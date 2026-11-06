@@ -5,7 +5,7 @@
 use crate::channel::{ReliableRx, ReliableTx, SequencedRx};
 use crate::fragment::{Fragmenter, Reassembler};
 use crate::packet::{Header, Kind, PacketError};
-use bytes::{Bytes, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 use net_common::limits::{HEADER_LEN, MAX_UNFRAGMENTED};
 use net_common::Channel;
 use std::collections::VecDeque;
@@ -56,6 +56,9 @@ pub struct Link {
     fragmenter: Fragmenter,
     reassembler: Reassembler,
     out: VecDeque<Bytes>,
+    /// Small unreliable messages waiting to share one datagram (`u16 len` prefixed).
+    batch: BytesMut,
+    batch_n: usize,
     stats: LinkStats,
     srtt: Option<Duration>,
     rttvar: Duration,
@@ -81,6 +84,8 @@ impl Link {
             fragmenter: Fragmenter::default(),
             reassembler: Reassembler::default(),
             out: VecDeque::new(),
+            batch: BytesMut::with_capacity(MAX_UNFRAGMENTED),
+            batch_n: 0,
             stats: LinkStats::default(),
             srtt: None,
             rttvar: Duration::ZERO,
@@ -128,6 +133,7 @@ impl Link {
             kind,
             ack_only,
             has_ack: ack.is_some(),
+            batch: false,
             seq,
             ack: ack.map(|a| a.0).unwrap_or(0),
             ack_bits: ack.map(|a| a.1).unwrap_or(0),
@@ -165,9 +171,14 @@ impl Link {
         }
         match channel {
             Channel::UnreliableSequenced => {
-                let seq = self.seq_tx;
-                self.seq_tx = self.seq_tx.wrapping_add(1);
-                self.emit(Kind::Channel(channel), seq, &msg, false);
+                // Coalesce: several small messages share one datagram until flush_batch().
+                if self.batch.len() + 2 + msg.len() > MAX_UNFRAGMENTED {
+                    self.flush_batch();
+                }
+                self.batch
+                    .extend_from_slice(&(msg.len() as u16).to_be_bytes());
+                self.batch.extend_from_slice(&msg);
+                self.batch_n += 1;
             }
             Channel::ReliableOrdered => {
                 for (seq, payload) in self.ordered_tx.push(msg, now) {
@@ -222,11 +233,28 @@ impl Link {
                     return out;
                 }
                 if self.seq_rx.accept(h.seq) {
-                    out.push(Received {
-                        channel: Channel::UnreliableSequenced,
-                        tick: h.tick,
-                        payload,
-                    });
+                    if h.batch {
+                        let mut p = payload;
+                        while p.len() >= 2 {
+                            let n = u16::from_be_bytes([p[0], p[1]]) as usize;
+                            p.advance(2);
+                            if p.len() < n {
+                                self.stats.decode_errors += 1;
+                                break;
+                            }
+                            out.push(Received {
+                                channel: Channel::UnreliableSequenced,
+                                tick: h.tick,
+                                payload: p.split_to(n),
+                            });
+                        }
+                    } else {
+                        out.push(Received {
+                            channel: Channel::UnreliableSequenced,
+                            tick: h.tick,
+                            payload,
+                        });
+                    }
                 } else {
                     self.stats.dropped_old += 1;
                 }
@@ -287,6 +315,7 @@ impl Link {
 
     /// Drives retransmits and delayed acks. Call every few milliseconds or after I/O.
     pub fn poll(&mut self, now: Instant) -> Result<(), LinkError> {
+        self.flush_batch();
         let rto = self.rto();
         let mut dead = false;
         let mut retrans: Vec<(Kind, u16, Bytes)> = Vec::new();
@@ -333,6 +362,21 @@ impl Link {
             }
         }
         Ok(())
+    }
+
+    /// Emits the pending unreliable batch as one datagram. Called by `poll()`; call it
+    /// directly when a message must leave immediately.
+    pub fn flush_batch(&mut self) {
+        if self.batch_n == 0 {
+            return;
+        }
+        let seq = self.seq_tx;
+        self.seq_tx = self.seq_tx.wrapping_add(1);
+        let mut h = self.header(Kind::Channel(Channel::UnreliableSequenced), seq, false);
+        h.batch = true;
+        let payload = self.batch.split().freeze();
+        self.batch_n = 0;
+        self.push_datagram(h, &payload);
     }
 
     /// Next datagram to put on the wire.
@@ -425,13 +469,43 @@ mod tests {
         let mut b = Link::new(t0);
         a.send(Channel::UnreliableSequenced, Bytes::from_static(b"1"), t0)
             .unwrap();
+        a.flush_batch();
         a.send(Channel::UnreliableSequenced, Bytes::from_static(b"2"), t0)
             .unwrap();
+        a.flush_batch();
         let d1 = a.next_outgoing().unwrap();
         let d2 = a.next_outgoing().unwrap();
         assert_eq!(b.receive(d2, t0).len(), 1);
         assert_eq!(b.receive(d1, t0).len(), 0);
         assert_eq!(b.stats().dropped_old, 1);
+    }
+
+    #[test]
+    fn unreliable_messages_coalesce() {
+        let t0 = Instant::now();
+        let mut a = Link::new(t0);
+        let mut b = Link::new(t0);
+        for i in 0..20u8 {
+            a.send(Channel::UnreliableSequenced, Bytes::from(vec![i; 40]), t0)
+                .unwrap();
+        }
+        assert_eq!(a.outgoing_len(), 0);
+        a.flush_batch();
+        assert_eq!(a.outgoing_len(), 1);
+        let got = pump(&mut a, &mut b, t0, 0, &mut 1u32);
+        assert_eq!(got.len(), 20);
+        assert_eq!(got[7].payload, Bytes::from(vec![7u8; 40]));
+        for _ in 0..40 {
+            a.send(
+                Channel::UnreliableSequenced,
+                Bytes::from(vec![1u8; 100]),
+                t0,
+            )
+            .unwrap();
+        }
+        a.flush_batch();
+        assert!(a.outgoing_len() >= 4);
+        assert_eq!(pump(&mut a, &mut b, t0, 0, &mut 1u32).len(), 40);
     }
 
     #[test]

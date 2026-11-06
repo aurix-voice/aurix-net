@@ -18,6 +18,8 @@ pub const PROTOCOL_VERSION: u8 = 1;
 pub const KIND_FRAGMENT: u8 = 3;
 const FLAG_ACK_ONLY: u8 = 0x80;
 const FLAG_HAS_ACK: u8 = 0x40;
+/// Payload is a sequence of `u16 len, bytes` messages (unreliable channel only).
+const FLAG_BATCH: u8 = 0x20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -47,6 +49,7 @@ pub struct Header {
     pub ack_only: bool,
     /// When false, `ack`/`ack_bits` carry nothing.
     pub has_ack: bool,
+    pub batch: bool,
     pub seq: u16,
     pub ack: u16,
     pub ack_bits: u32,
@@ -73,6 +76,9 @@ impl Header {
         if self.has_ack {
             k |= FLAG_HAS_ACK;
         }
+        if self.batch {
+            k |= FLAG_BATCH;
+        }
         out.put_u8(k);
         out.put_u16(self.seq);
         out.put_u16(self.ack);
@@ -90,11 +96,12 @@ impl Header {
             return Err(PacketError::Version(version));
         }
         let k = data.get_u8();
-        let kind = Kind::from_u8(k & 0x3f).ok_or(PacketError::Kind(k & 0x3f))?;
+        let kind = Kind::from_u8(k & 0x1f).ok_or(PacketError::Kind(k & 0x1f))?;
         let h = Header {
             kind,
             ack_only: k & FLAG_ACK_ONLY != 0,
             has_ack: k & FLAG_HAS_ACK != 0,
+            batch: k & FLAG_BATCH != 0,
             seq: data.get_u16(),
             ack: data.get_u16(),
             ack_bits: data.get_u32(),
@@ -120,6 +127,7 @@ mod tests {
             kind: Kind::Channel(Channel::ReliableOrdered),
             ack_only: false,
             has_ack: true,
+            batch: false,
             seq: 65535,
             ack: 12,
             ack_bits: 0xdead_beef,

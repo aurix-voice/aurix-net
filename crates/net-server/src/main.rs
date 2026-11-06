@@ -90,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
         region: region.clone(),
         cert_sha256: identity.fingerprint_sha256.clone(),
         quic_port,
-        metrics: net_api::metrics::Metrics::new(),
+        metrics: Arc::new(net_api::metrics::Metrics::new()),
         started: std::time::Instant::now(),
         pool: pool.clone(),
         redis: redis.clone(),
@@ -105,6 +105,7 @@ async fn main() -> anyhow::Result<()> {
 
     tokio::spawn(net_api::data::run_quic(st.clone(), endpoint));
     tokio::spawn(net_api::ws::reaper(st.clone()));
+    tokio::spawn(net_api::ws::flusher(st.clone()));
     tokio::spawn(lobby_forwarder(st.clone(), cfg.redis.url.clone()));
     {
         let st = st.clone();

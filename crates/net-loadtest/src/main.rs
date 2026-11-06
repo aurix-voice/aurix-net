@@ -384,12 +384,14 @@ async fn player(
             from: net_common::ActorId(0),
             payload: Bytes::from(payload.clone()),
         };
-        if link
-            .lock()
-            .send(Channel::UnreliableSequenced, frame.encode(), Instant::now())
-            .is_ok()
         {
-            stats.sent.fetch_add(1, Ordering::Relaxed);
+            let mut l = link.lock();
+            if l.send(Channel::UnreliableSequenced, frame.encode(), Instant::now())
+                .is_ok()
+            {
+                stats.sent.fetch_add(1, Ordering::Relaxed);
+            }
+            l.flush_batch();
         }
         flush();
     }

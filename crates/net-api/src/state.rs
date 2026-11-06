@@ -19,7 +19,7 @@ pub struct AppState {
     pub region: RegionId,
     pub cert_sha256: String,
     pub quic_port: u16,
-    pub metrics: Metrics,
+    pub metrics: Arc<Metrics>,
     pub started: std::time::Instant,
 }
 

@@ -43,6 +43,10 @@ impl DataSession {
             if l.send(channel, payload, Instant::now()).is_err() {
                 return;
             }
+            // Unreliable messages are coalesced and leave on the next flusher pass.
+            if channel == Channel::UnreliableSequenced {
+                return;
+            }
             std::iter::from_fn(|| l.next_outgoing()).collect()
         };
         self.flush(out);
@@ -52,13 +56,15 @@ impl DataSession {
         for d in out {
             self.metrics.datagrams_out.inc();
             self.metrics.bytes_out.inc_by(d.len() as u64);
-            match &self.sink {
-                DataSink::Quic(c) => {
-                    let _ = c.send_datagram(d);
-                }
-                DataSink::Ws(tx) => {
-                    let _ = tx.try_send(d);
-                }
+            let ok = match &self.sink {
+                DataSink::Quic(c) => c.send_datagram(d).is_ok(),
+                DataSink::Ws(tx) => tx.try_send(d).is_ok(),
+            };
+            if !ok {
+                self.metrics
+                    .errors
+                    .with_label_values(&["datagram_send"])
+                    .inc();
             }
         }
     }
@@ -106,8 +112,12 @@ pub struct HostedRoom {
     pub project: ProjectId,
 }
 
+pub const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(2);
+
 #[derive(Default)]
 pub struct RoomHost {
+    /// Every live data session; the flusher drives retransmits, acks and batches.
+    data_sessions: Mutex<Vec<std::sync::Weak<DataSession>>>,
     rooms: DashMap<RoomId, Arc<Mutex<HostedRoom>>>,
     by_name: DashMap<(ProjectId, String), RoomId>,
     /// Lobby subscribers per project on this node.
@@ -115,6 +125,29 @@ pub struct RoomHost {
 }
 
 impl RoomHost {
+    pub fn register_data(&self, ds: &Arc<DataSession>) {
+        self.data_sessions.lock().push(Arc::downgrade(ds));
+    }
+
+    /// One pass: poll every live link and push its datagrams. Returns dead links.
+    pub fn flush_all(&self) -> usize {
+        let sessions: Vec<Arc<DataSession>> = {
+            let mut v = self.data_sessions.lock();
+            v.retain(|w| w.strong_count() > 1);
+            v.iter().filter_map(|w| w.upgrade()).collect()
+        };
+        let mut dead = 0;
+        for s in sessions {
+            if !s.tick() {
+                dead += 1;
+                if let DataSink::Quic(c) = &s.sink {
+                    c.close(4u32.into(), b"link dead");
+                }
+            }
+        }
+        dead
+    }
+
     pub fn insert(&self, project: ProjectId, room: Room) -> Arc<Mutex<HostedRoom>> {
         let id = room.id();
         let name = room.cfg.name.clone();

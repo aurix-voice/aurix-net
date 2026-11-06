@@ -643,12 +643,9 @@ impl Session {
                         "ticket does not match session".into(),
                     ));
                 }
-                let ds = DataSession::new(
-                    DataSink::Ws(self.bin.clone()),
-                    Arc::new(crate::metrics::Metrics::new()),
-                );
+                let ds = DataSession::new(DataSink::Ws(self.bin.clone()), self.st.metrics.clone());
                 let ds = attach_data(&r.hosted, r.actor, ds);
-                spawn_ticker(ds.clone());
+                spawn_ticker(&self.st, ds.clone());
                 self.data = Some(ds);
                 Ok(())
             }
@@ -683,21 +680,19 @@ pub fn attach_data(
     ds
 }
 
-pub fn spawn_ticker(ds: Arc<DataSession>) {
-    tokio::spawn(async move {
-        let mut iv = tokio::time::interval(Duration::from_millis(10));
-        loop {
-            iv.tick().await;
-            if Arc::strong_count(&ds) == 1 || !ds.tick() {
-                break;
-            }
-            if let DataSink::Quic(c) = &ds.sink {
-                if c.close_reason().is_some() {
-                    break;
-                }
-            }
-        }
-    });
+/// Registers a data session with the node-wide flusher (see [`flusher`]).
+pub fn spawn_ticker(st: &Shared, ds: Arc<DataSession>) {
+    st.host.register_data(&ds);
+}
+
+/// Drives every data link every FLUSH_EVERY: coalesced batches, acks, retransmits.
+pub async fn flusher(st: Shared) {
+    let mut iv = tokio::time::interval(crate::host::FLUSH_EVERY);
+    iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        iv.tick().await;
+        st.host.flush_all();
+    }
 }
 
 pub async fn publish_room(st: &Shared, h: &Arc<Mutex<HostedRoom>>) {

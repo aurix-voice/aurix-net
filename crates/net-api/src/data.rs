@@ -37,12 +37,9 @@ async fn handle(st: Shared, incoming: quinn::Incoming) -> anyhow::Result<()> {
             anyhow::bail!("actor not joined");
         }
     }
-    let ds = DataSession::new(
-        DataSink::Quic(conn.clone()),
-        Arc::new(crate::metrics::Metrics::new()),
-    );
+    let ds = DataSession::new(DataSink::Quic(conn.clone()), st.metrics.clone());
     let ds = attach_data(&h, t.actor, ds);
-    spawn_ticker(ds.clone());
+    spawn_ticker(&st, ds.clone());
     // Echo an empty ack so the client learns the path is open.
     ds.send(net_common::Channel::ReliableOrdered, bytes::Bytes::new());
     loop {
