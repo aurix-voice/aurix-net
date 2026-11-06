@@ -1539,6 +1539,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "net-rollback"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "net-common",
+ "serde",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "net-rooms"
 version = "0.1.0"
 dependencies = [
