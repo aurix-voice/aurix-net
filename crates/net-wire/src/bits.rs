@@ -3,6 +3,9 @@
 #[derive(Debug, Default, Clone)]
 pub struct BitWriter {
     buf: Vec<u8>,
+    /// Pending bits, MSB-aligned in the low `nscratch` bits.
+    scratch: u64,
+    nscratch: u32,
     bit: usize,
 }
 
@@ -11,18 +14,47 @@ impl BitWriter {
         Self::default()
     }
 
+    #[inline]
     pub fn write_bits(&mut self, value: u64, nbits: u32) {
         debug_assert!(nbits <= 64);
-        for i in (0..nbits).rev() {
-            let b = (value >> i) & 1;
-            if self.bit.is_multiple_of(8) {
-                self.buf.push(0);
+        if nbits == 0 {
+            return;
+        }
+        let value = if nbits == 64 {
+            value
+        } else {
+            value & ((1u64 << nbits) - 1)
+        };
+        self.bit += nbits as usize;
+        // Push in two halves when the scratch would overflow 64 bits.
+        let mut remaining = nbits;
+        let mut v = value;
+        while remaining > 0 {
+            let take = remaining.min(64 - self.nscratch);
+            let part = v >> (remaining - take);
+            let part = if take == 64 {
+                part
+            } else {
+                part & ((1u64 << take) - 1)
+            };
+            self.scratch = if take == 64 {
+                part
+            } else {
+                (self.scratch << take) | part
+            };
+            self.nscratch += take;
+            remaining -= take;
+            if remaining > 0 {
+                v &= (1u64 << remaining) - 1;
             }
-            if b == 1 {
-                let idx = self.bit / 8;
-                self.buf[idx] |= 0x80 >> (self.bit % 8);
+            while self.nscratch >= 8 {
+                let byte = (self.scratch >> (self.nscratch - 8)) as u8;
+                self.buf.push(byte);
+                self.nscratch -= 8;
+                if self.nscratch < 64 {
+                    self.scratch &= (1u64 << self.nscratch) - 1;
+                }
             }
-            self.bit += 1;
         }
     }
 
@@ -58,6 +90,11 @@ impl BitWriter {
     }
 
     pub fn write_bytes(&mut self, b: &[u8]) {
+        if self.nscratch == 0 {
+            self.buf.extend_from_slice(b);
+            self.bit += b.len() * 8;
+            return;
+        }
         for x in b {
             self.write_bits(*x as u64, 8);
         }
@@ -67,7 +104,12 @@ impl BitWriter {
         self.bit
     }
 
-    pub fn finish(self) -> Vec<u8> {
+    pub fn finish(mut self) -> Vec<u8> {
+        if self.nscratch > 0 {
+            let byte = (self.scratch << (8 - self.nscratch)) as u8;
+            self.buf.push(byte);
+            self.nscratch = 0;
+        }
         self.buf
     }
 }
@@ -87,16 +129,25 @@ impl<'a> BitReader<'a> {
         Self { buf, bit: 0 }
     }
 
+    #[inline]
     pub fn read_bits(&mut self, nbits: u32) -> Result<u64, Eof> {
+        if nbits == 0 {
+            return Ok(0);
+        }
         if self.bit + nbits as usize > self.buf.len() * 8 {
             return Err(Eof);
         }
         let mut v = 0u64;
-        for _ in 0..nbits {
+        let mut remaining = nbits;
+        while remaining > 0 {
             let byte = self.buf[self.bit / 8];
-            let b = (byte >> (7 - (self.bit % 8))) & 1;
-            v = (v << 1) | b as u64;
-            self.bit += 1;
+            let off = (self.bit % 8) as u32;
+            let avail = 8 - off;
+            let take = remaining.min(avail);
+            let chunk = ((byte as u32) >> (avail - take)) & ((1u32 << take) - 1);
+            v = (v << take) | chunk as u64;
+            self.bit += take as usize;
+            remaining -= take;
         }
         Ok(v)
     }
@@ -125,6 +176,14 @@ impl<'a> BitReader<'a> {
     }
 
     pub fn read_bytes(&mut self, n: usize) -> Result<Vec<u8>, Eof> {
+        if self.bit.is_multiple_of(8) {
+            let start = self.bit / 8;
+            if start + n > self.buf.len() {
+                return Err(Eof);
+            }
+            self.bit += n * 8;
+            return Ok(self.buf[start..start + n].to_vec());
+        }
         (0..n).map(|_| self.read_bits(8).map(|b| b as u8)).collect()
     }
 
@@ -167,6 +226,23 @@ mod tests {
         let pad = buf.len() * 8 - bits;
         assert_eq!(r.read_bits(pad as u32).unwrap(), 0);
         assert_eq!(r.read_bits(1), Err(Eof));
+    }
+
+    #[test]
+    fn word_boundaries() {
+        let mut w = BitWriter::new();
+        w.write_bits(0x1, 3);
+        w.write_bits(u64::MAX, 64);
+        w.write_bits(0xABCDEF, 24);
+        w.write_bits(0, 61);
+        w.write_bits(0x5, 3);
+        let buf = w.finish();
+        let mut r = BitReader::new(&buf);
+        assert_eq!(r.read_bits(3).unwrap(), 1);
+        assert_eq!(r.read_bits(64).unwrap(), u64::MAX);
+        assert_eq!(r.read_bits(24).unwrap(), 0xABCDEF);
+        assert_eq!(r.read_bits(61).unwrap(), 0);
+        assert_eq!(r.read_bits(3).unwrap(), 5);
     }
 
     #[test]
