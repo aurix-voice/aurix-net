@@ -1547,6 +1547,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "net-sim"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "net-common",
+ "net-wire",
+ "serde",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "net-transport"
 version = "0.1.0"
 dependencies = [
