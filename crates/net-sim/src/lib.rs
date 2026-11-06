@@ -164,6 +164,28 @@ impl Frame {
         }
     }
 
+    /// Client side: makes sure `id` exists exactly as the server numbered it.
+    pub fn ensure_entity(&mut self, id: EntityId, owner: Option<ActorId>) {
+        let i = id.index as usize;
+        if i >= self.slots.len() {
+            self.slots.resize(i + 1, None);
+            self.generations.resize(i + 1, 0);
+        }
+        match &mut self.slots[i] {
+            Some(e) if e.id == id => e.owner = owner,
+            slot => {
+                *slot = Some(Entity {
+                    id,
+                    owner,
+                    components: BTreeMap::new(),
+                    spawned_at: self.tick,
+                });
+                self.generations[i] = id.generation;
+                self.free.retain(|f| *f != id.index);
+            }
+        }
+    }
+
     pub fn entity(&self, id: EntityId) -> Option<&Entity> {
         self.slots
             .get(id.index as usize)

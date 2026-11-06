@@ -1509,6 +1509,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "net-replication"
+version = "0.1.0"
+dependencies = [
+ "net-common",
+ "net-sim",
+ "net-wire",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "net-rooms"
 version = "0.1.0"
 dependencies = [
