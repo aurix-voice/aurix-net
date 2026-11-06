@@ -226,7 +226,15 @@ impl Session {
                 let mut attempt = 0;
                 let h = loop {
                     match self.find_room(g.project, &name).await {
-                        Ok(h) => break h,
+                        Ok(h) => {
+                            let existing = h.lock().room.cfg.mode;
+                            if existing != mode {
+                                return Err(NetError::Conflict(format!(
+                                    "room exists in {existing:?} mode, requested {mode:?}"
+                                )));
+                            }
+                            break h;
+                        }
                         Err(NetError::NotFound(_)) => {}
                         Err(NetError::Conflict(ref m)) if m == "room_pending" && attempt < 30 => {
                             attempt += 1;
