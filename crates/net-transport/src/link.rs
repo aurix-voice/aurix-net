@@ -191,7 +191,7 @@ impl Link {
                     self.rttvar = r / 2;
                 }
                 Some(s) => {
-                    let diff = if s > r { s - r } else { r - s };
+                    let diff = s.abs_diff(r);
                     self.rttvar = (self.rttvar * 3 + diff) / 4;
                     self.srtt = Some((s * 7 + r) / 8);
                 }
@@ -308,7 +308,7 @@ impl Link {
                         retrans.push((kind, seq, payload));
                     }
                 }
-                Err(()) => dead = true,
+                Err(_) => dead = true,
             }
         }
         if dead {

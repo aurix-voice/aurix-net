@@ -1,0 +1,470 @@
+use crate::models::*;
+use crate::{db_err, DbPool};
+use chrono::{DateTime, Utc};
+use net_common::Result;
+use uuid::Uuid;
+
+// ---------- projects ----------
+
+pub async fn create_project(pool: &DbPool, name: &str, plan: &str) -> Result<ProjectRow> {
+    sqlx::query_as::<_, ProjectRow>(
+        "INSERT INTO projects (id, name, plan) VALUES ($1, $2, $3) RETURNING *",
+    )
+    .bind(Uuid::now_v7())
+    .bind(name)
+    .bind(plan)
+    .fetch_one(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn get_project(pool: &DbPool, id: Uuid) -> Result<ProjectRow> {
+    sqlx::query_as::<_, ProjectRow>("SELECT * FROM projects WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(db_err)
+}
+
+pub async fn list_projects(pool: &DbPool) -> Result<Vec<ProjectRow>> {
+    sqlx::query_as::<_, ProjectRow>("SELECT * FROM projects ORDER BY created_at")
+        .fetch_all(pool)
+        .await
+        .map_err(db_err)
+}
+
+pub async fn set_project_limits(pool: &DbPool, id: Uuid, limits: &serde_json::Value) -> Result<()> {
+    sqlx::query("UPDATE projects SET limits = $2 WHERE id = $1")
+        .bind(id)
+        .bind(limits)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(())
+}
+
+// ---------- api keys ----------
+
+pub async fn insert_api_key(
+    pool: &DbPool,
+    project_id: Uuid,
+    key_hash: &str,
+    prefix: &str,
+    name: &str,
+    scopes: &[String],
+) -> Result<ApiKeyRow> {
+    sqlx::query_as::<_, ApiKeyRow>(
+        "INSERT INTO api_keys (id, project_id, key_hash, prefix, name, scopes) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *",
+    )
+    .bind(Uuid::now_v7())
+    .bind(project_id)
+    .bind(key_hash)
+    .bind(prefix)
+    .bind(name)
+    .bind(scopes)
+    .fetch_one(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn find_api_key(pool: &DbPool, key_hash: &str) -> Result<Option<ApiKeyRow>> {
+    sqlx::query_as::<_, ApiKeyRow>(
+        "SELECT * FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL",
+    )
+    .bind(key_hash)
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn touch_api_key(pool: &DbPool, id: Uuid) -> Result<()> {
+    sqlx::query("UPDATE api_keys SET last_used_at = now() WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')")
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(())
+}
+
+pub async fn list_api_keys(pool: &DbPool, project_id: Uuid) -> Result<Vec<ApiKeyRow>> {
+    sqlx::query_as::<_, ApiKeyRow>(
+        "SELECT * FROM api_keys WHERE project_id = $1 ORDER BY created_at",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn revoke_api_key(pool: &DbPool, project_id: Uuid, id: Uuid) -> Result<bool> {
+    let r = sqlx::query("UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND project_id = $2 AND revoked_at IS NULL")
+        .bind(id)
+        .bind(project_id)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(r.rows_affected() == 1)
+}
+
+// ---------- regions ----------
+
+pub async fn list_regions(pool: &DbPool, enabled_only: bool) -> Result<Vec<RegionRow>> {
+    let q = if enabled_only {
+        "SELECT * FROM regions WHERE enabled ORDER BY id"
+    } else {
+        "SELECT * FROM regions ORDER BY id"
+    };
+    sqlx::query_as::<_, RegionRow>(q)
+        .fetch_all(pool)
+        .await
+        .map_err(db_err)
+}
+
+pub async fn upsert_region(pool: &DbPool, r: &RegionRow) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO regions (id, display_name, dns_label, enabled) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (id) DO UPDATE SET display_name = EXCLUDED.display_name, dns_label = EXCLUDED.dns_label, enabled = EXCLUDED.enabled",
+    )
+    .bind(&r.id)
+    .bind(&r.display_name)
+    .bind(&r.dns_label)
+    .bind(r.enabled)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(())
+}
+
+// ---------- nodes ----------
+
+#[derive(Debug, Clone)]
+pub struct NodeHeartbeat {
+    pub id: Uuid,
+    pub region: String,
+    pub public_host: String,
+    pub quic_port: i32,
+    pub http_url: String,
+    pub cert_sha256: String,
+    pub version: String,
+    pub rooms: i32,
+    pub players: i32,
+    pub load_factor: f32,
+    pub draining: bool,
+}
+
+pub async fn upsert_node(pool: &DbPool, n: &NodeHeartbeat) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO nodes (id, region, public_host, quic_port, http_url, cert_sha256, version, rooms, players, load_factor, draining, last_heartbeat)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
+         ON CONFLICT (id) DO UPDATE SET region = EXCLUDED.region, public_host = EXCLUDED.public_host, quic_port = EXCLUDED.quic_port,
+            http_url = EXCLUDED.http_url, cert_sha256 = EXCLUDED.cert_sha256, version = EXCLUDED.version, rooms = EXCLUDED.rooms,
+            players = EXCLUDED.players, load_factor = EXCLUDED.load_factor, draining = EXCLUDED.draining, last_heartbeat = now()",
+    )
+    .bind(n.id)
+    .bind(&n.region)
+    .bind(&n.public_host)
+    .bind(n.quic_port)
+    .bind(&n.http_url)
+    .bind(&n.cert_sha256)
+    .bind(&n.version)
+    .bind(n.rooms)
+    .bind(n.players)
+    .bind(n.load_factor)
+    .bind(n.draining)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(())
+}
+
+/// Nodes with a heartbeat within `stale_secs`.
+pub async fn list_live_nodes(pool: &DbPool, stale_secs: i64) -> Result<Vec<NodeRow>> {
+    sqlx::query_as::<_, NodeRow>(
+        "SELECT * FROM nodes WHERE last_heartbeat > now() - make_interval(secs => $1) ORDER BY region, load_factor",
+    )
+    .bind(stale_secs as f64)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn delete_node(pool: &DbPool, id: Uuid) -> Result<()> {
+    sqlx::query("DELETE FROM nodes WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(())
+}
+
+// ---------- rooms ----------
+
+#[derive(Debug, Clone)]
+pub struct NewRoom {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub node_id: Uuid,
+    pub region: String,
+    pub name: String,
+    pub mode: String,
+    pub max_players: i32,
+    pub visible: bool,
+    pub open: bool,
+    pub schema_hash: Option<String>,
+    pub props: serde_json::Value,
+    pub lobby_props: Vec<String>,
+}
+
+pub async fn insert_room(pool: &DbPool, r: &NewRoom) -> Result<RoomRow> {
+    sqlx::query_as::<_, RoomRow>(
+        "INSERT INTO rooms (id, project_id, node_id, region, name, mode, max_players, visible, open, schema_hash, props, lobby_props)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *",
+    )
+    .bind(r.id)
+    .bind(r.project_id)
+    .bind(r.node_id)
+    .bind(&r.region)
+    .bind(&r.name)
+    .bind(&r.mode)
+    .bind(r.max_players)
+    .bind(r.visible)
+    .bind(r.open)
+    .bind(&r.schema_hash)
+    .bind(&r.props)
+    .bind(&r.lobby_props)
+    .fetch_one(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn get_room(pool: &DbPool, id: Uuid) -> Result<RoomRow> {
+    sqlx::query_as::<_, RoomRow>("SELECT * FROM rooms WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(db_err)
+}
+
+pub async fn find_open_room(
+    pool: &DbPool,
+    project_id: Uuid,
+    name: &str,
+) -> Result<Option<RoomRow>> {
+    sqlx::query_as::<_, RoomRow>(
+        "SELECT * FROM rooms WHERE project_id = $1 AND name = $2 AND state = 'open'",
+    )
+    .bind(project_id)
+    .bind(name)
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn list_open_rooms(pool: &DbPool, project_id: Uuid, limit: i64) -> Result<Vec<RoomRow>> {
+    sqlx::query_as::<_, RoomRow>(
+        "SELECT * FROM rooms WHERE project_id = $1 AND state = 'open' ORDER BY created_at DESC LIMIT $2",
+    )
+    .bind(project_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn update_room_flags(
+    pool: &DbPool,
+    id: Uuid,
+    visible: Option<bool>,
+    open: Option<bool>,
+    props: Option<&serde_json::Value>,
+    lobby_props: Option<&[String]>,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE rooms SET visible = COALESCE($2, visible), open = COALESCE($3, open),
+            props = COALESCE($4, props), lobby_props = COALESCE($5, lobby_props) WHERE id = $1",
+    )
+    .bind(id)
+    .bind(visible)
+    .bind(open)
+    .bind(props)
+    .bind(lobby_props)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(())
+}
+
+pub async fn close_room(pool: &DbPool, id: Uuid) -> Result<()> {
+    sqlx::query(
+        "UPDATE rooms SET state = 'closed', closed_at = now() WHERE id = $1 AND state <> 'closed'",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(())
+}
+
+/// Rooms left open by a node that disappeared.
+pub async fn close_rooms_of_node(pool: &DbPool, node_id: Uuid) -> Result<u64> {
+    let r = sqlx::query("UPDATE rooms SET state = 'closed', closed_at = now() WHERE node_id = $1 AND state = 'open'")
+        .bind(node_id)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(r.rows_affected())
+}
+
+pub async fn count_open_rooms(pool: &DbPool, project_id: Uuid) -> Result<i64> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM rooms WHERE project_id = $1 AND state = 'open'",
+    )
+    .bind(project_id)
+    .fetch_one(pool)
+    .await
+    .map_err(db_err)
+}
+
+// ---------- schemas ----------
+
+pub async fn upsert_schema(
+    pool: &DbPool,
+    project_id: Uuid,
+    hash: &str,
+    version: &str,
+    idl: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO schemas (project_id, hash, version, idl) VALUES ($1,$2,$3,$4) ON CONFLICT (project_id, hash) DO UPDATE SET version = EXCLUDED.version",
+    )
+    .bind(project_id)
+    .bind(hash)
+    .bind(version)
+    .bind(idl)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(())
+}
+
+pub async fn schema_exists(pool: &DbPool, project_id: Uuid, hash: &str) -> Result<bool> {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM schemas WHERE project_id = $1 AND hash = $2)",
+    )
+    .bind(project_id)
+    .bind(hash)
+    .fetch_one(pool)
+    .await
+    .map_err(db_err)
+}
+
+// ---------- webhooks ----------
+
+pub async fn insert_webhook(
+    pool: &DbPool,
+    project_id: Uuid,
+    url: &str,
+    secret: &str,
+    events: &[String],
+) -> Result<WebhookRow> {
+    sqlx::query_as::<_, WebhookRow>(
+        "INSERT INTO webhooks (id, project_id, url, secret, events) VALUES ($1,$2,$3,$4,$5) RETURNING *",
+    )
+    .bind(Uuid::now_v7())
+    .bind(project_id)
+    .bind(url)
+    .bind(secret)
+    .bind(events)
+    .fetch_one(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn list_webhooks(pool: &DbPool, project_id: Uuid) -> Result<Vec<WebhookRow>> {
+    sqlx::query_as::<_, WebhookRow>(
+        "SELECT * FROM webhooks WHERE project_id = $1 AND enabled ORDER BY created_at",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn delete_webhook(pool: &DbPool, project_id: Uuid, id: Uuid) -> Result<bool> {
+    let r = sqlx::query("DELETE FROM webhooks WHERE id = $1 AND project_id = $2")
+        .bind(id)
+        .bind(project_id)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(r.rows_affected() == 1)
+}
+
+// ---------- usage / audit ----------
+
+pub async fn add_usage(
+    pool: &DbPool,
+    project_id: Uuid,
+    hour: DateTime<Utc>,
+    metric: &str,
+    qty: f64,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO usage_hours (project_id, hour, metric, quantity) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (project_id, hour, metric) DO UPDATE SET quantity = usage_hours.quantity + EXCLUDED.quantity",
+    )
+    .bind(project_id)
+    .bind(hour)
+    .bind(metric)
+    .bind(qty)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct UsageRow {
+    pub hour: DateTime<Utc>,
+    pub metric: String,
+    pub quantity: f64,
+}
+
+pub async fn usage_between(
+    pool: &DbPool,
+    project_id: Uuid,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<UsageRow>> {
+    sqlx::query_as::<_, UsageRow>(
+        "SELECT hour, metric, quantity FROM usage_hours WHERE project_id = $1 AND hour >= $2 AND hour < $3 ORDER BY hour, metric",
+    )
+    .bind(project_id)
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn audit(
+    pool: &DbPool,
+    project_id: Option<Uuid>,
+    actor: &str,
+    action: &str,
+    target: &str,
+    details: serde_json::Value,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO audit (project_id, actor, action, target, details) VALUES ($1,$2,$3,$4,$5)",
+    )
+    .bind(project_id)
+    .bind(actor)
+    .bind(action)
+    .bind(target)
+    .bind(details)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(())
+}

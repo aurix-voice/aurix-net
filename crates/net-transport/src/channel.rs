@@ -34,24 +34,18 @@ pub struct InFlight {
 }
 
 /// Send side of a reliable channel: a sliding window of unacked packets.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ReliableTx {
     next_seq: u16,
     in_flight: VecDeque<InFlight>,
     pending: VecDeque<Bytes>,
 }
 
-impl Default for ReliableTx {
-    fn default() -> Self {
-        Self {
-            next_seq: 0,
-            in_flight: VecDeque::new(),
-            pending: VecDeque::new(),
-        }
-    }
-}
-
 pub const MAX_RETRIES: u8 = 20;
+
+/// A packet was retransmitted MAX_RETRIES times without an ack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkDead;
 
 impl ReliableTx {
     /// Queues a payload; returns packets that may be sent now (window permitting).
@@ -110,13 +104,13 @@ impl ReliableTx {
     }
 
     /// Returns packets to retransmit (older than `rto`) and newly windowed packets.
-    /// `Err(())` when a packet exceeded MAX_RETRIES: the link is dead.
-    pub fn poll(&mut self, now: Instant, rto: Duration) -> Result<Vec<(u16, Bytes)>, ()> {
+    /// `Err(LinkDead)` when a packet exceeded MAX_RETRIES.
+    pub fn poll(&mut self, now: Instant, rto: Duration) -> Result<Vec<(u16, Bytes)>, LinkDead> {
         let mut out = Vec::new();
         for p in self.in_flight.iter_mut() {
             if now.duration_since(p.sent_at) >= rto {
                 if p.retries >= MAX_RETRIES {
-                    return Err(());
+                    return Err(LinkDead);
                 }
                 p.retries += 1;
                 p.sent_at = now;

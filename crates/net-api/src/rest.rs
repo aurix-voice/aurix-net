@@ -1,0 +1,546 @@
+//! REST for developer backends (API key) and operators (admin token).
+
+use crate::state::Shared;
+use crate::ws::close_room;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{delete, get, post};
+use axum::{Json, Router};
+use chrono::{DateTime, Utc};
+use net_auth::api_key::{hash_key, looks_like_key, ApiKeyMaterial, Scope};
+use net_common::{NetError, ProjectId, Result, RoomId};
+use net_db::models::ApiKeyRow;
+use net_db::queries;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::sync::Arc;
+use uuid::Uuid;
+
+pub struct ApiError(NetError);
+
+impl From<NetError> for ApiError {
+    fn from(e: NetError) -> Self {
+        ApiError(e)
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let status =
+            StatusCode::from_u16(self.0.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        (
+            status,
+            Json(json!({"error": self.0.code(), "message": self.0.to_string()})),
+        )
+            .into_response()
+    }
+}
+
+type ApiResult<T> = std::result::Result<T, ApiError>;
+
+pub fn router(st: Shared) -> Router {
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/metrics", get(metrics))
+        .route("/v1/regions", get(regions))
+        .route("/v1/nodes", get(nodes))
+        .route("/v1/grants", post(create_grant))
+        .route("/v1/rooms", get(list_rooms).post(create_room))
+        .route("/v1/rooms/:id", get(get_room).delete(delete_room))
+        .route("/v1/usage", get(usage))
+        .route("/v1/keys", get(list_keys).post(create_key))
+        .route("/v1/keys/:id", delete(revoke_key))
+        .route("/v1/webhooks", get(list_webhooks).post(create_webhook))
+        .route("/v1/webhooks/:id", delete(delete_webhook))
+        .route(
+            "/v1/operator/projects",
+            get(op_list_projects).post(op_create_project),
+        )
+        .route("/v1/operator/projects/:id/keys", post(op_create_key))
+        .route("/v1/operator/projects/:id/limits", post(op_set_limits))
+        .route("/v1/operator/nodes", get(op_nodes))
+        .with_state(st)
+}
+
+fn bearer(h: &HeaderMap) -> Option<&str> {
+    h.get("authorization")?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+        .map(str::trim)
+}
+
+async fn api_key(st: &Shared, h: &HeaderMap, scope: Scope) -> Result<ApiKeyRow> {
+    let k = bearer(h).ok_or_else(|| NetError::Unauthorized("missing bearer api key".into()))?;
+    if !looks_like_key(k) {
+        return Err(NetError::Unauthorized("malformed api key".into()));
+    }
+    let row = queries::find_api_key(&st.pool, &hash_key(k))
+        .await?
+        .ok_or_else(|| NetError::Unauthorized("unknown api key".into()))?;
+    let has = row
+        .scopes
+        .iter()
+        .any(|s| s == scope.as_str() || s == "admin");
+    if !has {
+        return Err(NetError::Forbidden(format!(
+            "key lacks scope {}",
+            scope.as_str()
+        )));
+    }
+    let _ = queries::touch_api_key(&st.pool, row.id).await;
+    Ok(row)
+}
+
+fn operator(st: &Shared, h: &HeaderMap) -> Result<()> {
+    let t = bearer(h).unwrap_or("");
+    if net_auth::admin::admin_token_ok(&st.cfg.auth.admin_token, t) {
+        Ok(())
+    } else {
+        Err(NetError::Unauthorized("operator token required".into()))
+    }
+}
+
+async fn healthz(State(st): State<Shared>) -> Json<Value> {
+    Json(json!({
+        "ok": true,
+        "version": env!("CARGO_PKG_VERSION"),
+        "node_id": st.node_id,
+        "region": st.region,
+        "rooms": st.host.len(),
+        "players": st.host.players(),
+        "uptime_secs": st.started.elapsed().as_secs(),
+    }))
+}
+
+async fn metrics(State(st): State<Shared>) -> String {
+    st.metrics.rooms.set(st.host.len() as i64);
+    st.metrics.players.set(st.host.players() as i64);
+    st.metrics.render()
+}
+
+#[derive(Serialize)]
+struct RegionOut {
+    id: String,
+    display_name: String,
+    nodes: usize,
+}
+
+async fn regions(State(st): State<Shared>) -> ApiResult<Json<Vec<RegionOut>>> {
+    let rows = queries::list_regions(&st.pool, true).await?;
+    let nodes = st.registry.snapshot();
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| RegionOut {
+                nodes: nodes
+                    .iter()
+                    .filter(|n| n.region.as_str() == r.id && !n.draining)
+                    .count(),
+                id: r.id,
+                display_name: r.display_name,
+            })
+            .filter(|r| r.nodes > 0 || r.id == st.region.as_str())
+            .collect(),
+    ))
+}
+
+#[derive(Deserialize)]
+struct NodesQuery {
+    region: Option<String>,
+}
+
+async fn nodes(State(st): State<Shared>, Query(q): Query<NodesQuery>) -> Json<Vec<Value>> {
+    Json(
+        st.registry
+            .snapshot()
+            .into_iter()
+            .filter(|n| !n.draining && q.region.as_deref().is_none_or(|r| r == n.region.as_str()))
+            .map(|n| {
+                json!({
+                    "id": n.id, "region": n.region, "host": n.public_host, "quic_port": n.quic_port,
+                    "http_url": n.http_url, "cert_sha256": n.cert_sha256, "load_factor": n.load_factor,
+                })
+            })
+            .collect(),
+    )
+}
+
+#[derive(Deserialize)]
+struct GrantReq {
+    player_id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    room: Option<String>,
+    #[serde(default)]
+    scopes: Option<Vec<String>>,
+    #[serde(default)]
+    ttl_secs: Option<u64>,
+    #[serde(default)]
+    meta: Option<Value>,
+}
+
+async fn create_grant(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Json(req): Json<GrantReq>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Rooms).await?;
+    let scopes: Vec<&str> = req
+        .scopes
+        .as_ref()
+        .map(|v| v.iter().map(String::as_str).collect())
+        .unwrap_or_else(|| vec!["join", "create"]);
+    let (token, claims) = st.grants.issue(
+        ProjectId::from_uuid(key.project_id),
+        &req.player_id,
+        &req.name,
+        req.room.as_deref(),
+        &scopes,
+        req.meta,
+        req.ttl_secs,
+    )?;
+    Ok(Json(
+        json!({"grant": token, "expires_at": claims.exp, "player_id": claims.sub}),
+    ))
+}
+
+async fn list_rooms(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Read).await?;
+    let project = ProjectId::from_uuid(key.project_id);
+    let live = st.redis.list_rooms(project).await.unwrap_or_default();
+    Ok(Json(json!({"rooms": live})))
+}
+
+#[derive(Deserialize)]
+struct CreateRoomReq {
+    name: String,
+    #[serde(default)]
+    max_players: Option<u16>,
+    #[serde(default = "t")]
+    visible: bool,
+    #[serde(default = "t")]
+    open: bool,
+    #[serde(default)]
+    props: serde_json::Map<String, Value>,
+    #[serde(default)]
+    lobby_props: Vec<String>,
+}
+fn t() -> bool {
+    true
+}
+
+/// Server-side room creation (no player joins). The room lives on this node.
+async fn create_room(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Json(req): Json<CreateRoomReq>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Rooms).await?;
+    let project = ProjectId::from_uuid(key.project_id);
+    if st.host.by_name(project, &req.name).is_some() {
+        return Err(NetError::Conflict("room name already in use".into()).into());
+    }
+    let prow = queries::get_project(&st.pool, key.project_id).await?;
+    let limits = net_control::ProjectLimits::from_json(&prow.limits).effective(&st.cfg.limits);
+    let max_players = req
+        .max_players
+        .unwrap_or(limits.max_players_per_room.min(16))
+        .clamp(1, limits.max_players_per_room);
+    let cfg = net_rooms::RoomConfig {
+        id: RoomId::new(),
+        project,
+        name: req.name.clone(),
+        mode: net_common::RoomMode::Relay,
+        max_players,
+        visible: req.visible,
+        open: req.open,
+        props: req.props.clone(),
+        lobby_props: req.lobby_props.clone(),
+        max_events_per_sec: limits.max_events_per_sec_per_room,
+        max_event_bytes: limits.max_event_bytes,
+        max_props_bytes: limits.max_props_bytes,
+        max_cached_events: limits.max_cached_events_per_room,
+        offline_ttl: std::time::Duration::from_secs(30),
+        // Server-created rooms wait longer for their first player.
+        empty_ttl: std::time::Duration::from_secs(300),
+    };
+    queries::insert_room(
+        &st.pool,
+        &queries::NewRoom {
+            id: cfg.id.0,
+            project_id: key.project_id,
+            node_id: st.node_id.0,
+            region: st.region.to_string(),
+            name: req.name,
+            mode: "relay".into(),
+            max_players: max_players as i32,
+            visible: req.visible,
+            open: req.open,
+            schema_hash: None,
+            props: Value::Object(req.props),
+            lobby_props: req.lobby_props,
+        },
+    )
+    .await?;
+    let id = cfg.id;
+    let hr = st.host.insert(
+        project,
+        net_rooms::Room::new(cfg, std::time::Instant::now()),
+    );
+    crate::ws::publish_room(&st, &hr).await;
+    Ok(Json(
+        json!({"id": id, "node": st.node_id, "region": st.region}),
+    ))
+}
+
+async fn get_room(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Read).await?;
+    let row = queries::get_room(&st.pool, id).await?;
+    if row.project_id != key.project_id {
+        return Err(NetError::NotFound("room".into()).into());
+    }
+    let live = st
+        .redis
+        .get_room(ProjectId::from_uuid(key.project_id), RoomId::from_uuid(id))
+        .await?;
+    let players: Vec<Value> = st
+        .host
+        .get(RoomId::from_uuid(id))
+        .map(|hr| {
+            hr.lock()
+                .room
+                .player_infos()
+                .into_iter()
+                .map(|p| json!({"actor": p.actor, "player_id": p.player_id, "name": p.name, "online": p.online}))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Json(json!({"room": row, "live": live, "players": players})))
+}
+
+async fn delete_room(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    let key = api_key(&st, &h, Scope::Rooms).await?;
+    let row = queries::get_room(&st.pool, id).await?;
+    if row.project_id != key.project_id {
+        return Err(NetError::NotFound("room".into()).into());
+    }
+    close_room(
+        &st,
+        ProjectId::from_uuid(key.project_id),
+        RoomId::from_uuid(id),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct UsageQuery {
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+}
+
+async fn usage(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Query(q): Query<UsageQuery>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Read).await?;
+    let to = q.to.unwrap_or_else(Utc::now);
+    let from = q.from.unwrap_or(to - chrono::Duration::days(30));
+    let rows = queries::usage_between(&st.pool, key.project_id, from, to).await?;
+    Ok(Json(json!({"from": from, "to": to, "usage": rows})))
+}
+
+#[derive(Deserialize)]
+struct KeyReq {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    scopes: Vec<String>,
+}
+
+fn validate_scopes(s: &[String]) -> Result<Vec<String>> {
+    if s.is_empty() {
+        return Ok(vec!["rooms".into(), "read".into()]);
+    }
+    for x in s {
+        if Scope::parse(x).is_none() {
+            return Err(NetError::Invalid(format!("unknown scope {x}")));
+        }
+    }
+    Ok(s.to_vec())
+}
+
+async fn issue_key(st: &Shared, project: Uuid, name: &str, scopes: &[String]) -> Result<Value> {
+    let scopes = validate_scopes(scopes)?;
+    let m = ApiKeyMaterial::generate();
+    let row = queries::insert_api_key(&st.pool, project, &m.hash, &m.prefix, name, &scopes).await?;
+    Ok(
+        json!({"id": row.id, "key": m.plaintext, "prefix": row.prefix, "scopes": row.scopes, "name": row.name}),
+    )
+}
+
+async fn create_key(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Json(req): Json<KeyReq>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Admin).await?;
+    Ok(Json(
+        issue_key(&st, key.project_id, &req.name, &req.scopes).await?,
+    ))
+}
+
+async fn list_keys(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Admin).await?;
+    let rows = queries::list_api_keys(&st.pool, key.project_id).await?;
+    Ok(Json(json!({"keys": rows.into_iter().map(|r| json!({
+        "id": r.id, "prefix": r.prefix, "name": r.name, "scopes": r.scopes,
+        "created_at": r.created_at, "last_used_at": r.last_used_at, "revoked_at": r.revoked_at
+    })).collect::<Vec<_>>()})))
+}
+
+async fn revoke_key(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    let key = api_key(&st, &h, Scope::Admin).await?;
+    if queries::revoke_api_key(&st.pool, key.project_id, id).await? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(NetError::NotFound("key".into()).into())
+    }
+}
+
+#[derive(Deserialize)]
+struct WebhookReq {
+    url: String,
+    #[serde(default)]
+    events: Vec<String>,
+}
+
+async fn create_webhook(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Json(req): Json<WebhookReq>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Admin).await?;
+    if !req.url.starts_with("https://") && !req.url.starts_with("http://") {
+        return Err(NetError::Invalid("url must be http(s)".into()).into());
+    }
+    let secret = ApiKeyMaterial::generate().plaintext;
+    let row =
+        queries::insert_webhook(&st.pool, key.project_id, &req.url, &secret, &req.events).await?;
+    Ok(Json(
+        json!({"id": row.id, "url": row.url, "events": row.events, "secret": row.secret}),
+    ))
+}
+
+async fn list_webhooks(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Admin).await?;
+    let rows = queries::list_webhooks(&st.pool, key.project_id).await?;
+    Ok(Json(
+        json!({"webhooks": rows.into_iter().map(|r| json!({"id": r.id, "url": r.url, "events": r.events, "created_at": r.created_at})).collect::<Vec<_>>()}),
+    ))
+}
+
+async fn delete_webhook(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    let key = api_key(&st, &h, Scope::Admin).await?;
+    if queries::delete_webhook(&st.pool, key.project_id, id).await? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(NetError::NotFound("webhook".into()).into())
+    }
+}
+
+#[derive(Deserialize)]
+struct ProjectReq {
+    name: String,
+    #[serde(default = "default_plan")]
+    plan: String,
+}
+fn default_plan() -> String {
+    "self_hosted".into()
+}
+
+async fn op_create_project(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Json(req): Json<ProjectReq>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    let p = queries::create_project(&st.pool, &req.name, &req.plan).await?;
+    let key = issue_key(
+        &st,
+        p.id,
+        "default",
+        &["rooms".into(), "read".into(), "admin".into()],
+    )
+    .await?;
+    queries::audit(
+        &st.pool,
+        Some(p.id),
+        "operator",
+        "project.create",
+        &p.id.to_string(),
+        json!({}),
+    )
+    .await?;
+    Ok(Json(json!({"project": p, "key": key})))
+}
+
+async fn op_list_projects(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    Ok(Json(
+        json!({"projects": queries::list_projects(&st.pool).await?}),
+    ))
+}
+
+async fn op_create_key(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<KeyReq>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    queries::get_project(&st.pool, id).await?;
+    Ok(Json(issue_key(&st, id, &req.name, &req.scopes).await?))
+}
+
+async fn op_set_limits(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(limits): Json<Value>,
+) -> ApiResult<StatusCode> {
+    operator(&st, &h)?;
+    let _ = net_control::ProjectLimits::from_json(&limits);
+    queries::set_project_limits(&st.pool, id, &limits).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn op_nodes(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    let rows = queries::list_live_nodes(&st.pool, i64::MAX / 4).await?;
+    Ok(Json(json!({"nodes": rows})))
+}
+
+pub fn shared(st: AppStateArc) -> Shared {
+    st
+}
+pub type AppStateArc = Arc<crate::state::AppState>;

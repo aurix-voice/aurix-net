@@ -8,3 +8,15 @@ publish.workspace = true
 
 [dependencies]
 net-common = { path = "../net-common" }
+net-db = { path = "../net-db" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+redis = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+sqlx = { workspace = true }

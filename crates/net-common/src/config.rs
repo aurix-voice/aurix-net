@@ -121,13 +121,12 @@ impl NetConfig {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.server.environment != "development" {
-            if self.auth.grant_secret.len() < 32 || self.auth.grant_secret.starts_with("dev-only") {
-                return Err(NetError::Config(
-                    "auth.grant_secret must be a random string of 32+ bytes outside development"
-                        .into(),
-                ));
-            }
+        if self.server.environment != "development"
+            && (self.auth.grant_secret.len() < 32 || self.auth.grant_secret.starts_with("dev-only"))
+        {
+            return Err(NetError::Config(
+                "auth.grant_secret must be a random string of 32+ bytes outside development".into(),
+            ));
         }
         if self.limits.max_players_per_room == 0 || self.limits.max_players_per_room > 1024 {
             return Err(NetError::Config(

@@ -1,0 +1,80 @@
+//! Per-project limits, stored as JSON in `projects.limits`; missing keys fall back to the
+//! node-wide `limits` config.
+
+use net_common::config::LimitsConfig;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ProjectLimits {
+    #[serde(default)]
+    pub max_rooms: Option<u32>,
+    #[serde(default)]
+    pub max_players_per_room: Option<u16>,
+    #[serde(default)]
+    pub max_events_per_sec_per_room: Option<u32>,
+    #[serde(default)]
+    pub max_event_bytes: Option<usize>,
+    #[serde(default)]
+    pub allowed_regions: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EffectiveLimits {
+    pub max_rooms: u32,
+    pub max_players_per_room: u16,
+    pub max_events_per_sec_per_room: u32,
+    pub max_event_bytes: usize,
+    pub max_props_bytes: usize,
+    pub max_cached_events_per_room: usize,
+    pub allowed_regions: Option<Vec<String>>,
+}
+
+impl ProjectLimits {
+    pub fn from_json(v: &serde_json::Value) -> Self {
+        serde_json::from_value(v.clone()).unwrap_or_default()
+    }
+
+    pub fn effective(&self, node: &LimitsConfig) -> EffectiveLimits {
+        EffectiveLimits {
+            max_rooms: self.max_rooms.unwrap_or(node.max_rooms_per_node),
+            max_players_per_room: self
+                .max_players_per_room
+                .unwrap_or(node.max_players_per_room)
+                .min(node.max_players_per_room),
+            max_events_per_sec_per_room: self
+                .max_events_per_sec_per_room
+                .unwrap_or(node.max_events_per_sec_per_room),
+            max_event_bytes: self
+                .max_event_bytes
+                .unwrap_or(node.max_event_bytes)
+                .min(node.max_event_bytes),
+            max_props_bytes: node.max_props_bytes,
+            max_cached_events_per_room: node.max_cached_events_per_room,
+            allowed_regions: self.allowed_regions.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_cannot_exceed_node() {
+        let node = LimitsConfig {
+            max_players_per_room: 128,
+            max_rooms_per_node: 2000,
+            max_events_per_sec_per_room: 500,
+            max_event_bytes: 65536,
+            max_props_bytes: 16384,
+            max_cached_events_per_room: 1000,
+        };
+        let p = ProjectLimits::from_json(
+            &serde_json::json!({"max_players_per_room": 1000, "max_rooms": 5}),
+        );
+        let e = p.effective(&node);
+        assert_eq!(e.max_players_per_room, 128);
+        assert_eq!(e.max_rooms, 5);
+        assert_eq!(e.max_events_per_sec_per_room, 500);
+    }
+}

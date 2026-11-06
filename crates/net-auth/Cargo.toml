@@ -8,3 +8,13 @@ publish.workspace = true
 
 [dependencies]
 net-common = { path = "../net-common" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+jsonwebtoken = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
