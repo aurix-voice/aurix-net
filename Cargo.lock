@@ -1490,6 +1490,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "net-fpmath"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "net-lagcomp"
 version = "0.1.0"
 dependencies = [
