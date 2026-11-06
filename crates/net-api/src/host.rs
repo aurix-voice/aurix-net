@@ -112,6 +112,8 @@ pub struct HostedRoom {
     pub project: ProjectId,
     /// Present for rooms in sync mode.
     pub sync: Option<crate::sync::SyncRoom>,
+    /// Present for rooms in lockstep mode.
+    pub lockstep: Option<crate::lockstep::LockstepRoom>,
 }
 
 pub const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(2);
@@ -158,6 +160,7 @@ impl RoomHost {
             sessions: HashMap::new(),
             project,
             sync: None,
+            lockstep: None,
         }));
         self.rooms.insert(id, h.clone());
         self.by_name.insert((project, name), id);
@@ -285,6 +288,11 @@ pub fn handle_data_frame(
     if channel == Channel::UnreliableSequenced {
         if let Some(sy) = h.sync.as_mut() {
             if sy.handle(actor, payload.clone()) {
+                return Ok(());
+            }
+        }
+        if let Some(ls) = h.lockstep.as_mut() {
+            if ls.handle(actor, payload.clone()) {
                 return Ok(());
             }
         }

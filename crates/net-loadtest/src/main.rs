@@ -199,7 +199,7 @@ async fn main() -> anyhow::Result<()> {
         stats.bytes_out.load(Ordering::Relaxed),
         stats.bytes_in.load(Ordering::Relaxed)
     );
-    if cli.mode == "sync" {
+    if cli.mode == "sync" || cli.mode == "lockstep" {
         if let Ok(txt) = reqwest::get(format!("{}/metrics", cli.http)).await {
             if let Ok(body) = txt.text().await {
                 println!("{}", summarize_hist(&body, "net_sync_tick_seconds"));
@@ -248,13 +248,13 @@ async fn player(
     let room_name = format!("lt-{}-{room}", cli.run);
     tx.send(send(&ClientMsg::JoinOrCreate {
         name: room_name,
-        mode: if cli.mode == "sync" {
-            net_common::types::RoomMode::Sync
-        } else {
-            net_common::types::RoomMode::Relay
+        mode: match cli.mode.as_str() {
+            "sync" => net_common::types::RoomMode::Sync,
+            "lockstep" => net_common::types::RoomMode::Lockstep,
+            _ => net_common::types::RoomMode::Relay,
         },
         max_players: Some(cli.players as u16),
-        props: if cli.mode == "sync" {
+        props: if cli.mode == "sync" || cli.mode == "lockstep" {
             let mut m = serde_json::Map::new();
             m.insert("tick_hz".into(), serde_json::json!(cli.tick_hz));
             m
@@ -338,7 +338,7 @@ async fn player(
         }
     });
 
-    let sync = cli.mode == "sync";
+    let sync = cli.mode == "sync" || cli.mode == "lockstep";
     let server_tick = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
     // Incoming datagrams -> link -> latency samples.
     let on_datagram = {
@@ -359,6 +359,15 @@ async fn player(
                         stats.received.fetch_add(1, Ordering::Relaxed);
                         let t = u32::from_be_bytes(m.payload[1..5].try_into().unwrap());
                         server_tick.store(t, Ordering::Relaxed);
+                    }
+                    if m.payload[0] == net_api::lockstep::KIND_BUNDLE {
+                        // newest bundle = server clock; count bundles (not redundant copies)
+                        if let Some((t, _)) =
+                            net_api::lockstep::LockstepRoom::decode_bundles(m.payload).last()
+                        {
+                            stats.received.fetch_add(1, Ordering::Relaxed);
+                            server_tick.store(t.0 + 1, Ordering::Relaxed);
+                        }
                     }
                     continue;
                 }

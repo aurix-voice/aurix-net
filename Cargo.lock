@@ -1412,6 +1412,7 @@ dependencies = [
  "net-db",
  "net-lagcomp",
  "net-replication",
+ "net-rollback",
  "net-rooms",
  "net-sim",
  "net-transport",

@@ -383,6 +383,9 @@ impl Session {
                     if let Some(sy) = h.sync.as_mut() {
                         sy.on_leave(actor);
                     }
+                    if let Some(ls) = h.lockstep.as_mut() {
+                        ls.on_leave(actor);
+                    }
                 }
                 self.publish_current().await;
                 Ok(())
@@ -478,11 +481,16 @@ impl Session {
         if name.is_empty() || name.len() > 64 {
             return Err(NetError::Invalid("room name must be 1..=64 chars".into()));
         }
-        if mode == RoomMode::Lockstep {
-            return Err(NetError::Invalid(
-                "lockstep mode is not available yet".into(),
-            ));
-        }
+        let lockstep = if mode == RoomMode::Lockstep {
+            let hz = props.get("tick_hz").and_then(|v| v.as_u64()).unwrap_or(60) as u16;
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(1);
+            Some(crate::lockstep::LockstepRoom::new(hz, seed))
+        } else {
+            None
+        };
         let sync = if mode == RoomMode::Sync {
             let schema = props.get("schema").and_then(|v| v.as_str());
             let hz = props.get("tick_hz").and_then(|v| v.as_u64()).unwrap_or(60) as u16;
@@ -585,6 +593,11 @@ impl Session {
             h.lock().sync = Some(sy);
             tokio::spawn(run_sync(self.st.clone(), room_id, period));
         }
+        if let Some(ls) = lockstep {
+            let period = ls.tick_period();
+            h.lock().lockstep = Some(ls);
+            tokio::spawn(run_lockstep(self.st.clone(), room_id, period));
+        }
         self.st.metrics.rooms.set(self.st.host.len() as i64);
         Ok(h)
     }
@@ -615,6 +628,9 @@ impl Session {
             if let Some(sy) = hr.sync.as_mut() {
                 sy.on_join(actor);
             }
+            if let Some(ls) = hr.lockstep.as_mut() {
+                ls.on_join(actor);
+            }
             dispatch(&hr, out, &self.st.metrics);
             let ticket = self.st.tickets.issue(self.id, hr.room.id(), actor);
             ServerMsg::Joined {
@@ -635,7 +651,11 @@ impl Session {
                 },
                 cached: hr.room.cached_for_join(),
                 schema_hash: hr.sync.as_ref().map(|s| s.schema_hash.clone()),
-                tick_hz: hr.sync.as_ref().map(|s| s.hz),
+                tick_hz: hr
+                    .sync
+                    .as_ref()
+                    .map(|s| s.hz)
+                    .or(hr.lockstep.as_ref().map(|l| l.hz)),
             }
         };
         let (id, actor) = match &joined {
@@ -674,6 +694,9 @@ impl Session {
             h.sessions.remove(&r.actor);
             if let Some(sy) = h.sync.as_mut() {
                 sy.on_leave(r.actor);
+            }
+            if let Some(ls) = h.lockstep.as_mut() {
+                ls.on_leave(r.actor);
             }
             (h.room.is_empty() && !offline, h.project, h.room.id())
         };
@@ -814,6 +837,47 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
                 }
             });
         }
+    }
+}
+
+/// Lockstep clock: every tick bundle the inputs for that tick and fan them out.
+pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration) {
+    let mut iv = tokio::time::interval(period);
+    iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        iv.tick().await;
+        let Some(h) = st.host.get(room) else { return };
+        let t0 = Instant::now();
+        {
+            let mut g = h.lock();
+            let (bundle, desyncs, actors) = {
+                let Some(ls) = g.lockstep.as_mut() else {
+                    return;
+                };
+                let bundle = ls.tick();
+                let desyncs = ls.take_desyncs();
+                let actors: Vec<ActorId> = ls.actors.keys().copied().collect();
+                (bundle, desyncs, actors)
+            };
+            for a in &actors {
+                if let Some(ds) = g.sessions.get(a).and_then(|s| s.data.as_ref()) {
+                    ds.send(net_common::Channel::UnreliableSequenced, bundle.clone());
+                    st.metrics
+                        .events
+                        .with_label_values(&["lockstep_bundle"])
+                        .inc();
+                }
+            }
+            for (tick, actor) in desyncs {
+                st.metrics.errors.with_label_values(&["desync"]).inc();
+                for a in &actors {
+                    if let Some(s) = g.sessions.get(a) {
+                        let _ = s.control.try_send(ServerMsg::Desync { tick, actor });
+                    }
+                }
+            }
+        }
+        st.metrics.sync_tick.observe(t0.elapsed().as_secs_f64());
     }
 }
 
@@ -960,6 +1024,9 @@ pub async fn reaper(st: Shared) {
                         g.sessions.remove(a);
                         if let Some(sy) = g.sync.as_mut() {
                             sy.on_leave(*a);
+                        }
+                        if let Some(ls) = g.lockstep.as_mut() {
+                            ls.on_leave(*a);
                         }
                     }
                 }

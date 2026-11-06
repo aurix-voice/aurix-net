@@ -233,6 +233,11 @@ pub enum ServerMsg {
         code: String,
         message: String,
     },
+    /// Lockstep: this actor's state hash for `tick` disagreed with the majority.
+    Desync {
+        tick: u32,
+        actor: ActorId,
+    },
 }
 
 #[cfg(test)]
