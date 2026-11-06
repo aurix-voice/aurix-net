@@ -188,6 +188,14 @@ pub async fn list_live_nodes(pool: &DbPool, stale_secs: i64) -> Result<Vec<NodeR
     .map_err(db_err)
 }
 
+/// Every registered node, live or not.
+pub async fn list_all_nodes(pool: &DbPool) -> Result<Vec<NodeRow>> {
+    sqlx::query_as::<_, NodeRow>("SELECT * FROM nodes ORDER BY region, load_factor")
+        .fetch_all(pool)
+        .await
+        .map_err(db_err)
+}
+
 pub async fn delete_node(pool: &DbPool, id: Uuid) -> Result<()> {
     sqlx::query("DELETE FROM nodes WHERE id = $1")
         .bind(id)

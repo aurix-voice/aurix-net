@@ -112,7 +112,7 @@ impl NodeRegistry {
             .into_iter()
             .map(|r| r.id)
             .collect();
-        let all = queries::list_live_nodes(&self.pool, i64::MAX / 4).await?;
+        let all = queries::list_all_nodes(&self.pool).await?;
         let mut removed = Vec::new();
         for n in all {
             if !live.contains(&n.id) {

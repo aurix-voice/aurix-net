@@ -209,23 +209,41 @@ impl Session {
                 let g = self.grant()?.clone();
                 self.ensure_not_in_room()?;
                 self.check_room_scope(&g, &name)?;
-                let h = match self.find_room(g.project, &name).await {
-                    Ok(h) => h,
-                    Err(NetError::NotFound(_)) => {
-                        self.create_room(
+                // Several players may race to create the same room; whoever loses the DB
+                // uniqueness race joins the winner's room.
+                let mut attempt = 0;
+                let h = loop {
+                    match self.find_room(g.project, &name).await {
+                        Ok(h) => break h,
+                        Err(NetError::NotFound(_)) => {}
+                        Err(NetError::Conflict(ref m)) if m == "room_pending" && attempt < 30 => {
+                            attempt += 1;
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                    match self
+                        .create_room(
                             &g,
-                            name,
+                            name.clone(),
                             mode,
                             max_players,
                             true,
                             true,
-                            props,
-                            lobby_props,
-                            region,
+                            props.clone(),
+                            lobby_props.clone(),
+                            region.clone(),
                         )
-                        .await?
+                        .await
+                    {
+                        Ok(h) => break h,
+                        Err(NetError::Conflict(_)) if attempt < 30 => {
+                            attempt += 1;
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                        Err(e) => return Err(e),
                     }
-                    Err(e) => return Err(e),
                 };
                 self.join_hosted(h, player_props, None).await
             }
@@ -402,7 +420,17 @@ impl Session {
                     Some(n) if n.id != self.st.node_id => {
                         Err(NetError::Conflict(format!("room_elsewhere:{}", n.http_url)))
                     }
-                    _ => Err(NetError::NotFound(format!("room {name} (stale)"))),
+                    // Row exists for this node but the room is not hosted yet: creation in
+                    // progress on another session, or a row left over from a crash.
+                    _ if row.node_id == Some(self.st.node_id.0)
+                        && (chrono::Utc::now() - row.created_at).num_seconds() < 10 =>
+                    {
+                        Err(NetError::Conflict("room_pending".into()))
+                    }
+                    _ => {
+                        let _ = queries::close_room(&self.st.pool, row.id).await;
+                        Err(NetError::NotFound(format!("room {name}")))
+                    }
                 }
             }
         }

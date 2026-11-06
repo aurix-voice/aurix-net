@@ -536,7 +536,7 @@ async fn op_set_limits(
 
 async fn op_nodes(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
     operator(&st, &h)?;
-    let rows = queries::list_live_nodes(&st.pool, i64::MAX / 4).await?;
+    let rows = queries::list_all_nodes(&st.pool).await?;
     Ok(Json(json!({"nodes": rows})))
 }
 
