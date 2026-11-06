@@ -1,4 +1,7 @@
-use prometheus::{Encoder, IntCounter, IntCounterVec, IntGauge, Opts, Registry, TextEncoder};
+use prometheus::{
+    Encoder, Histogram, HistogramOpts, IntCounter, IntCounterVec, IntGauge, Opts, Registry,
+    TextEncoder,
+};
 
 pub struct Metrics {
     pub registry: Registry,
@@ -11,6 +14,7 @@ pub struct Metrics {
     pub bytes_out: IntCounter,
     pub events: IntCounterVec,
     pub errors: IntCounterVec,
+    pub sync_tick: Histogram,
 }
 
 impl Metrics {
@@ -38,7 +42,15 @@ impl Metrics {
         )
         .unwrap();
         registry.register(Box::new(errors.clone())).unwrap();
+        let sync_tick = Histogram::with_opts(
+            HistogramOpts::new("net_sync_tick_seconds", "sync room tick duration").buckets(vec![
+                0.0002, 0.0005, 0.001, 0.002, 0.004, 0.008, 0.016, 0.033,
+            ]),
+        )
+        .unwrap();
+        registry.register(Box::new(sync_tick.clone())).unwrap();
         Self {
+            sync_tick,
             rooms: g("net_rooms", "open rooms on this node"),
             players: g("net_players", "online players on this node"),
             control_sessions: g("net_control_sessions", "open control websockets"),

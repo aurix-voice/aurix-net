@@ -190,11 +190,23 @@ impl Session {
                 name,
                 player_props,
                 rejoin_actor,
+                schema_hash,
             } => {
                 let g = self.grant()?.clone();
                 self.ensure_not_in_room()?;
                 self.check_room_scope(&g, &name)?;
                 let h = self.find_room(g.project, &name).await?;
+                if let Some(c) = schema_hash.as_deref() {
+                    let hr = h.lock();
+                    if let Some(sy) = hr.sync.as_ref() {
+                        if sy.schema_hash != c {
+                            return Err(NetError::SchemaMismatch {
+                                client: c.to_string(),
+                                server: sy.schema_hash.clone(),
+                            });
+                        }
+                    }
+                }
                 self.join_hosted(h, player_props, rejoin_actor).await
             }
             ClientMsg::JoinOrCreate {
@@ -360,6 +372,9 @@ impl Session {
                         .map_err(room_err)?;
                     dispatch(&h, out, &self.st.metrics);
                     h.sessions.remove(&actor);
+                    if let Some(sy) = h.sync.as_mut() {
+                        sy.on_leave(actor);
+                    }
                 }
                 self.publish_current().await;
                 Ok(())
@@ -455,11 +470,25 @@ impl Session {
         if name.is_empty() || name.len() > 64 {
             return Err(NetError::Invalid("room name must be 1..=64 chars".into()));
         }
-        if mode != RoomMode::Relay {
+        if mode == RoomMode::Lockstep {
             return Err(NetError::Invalid(
-                "only relay mode is available in this version".into(),
+                "lockstep mode is not available yet".into(),
             ));
         }
+        let sync = if mode == RoomMode::Sync {
+            let schema = props.get("schema").and_then(|v| v.as_str());
+            let hz = props.get("tick_hz").and_then(|v| v.as_u64()).unwrap_or(60) as u16;
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(1);
+            Some(
+                crate::sync::SyncRoom::new(schema, hz, seed)
+                    .map_err(|e| NetError::Invalid(format!("schema: {e}")))?,
+            )
+        } else {
+            None
+        };
         if let Some(r) = region.as_deref() {
             if r != self.st.region.as_str() {
                 return Err(NetError::Conflict(format!(
@@ -494,8 +523,9 @@ impl Session {
         if net_rooms::room::props_len(&props) > limits.max_props_bytes {
             return Err(NetError::Invalid("props too large".into()));
         }
+        let room_id = RoomId::new();
         let cfg = RoomConfig {
-            id: RoomId::new(),
+            id: room_id,
             project: g.project,
             name: name.clone(),
             mode,
@@ -519,11 +549,11 @@ impl Session {
                 node_id: self.st.node_id.0,
                 region: self.st.region.to_string(),
                 name,
-                mode: "relay".into(),
+                mode: format!("{mode:?}").to_lowercase(),
                 max_players: max_players as i32,
                 visible,
                 open,
-                schema_hash: None,
+                schema_hash: sync.as_ref().map(|s| s.schema_hash.clone()),
                 props: Value::Object(props),
                 lobby_props,
             },
@@ -537,6 +567,11 @@ impl Session {
             .st
             .host
             .insert(g.project, Room::new(cfg, Instant::now()));
+        if let Some(sy) = sync {
+            let period = sy.tick_period();
+            h.lock().sync = Some(sy);
+            tokio::spawn(run_sync(self.st.clone(), room_id, period));
+        }
         self.st.metrics.rooms.set(self.st.host.len() as i64);
         Ok(h)
     }
@@ -564,6 +599,9 @@ impl Session {
                     data: None,
                 },
             );
+            if let Some(sy) = hr.sync.as_mut() {
+                sy.on_join(actor);
+            }
             dispatch(&hr, out, &self.st.metrics);
             let ticket = self.st.tickets.issue(self.id, hr.room.id(), actor);
             ServerMsg::Joined {
@@ -583,6 +621,8 @@ impl Session {
                     ws_tunnel: self.st.cfg.transport.ws_tunnel,
                 },
                 cached: hr.room.cached_for_join(),
+                schema_hash: hr.sync.as_ref().map(|s| s.schema_hash.clone()),
+                tick_hz: hr.sync.as_ref().map(|s| s.hz),
             }
         };
         let (id, actor) = match &joined {
@@ -619,6 +659,9 @@ impl Session {
             let out = h.room.leave(r.actor, offline, Instant::now());
             dispatch(&h, out, &self.st.metrics);
             h.sessions.remove(&r.actor);
+            if let Some(sy) = h.sync.as_mut() {
+                sy.on_leave(r.actor);
+            }
             (h.room.is_empty() && !offline, h.project, h.room.id())
         };
         self.st.metrics.players.set(self.st.host.players() as i64);
@@ -683,6 +726,29 @@ pub fn attach_data(
 /// Registers a data session with the node-wide flusher (see [`flusher`]).
 pub fn spawn_ticker(st: &Shared, ds: Arc<DataSession>) {
     st.host.register_data(&ds);
+}
+
+/// Fixed-rate simulation loop for one sync room; stops when the room is gone.
+pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
+    let mut iv = tokio::time::interval(period);
+    iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        iv.tick().await;
+        let Some(h) = st.host.get(room) else { return };
+        let t0 = Instant::now();
+        {
+            let mut g = h.lock();
+            let Some(sy) = g.sync.as_mut() else { return };
+            let out = sy.tick();
+            for (actor, d) in out {
+                if let Some(ds) = g.sessions.get(&actor).and_then(|s| s.data.as_ref()) {
+                    ds.send(net_common::Channel::UnreliableSequenced, d);
+                    st.metrics.events.with_label_values(&["sync_delta"]).inc();
+                }
+            }
+        }
+        st.metrics.sync_tick.observe(t0.elapsed().as_secs_f64());
+    }
 }
 
 /// Drives every data link every FLUSH_EVERY: coalesced batches, acks, retransmits.
@@ -826,6 +892,9 @@ pub async fn reaper(st: Shared) {
                     ) = o
                     {
                         g.sessions.remove(a);
+                        if let Some(sy) = g.sync.as_mut() {
+                            sy.on_leave(*a);
+                        }
                     }
                 }
                 dispatch(&g, out, &st.metrics);

@@ -110,6 +110,8 @@ pub struct HostedRoom {
     pub room: Room,
     pub sessions: HashMap<ActorId, Attached>,
     pub project: ProjectId,
+    /// Present for rooms in sync mode.
+    pub sync: Option<crate::sync::SyncRoom>,
 }
 
 pub const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(2);
@@ -155,6 +157,7 @@ impl RoomHost {
             room,
             sessions: HashMap::new(),
             project,
+            sync: None,
         }));
         self.rooms.insert(id, h.clone());
         self.by_name.insert((project, name), id);
@@ -279,6 +282,13 @@ pub fn handle_data_frame(
     payload: Bytes,
     metrics: &Metrics,
 ) -> Result<()> {
+    if channel == Channel::UnreliableSequenced {
+        if let Some(sy) = h.sync.as_mut() {
+            if sy.handle(actor, payload.clone()) {
+                return Ok(());
+            }
+        }
+    }
     let frame = EventFrame::decode(payload).map_err(|e| NetError::Invalid(e.to_string()))?;
     let out = h
         .room

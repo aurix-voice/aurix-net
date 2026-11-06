@@ -72,6 +72,12 @@ impl ClientView {
         }
     }
 
+    /// Forget everything so the next build is a full snapshot (client asked to resync).
+    pub fn reset(&mut self) {
+        self.known.clear();
+        self.last_tick = None;
+    }
+
     pub fn known_count(&self) -> usize {
         self.known.len()
     }

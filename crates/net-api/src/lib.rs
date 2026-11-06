@@ -5,6 +5,7 @@ pub mod host;
 pub mod metrics;
 pub mod rest;
 pub mod state;
+pub mod sync;
 pub mod ws;
 
 pub use state::AppState;

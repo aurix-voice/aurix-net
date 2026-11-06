@@ -38,6 +38,9 @@ pub enum ClientMsg {
         /// Reconnect into the same actor slot.
         #[serde(default)]
         rejoin_actor: Option<ActorId>,
+        /// Sync rooms: the client's compiled schema hash; mismatch is refused.
+        #[serde(default)]
+        schema_hash: Option<String>,
     },
     /// Join by name, create with these settings if absent.
     JoinOrCreate {
@@ -180,6 +183,11 @@ pub enum ServerMsg {
         data: DataEndpoint,
         /// Cached events replayed in order (code, from, base64 data).
         cached: Vec<(u8, ActorId, String)>,
+        /// Sync rooms only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schema_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tick_hz: Option<u16>,
     },
     Left {
         reason: String,
@@ -239,7 +247,8 @@ mod tests {
             ClientMsg::Join {
                 name: "lobby".into(),
                 player_props: Default::default(),
-                rejoin_actor: None
+                rejoin_actor: None,
+                schema_hash: None,
             }
         );
         let m: ClientMsg = serde_json::from_str(
