@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/net-common",
     "crates/net-transport",
+    "crates/net-wire",
     "crates/net-auth",
     "crates/net-db",
     "crates/net-control",
