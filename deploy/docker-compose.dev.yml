@@ -1,0 +1,15 @@
+# Local dependencies for `aurix-net-server` (defaults in net-common/src/config.rs point here).
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aurix
+      POSTGRES_PASSWORD: aurix
+      POSTGRES_DB: aurix_net
+    ports: ["5432:5432"]
+    volumes: ["net-pg:/var/lib/postgresql/data"]
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+volumes:
+  net-pg: {}
