@@ -6,6 +6,7 @@ members = [
     "crates/net-wire",
     "crates/net-sim",
     "crates/net-replication",
+    "crates/net-lagcomp",
     "crates/net-auth",
     "crates/net-db",
     "crates/net-control",

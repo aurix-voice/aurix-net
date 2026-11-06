@@ -1486,6 +1486,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "net-lagcomp"
+version = "0.1.0"
+dependencies = [
+ "net-common",
+ "net-sim",
+]
+
+[[package]]
 name = "net-loadtest"
 version = "0.1.0"
 dependencies = [
