@@ -307,6 +307,14 @@ impl Journal {
         self.ticks.is_empty()
     }
 
+    /// Every actor that ever submitted an input.
+    pub fn actors(&self) -> Vec<ActorId> {
+        let mut v: Vec<ActorId> = self.ticks.iter().flat_map(|t| t.keys().copied()).collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
     pub fn tick(&self, t: Tick) -> Option<&TickInputs> {
         self.ticks.get(t.0 as usize)
     }

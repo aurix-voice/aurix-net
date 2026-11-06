@@ -1447,6 +1447,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "net-client"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "futures",
+ "net-common",
+ "net-rooms",
+ "net-transport",
+ "parking_lot",
+ "quinn",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+]
+
+[[package]]
 name = "net-common"
 version = "0.1.0"
 dependencies = [

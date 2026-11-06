@@ -9,6 +9,7 @@ members = [
     "crates/net-lagcomp",
     "crates/net-fpmath",
     "crates/net-rollback",
+    "crates/net-client",
     "crates/net-auth",
     "crates/net-db",
     "crates/net-control",
