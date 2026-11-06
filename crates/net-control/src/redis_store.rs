@@ -88,6 +88,31 @@ impl RedisStore {
             .map_err(|e| NetError::Redis(e.to_string()))
     }
 
+    fn replay_key(project: ProjectId, room: RoomId) -> String {
+        format!("net:{project}:replay:{room}")
+    }
+
+    /// Stores a lockstep replay (JSON) for a closed room.
+    pub async fn put_replay(
+        &self,
+        project: ProjectId,
+        room: RoomId,
+        body: &[u8],
+        ttl_secs: u64,
+    ) -> Result<()> {
+        let mut c = self.conn.clone();
+        c.set_ex::<_, _, ()>(Self::replay_key(project, room), body, ttl_secs)
+            .await
+            .map_err(|e| NetError::Redis(e.to_string()))
+    }
+
+    pub async fn get_replay(&self, project: ProjectId, room: RoomId) -> Result<Option<Vec<u8>>> {
+        let mut c = self.conn.clone();
+        c.get::<_, Option<Vec<u8>>>(Self::replay_key(project, room))
+            .await
+            .map_err(|e| NetError::Redis(e.to_string()))
+    }
+
     pub async fn remove_room(&self, project: ProjectId, room: RoomId) -> Result<()> {
         let mut c = self.conn.clone();
         let gone = serde_json::json!({"room": room, "removed": true}).to_string();

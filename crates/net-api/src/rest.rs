@@ -48,6 +48,7 @@ pub fn router(st: Shared) -> Router {
         .route("/v1/grants", post(create_grant))
         .route("/v1/rooms", get(list_rooms).post(create_room))
         .route("/v1/rooms/:id", get(get_room).delete(delete_room))
+        .route("/v1/rooms/:id/replay", get(get_replay))
         .route("/v1/usage", get(usage))
         .route("/v1/keys", get(list_keys).post(create_key))
         .route("/v1/keys/:id", delete(revoke_key))
@@ -322,6 +323,26 @@ async fn get_room(
         })
         .unwrap_or_default();
     Ok(Json(json!({"room": row, "live": live, "players": players})))
+}
+
+/// Lockstep replay (input journal) of a closed room, kept for 24 h.
+async fn get_replay(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Read).await?;
+    let row = queries::get_room(&st.pool, id).await?;
+    if row.project_id != key.project_id {
+        return Err(NetError::NotFound("room".into()).into());
+    }
+    let body = st
+        .redis
+        .get_replay(ProjectId::from_uuid(key.project_id), RoomId::from_uuid(id))
+        .await?
+        .ok_or_else(|| NetError::NotFound("replay".into()))?;
+    let v: Value = serde_json::from_slice(&body).map_err(|e| NetError::Internal(e.to_string()))?;
+    Ok(Json(v))
 }
 
 async fn delete_room(

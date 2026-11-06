@@ -142,6 +142,17 @@ impl LockstepRoom {
         self.hashes.retain(|k, _| *k >= cutoff);
     }
 
+    /// The canonical replay so far (consumes the journal copy).
+    pub fn replay(&self, schema_hash: &str) -> net_rollback::Replay {
+        self.journal.clone().into_replay(
+            self.seed,
+            schema_hash.to_string(),
+            self.hz,
+            self.actors.keys().copied().collect(),
+            10,
+        )
+    }
+
     pub fn take_desyncs(&mut self) -> Vec<(u32, ActorId)> {
         std::mem::take(&mut self.desyncs)
     }

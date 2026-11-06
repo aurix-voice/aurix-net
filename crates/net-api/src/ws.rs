@@ -929,10 +929,28 @@ pub async fn publish_room(st: &Shared, h: &Arc<Mutex<HostedRoom>>) {
 
 pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {
     if let Some(h) = st.host.remove(id) {
-        let sessions: Vec<mpsc::Sender<ServerMsg>> = {
+        let (sessions, replay) = {
             let g = h.lock();
-            g.sessions.values().map(|s| s.control.clone()).collect()
+            let replay = g
+                .lockstep
+                .as_ref()
+                .filter(|l| !l.journal.is_empty())
+                .map(|l| l.replay(""));
+            (
+                g.sessions
+                    .values()
+                    .map(|s| s.control.clone())
+                    .collect::<Vec<mpsc::Sender<ServerMsg>>>(),
+                replay,
+            )
         };
+        if let Some(r) = replay {
+            if let Ok(body) = serde_json::to_vec(&r) {
+                if let Err(e) = st.redis.put_replay(project, id, &body, 86_400).await {
+                    tracing::warn!(error = %e, room = %id, "replay store");
+                }
+            }
+        }
         for s in sessions {
             let _ = s.try_send(ServerMsg::Left {
                 reason: "room closed".into(),
