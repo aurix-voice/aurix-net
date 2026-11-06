@@ -169,6 +169,38 @@ pub struct SyncRoom {
 impl SyncRoom {
     /// `schema`: IDL text from room props, or None for the built-in arena.
     pub fn new(schema: Option<&str>, hz: u16, seed: u64) -> Result<Self, String> {
+        Self::with_replication(schema, hz, seed, ReplicationConfig::default())
+    }
+
+    /// Replication settings from room props: `budget_bytes`, `aoi_cell`, `aoi_radius`,
+    /// `position` ("Component.field_index"; empty string disables AOI).
+    pub fn replication_from_props(
+        props: &serde_json::Map<String, serde_json::Value>,
+    ) -> ReplicationConfig {
+        let mut cfg = ReplicationConfig::default();
+        if let Some(v) = props.get("budget_bytes").and_then(|v| v.as_u64()) {
+            cfg.budget_bytes = (v as usize).clamp(200, 60_000);
+        }
+        if let Some(v) = props.get("aoi_cell").and_then(|v| v.as_f64()) {
+            cfg.aoi_cell = v.max(0.0) as f32;
+        }
+        if let Some(v) = props.get("aoi_radius").and_then(|v| v.as_u64()) {
+            cfg.aoi_radius = v.min(64) as u32;
+        }
+        if let Some(v) = props.get("position").and_then(|v| v.as_str()) {
+            cfg.position = v
+                .split_once('.')
+                .and_then(|(c, f)| f.parse().ok().map(|f| (c.to_string(), f)));
+        }
+        cfg
+    }
+
+    pub fn with_replication(
+        schema: Option<&str>,
+        hz: u16,
+        seed: u64,
+        rep: ReplicationConfig,
+    ) -> Result<Self, String> {
         let (schema, logic): (Schema, Box<dyn GameLogic>) = match schema {
             Some(src) => (
                 Schema::parse(src).map_err(|e| e.to_string())?,
@@ -180,7 +212,7 @@ impl SyncRoom {
             ),
         };
         let hz = hz.clamp(8, 128);
-        let rep = Replicator::new(ReplicationConfig::default(), &schema);
+        let rep = Replicator::new(rep, &schema);
         let frame = Frame::new(
             schema.clone(),
             FrameConfig {
@@ -209,7 +241,15 @@ impl SyncRoom {
         if self.avatars.contains_key(&actor) {
             return;
         }
-        let avatar = self.logic.on_join(&mut self.frame, actor);
+        let existing = self
+            .frame
+            .entities()
+            .find(|e| e.owner == Some(actor))
+            .map(|e| e.id);
+        let avatar = match existing {
+            Some(e) => Some(e),
+            None => self.logic.on_join(&mut self.frame, actor),
+        };
         self.avatars.insert(actor, avatar);
         let mut v = ClientView::new(actor);
         v.viewpoint = avatar;
@@ -287,6 +327,30 @@ impl SyncRoom {
         out
     }
 
+    /// Simulation events raised during the last tick(s), as relay frames: `target` None means
+    /// everyone in the room.
+    pub fn take_events(&mut self) -> Vec<(Option<ActorId>, u8, Bytes)> {
+        self.frame
+            .drain_events()
+            .into_iter()
+            .map(|e| (e.target, e.code as u8, Bytes::from(e.data)))
+            .collect()
+    }
+
+    /// Checkpoint body: frame snapshot (tick, rng, entities). Views are rebuilt on restore.
+    pub fn checkpoint(&self) -> Vec<u8> {
+        self.frame.snapshot()
+    }
+
+    /// Re-host from a checkpoint: avatars are re-linked by owner on the next on_join.
+    pub fn restore(&mut self, body: &[u8]) -> Result<(), String> {
+        self.frame.restore(body).map_err(|e| e.to_string())?;
+        self.views.clear();
+        self.avatars.clear();
+        self.history = History::new(self.hz as usize * 2);
+        Ok(())
+    }
+
     /// Encodes a client input packet (used by SDK/loadtest): the last K inputs ending at `tick`.
     pub fn encode_input(first_tick: Tick, inputs: &[Vec<u8>]) -> Bytes {
         let mut b = BytesMut::new();
@@ -358,6 +422,40 @@ mod tests {
             .unwrap();
         assert_eq!(hit.entity, ea);
         assert!(hit.distance < 20.0);
+    }
+
+    #[test]
+    fn checkpoint_restore_keeps_avatars() {
+        let mut room = SyncRoom::new(None, 60, 3).unwrap();
+        room.on_join(ActorId(1));
+        for t in 0..10u32 {
+            room.handle(
+                ActorId(1),
+                SyncRoom::encode_input(Tick(t), &[vec![127, 0, 0]]),
+            );
+            room.tick();
+        }
+        let ea = room.avatars[&ActorId(1)].unwrap();
+        let p = net_sim::vec3_of(room.frame.get(ea, "Transform").unwrap(), 0).unwrap();
+        let ck = room.checkpoint();
+        let mut fresh = SyncRoom::new(None, 60, 0).unwrap();
+        fresh.restore(&ck).unwrap();
+        assert_eq!(fresh.frame.tick, Tick(10));
+        fresh.on_join(ActorId(1));
+        assert_eq!(fresh.avatars[&ActorId(1)], Some(ea));
+        let p2 = net_sim::vec3_of(fresh.frame.get(ea, "Transform").unwrap(), 0).unwrap();
+        assert!((p[0] - p2[0]).abs() < 0.02);
+        room.frame.raise(7, Some(ActorId(1)), vec![1, 2]);
+        room.frame.raise(8, None, vec![]);
+        let ev = room.take_events();
+        assert_eq!(ev.len(), 2);
+        assert_eq!(ev[0].1, 7);
+        let mut props = serde_json::Map::new();
+        props.insert("budget_bytes".into(), serde_json::json!(5000));
+        props.insert("position".into(), serde_json::json!("Transform.0"));
+        let cfg = SyncRoom::replication_from_props(&props);
+        assert_eq!(cfg.budget_bytes, 5000);
+        assert_eq!(cfg.position, Some(("Transform".into(), 0)));
     }
 
     #[test]

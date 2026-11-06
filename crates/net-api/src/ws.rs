@@ -491,8 +491,13 @@ impl Session {
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(1);
             Some(
-                crate::sync::SyncRoom::new(schema, hz, seed)
-                    .map_err(|e| NetError::Invalid(format!("schema: {e}")))?,
+                crate::sync::SyncRoom::with_replication(
+                    schema,
+                    hz,
+                    seed,
+                    crate::sync::SyncRoom::replication_from_props(&props),
+                )
+                .map_err(|e| NetError::Invalid(format!("schema: {e}")))?,
             )
         } else {
             None
@@ -738,24 +743,77 @@ pub fn spawn_ticker(st: &Shared, ds: Arc<DataSession>) {
 
 /// Fixed-rate simulation loop for one sync room; stops when the room is gone.
 pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
+    use net_rooms::event::{CacheOp, EventFrame, EventTarget};
+    use net_rooms::room::Outgoing;
     let mut iv = tokio::time::interval(period);
     iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let checkpoint_every = (5_000_000 / period.as_micros().max(1)) as u64;
+    let mut n: u64 = 0;
     loop {
         iv.tick().await;
         let Some(h) = st.host.get(room) else { return };
         let t0 = Instant::now();
+        let mut checkpoint: Option<(ProjectId, Vec<u8>)> = None;
         {
             let mut g = h.lock();
-            let Some(sy) = g.sync.as_mut() else { return };
-            let out = sy.tick();
+            let project = g.project;
+            let (out, events, actors) = {
+                let Some(sy) = g.sync.as_mut() else { return };
+                let out = sy.tick();
+                let events = sy.take_events();
+                let actors: Vec<ActorId> = sy.avatars.keys().copied().collect();
+                n += 1;
+                if n.is_multiple_of(checkpoint_every) {
+                    checkpoint = Some((project, sy.checkpoint()));
+                }
+                (out, events, actors)
+            };
             for (actor, d) in out {
                 if let Some(ds) = g.sessions.get(&actor).and_then(|s| s.data.as_ref()) {
                     ds.send(net_common::Channel::UnreliableSequenced, d);
                     st.metrics.events.with_label_values(&["sync_delta"]).inc();
                 }
             }
+            if !events.is_empty() {
+                let mut outgoing = Vec::new();
+                for (target, code, payload) in events {
+                    let frame = EventFrame {
+                        code,
+                        target: EventTarget::All,
+                        cache: CacheOp::None,
+                        group: None,
+                        from: ActorId(0),
+                        payload,
+                    };
+                    match target {
+                        Some(a) => outgoing.push(Outgoing::Data(
+                            a,
+                            net_common::Channel::ReliableOrdered,
+                            frame,
+                        )),
+                        None => {
+                            for a in &actors {
+                                outgoing.push(Outgoing::Data(
+                                    *a,
+                                    net_common::Channel::ReliableOrdered,
+                                    frame.clone(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                dispatch(&g, outgoing, &st.metrics);
+            }
         }
         st.metrics.sync_tick.observe(t0.elapsed().as_secs_f64());
+        if let Some((project, body)) = checkpoint {
+            let redis = st.redis.clone();
+            tokio::spawn(async move {
+                if let Err(e) = redis.put_checkpoint(project, room, &body, 600).await {
+                    tracing::warn!(%room, error = %e, "checkpoint write failed");
+                }
+            });
+        }
     }
 }
 

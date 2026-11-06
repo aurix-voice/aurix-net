@@ -59,6 +59,35 @@ impl RedisStore {
         Ok(())
     }
 
+    fn checkpoint_key(project: ProjectId, room: RoomId) -> String {
+        format!("net:{project}:ckpt:{room}")
+    }
+
+    /// Stores a sync-room checkpoint (frame snapshot) for re-hosting after a node failure.
+    pub async fn put_checkpoint(
+        &self,
+        project: ProjectId,
+        room: RoomId,
+        body: &[u8],
+        ttl_secs: u64,
+    ) -> Result<()> {
+        let mut c = self.conn.clone();
+        c.set_ex::<_, _, ()>(Self::checkpoint_key(project, room), body, ttl_secs)
+            .await
+            .map_err(|e| NetError::Redis(e.to_string()))
+    }
+
+    pub async fn get_checkpoint(
+        &self,
+        project: ProjectId,
+        room: RoomId,
+    ) -> Result<Option<Vec<u8>>> {
+        let mut c = self.conn.clone();
+        c.get::<_, Option<Vec<u8>>>(Self::checkpoint_key(project, room))
+            .await
+            .map_err(|e| NetError::Redis(e.to_string()))
+    }
+
     pub async fn remove_room(&self, project: ProjectId, room: RoomId) -> Result<()> {
         let mut c = self.conn.clone();
         let gone = serde_json::json!({"room": room, "removed": true}).to_string();
