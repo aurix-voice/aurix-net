@@ -1,0 +1,15 @@
+{
+  "name": "@aurix/net",
+  "version": "0.1.0",
+  "description": "Aurix Net web client: rooms, relay events, sync deltas and lockstep bundles over WebSocket (WebTransport next).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test test/"
+  },
+  "devDependencies": { "typescript": "^5.4.0", "@types/node": "^20.0.0", "ws": "^8.17.0" }
+}
