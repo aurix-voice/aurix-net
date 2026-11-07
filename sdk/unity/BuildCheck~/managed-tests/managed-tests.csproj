@@ -13,4 +13,7 @@
     <Compile Include="../../Runtime/Native.cs" />
     <Compile Include="../../Runtime/Managed/*.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="../../../../target/release/libnet_sim_wasm.so" Condition="Exists('../../../../target/release/libnet_sim_wasm.so')" CopyToOutputDirectory="PreserveNewest" Link="libnet_sim_wasm.so" />
+  </ItemGroup>
 </Project>

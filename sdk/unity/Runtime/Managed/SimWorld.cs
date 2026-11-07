@@ -1,0 +1,128 @@
+// Aurix Sim: deterministic fixed-point 2D physics over the shared net_sim_wasm native library
+// (libnet_sim_wasm.so / .dll / .dylib; in WebGL the same module is linked as a static lib).
+// Values crossing the boundary are Q32.32 raw longs; `Fx.From`/`Fx.To` convert.
+using System;
+using System.Runtime.InteropServices;
+
+namespace Aurix.Net.Sim
+{
+    public static class Fx
+    {
+        public const long One = 1L << 32;
+        public static long From(double v) => (long)Math.Round(v * 4294967296.0);
+        public static double To(long raw) => raw / 4294967296.0;
+    }
+
+    public enum BodyKind : uint { Static = 0, Kinematic = 1, Dynamic = 2 }
+
+    public struct BodyState { public double X, Y, Angle, Vx, Vy, AngularVelocity; }
+    public struct RayHit { public uint Body; public double Fraction, X, Y, Nx, Ny; }
+
+    internal static class SimNative
+    {
+        const string Lib = "net_sim_wasm";
+        [DllImport(Lib)] public static extern uint sim_world_new(long gx, long gy, uint hz);
+        [DllImport(Lib)] public static extern void sim_world_free(uint h);
+        [DllImport(Lib)] public static extern void sim_step(uint h);
+        [DllImport(Lib)] public static extern uint sim_tick(uint h);
+        [DllImport(Lib)] public static extern ulong sim_hash(uint h);
+        [DllImport(Lib)] public static extern uint sim_snapshot(uint h);
+        [DllImport(Lib)] public static extern uint sim_snapshot_byte(uint h, uint i);
+        [DllImport(Lib)] public static extern void sim_snapshot_set_len(uint h, uint len);
+        [DllImport(Lib)] public static extern void sim_snapshot_set_byte(uint h, uint i, uint v);
+        [DllImport(Lib)] public static extern uint sim_restore(uint h);
+        [DllImport(Lib)] public static extern uint sim_add_circle(uint h, uint k, long x, long y, long r, long d);
+        [DllImport(Lib)] public static extern uint sim_add_box(uint h, uint k, long x, long y, long hw, long hh, long d);
+        [DllImport(Lib)] public static extern uint sim_add_capsule(uint h, uint k, long x, long y, long hl, long r, long d);
+        [DllImport(Lib)] public static extern void sim_remove_body(uint h, uint id);
+        [DllImport(Lib)] public static extern void sim_set_material(uint h, uint id, long f, long r);
+        [DllImport(Lib)] public static extern void sim_set_layers(uint h, uint id, uint layer, uint mask, uint sensor);
+        [DllImport(Lib)] public static extern void sim_set_velocity(uint h, uint id, long vx, long vy, long w);
+        [DllImport(Lib)] public static extern void sim_set_position(uint h, uint id, long x, long y, long a);
+        [DllImport(Lib)] public static extern void sim_apply_impulse(uint h, uint id, long ix, long iy);
+        [DllImport(Lib)] public static extern long sim_body_get(uint h, uint id, uint field);
+        [DllImport(Lib)] public static extern uint sim_raycast(uint h, long x, long y, long dx, long dy, uint mask);
+        [DllImport(Lib)] public static extern long sim_ray_get(uint field);
+        [DllImport(Lib)] public static extern uint sim_kcc_new(uint h, uint body, long step, long minNy);
+        [DllImport(Lib)] public static extern uint sim_kcc_move(uint h, uint k, long dx, long dy);
+        [DllImport(Lib)] public static extern ulong sim_golden_hash();
+    }
+
+    public sealed class SimWorld : IDisposable
+    {
+        public readonly uint Handle;
+        bool _freed;
+
+        public SimWorld(double gravityX = 0, double gravityY = -10, uint tickHz = 60)
+        {
+            Handle = SimNative.sim_world_new(Fx.From(gravityX), Fx.From(gravityY), tickHz);
+        }
+
+        /// Reference scenario hash; equals the Rust/wasm value 0x58d9870ba45952b5 on every platform.
+        public static ulong GoldenHash() => SimNative.sim_golden_hash();
+
+        public void Dispose() { if (!_freed) { _freed = true; SimNative.sim_world_free(Handle); } }
+        public void Step() => SimNative.sim_step(Handle);
+        public uint Tick => SimNative.sim_tick(Handle);
+        public ulong Hash() => SimNative.sim_hash(Handle);
+
+        public byte[] Snapshot()
+        {
+            uint n = SimNative.sim_snapshot(Handle);
+            var b = new byte[n];
+            for (uint i = 0; i < n; i++) b[i] = (byte)SimNative.sim_snapshot_byte(Handle, i);
+            return b;
+        }
+        public bool Restore(byte[] bytes)
+        {
+            SimNative.sim_snapshot_set_len(Handle, (uint)bytes.Length);
+            for (uint i = 0; i < bytes.Length; i++) SimNative.sim_snapshot_set_byte(Handle, i, bytes[i]);
+            return SimNative.sim_restore(Handle) == 1;
+        }
+
+        public uint AddCircle(BodyKind kind, double x, double y, double radius, double density = 1)
+            => SimNative.sim_add_circle(Handle, (uint)kind, Fx.From(x), Fx.From(y), Fx.From(radius), Fx.From(density));
+        public uint AddBox(BodyKind kind, double x, double y, double halfW, double halfH, double density = 1)
+            => SimNative.sim_add_box(Handle, (uint)kind, Fx.From(x), Fx.From(y), Fx.From(halfW), Fx.From(halfH), Fx.From(density));
+        public uint AddCapsule(BodyKind kind, double x, double y, double halfLen, double radius, double density = 1)
+            => SimNative.sim_add_capsule(Handle, (uint)kind, Fx.From(x), Fx.From(y), Fx.From(halfLen), Fx.From(radius), Fx.From(density));
+        public void Remove(uint id) => SimNative.sim_remove_body(Handle, id);
+        public void SetMaterial(uint id, double friction, double restitution) => SimNative.sim_set_material(Handle, id, Fx.From(friction), Fx.From(restitution));
+        public void SetLayers(uint id, uint layer, uint mask, bool sensor = false) => SimNative.sim_set_layers(Handle, id, layer, mask, sensor ? 1u : 0u);
+        public void SetVelocity(uint id, double vx, double vy, double angular = 0) => SimNative.sim_set_velocity(Handle, id, Fx.From(vx), Fx.From(vy), Fx.From(angular));
+        public void SetPosition(uint id, double x, double y, double angle = 0) => SimNative.sim_set_position(Handle, id, Fx.From(x), Fx.From(y), Fx.From(angle));
+        public void ApplyImpulse(uint id, double ix, double iy) => SimNative.sim_apply_impulse(Handle, id, Fx.From(ix), Fx.From(iy));
+
+        public BodyState Body(uint id) => new BodyState
+        {
+            X = Fx.To(SimNative.sim_body_get(Handle, id, 0)),
+            Y = Fx.To(SimNative.sim_body_get(Handle, id, 1)),
+            Angle = Fx.To(SimNative.sim_body_get(Handle, id, 2)),
+            Vx = Fx.To(SimNative.sim_body_get(Handle, id, 3)),
+            Vy = Fx.To(SimNative.sim_body_get(Handle, id, 4)),
+            AngularVelocity = Fx.To(SimNative.sim_body_get(Handle, id, 5)),
+        };
+        /// Raw Q32.32 field (0..5 = x, y, angle, vx, vy, angular velocity) for hashing/networking.
+        public long BodyRaw(uint id, uint field) => SimNative.sim_body_get(Handle, id, field);
+
+        public bool Raycast(double x, double y, double dx, double dy, out RayHit hit, uint mask = uint.MaxValue)
+        {
+            uint body = SimNative.sim_raycast(Handle, Fx.From(x), Fx.From(y), Fx.From(dx), Fx.From(dy), mask);
+            hit = default;
+            if (body == 0) return false;
+            hit.Body = body;
+            hit.Fraction = Fx.To(SimNative.sim_ray_get(0));
+            hit.X = Fx.To(SimNative.sim_ray_get(1));
+            hit.Y = Fx.To(SimNative.sim_ray_get(2));
+            hit.Nx = Fx.To(SimNative.sim_ray_get(3));
+            hit.Ny = Fx.To(SimNative.sim_ray_get(4));
+            return true;
+        }
+
+        /// Character controller over a kinematic body; returns its index for MoveCharacter.
+        public uint Character(uint body, double stepHeight = 0.5, double minGroundNormalY = 0.7)
+            => SimNative.sim_kcc_new(Handle, body, Fx.From(stepHeight), Fx.From(minGroundNormalY));
+        /// Moves the controller; true when grounded afterwards.
+        public bool MoveCharacter(uint kcc, double dx, double dy) => SimNative.sim_kcc_move(Handle, kcc, Fx.From(dx), Fx.From(dy)) == 1;
+    }
+}

@@ -85,3 +85,15 @@ and wasm32 (CI matrix) — the same vectors shipped to the C# and TS ports.
    example lockstep game in `examples/`.
 3. `net-sim-nav` A*/funnel/steering; flow fields.
 4. 3D decision + bot kit.
+
+## Status
+
+- Phase 1 done: bodies (static/kinematic/dynamic), circles, boxes/convex polygons, capsules, edge
+  chains; uniform-grid broadphase with sorted pairs; SAT manifolds over rounded convex cores;
+  sequential impulses with warm starting, friction, restitution (pre-solve bias), positional
+  correction; joints (distance/rope with slack, revolute with limits + motor, weld; jointed bodies
+  do not collide); raycast (circle/polygon/capsule/segment); kinematic `CharacterController`
+  (slide, step-up, ground snap, slope limit); contact/sensor events; snapshot/restore/FNV hash.
+- Bindings: `net-sim-wasm` flat ABI (cdylib + wasm32), Web `Sim/SimWorld`, Unity
+  `Aurix.Net.Sim.SimWorld`; golden hash `0x58d9870ba45952b5` identical on native and wasm32.
+- Not yet: shapecast, joints/events over the flat ABI, 3D, navmesh/steering (phase 2), bot kit.

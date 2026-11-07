@@ -179,3 +179,5 @@ export class Client {
   close() { this.stop(); this.path?.close(); this.ws.close(); }
   private stop() { if (this.timer) { clearInterval(this.timer); this.timer = undefined; } }
 }
+
+export * from "./sim.js";

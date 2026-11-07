@@ -99,3 +99,43 @@ Two ways to rewind a lockstep match:
   spectators who arrived late, bug reports and server-side highlight generation; the payload is the
   same `Replay` JSON as the post-match replay (`from_tick`, `inputs`, `hashes`).
 
+
+## Aurix Sim — deterministic physics in every SDK
+
+`net-sim-physics` (fixed-point Q32.32, no floats) is exposed through one flat ABI crate,
+`net-sim-wasm`, built both as `net_sim_wasm.wasm` (browsers, Unity WebGL, node referee) and as a
+native `libnet_sim_wasm.{so,dll,dylib}` (Unity desktop/mobile, C++/Godot). Every build runs the
+same integer math, so a lockstep room can hash the world on any platform and compare:
+`sim_golden_hash()` returns `0x58d9870ba45952b5` on x86-64 native and wasm32.
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo build --release --target wasm32-unknown-unknown -p net-sim-wasm   # target/wasm32-unknown-unknown/release/net_sim_wasm.wasm
+cargo build --release -p net-sim-wasm                                   # target/release/libnet_sim_wasm.so
+cargo run -p net-sim-wasm --example golden_check                        # native vs wasm hash
+```
+
+Web:
+
+```ts
+import { Sim, BodyKind } from "@aurix/net";
+const sim = await Sim.load(fetch("/net_sim_wasm.wasm"));
+const w = sim.world({ x: 0, y: -10 }, 60);
+w.addBox(BodyKind.Static, 0, -1, 50, 1);
+const hero = w.addCapsule(BodyKind.Kinematic, 0, 1, 0.5, 0.5);
+const kcc = w.character(hero);            // step-up 0.5, slope limit cos 0.7
+const ball = w.addCircle(BodyKind.Dynamic, 3, 5, 0.5);
+w.setMaterial(ball, 0.3, 0.6);
+// per lockstep tick:
+w.moveCharacter(kcc, input.x / 60, vy / 60);
+w.step();
+lockstep.reportHash(tick, w.hash());      // identical on every client
+const snap = w.snapshot();                // for rollback / checkpoints
+```
+
+Unity (C#): `Aurix.Net.Sim.SimWorld` has the same surface (`AddBox/AddCircle/AddCapsule`,
+`SetMaterial/SetLayers/SetVelocity/ApplyImpulse`, `Body(id)`, `Raycast`, `Character/MoveCharacter`,
+`Snapshot/Restore/Hash`). Put `libnet_sim_wasm.so`/`.dll` under `Plugins/` (WebGL links the static
+build). Rust games use `net-sim-physics` directly (`World`, `Body`, `Joint`, `CharacterController`),
+with joints (distance/rope, revolute with limits and motor, weld) and contact events on top of what
+the flat ABI exposes today.

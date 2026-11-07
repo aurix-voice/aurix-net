@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Aurix.Net;
 using Aurix.Net.Managed;
+using Aurix.Net.Sim;
 
 static class Program
 {
@@ -142,8 +143,32 @@ static class Program
 
     }
 
+
+    static void SimTests()
+    {
+        Check(SimWorld.GoldenHash() == 0x58d9870ba45952b5UL, "sim: golden hash equals the Rust/wasm value");
+        using var a = new SimWorld();
+        using var b = new SimWorld();
+        uint ballA = 0, ballB = 0;
+        foreach (var (w, isA) in new[] { (a, true), (b, false) })
+        {
+            w.AddBox(BodyKind.Static, 0, -1, 50, 1);
+            uint ball = w.AddCircle(BodyKind.Dynamic, 0, 5, 1);
+            w.SetMaterial(ball, 0.3, 0.2);
+            if (isA) ballA = ball; else ballB = ball;
+        }
+        for (int i = 0; i < 120; i++) { a.Step(); b.Step(); }
+        Check(a.Hash() == b.Hash() && ballA == ballB, "sim: two worlds agree");
+        double y = a.Body(ballA).Y;
+        Check(y > 0.9 && y < 1.1, "sim: ball rests on the floor (" + y.ToString("F3") + ")");
+        var snap = a.Snapshot(); ulong h = a.Hash(); a.Step();
+        Check(a.Restore(snap) && a.Hash() == h, "sim: snapshot round-trip");
+        Check(a.Raycast(0, 5, 0, -10, out var hit) && hit.Body == ballA && Math.Abs(hit.Ny - 1) < 1e-6, "sim: raycast hits the ball from above");
+    }
+
     static int Main()
     {
+        SimTests();
         PredictorTests();
         LockstepTests();
         RollbackTests();
