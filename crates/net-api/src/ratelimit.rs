@@ -136,7 +136,8 @@ impl Guards {
 #[derive(Clone, Copy, Debug)]
 pub struct ClientIp(pub IpAddr);
 
-/// Axum middleware: per-IP request budget and the `ClientIp` extension for handlers.
+/// Axum middleware: per-IP request budget, the `ClientIp` extension for handlers, and the
+/// per-IP budget for failed authentications (401 → 429 once spent).
 pub async fn http_guard(
     State(st): State<crate::state::Shared>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -149,7 +150,22 @@ pub async fn http_guard(
         return (StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
     }
     req.extensions_mut().insert(ClientIp(ip));
-    next.run(req).await
+    let resp = next.run(req).await;
+    // Failed REST auth (bad API key / operator token) shares the per-IP auth-failure budget
+    // with WebSocket grant failures; once it is spent the caller sees 429 instead of 401,
+    // so credential guessing cannot run at the general HTTP rate. Valid requests are untouched.
+    if resp.status() == StatusCode::UNAUTHORIZED && !st.guards.auth_fail.allow(ip) {
+        st.metrics
+            .errors
+            .with_label_values(&["auth_rate_limited"])
+            .inc();
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many failed authentications",
+        )
+            .into_response();
+    }
+    resp
 }
 
 #[cfg(test)]

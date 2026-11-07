@@ -28,7 +28,7 @@ QUIC data, WebTransport data). We assume:
 | Grants | HS256 JWT signed with `auth.grant_secret` (≥ 32 random bytes enforced outside development); `exp` checked with 5 s leeway; scopes limited to `join/create/master/spectate`; `room` binding; `meta` ≤ 1 KiB; control characters stripped |
 | Data tickets | HMAC-SHA256 over session/room/actor, 30 s TTL; constant-time check; a stale data session cannot act on a slot a newer one owns |
 | Transport | QUIC/WebTransport over TLS 1.3 with certificate pinning (`cert_sha256`) for self-signed deployments; QUIC Retry (address validation) before any handshake work; per-IP connection cap |
-| Control plane | per-IP HTTP budget, per-IP WebSocket connect budget, auth-failure budget per IP, 10 s pre-auth timeout, 8 KiB pre-auth message cap, 90 s idle timeout, 64 KiB body cap (8 MiB for module upload) |
+| Control plane | per-IP HTTP budget, per-IP WebSocket connect budget, auth-failure budget per IP (shared by WebSocket grant failures and REST 401s on API keys / operator tokens; spent budget turns 401 into 429, valid callers unaffected), 10 s pre-auth timeout, 8 KiB pre-auth message cap, 90 s idle timeout, 64 KiB body cap (8 MiB for module upload) |
 | Rooms | room/player props size caps, per-room and per-player event budgets, input-rate and look-ahead caps, max players per room/node, project quotas |
 | Webhooks | https only outside development, no credentials in URL, no redirects, private/loopback/link-local/metadata hosts refused both at registration and at delivery (DNS rebinding) |
 | WASM | wasmtime with fuel (50 M per call), 64 MiB memory, 8 MiB module; a trapping module is disabled, the node is unaffected |
