@@ -174,12 +174,42 @@ export function useDeleteModule() {
   const qc = useQueryClient();
   return useMutation({ mutationFn: (name: string) => api.del(`/v1/modules/${encodeURIComponent(name)}`), onSuccess: () => void qc.invalidateQueries({ queryKey: qk.modules }) });
 }
-export function useAudit(limit = 200) {
+export interface AuditFilter {
+  action?: string;
+  actor?: string;
+  limit?: number;
+}
+export function useAudit(f: AuditFilter = {}) {
   const api = useApi();
   const { operator, projectId } = useAuth();
+  const limit = f.limit ?? 200;
   return useQuery({
-    queryKey: [...qk.audit(operator ? projectId : "me"), limit],
-    queryFn: async () => (await api.get<{ audit: AuditRow[] }>(operator ? "/v1/operator/audit" : "/v1/audit", { limit, project: operator ? projectId : undefined })).audit,
+    queryKey: [...qk.audit(operator ? projectId : "me"), limit, f.action ?? "", f.actor ?? ""],
+    queryFn: async () =>
+      (
+        await api.get<{ audit: AuditRow[] }>(operator ? "/v1/operator/audit" : "/v1/audit", {
+          limit,
+          project: operator ? projectId : undefined,
+          action: f.action || undefined,
+          actor: f.actor || undefined,
+        })
+      ).audit,
+  });
+}
+export function useOpDeleteWebhook(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.del(`/v1/operator/projects/${projectId}/webhooks/${id}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.project(projectId) }),
+  });
+}
+export function useOpDeleteModule(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => api.del(`/v1/operator/projects/${projectId}/modules/${encodeURIComponent(name)}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.project(projectId) }),
   });
 }
 export function useCreateProject() {

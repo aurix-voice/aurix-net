@@ -4,14 +4,23 @@ import { useAuth } from "@/auth/AuthProvider";
 import { useI18n } from "@/i18n";
 import { fmtDateTimeShort } from "@/lib/format";
 import { RequireScope } from "@/shell/Guards";
-import { PageHeader } from "@/ui/Page";
+import { useState } from "react";
+
+import { Button } from "@/ui/Button";
+import { Input, NativeSelect } from "@/ui/Input";
+import { PageHeader, Toolbar } from "@/ui/Page";
 import { Badge, Card, IdChip, Mono } from "@/ui/Primitives";
 import { DataTable, type Column } from "@/ui/Table";
+
+const ACTIONS = ["key.create", "key.revoke", "webhook.create", "webhook.delete", "module.put", "module.delete", "project.create", "project.limits", "room.close"];
 
 function AuditTable() {
   const { t, locale } = useI18n();
   const { operator, projectId } = useAuth();
-  const q = useAudit();
+  const [action, setAction] = useState("");
+  const [actor, setActor] = useState("");
+  const [limit, setLimit] = useState(200);
+  const q = useAudit({ action: action.trim(), actor: actor.trim(), limit });
   const cols: Column<AuditRow>[] = [
     { key: "when", header: t("audit.when"), width: "160px", cell: (r) => <span className="text-fg-muted tabular-nums">{fmtDateTimeShort(locale, r.created_at)}</span> },
     { key: "actor", header: t("audit.actor"), cell: (r) => <Mono>{r.actor}</Mono> },
@@ -22,6 +31,34 @@ function AuditTable() {
   ];
   return (
     <Card>
+      <Toolbar end={<span className="text-xs text-fg-muted tabular-nums">{t("common.total")}: {q.data?.length ?? 0}</span>}>
+        <Input placeholder={t("audit.filter.action")} value={action} onChange={(e) => setAction(e.target.value)} className="w-44" list="audit-actions" />
+        <datalist id="audit-actions">
+          {ACTIONS.map((a) => (
+            <option key={a} value={a} />
+          ))}
+        </datalist>
+        <Input placeholder={t("audit.filter.actor")} value={actor} onChange={(e) => setActor(e.target.value)} className="w-44" />
+        <NativeSelect aria-label={t("audit.filter.limit")} value={String(limit)} onChange={(e) => setLimit(Number(e.target.value))} className="w-28">
+          {[50, 200, 500, 1000].map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </NativeSelect>
+        {action || actor ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setAction("");
+              setActor("");
+            }}
+          >
+            {t("rooms.filter.clear")}
+          </Button>
+        ) : null}
+      </Toolbar>
       <DataTable rows={q.data} columns={cols} rowKey={(r) => String(r.id)} loading={q.isLoading} error={q.error} dense />
     </Card>
   );

@@ -3,7 +3,8 @@ import { ArrowLeft, Plus } from "lucide-react";
 import { useState } from "react";
 
 import type { ApiKey, LiveRoom, Module, Webhook } from "@/api/client";
-import { useCreateKey, useProject, useRevokeProjectKey, useSetLimits } from "@/api/hooks";
+import { useCreateKey, useOpDeleteModule, useOpDeleteWebhook, useProject, useRegions, useRevokeProjectKey, useSetLimits } from "@/api/hooks";
+import { ConnectCard } from "@/components/ConnectCard";
 import { useAuth } from "@/auth/AuthProvider";
 import { NewKeyDialog } from "@/components/NewKeyDialog";
 import { useI18n } from "@/i18n";
@@ -79,9 +80,14 @@ function ProjectBody() {
   const { t, locale } = useI18n();
   const { selectProject } = useAuth();
   const q = useProject(projectId);
+  const toast = useToast();
   const createKey = useCreateKey(projectId);
   const revokeKey = useRevokeProjectKey(projectId);
   const [revoking, setRevoking] = useState<ApiKey | null>(null);
+  const regions = useRegions();
+  const delWebhook = useOpDeleteWebhook(projectId);
+  const delModule = useOpDeleteModule(projectId);
+  const [deleting, setDeleting] = useState<{ kind: "webhook" | "module"; id: string; label: string } | null>(null);
   const [tab, setTab] = useState("keys");
   const [newKey, setNewKey] = useState(false);
   if (q.isLoading) return <Loading />;
@@ -151,6 +157,16 @@ function ProjectBody() {
                 columns={[
                   { key: "url", header: t("webhooks.url"), cell: (w) => <Mono>{w.url}</Mono> },
                   { key: "events", header: t("webhooks.events"), cell: (w) => (w.events.length ? w.events.join(", ") : "*") },
+                  {
+                    key: "actions",
+                    header: "",
+                    align: "right",
+                    cell: (w) => (
+                      <Button variant="ghost" size="sm" onClick={() => setDeleting({ kind: "webhook", id: w.id, label: w.url })}>
+                        {t("common.delete")}
+                      </Button>
+                    ),
+                  },
                 ]}
               />
             </TabPanel>
@@ -164,6 +180,16 @@ function ProjectBody() {
                   { key: "hash", header: t("modules.hash"), cell: (m) => <Mono>{m.hash.slice(0, 16)}…</Mono> },
                   { key: "size", header: t("modules.size"), align: "right", cell: (m) => fmtBytes(locale, m.size) },
                   { key: "updated", header: t("modules.updated"), cell: (m) => fmtDateTimeShort(locale, m.updated_at) },
+                  {
+                    key: "actions",
+                    header: "",
+                    align: "right",
+                    cell: (m) => (
+                      <Button variant="ghost" size="sm" onClick={() => setDeleting({ kind: "module", id: m.name, label: m.name })}>
+                        {t("common.delete")}
+                      </Button>
+                    ),
+                  },
                 ]}
               />
             </TabPanel>
@@ -176,9 +202,27 @@ function ProjectBody() {
           <Card className="p-4">
             <KV cols={1} items={[{ k: t("common.created"), v: fmtDateTimeShort(locale, p.created_at) }, { k: t("projects.plan"), v: p.plan }]} />
           </Card>
+          <Section title={t("projects.connect")}>
+            <ConnectCard regions={regions.data ?? []} allowed={Array.isArray(p.limits?.allowed_regions) ? (p.limits.allowed_regions as string[]) : undefined} />
+          </Section>
         </div>
       </div>
       <NewKeyDialog open={newKey} onOpenChange={setNewKey} create={(b) => createKey.mutateAsync(b)} />
+      <ConfirmDialog
+        open={!!deleting}
+        onOpenChange={(o) => !o && setDeleting(null)}
+        title={deleting?.kind === "webhook" ? t("webhooks.delete") : t("modules.delete")}
+        description={deleting ? t("common.delete.confirm", { name: deleting.label }) : ""}
+        confirmLabel={t("common.delete")}
+        variant="danger"
+        onConfirm={async () => {
+          if (!deleting) return;
+          if (deleting.kind === "webhook") await delWebhook.mutateAsync(deleting.id);
+          else await delModule.mutateAsync(deleting.id);
+          toast.ok(t("common.deleted"));
+          setDeleting(null);
+        }}
+      />
       <ConfirmDialog
         open={!!revoking}
         onOpenChange={(o) => !o && setRevoking(null)}

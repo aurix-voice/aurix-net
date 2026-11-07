@@ -81,6 +81,14 @@ pub fn router(st: Shared) -> Router {
         )
         .route("/v1/operator/audit", get(op_audit))
         .route("/v1/operator/usage", get(op_fleet_usage))
+        .route(
+            "/v1/operator/projects/:id/webhooks/:wid",
+            delete(op_delete_webhook),
+        )
+        .route(
+            "/v1/operator/projects/:id/modules/:name",
+            delete(op_delete_module),
+        )
         .route("/v1/internal/rooms/:id/players", get(internal_players))
         .route("/v1/operator/rooms/:id/replay", get(op_replay))
         .route("/v1/operator/projects/:id", get(op_project))
@@ -1008,6 +1016,10 @@ struct AuditQuery {
     limit: Option<i64>,
     #[serde(default)]
     project: Option<Uuid>,
+    #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
+    actor: Option<String>,
 }
 
 async fn list_audit(
@@ -1016,7 +1028,14 @@ async fn list_audit(
     Query(q): Query<AuditQuery>,
 ) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Read).await?;
-    let rows = queries::list_audit(&st.pool, Some(key.project_id), q.limit.unwrap_or(100)).await?;
+    let rows = queries::list_audit(
+        &st.pool,
+        Some(key.project_id),
+        q.action.as_deref(),
+        q.actor.as_deref(),
+        q.limit.unwrap_or(100),
+    )
+    .await?;
     Ok(Json(json!({"audit": rows})))
 }
 
@@ -1026,8 +1045,53 @@ async fn op_audit(
     Query(q): Query<AuditQuery>,
 ) -> ApiResult<Json<Value>> {
     operator(&st, &h)?;
-    let rows = queries::list_audit(&st.pool, q.project, q.limit.unwrap_or(100)).await?;
+    let rows = queries::list_audit(
+        &st.pool,
+        q.project,
+        q.action.as_deref(),
+        q.actor.as_deref(),
+        q.limit.unwrap_or(100),
+    )
+    .await?;
     Ok(Json(json!({"audit": rows})))
+}
+
+/// Operator removes a project's webhook (e.g. a leaked secret or an abusive endpoint); audited.
+async fn op_delete_webhook(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((id, wid)): Path<(Uuid, Uuid)>,
+) -> ApiResult<StatusCode> {
+    operator(&st, &h)?;
+    if queries::delete_webhook(&st.pool, id, wid).await? {
+        audit_log(
+            &st,
+            Some(id),
+            "operator",
+            "webhook.delete",
+            &wid.to_string(),
+            json!({}),
+        )
+        .await;
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(NetError::NotFound("webhook".into()).into())
+    }
+}
+
+/// Operator removes a project's WASM module; audited.
+async fn op_delete_module(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((id, name)): Path<(Uuid, String)>,
+) -> ApiResult<StatusCode> {
+    operator(&st, &h)?;
+    if queries::delete_game_module(&st.pool, id, &name).await? {
+        audit_log(&st, Some(id), "operator", "module.delete", &name, json!({})).await;
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(NetError::NotFound(format!("module {name}")).into())
+    }
 }
 
 /// Project detail for the operator: row, keys (hashes never leave the DB), webhooks, modules.

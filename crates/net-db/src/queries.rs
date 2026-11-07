@@ -633,12 +633,36 @@ pub async fn purge_usage(pool: &DbPool, days: u32) -> Result<u64> {
 }
 
 /// Newest audit rows first; `project` = None lists every project (operator view).
-pub async fn list_audit(pool: &DbPool, project: Option<Uuid>, limit: i64) -> Result<Vec<AuditRow>> {
+/// Audit rows, newest first. `action` / `actor` are prefix filters (`key.` matches every key
+/// action; `operator` matches the operator actor).
+pub async fn list_audit(
+    pool: &DbPool,
+    project: Option<Uuid>,
+    action: Option<&str>,
+    actor: Option<&str>,
+    limit: i64,
+) -> Result<Vec<AuditRow>> {
+    let like = |s: Option<&str>| {
+        s.filter(|s| !s.is_empty()).map(|s| {
+            format!(
+                "{}%",
+                s.replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            )
+        })
+    };
     sqlx::query_as::<_, AuditRow>(
-        "SELECT id, project_id, actor, action, target, details, created_at FROM audit WHERE ($1::uuid IS NULL OR project_id = $1) ORDER BY id DESC LIMIT $2",
+        "SELECT id, project_id, actor, action, target, details, created_at FROM audit \
+         WHERE ($1::uuid IS NULL OR project_id = $1) \
+           AND ($3::text IS NULL OR action LIKE $3) \
+           AND ($4::text IS NULL OR actor LIKE $4) \
+         ORDER BY id DESC LIMIT $2",
     )
     .bind(project)
     .bind(limit.clamp(1, 1000))
+    .bind(like(action))
+    .bind(like(actor))
     .fetch_all(pool)
     .await
     .map_err(db_err)
