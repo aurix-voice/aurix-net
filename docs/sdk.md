@@ -16,3 +16,34 @@ sync/lockstep frames), `closed`. Grants always come from the developer's backend
 ## Rehost
 
 When a node shuts down (deploy) it hands its rooms to another node and sends `left{reason:"rehost"}`. Clients rejoin the same room with the same grant: Rust `client.rejoin(&[fallback_urls])`, Web `client.rejoin(fallbackUrls)` (or listen to the `rehost` event), C# `ManagedClient.RejoinAsync(fallbacks)`; Unity `NetRunner` does it automatically (`FallbackUrls`). Actor ids are preserved by player id.
+
+## Lockstep rooms from Rust, C++ and Godot
+
+`net_client::lockstep::LockstepClient` is the same core the C# and Web SDKs use, as pure logic: feed
+every data-path payload to `receive()` and act on the events it returns (`Tick` with the confirmed
+inputs in tick order, `Restore` on catch-up, `CheckpointRequested` for the master, `DumpRequested`
+after a desync); send what `send_input()`, `hash_frame()`, `checkpoint_frame()` and `dump_frame()`
+hand back (`Outgoing::reliable` picks the channel). Input delay adapts to the node's margin reports
+(`0x25`) between `input_delay_min/max`; `input_redundancy` (1–8) past inputs ride in every datagram.
+
+The C ABI mirrors it (`aurix_net_lockstep_*` in `aurix_net.h`) and the header-only
+`aurix::net::Lockstep` wraps it for C++ and the Godot extension:
+
+```cpp
+aurix::net::Client c; c.connect(http, grant);
+c.joinOrCreate("duel", aurix::net::Mode::Lockstep, 2);
+aurix::net::Lockstep ls;
+// per frame
+ls.sendInput(c, input, sizeof input);
+c.poll(); // for each Data event: if (!ls.receive(ev.data, ev.len)) handleRelay(ev);
+for (auto e = ls.poll(); e.kind != aurix::net::Lockstep::Kind::None; e = ls.poll()) {
+  switch (e.kind) {
+    case aurix::net::Lockstep::Kind::Tick:    sim.step(e.tick, e.inputs); aurix::net::Lockstep::reportHash(c, e.tick, sim.hash()); break;
+    case aurix::net::Lockstep::Kind::Restore: sim.restore(e.state, e.stateLen); break;
+    case aurix::net::Lockstep::Kind::CheckpointReq: aurix::net::Lockstep::sendCheckpoint(c, e.tick, sim.hash(), sim.bytes(), sim.size()); break;
+    case aurix::net::Lockstep::Kind::DumpReq: aurix::net::Lockstep::sendDump(c, e.tick, sim.hashAt(e.tick), sim.bytesAt(e.tick), sim.sizeAt(e.tick)); break;
+    default: break;
+  }
+}
+```
+

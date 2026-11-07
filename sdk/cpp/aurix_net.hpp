@@ -76,6 +76,7 @@ public:
         if (!h_) throw Error(lastError());
     }
     bool connected() const { return h_ != nullptr; }
+    AurixNetClient* handle() const { return h_; }
     int actor() const { return actor_; }
 
     /// Protocol JSON, e.g. {"t":"set_room_props","props":{...}}.
@@ -145,6 +146,51 @@ public:
 
 private:
     AurixNetClient* h_ = nullptr; int actor_ = -1;
+};
+
+/// Lockstep room helper: feed every Data payload to receive(), step your deterministic simulation
+/// on each Tick, answer Restore/CheckpointReq/DumpReq. Input delay adapts to the node's margin reports.
+class Lockstep {
+public:
+    enum class Kind { None = 0, Tick = 1, Restore = 2, CheckpointReq = 3, DumpReq = 4 };
+    struct Input { uint16_t actor; const uint8_t* data; size_t len; };
+    struct Event { Kind kind; uint32_t tick; uint64_t hash; std::vector<Input> inputs; const uint8_t* state; size_t stateLen; };
+
+    Lockstep() : ls_(aurix_net_lockstep_new()) {}
+    ~Lockstep() { aurix_net_lockstep_destroy(ls_); }
+    Lockstep(const Lockstep&) = delete; Lockstep& operator=(const Lockstep&) = delete;
+
+    /// True when the payload was a lockstep frame (events may now be pending in poll()).
+    bool receive(const uint8_t* data, size_t len) { return aurix_net_lockstep_receive(ls_, data, len) == 1; }
+    /// Next event; Event::kind == Kind::None when there is nothing. Pointers stay valid until the next poll().
+    Event poll() {
+        AurixNetLsEvent e{}; Event out{Kind::None, 0, 0, {}, nullptr, 0};
+        if (aurix_net_lockstep_poll(ls_, &e) != 1) return out;
+        out.kind = Kind(e.kind); out.tick = e.tick; out.hash = e.hash; out.state = e.state; out.stateLen = e.state_len;
+        for (uint16_t i = 0; i < e.inputs; i++) { Input in{}; if (aurix_net_lockstep_input(ls_, i, &in.actor, &in.data, &in.len) == 1) out.inputs.push_back(in); }
+        return out;
+    }
+    /// Sends this tick's local input through the client; returns the tick it was stamped with (or -1).
+    int64_t sendInput(Client& c, const uint8_t* data, size_t len) { return aurix_net_lockstep_send_input(ls_, c.handle(), data, len); }
+    static void reportHash(Client& c, uint32_t tick, uint64_t hash) { aurix_net_lockstep_report_hash(c.handle(), tick, hash); }
+    static void sendCheckpoint(Client& c, uint32_t tick, uint64_t hash, const uint8_t* s, size_t n) { aurix_net_lockstep_send_checkpoint(c.handle(), tick, hash, s, n); }
+    static void sendDump(Client& c, uint32_t tick, uint64_t hash, const uint8_t* s, size_t n) { aurix_net_lockstep_send_dump(c.handle(), tick, hash, s, n); }
+    static uint64_t fnv1a(const uint8_t* s, size_t n) { return aurix_net_lockstep_fnv1a(s, n); }
+
+    int64_t get(int32_t key) const { return aurix_net_lockstep_get(ls_, key); }
+    void set(int32_t key, int64_t v) { aurix_net_lockstep_set(ls_, key, v); }
+    uint32_t inputDelay() const { return uint32_t(get(AURIX_NET_LS_INPUT_DELAY)); }
+    void setInputDelay(uint32_t d, uint32_t min = 1, uint32_t max = 8, bool adaptive = true) {
+        set(AURIX_NET_LS_INPUT_DELAY, d); set(AURIX_NET_LS_INPUT_DELAY_MIN, min); set(AURIX_NET_LS_INPUT_DELAY_MAX, max); set(AURIX_NET_LS_ADAPTIVE_DELAY, adaptive ? 1 : 0);
+    }
+    void setInputRedundancy(uint32_t n) { set(AURIX_NET_LS_INPUT_REDUNDANCY, n); }
+    uint32_t confirmedTick() const { return uint32_t(get(AURIX_NET_LS_CONFIRMED_TICK)); }
+    uint32_t serverTick() const { return uint32_t(get(AURIX_NET_LS_SERVER_TICK)); }
+    int lastMargin() const { return int(get(AURIX_NET_LS_LAST_MARGIN)); }
+    int64_t lateInputs() const { return get(AURIX_NET_LS_LATE_INPUTS); }
+
+private:
+    AurixNetLockstep* ls_;
 };
 
 } // namespace aurix::net

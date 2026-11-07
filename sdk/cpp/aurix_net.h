@@ -49,6 +49,30 @@ void aurix_net_event_free(AurixNetEvent *ev);
 int32_t aurix_net_leave(AurixNetClient *h);
 void aurix_net_destroy(AurixNetClient *h);
 
+/* ---- lockstep rooms (pure-logic helper; feed it every data payload of a lockstep room) ---- */
+typedef struct AurixNetLockstep AurixNetLockstep;
+enum { AURIX_NET_LS_NONE = 0, AURIX_NET_LS_TICK = 1, AURIX_NET_LS_RESTORE = 2, AURIX_NET_LS_CHECKPOINT_REQ = 3, AURIX_NET_LS_DUMP_REQ = 4 };
+enum { AURIX_NET_LS_INPUT_DELAY = 0, AURIX_NET_LS_INPUT_DELAY_MIN = 1, AURIX_NET_LS_INPUT_DELAY_MAX = 2, AURIX_NET_LS_ADAPTIVE_DELAY = 3,
+       AURIX_NET_LS_INPUT_REDUNDANCY = 4, AURIX_NET_LS_LAST_MARGIN = 5, AURIX_NET_LS_LATE_INPUTS = 6, AURIX_NET_LS_CONFIRMED_TICK = 7,
+       AURIX_NET_LS_SERVER_TICK = 8, AURIX_NET_LS_DELIVERED = 9, AURIX_NET_LS_CATCHUPS = 10, AURIX_NET_LS_DROPPED = 11 };
+typedef struct AurixNetLsEvent {
+  int32_t kind; uint32_t tick; uint64_t hash;
+  uint16_t inputs;             /* TICK: actors with input, read with aurix_net_lockstep_input */
+  const uint8_t *state; size_t state_len; /* RESTORE: checkpoint state, valid until the next poll */
+} AurixNetLsEvent;
+AurixNetLockstep *aurix_net_lockstep_new(void);
+void aurix_net_lockstep_destroy(AurixNetLockstep *ls);
+int32_t aurix_net_lockstep_receive(AurixNetLockstep *ls, const uint8_t *data, size_t len); /* 1 = lockstep frame */
+int32_t aurix_net_lockstep_poll(AurixNetLockstep *ls, AurixNetLsEvent *out);               /* 1 = event filled */
+int32_t aurix_net_lockstep_input(AurixNetLockstep *ls, uint16_t index, uint16_t *actor, const uint8_t **data, size_t *len);
+int64_t aurix_net_lockstep_send_input(AurixNetLockstep *ls, AurixNetClient *h, const uint8_t *data, size_t len); /* stamped tick or -1 */
+int32_t aurix_net_lockstep_report_hash(AurixNetClient *h, uint32_t tick, uint64_t hash);
+int32_t aurix_net_lockstep_send_checkpoint(AurixNetClient *h, uint32_t tick, uint64_t hash, const uint8_t *state, size_t len);
+int32_t aurix_net_lockstep_send_dump(AurixNetClient *h, uint32_t tick, uint64_t hash, const uint8_t *state, size_t len);
+int64_t aurix_net_lockstep_get(AurixNetLockstep *ls, int32_t key);
+int32_t aurix_net_lockstep_set(AurixNetLockstep *ls, int32_t key, int64_t value);
+uint64_t aurix_net_lockstep_fnv1a(const uint8_t *data, size_t len);
+
 #ifdef __cplusplus
 }
 #endif

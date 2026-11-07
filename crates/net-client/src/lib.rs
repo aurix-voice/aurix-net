@@ -2,6 +2,8 @@
 //! certificate) or the WebSocket tunnel, with the same `Link` channels the server uses.
 //! Engine SDKs and the C ABI are thin layers over this crate.
 
+pub mod lockstep;
+
 use base64::Engine;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};

@@ -379,3 +379,294 @@ pub unsafe extern "C" fn aurix_net_destroy(h: *mut AurixNetClient) {
         drop(Box::from_raw(h));
     }
 }
+
+// ---- lockstep rooms: a pure-logic helper next to the client (see net_client::lockstep) ----
+
+use net_client::lockstep::{LockstepClient, LsEvent, Outgoing};
+use std::collections::VecDeque;
+
+pub struct AurixNetLockstep {
+    inner: Mutex<LockstepClient>,
+    queue: Mutex<VecDeque<LsEvent>>,
+    /// The event last handed out by poll: its inputs/state stay readable until the next poll.
+    current: Mutex<Option<LsEvent>>,
+}
+
+pub const AURIX_NET_LS_NONE: i32 = 0;
+pub const AURIX_NET_LS_TICK: i32 = 1;
+pub const AURIX_NET_LS_RESTORE: i32 = 2;
+pub const AURIX_NET_LS_CHECKPOINT_REQ: i32 = 3;
+pub const AURIX_NET_LS_DUMP_REQ: i32 = 4;
+
+#[repr(C)]
+pub struct AurixNetLsEvent {
+    pub kind: i32,
+    pub tick: u32,
+    pub hash: u64,
+    /// TICK: number of actors with input (read them with aurix_net_lockstep_input).
+    pub inputs: u16,
+    /// RESTORE: checkpoint state, valid until the next poll.
+    pub state: *const u8,
+    pub state_len: usize,
+}
+
+#[no_mangle]
+pub extern "C" fn aurix_net_lockstep_new() -> *mut AurixNetLockstep {
+    Box::into_raw(Box::new(AurixNetLockstep {
+        inner: Mutex::new(LockstepClient::new()),
+        queue: Mutex::new(VecDeque::new()),
+        current: Mutex::new(None),
+    }))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_lockstep_destroy(ls: *mut AurixNetLockstep) {
+    if !ls.is_null() {
+        drop(Box::from_raw(ls));
+    }
+}
+
+/// Feeds one data-path payload. 1 = lockstep frame (events may be queued), 0 = not a lockstep frame.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_lockstep_receive(
+    ls: *mut AurixNetLockstep,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    let Some(ls) = ls.as_ref() else { return -1 };
+    if data.is_null() || len == 0 {
+        return 0;
+    }
+    let p = std::slice::from_raw_parts(data, len);
+    match ls.inner.lock().receive(p) {
+        Some(evs) => {
+            ls.queue.lock().extend(evs);
+            1
+        }
+        None => 0,
+    }
+}
+
+/// Pops the next lockstep event; 1 = `out` filled, 0 = none.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_lockstep_poll(
+    ls: *mut AurixNetLockstep,
+    out: *mut AurixNetLsEvent,
+) -> i32 {
+    let (Some(ls), Some(out)) = (ls.as_ref(), out.as_mut()) else {
+        return -1;
+    };
+    let Some(ev) = ls.queue.lock().pop_front() else {
+        out.kind = AURIX_NET_LS_NONE;
+        return 0;
+    };
+    *out = match &ev {
+        LsEvent::Tick { tick, inputs } => AurixNetLsEvent {
+            kind: AURIX_NET_LS_TICK,
+            tick: *tick,
+            hash: 0,
+            inputs: inputs.len() as u16,
+            state: std::ptr::null(),
+            state_len: 0,
+        },
+        LsEvent::Restore { tick, hash, state } => AurixNetLsEvent {
+            kind: AURIX_NET_LS_RESTORE,
+            tick: *tick,
+            hash: *hash,
+            inputs: 0,
+            state: state.as_ptr(),
+            state_len: state.len(),
+        },
+        LsEvent::CheckpointRequested(t) => AurixNetLsEvent {
+            kind: AURIX_NET_LS_CHECKPOINT_REQ,
+            tick: *t,
+            hash: 0,
+            inputs: 0,
+            state: std::ptr::null(),
+            state_len: 0,
+        },
+        LsEvent::DumpRequested(t) => AurixNetLsEvent {
+            kind: AURIX_NET_LS_DUMP_REQ,
+            tick: *t,
+            hash: 0,
+            inputs: 0,
+            state: std::ptr::null(),
+            state_len: 0,
+        },
+    };
+    *ls.current.lock() = Some(ev);
+    1
+}
+
+/// Reads input `index` of the TICK event last returned by poll (actor ascending). 1 = filled.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_lockstep_input(
+    ls: *mut AurixNetLockstep,
+    index: u16,
+    actor: *mut u16,
+    data: *mut *const u8,
+    len: *mut usize,
+) -> i32 {
+    let Some(ls) = ls.as_ref() else { return -1 };
+    let cur = ls.current.lock();
+    let Some(LsEvent::Tick { inputs, .. }) = cur.as_ref() else {
+        return 0;
+    };
+    let Some((a, d)) = inputs.iter().nth(index as usize) else {
+        return 0;
+    };
+    if let Some(actor) = actor.as_mut() {
+        *actor = *a;
+    }
+    if let Some(data) = data.as_mut() {
+        *data = d.as_ptr();
+    }
+    if let Some(len) = len.as_mut() {
+        *len = d.len();
+    }
+    1
+}
+
+unsafe fn send_frame(h: *mut AurixNetClient, f: Outgoing) -> i32 {
+    let Some(h) = h.as_ref() else { return -1 };
+    let Some(ch) = Channel::from_u8(if f.reliable { 1 } else { 0 }) else {
+        return -1;
+    };
+    match h.inner.lock().send_data(ch, f.payload) {
+        Ok(()) => 0,
+        Err(e) => {
+            set_error(e);
+            -1
+        }
+    }
+}
+
+/// Queues this tick's local input and sends it (with the previous ones for redundancy) through
+/// `h`. Returns the tick it was stamped with, or -1.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_lockstep_send_input(
+    ls: *mut AurixNetLockstep,
+    h: *mut AurixNetClient,
+    data: *const u8,
+    len: usize,
+) -> i64 {
+    let Some(ls) = ls.as_ref() else { return -1 };
+    let input = if data.is_null() || len == 0 {
+        Bytes::new()
+    } else {
+        Bytes::copy_from_slice(std::slice::from_raw_parts(data, len))
+    };
+    let (tick, f) = ls.inner.lock().send_input(input);
+    if send_frame(h, f) != 0 {
+        return -1;
+    }
+    tick as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_lockstep_report_hash(
+    h: *mut AurixNetClient,
+    tick: u32,
+    hash: u64,
+) -> i32 {
+    send_frame(h, LockstepClient::hash_frame(tick, hash))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_lockstep_send_checkpoint(
+    h: *mut AurixNetClient,
+    tick: u32,
+    hash: u64,
+    state: *const u8,
+    len: usize,
+) -> i32 {
+    let st = if state.is_null() {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(state, len)
+    };
+    send_frame(h, LockstepClient::checkpoint_frame(tick, hash, st))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_lockstep_send_dump(
+    h: *mut AurixNetClient,
+    tick: u32,
+    hash: u64,
+    state: *const u8,
+    len: usize,
+) -> i32 {
+    let st = if state.is_null() {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(state, len)
+    };
+    send_frame(h, LockstepClient::dump_frame(tick, hash, st))
+}
+
+pub const AURIX_NET_LS_INPUT_DELAY: i32 = 0;
+pub const AURIX_NET_LS_INPUT_DELAY_MIN: i32 = 1;
+pub const AURIX_NET_LS_INPUT_DELAY_MAX: i32 = 2;
+pub const AURIX_NET_LS_ADAPTIVE_DELAY: i32 = 3;
+pub const AURIX_NET_LS_INPUT_REDUNDANCY: i32 = 4;
+pub const AURIX_NET_LS_LAST_MARGIN: i32 = 5;
+pub const AURIX_NET_LS_LATE_INPUTS: i32 = 6;
+pub const AURIX_NET_LS_CONFIRMED_TICK: i32 = 7;
+pub const AURIX_NET_LS_SERVER_TICK: i32 = 8;
+pub const AURIX_NET_LS_DELIVERED: i32 = 9;
+pub const AURIX_NET_LS_CATCHUPS: i32 = 10;
+pub const AURIX_NET_LS_DROPPED: i32 = 11;
+
+/// Reads a tuning knob or counter (AURIX_NET_LS_* keys); i64::MIN for an unknown key.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_lockstep_get(ls: *mut AurixNetLockstep, key: i32) -> i64 {
+    let Some(ls) = ls.as_ref() else {
+        return i64::MIN;
+    };
+    let c = ls.inner.lock();
+    match key {
+        AURIX_NET_LS_INPUT_DELAY => c.input_delay as i64,
+        AURIX_NET_LS_INPUT_DELAY_MIN => c.input_delay_min as i64,
+        AURIX_NET_LS_INPUT_DELAY_MAX => c.input_delay_max as i64,
+        AURIX_NET_LS_ADAPTIVE_DELAY => c.adaptive_delay as i64,
+        AURIX_NET_LS_INPUT_REDUNDANCY => c.input_redundancy as i64,
+        AURIX_NET_LS_LAST_MARGIN => c.last_margin as i64,
+        AURIX_NET_LS_LATE_INPUTS => c.late_inputs as i64,
+        AURIX_NET_LS_CONFIRMED_TICK => c.confirmed_tick() as i64,
+        AURIX_NET_LS_SERVER_TICK => c.server_tick as i64,
+        AURIX_NET_LS_DELIVERED => c.delivered as i64,
+        AURIX_NET_LS_CATCHUPS => c.catchups as i64,
+        AURIX_NET_LS_DROPPED => c.dropped as i64,
+        _ => i64::MIN,
+    }
+}
+
+/// Sets a tuning knob (delay, min, max, adaptive, redundancy); -1 for a read-only or unknown key.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_lockstep_set(
+    ls: *mut AurixNetLockstep,
+    key: i32,
+    value: i64,
+) -> i32 {
+    let Some(ls) = ls.as_ref() else { return -1 };
+    let mut c = ls.inner.lock();
+    let v = value.clamp(0, u32::MAX as i64) as u32;
+    match key {
+        AURIX_NET_LS_INPUT_DELAY => c.input_delay = v,
+        AURIX_NET_LS_INPUT_DELAY_MIN => c.input_delay_min = v,
+        AURIX_NET_LS_INPUT_DELAY_MAX => c.input_delay_max = v,
+        AURIX_NET_LS_ADAPTIVE_DELAY => c.adaptive_delay = value != 0,
+        AURIX_NET_LS_INPUT_REDUNDANCY => c.input_redundancy = v.clamp(1, 8) as usize,
+        _ => return -1,
+    }
+    0
+}
+
+/// FNV-1a 64 over bytes: the portable state hash the SDKs share.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_lockstep_fnv1a(data: *const u8, len: usize) -> u64 {
+    if data.is_null() || len == 0 {
+        return LockstepClient::fnv1a(&[]);
+    }
+    LockstepClient::fnv1a(std::slice::from_raw_parts(data, len))
+}
