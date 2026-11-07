@@ -54,9 +54,10 @@ pub async fn insert_api_key(
     prefix: &str,
     name: &str,
     scopes: &[String],
+    expires_at: Option<DateTime<Utc>>,
 ) -> Result<ApiKeyRow> {
     sqlx::query_as::<_, ApiKeyRow>(
-        "INSERT INTO api_keys (id, project_id, key_hash, prefix, name, scopes) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *",
+        "INSERT INTO api_keys (id, project_id, key_hash, prefix, name, scopes, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *",
     )
     .bind(Uuid::now_v7())
     .bind(project_id)
@@ -64,6 +65,7 @@ pub async fn insert_api_key(
     .bind(prefix)
     .bind(name)
     .bind(scopes)
+    .bind(expires_at)
     .fetch_one(pool)
     .await
     .map_err(db_err)
@@ -129,7 +131,7 @@ pub async fn find_api_key(pool: &DbPool, key_hash: &str) -> Result<Option<ApiKey
     sqlx::query_as::<_, ApiKeyAuth>(
         "SELECT k.*, p.disabled_at AS project_disabled_at FROM api_keys k \
          JOIN projects p ON p.id = k.project_id \
-         WHERE k.key_hash = $1 AND k.revoked_at IS NULL",
+         WHERE k.key_hash = $1 AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > now())",
     )
     .bind(key_hash)
     .fetch_optional(pool)

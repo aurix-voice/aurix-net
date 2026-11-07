@@ -148,8 +148,9 @@ export interface ApiKey {
   created_at: string;
   last_used_at: string | null;
   revoked_at: string | null;
+  expires_at?: string | null;
 }
-export interface NewKey extends Pick<ApiKey, "id" | "prefix" | "name" | "scopes"> {
+export interface NewKey extends Pick<ApiKey, "id" | "prefix" | "name" | "scopes" | "expires_at"> {
   key: string;
 }
 export interface Region {

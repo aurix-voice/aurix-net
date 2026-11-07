@@ -21,10 +21,12 @@ export function keyColumns(t: (k: never, v?: never) => string, locale: "en" | "r
     { key: "scopes", header: tt("keys.scopes"), cell: (k) => <span className="flex gap-1 flex-wrap">{k.scopes.map((s) => <Badge key={s}>{s}</Badge>)}</span> },
     { key: "created", header: tt("common.created"), sort: (k) => k.created_at, cell: (k) => <span className="text-fg-muted">{fmtDateTimeShort(locale, k.created_at)}</span> },
     { key: "used", header: tt("keys.lastUsed"), sort: (k) => k.last_used_at ?? "", cell: (k) => <span className="text-fg-muted">{k.last_used_at ? fmtRelative(locale, k.last_used_at) : "—"}</span> },
+    { key: "expires", header: tt("keys.expires"), sort: (k) => k.expires_at ?? "", cell: (k) => <span className="text-fg-muted">{k.expires_at ? fmtDateTimeShort(locale, k.expires_at) : tt("keys.expires.never")}</span> },
     {
       key: "state",
       header: tt("rooms.state"),
-      cell: (k) => (k.revoked_at ? <Badge tone="danger">{tt("keys.revoked")}</Badge> : <Badge tone="ok" dot>{tt("rooms.open")}</Badge>),
+      cell: (k) =>
+        k.revoked_at ? <Badge tone="danger">{tt("keys.revoked")}</Badge> : k.expires_at && Date.parse(k.expires_at) < Date.now() ? <Badge tone="warn">{tt("keys.expired")}</Badge> : <Badge tone="ok" dot>{tt("rooms.open")}</Badge>,
     },
     ...(onRevoke
       ? [

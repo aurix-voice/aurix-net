@@ -766,6 +766,14 @@ struct KeyReq {
     name: String,
     #[serde(default)]
     scopes: Vec<String>,
+    /// Seconds until the key stops authenticating; omit for no expiry.
+    #[serde(default)]
+    expires_in_secs: Option<u64>,
+}
+
+fn key_expiry(secs: Option<u64>) -> Option<chrono::DateTime<chrono::Utc>> {
+    secs.filter(|s| *s > 0)
+        .map(|s| chrono::Utc::now() + chrono::Duration::seconds(s.min(10 * 365 * 86_400) as i64))
 }
 
 fn validate_scopes(s: &[String]) -> Result<Vec<String>> {
@@ -780,12 +788,21 @@ fn validate_scopes(s: &[String]) -> Result<Vec<String>> {
     Ok(s.to_vec())
 }
 
-async fn issue_key(st: &Shared, project: Uuid, name: &str, scopes: &[String]) -> Result<Value> {
+async fn issue_key(
+    st: &Shared,
+    project: Uuid,
+    name: &str,
+    scopes: &[String],
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<Value> {
     let scopes = validate_scopes(scopes)?;
     let m = ApiKeyMaterial::generate();
-    let row = queries::insert_api_key(&st.pool, project, &m.hash, &m.prefix, name, &scopes).await?;
+    let row = queries::insert_api_key(
+        &st.pool, project, &m.hash, &m.prefix, name, &scopes, expires_at,
+    )
+    .await?;
     Ok(
-        json!({"id": row.id, "key": m.plaintext, "prefix": row.prefix, "scopes": row.scopes, "name": row.name}),
+        json!({"id": row.id, "key": m.plaintext, "prefix": row.prefix, "scopes": row.scopes, "name": row.name, "expires_at": row.expires_at}),
     )
 }
 
@@ -796,14 +813,21 @@ async fn create_key(
 ) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Admin).await?;
     key_write(&st, &key)?;
-    let out = issue_key(&st, key.project_id, &req.name, &req.scopes).await?;
+    let out = issue_key(
+        &st,
+        key.project_id,
+        &req.name,
+        &req.scopes,
+        key_expiry(req.expires_in_secs),
+    )
+    .await?;
     audit_log(
         &st,
         Some(key.project_id),
         &format!("key:{}", key.id),
         "key.create",
         out["id"].as_str().unwrap_or_default(),
-        json!({"name": req.name, "scopes": req.scopes}),
+        json!({"name": req.name, "scopes": req.scopes, "expires_at": out["expires_at"]}),
     )
     .await;
     Ok(Json(out))
@@ -923,6 +947,7 @@ async fn op_create_project(
         p.id,
         "default",
         &["rooms".into(), "read".into(), "admin".into()],
+        None,
     )
     .await?;
     queries::audit(
@@ -952,14 +977,21 @@ async fn op_create_key(
 ) -> ApiResult<Json<Value>> {
     operator(&st, &h)?;
     queries::get_project(&st.pool, id).await?;
-    let out = issue_key(&st, id, &req.name, &req.scopes).await?;
+    let out = issue_key(
+        &st,
+        id,
+        &req.name,
+        &req.scopes,
+        key_expiry(req.expires_in_secs),
+    )
+    .await?;
     audit_log(
         &st,
         Some(id),
         "operator",
         "key.create",
         out["id"].as_str().unwrap_or_default(),
-        json!({"name": req.name, "scopes": req.scopes}),
+        json!({"name": req.name, "scopes": req.scopes, "expires_at": out["expires_at"]}),
     )
     .await;
     Ok(Json(out))
@@ -1672,7 +1704,8 @@ async fn delete_module(
 fn key_json(r: &ApiKeyRow) -> Value {
     json!({
         "id": r.id, "prefix": r.prefix, "name": r.name, "scopes": r.scopes,
-        "created_at": r.created_at, "last_used_at": r.last_used_at, "revoked_at": r.revoked_at
+        "created_at": r.created_at, "last_used_at": r.last_used_at, "revoked_at": r.revoked_at,
+        "expires_at": r.expires_at
     })
 }
 

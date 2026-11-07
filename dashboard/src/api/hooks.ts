@@ -133,7 +133,7 @@ export function useCreateKey(projectId?: string) {
   const qc = useQueryClient();
   const { operator } = useAuth();
   return useMutation({
-    mutationFn: (body: { name: string; scopes: string[] }) => api.post<NewKey>(operator && projectId ? `/v1/operator/projects/${projectId}/keys` : "/v1/keys", body),
+    mutationFn: (body: { name: string; scopes: string[]; expires_in_secs?: number }) => api.post<NewKey>(operator && projectId ? `/v1/operator/projects/${projectId}/keys` : "/v1/keys", body),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.keys });
       if (projectId) void qc.invalidateQueries({ queryKey: qk.project(projectId) });

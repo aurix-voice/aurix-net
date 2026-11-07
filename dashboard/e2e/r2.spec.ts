@@ -194,3 +194,19 @@ test("operator bans a player from the project page; grants for that id are refus
   await expect(page.getByRole("row").filter({ hasText: "cheater-1" })).toHaveCount(0);
   expect((await grant()).status()).toBe(200);
 });
+
+test("operator issues a key with an expiry and the table shows it", async ({ page }) => {
+  const project = await api<{ project: { id: string } }>(page, "POST", "/v1/operator/projects", { name: uniq("e2e-exp") });
+  await page.goto(`/projects/${project.project.id}`);
+  await page.getByRole("button", { name: "Issue key" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Name").fill("short-lived");
+  await dialog.getByLabel("Expires").selectOption("30");
+  await dialog.getByRole("button", { name: "Create" }).click();
+  await expect(dialog.getByText(/an_/)).toBeVisible();
+  await dialog.getByRole("button", { name: "Close", exact: true }).last().click();
+  const row = page.getByRole("row").filter({ hasText: "short-lived" });
+  await expect(row).toBeVisible();
+  await expect(row.getByText("Never")).toHaveCount(0);
+  await expect(page.getByRole("row").filter({ hasText: "default" }).getByText("Never")).toBeVisible();
+});
