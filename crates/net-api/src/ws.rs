@@ -499,21 +499,11 @@ impl Session {
             None
         };
         let sync = if mode == RoomMode::Sync {
-            let schema = props.get("schema").and_then(|v| v.as_str());
-            let hz = props.get("tick_hz").and_then(|v| v.as_u64()).unwrap_or(60) as u16;
             let seed = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(1);
-            Some(
-                crate::sync::SyncRoom::with_replication(
-                    schema,
-                    hz,
-                    seed,
-                    crate::sync::SyncRoom::replication_from_props(&props),
-                )
-                .map_err(|e| NetError::Invalid(format!("schema: {e}")))?,
-            )
+            Some(build_sync(&self.st, g.project, &props, seed).await?)
         } else {
             None
         };
@@ -945,6 +935,44 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
     }
 }
 
+/// Sync room from room props: `tick_hz`, `schema` (IDL text), replication settings and
+/// `logic` (name of a project WASM module uploaded via `PUT /v1/modules/:name`).
+pub async fn build_sync(
+    st: &Shared,
+    project: ProjectId,
+    props: &Map<String, Value>,
+    seed: u64,
+) -> Result<crate::sync::SyncRoom> {
+    let schema = props.get("schema").and_then(|v| v.as_str());
+    let hz = props.get("tick_hz").and_then(|v| v.as_u64()).unwrap_or(60) as u16;
+    let logic: Option<Box<dyn crate::sync::GameLogic>> =
+        match props.get("logic").and_then(|v| v.as_str()) {
+            None => None,
+            Some(name) => {
+                let row = queries::get_game_module(&st.pool, project.0, name)
+                    .await?
+                    .ok_or_else(|| NetError::NotFound(format!("game module {name}")))?;
+                let (_, module) = st
+                    .games
+                    .load(&row.wasm)
+                    .map_err(|e| NetError::Invalid(format!("game module {name}: {e}")))?;
+                let logic = st
+                    .games
+                    .instantiate(&module, seed)
+                    .map_err(|e| NetError::Invalid(format!("game module {name}: {e}")))?;
+                Some(Box::new(logic))
+            }
+        };
+    crate::sync::SyncRoom::with_logic(
+        schema,
+        hz,
+        seed,
+        crate::sync::SyncRoom::replication_from_props(props),
+        logic,
+    )
+    .map_err(|e| NetError::Invalid(format!("schema: {e}")))
+}
+
 /// What a node writes to Redis every few seconds per sync/lockstep room so that any other
 /// node can continue the room after this one dies (`adopt_room`).
 #[derive(Serialize, Deserialize)]
@@ -1037,14 +1065,7 @@ pub async fn adopt_room(
     if let Some(c) = ckpt {
         room.restore_offline(c.players, c.master, Instant::now());
         if mode == RoomMode::Sync {
-            let schema = props.get("schema").and_then(|v| v.as_str());
-            let mut sy = crate::sync::SyncRoom::with_replication(
-                schema,
-                hz,
-                0,
-                crate::sync::SyncRoom::replication_from_props(&props),
-            )
-            .map_err(|e| NetError::Invalid(format!("schema: {e}")))?;
+            let mut sy = build_sync(st, project, &props, 0).await?;
             if let Some(body) = c.sync {
                 sy.restore(&body).map_err(NetError::Invalid)?;
                 restored = "sync";
@@ -1057,16 +1078,7 @@ pub async fn adopt_room(
         }
     }
     if mode == RoomMode::Sync && sync.is_none() {
-        let schema = props.get("schema").and_then(|v| v.as_str());
-        sync = Some(
-            crate::sync::SyncRoom::with_replication(
-                schema,
-                hz,
-                0,
-                crate::sync::SyncRoom::replication_from_props(&props),
-            )
-            .map_err(|e| NetError::Invalid(format!("schema: {e}")))?,
-        );
+        sync = Some(build_sync(st, project, &props, 0).await?);
     }
     if mode == RoomMode::Lockstep && lockstep.is_none() {
         lockstep = Some(crate::lockstep::LockstepRoom::new(hz, 1));

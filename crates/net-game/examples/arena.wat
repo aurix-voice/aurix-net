@@ -1,0 +1,58 @@
+;; Minimal arena in WAT: every actor gets an avatar with Transform{pos: vec3, speed: f32};
+;; input = i8 move_x, i8 move_z, u8 buttons; the server integrates velocity each tick.
+;; Upload: aurix-net module-put arena crates/net-game/examples/arena.wat
+;; Room props: {"schema": "component Transform {\n pos: vec3 @range(-4096, 4096, 0.01)\n speed: f32\n}",
+;;              "logic": "arena", "position": "Transform.0"}
+(module
+  (import "aurix" "spawn" (func $spawn (param i32) (result i64)))
+  (import "aurix" "despawn" (func $despawn (param i64) (result i32)))
+  (import "aurix" "component_id" (func $cid (param i32 i32) (result i32)))
+  (import "aurix" "get_f32" (func $get_f32 (param i64 i32 i32) (result f32)))
+  (import "aurix" "get_vec3" (func $get_vec3 (param i64 i32 i32 i32) (result i32)))
+  (import "aurix" "set_vec3" (func $set_vec3 (param i64 i32 i32 f32 f32 f32) (result i32)))
+  (import "aurix" "set_f32" (func $set_f32 (param i64 i32 i32 f32) (result i32)))
+  (import "aurix" "input_count" (func $input_count (result i32)))
+  (import "aurix" "input_entity" (func $input_entity (param i32) (result i64)))
+  (import "aurix" "input_read" (func $input_read (param i32 i32 i32) (result i32)))
+  (import "aurix" "hitbox" (func $hitbox (param i64 f32 f32 f32 f32 f32 f32)))
+  (import "aurix" "dt" (func $dt (result f32)))
+  (memory (export "memory") 1)
+  (data (i32.const 0) "Transform")
+  (global $tf (mut i32) (i32.const -1))
+  (func (export "aurix_init") (param $seed i64)
+    (global.set $tf (call $cid (i32.const 0) (i32.const 9))))
+  (func (export "aurix_join") (param $actor i32) (result i64)
+    (local $e i64)
+    (local.set $e (call $spawn (local.get $actor)))
+    ;; spread spawns on a grid like the built-in arena
+    (drop (call $set_vec3 (local.get $e) (global.get $tf) (i32.const 0)
+      (f32.sub (f32.mul (f32.convert_i32_s (i32.rem_u (local.get $actor) (i32.const 16))) (f32.const 4)) (f32.const 32))
+      (f32.const 0)
+      (f32.sub (f32.mul (f32.convert_i32_s (i32.div_u (local.get $actor) (i32.const 16))) (f32.const 4)) (f32.const 32))))
+    (drop (call $set_f32 (local.get $e) (global.get $tf) (i32.const 1) (f32.const 6)))
+    (local.get $e))
+  (func (export "aurix_leave") (param $actor i32) (param $e i64)
+    (drop (call $despawn (local.get $e))))
+  (func (export "aurix_step")
+    (local $i i32) (local $n i32) (local $e i64) (local $k f32)
+    (local.set $n (call $input_count))
+    (block $done (loop $l
+      (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+      (local.set $e (call $input_entity (local.get $i)))
+      (if (i64.ne (local.get $e) (i64.const 0)) (then
+        (i64.store (i32.const 64) (i64.const 0))
+        (drop (call $input_read (local.get $i) (i32.const 64) (i32.const 3)))
+        (drop (call $get_vec3 (local.get $e) (global.get $tf) (i32.const 0) (i32.const 80)))
+        ;; k = speed * dt / 127
+        (local.set $k (f32.div (f32.mul (call $get_f32 (local.get $e) (global.get $tf) (i32.const 1)) (call $dt)) (f32.const 127)))
+        (f32.store (i32.const 80) (f32.add (f32.load (i32.const 80))
+          (f32.mul (f32.convert_i32_s (i32.load8_s (i32.const 64))) (local.get $k))))
+        (f32.store (i32.const 88) (f32.add (f32.load (i32.const 88))
+          (f32.mul (f32.convert_i32_s (i32.load8_s (i32.const 65))) (local.get $k))))
+        (drop (call $set_vec3 (local.get $e) (global.get $tf) (i32.const 0)
+          (f32.load (i32.const 80)) (f32.load (i32.const 84)) (f32.load (i32.const 88))))
+        (call $hitbox (local.get $e) (f32.load (i32.const 80)) (f32.const 1) (f32.load (i32.const 88))
+          (f32.const 0.5) (f32.const 1) (f32.const 0.5))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l))))
+)

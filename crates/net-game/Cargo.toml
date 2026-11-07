@@ -1,0 +1,18 @@
+[package]
+name = "net-game"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Aurix Net: server-side game logic in a WebAssembly sandbox (sync mode)"
+
+[dependencies]
+net-common = { path = "../net-common" }
+net-sim = { path = "../net-sim" }
+net-wire = { path = "../net-wire" }
+net-lagcomp = { path = "../net-lagcomp" }
+wasmtime = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+blake3 = { workspace = true }
+parking_lot = { workspace = true }

@@ -51,6 +51,9 @@ struct Cli {
     /// Sync mode: simulation rate requested for the room.
     #[arg(long, default_value_t = 60)]
     tick_hz: u16,
+    /// Extra room props as JSON (e.g. '{"schema": "...", "logic": "arena"}').
+    #[arg(long, default_value = "{}")]
+    props_json: String,
     /// Lockstep: one extra player per room joins this many seconds in and must catch up
     /// (checkpoint + journal tail, then a gapless live stream). 0 = off.
     #[arg(long, default_value_t = 0)]
@@ -305,12 +308,13 @@ async fn player(
             _ => net_common::types::RoomMode::Relay,
         },
         max_players: Some(cli.players as u16 + u16::from(cli.late_join_secs > 0)),
-        props: if cli.mode == "sync" || cli.mode == "lockstep" {
-            let mut m = serde_json::Map::new();
-            m.insert("tick_hz".into(), serde_json::json!(cli.tick_hz));
+        props: {
+            let mut m: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&cli.props_json).unwrap_or_default();
+            if cli.mode == "sync" || cli.mode == "lockstep" {
+                m.insert("tick_hz".into(), serde_json::json!(cli.tick_hz));
+            }
             m
-        } else {
-            Default::default()
         },
         lobby_props: vec![],
         region: None,
@@ -409,6 +413,12 @@ async fn player(
                     continue;
                 }
                 if sync {
+                    if m.payload[0] == net_api::sync::KIND_DELTA && m.payload.len() >= 5 {
+                        stats.received.fetch_add(1, Ordering::Relaxed);
+                        let t = u32::from_be_bytes(m.payload[1..5].try_into().unwrap());
+                        server_tick.store(t, Ordering::Relaxed);
+                        continue;
+                    }
                     if m.payload[0] == net_api::lockstep::KIND_CATCHUP {
                         if let Some(ck) = net_api::lockstep::LockstepRoom::decode_catchup(m.payload)
                         {

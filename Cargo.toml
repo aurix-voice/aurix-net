@@ -17,6 +17,7 @@ members = [
     "crates/net-control",
     "crates/net-rooms",
     "crates/net-api",
+    "crates/net-game",
     "crates/net-server",
     "crates/net-loadtest",
 ]
@@ -68,6 +69,7 @@ prometheus = { version = "0.13", default-features = false, features = ["process"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 async-trait = "0.1"
 blake3 = "1"
+wasmtime = { version = "36", default-features = false, features = ["cranelift", "runtime", "wat", "std", "parallel-compilation"] }
 
 [profile.release]
 lto = "thin"

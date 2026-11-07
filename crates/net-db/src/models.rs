@@ -80,3 +80,15 @@ pub struct WebhookRow {
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
 }
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct GameModuleRow {
+    pub project_id: Uuid,
+    pub name: String,
+    pub hash: String,
+    #[serde(skip)]
+    pub wasm: Vec<u8>,
+    pub size: i32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}

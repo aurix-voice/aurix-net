@@ -83,6 +83,16 @@ enum Cmd {
         #[arg(long, value_delimiter = ',')]
         events: Vec<String>,
     },
+    /// List the project's server-side game modules (WASM logic for sync rooms).
+    Modules,
+    /// Upload or replace a game module (.wasm binary or .wat text); rooms use it via props.logic.
+    ModulePut {
+        name: String,
+        file: std::path::PathBuf,
+    },
+    ModuleDelete {
+        name: String,
+    },
 }
 
 struct Api {
@@ -113,6 +123,29 @@ impl Api {
         }
         if text.is_empty() {
             return Ok(json!({"ok": true}));
+        }
+        Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+    }
+
+    async fn call_raw(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Vec<u8>,
+    ) -> anyhow::Result<Value> {
+        let mut r = self
+            .http
+            .request(method, format!("{}{}", self.base, path))
+            .header("content-type", "application/octet-stream")
+            .body(body);
+        if let Some(b) = &self.bearer {
+            r = r.bearer_auth(b);
+        }
+        let resp = r.send().await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            anyhow::bail!("{status}: {text}");
         }
         Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
     }
@@ -242,6 +275,25 @@ async fn main() -> anyhow::Result<()> {
                 POST,
                 "/v1/webhooks",
                 Some(json!({"url": url, "events": events})),
+            )
+            .await?
+        }
+        Cmd::Modules => {
+            need(&cli.api_key, "--api-key")?;
+            dev.call(GET, "/v1/modules", None).await?
+        }
+        Cmd::ModulePut { name, file } => {
+            need(&cli.api_key, "--api-key")?;
+            let bytes = std::fs::read(&file)?;
+            dev.call_raw(reqwest::Method::PUT, &format!("/v1/modules/{name}"), bytes)
+                .await?
+        }
+        Cmd::ModuleDelete { name } => {
+            need(&cli.api_key, "--api-key")?;
+            dev.call(
+                reqwest::Method::DELETE,
+                &format!("/v1/modules/{name}"),
+                None,
             )
             .await?
         }

@@ -22,6 +22,8 @@ pub struct AppState {
     pub metrics: Arc<Metrics>,
     pub webhooks: crate::webhooks::Dispatcher,
     pub matchmaker: crate::matchmaking::Matchmaker,
+    /// Compiled WASM game modules (sync-room logic), cached by content hash.
+    pub games: Arc<net_game::GameEngine>,
     pub started: std::time::Instant,
 }
 

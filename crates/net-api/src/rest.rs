@@ -2,10 +2,11 @@
 
 use crate::state::Shared;
 use crate::ws::close_room;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use net_auth::api_key::{hash_key, looks_like_key, ApiKeyMaterial, Scope};
@@ -56,6 +57,13 @@ pub fn router(st: Shared) -> Router {
         .route("/v1/matchmaking/tickets", post(mm_file))
         .route("/v1/matchmaking/tickets/:id", get(mm_get).delete(mm_cancel))
         .route("/v1/webhooks/:id", delete(delete_webhook))
+        .route("/v1/modules", get(list_modules))
+        .route(
+            "/v1/modules/:name",
+            put(put_module)
+                .delete(delete_module)
+                .layer(DefaultBodyLimit::max(net_game::MAX_MODULE_BYTES + 1024)),
+        )
         .route(
             "/v1/operator/projects",
             get(op_list_projects).post(op_create_project),
@@ -615,3 +623,58 @@ pub fn shared(st: AppStateArc) -> Shared {
     st
 }
 pub type AppStateArc = Arc<crate::state::AppState>;
+
+// ---------- game modules (server-side WASM logic for sync rooms) ----------
+
+fn valid_module_name(n: &str) -> bool {
+    !n.is_empty()
+        && n.len() <= 64
+        && n.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
+/// Upload (or replace) a WebAssembly module; binary `.wasm` or WAT text. Validated and
+/// compiled before it is stored. Rooms created afterwards with `props.logic = name` use it.
+async fn put_module(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(name): Path<String>,
+    body: axum::body::Bytes,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Admin).await?;
+    if !valid_module_name(&name) {
+        return Err(NetError::Invalid("module name: 1..=64 chars [A-Za-z0-9._-]".into()).into());
+    }
+    if body.is_empty() {
+        return Err(NetError::Invalid("empty module".into()).into());
+    }
+    let games = st.games.clone();
+    let bytes = body.to_vec();
+    let (hash, _) = tokio::task::spawn_blocking(move || games.load(&bytes))
+        .await
+        .map_err(|e| NetError::Internal(e.to_string()))?
+        .map_err(|e| NetError::Invalid(format!("module rejected: {e}")))?;
+    let row = queries::upsert_game_module(&st.pool, key.project_id, &name, &hash, &body).await?;
+    Ok(Json(
+        json!({"name": row.name, "hash": row.hash, "size": row.size, "updated_at": row.updated_at}),
+    ))
+}
+
+async fn list_modules(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Read).await?;
+    let rows = queries::list_game_modules(&st.pool, key.project_id).await?;
+    Ok(Json(json!({ "modules": rows })))
+}
+
+async fn delete_module(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(name): Path<String>,
+) -> ApiResult<StatusCode> {
+    let key = api_key(&st, &h, Scope::Admin).await?;
+    if queries::delete_game_module(&st.pool, key.project_id, &name).await? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(NetError::NotFound(format!("module {name}")).into())
+    }
+}

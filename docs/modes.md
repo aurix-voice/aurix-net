@@ -66,6 +66,17 @@ Types: `bool`, `u8..u64`, `i8..i64`, `bits(n)`, `f32`, `f32 @range(min,max,res)`
 canonical schema is returned in `joined.schema_hash`; a client that sends a different
 `schema_hash` on join is refused with `schema_mismatch`.
 
+### Server-side game logic (WASM)
+
+Set `props.logic` to the name of a module uploaded with `PUT /v1/modules/:name` and the
+node runs it as the room's authoritative logic: `aurix_join` spawns the avatar,
+`aurix_step` reads this tick's inputs and writes components, `raise` sends game events,
+`hitbox` feeds lag compensation. Any language that targets wasm32 works; the ABI is plain
+integers and floats (see `net-game`). Fuel and memory are capped per call/room, so one
+broken game cannot stall a shared node. Without `logic`, a custom schema runs
+owner-authoritative (clients write their own entities' components) and no schema at all runs
+the built-in arena.
+
 ## lockstep
 
 Create with `mode: "lockstep"` and `tick_hz`. The server is the clock: every tick it bundles

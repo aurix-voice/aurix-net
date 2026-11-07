@@ -15,6 +15,7 @@ net-control = { path = "../net-control" }
 net-rooms = { path = "../net-rooms" }
 net-wire = { path = "../net-wire" }
 net-sim = { path = "../net-sim" }
+net-game = { path = "../net-game" }
 net-replication = { path = "../net-replication" }
 net-lagcomp = { path = "../net-lagcomp" }
 net-rollback = { path = "../net-rollback" }

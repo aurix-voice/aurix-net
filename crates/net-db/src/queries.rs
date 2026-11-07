@@ -448,6 +448,66 @@ pub async fn delete_webhook(pool: &DbPool, project_id: Uuid, id: Uuid) -> Result
     Ok(r.rows_affected() == 1)
 }
 
+// ---------- game modules (WASM logic) ----------
+
+pub async fn upsert_game_module(
+    pool: &DbPool,
+    project_id: Uuid,
+    name: &str,
+    hash: &str,
+    wasm: &[u8],
+) -> Result<GameModuleRow> {
+    sqlx::query_as::<_, GameModuleRow>(
+        "INSERT INTO game_modules (project_id, name, hash, wasm, size) VALUES ($1,$2,$3,$4,$5) \
+         ON CONFLICT (project_id, name) DO UPDATE SET hash = EXCLUDED.hash, wasm = EXCLUDED.wasm, size = EXCLUDED.size, updated_at = now() \
+         RETURNING *",
+    )
+    .bind(project_id)
+    .bind(name)
+    .bind(hash)
+    .bind(wasm)
+    .bind(wasm.len() as i32)
+    .fetch_one(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn get_game_module(
+    pool: &DbPool,
+    project_id: Uuid,
+    name: &str,
+) -> Result<Option<GameModuleRow>> {
+    sqlx::query_as::<_, GameModuleRow>(
+        "SELECT * FROM game_modules WHERE project_id = $1 AND name = $2",
+    )
+    .bind(project_id)
+    .bind(name)
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)
+}
+
+/// Metadata only (no bytes).
+pub async fn list_game_modules(pool: &DbPool, project_id: Uuid) -> Result<Vec<GameModuleRow>> {
+    sqlx::query_as::<_, GameModuleRow>(
+        "SELECT project_id, name, hash, ''::bytea AS wasm, size, created_at, updated_at FROM game_modules WHERE project_id = $1 ORDER BY name",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn delete_game_module(pool: &DbPool, project_id: Uuid, name: &str) -> Result<bool> {
+    let r = sqlx::query("DELETE FROM game_modules WHERE project_id = $1 AND name = $2")
+        .bind(project_id)
+        .bind(name)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(r.rows_affected() == 1)
+}
+
 // ---------- usage / audit ----------
 
 pub async fn add_usage(

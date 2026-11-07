@@ -93,3 +93,22 @@ or the oldest ticket waited `max_wait_secs` with at least `min_players`.
 
 `aurix-net` (crate `net-cli`): `health, regions, project-create, projects, nodes, key-create,
 keys, grant, rooms, room, room-close, replay -o file, match, usage, webhooks, webhook-create`.
+
+## Game modules (server-side logic, sync rooms)
+
+Authoritative game logic runs on the node inside a WebAssembly sandbox — on every plan, no
+dedicated server. Upload a module per project, reference it from room props.
+
+| | |
+|---|---|
+| `PUT /v1/modules/:name` (admin) | body = `.wasm` binary or WAT text, <= 8 MiB; compiled and validated (`memory`, `aurix_init`, `aurix_step` exports); returns `{name, hash, size}` |
+| `GET /v1/modules` (read) | `{modules: [{name, hash, size, created_at, updated_at}]}` |
+| `DELETE /v1/modules/:name` (admin) | 204 |
+
+Room props: `{"schema": "<IDL>", "logic": "<name>", "position": "Transform.0"}`. The host
+ABI (imports under module `aurix`: spawn/despawn, component get/set by id and field index,
+inputs, `raise` events, `hitbox` for lag compensation, `log`) is documented in
+`crates/net-game/src/lib.rs`; a complete guest is `crates/net-game/examples/arena.wat`.
+Limits per room: 50M fuel per call, 64 MiB memory; a trap disables the module for that room
+and the room keeps running. Guest memory is not checkpointed — keep state in components.
+CLI: `aurix-net modules | module-put <name> <file> | module-delete <name>`.

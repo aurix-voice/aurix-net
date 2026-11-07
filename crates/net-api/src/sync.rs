@@ -36,6 +36,27 @@ pub trait GameLogic: Send {
     /// `inputs`: (actor, avatar, input bytes, fresh) for every connected actor.
     fn step(&mut self, frame: &mut Frame, inputs: &[(ActorId, Option<EntityId>, Vec<u8>, bool)]);
     fn hitboxes(&self, frame: &Frame) -> Vec<(EntityId, Hitbox)>;
+    /// Called after the frame was restored from a checkpoint (node failover).
+    fn reset(&mut self) {}
+}
+
+/// Project-supplied logic in the WebAssembly sandbox (`net-game`).
+impl GameLogic for net_game::WasmLogic {
+    fn on_join(&mut self, frame: &mut Frame, actor: ActorId) -> Option<EntityId> {
+        net_game::WasmLogic::on_join(self, frame, actor)
+    }
+    fn on_leave(&mut self, frame: &mut Frame, actor: ActorId, avatar: Option<EntityId>) {
+        net_game::WasmLogic::on_leave(self, frame, actor, avatar)
+    }
+    fn step(&mut self, frame: &mut Frame, inputs: &[(ActorId, Option<EntityId>, Vec<u8>, bool)]) {
+        net_game::WasmLogic::step(self, frame, inputs)
+    }
+    fn hitboxes(&self, _frame: &Frame) -> Vec<(EntityId, Hitbox)> {
+        net_game::WasmLogic::hitboxes(self)
+    }
+    fn reset(&mut self) {
+        net_game::WasmLogic::reset(self)
+    }
 }
 
 /// Arena: input = i8 move_x, i8 move_z, u8 buttons; server integrates velocity.
@@ -201,12 +222,26 @@ impl SyncRoom {
         seed: u64,
         rep: ReplicationConfig,
     ) -> Result<Self, String> {
-        let (schema, logic): (Schema, Box<dyn GameLogic>) = match schema {
-            Some(src) => (
+        Self::with_logic(schema, hz, seed, rep, None)
+    }
+
+    /// `logic`: server-side game logic (WASM module); None = owner-authoritative writes for a
+    /// custom schema, or the built-in arena when there is no schema either.
+    pub fn with_logic(
+        schema: Option<&str>,
+        hz: u16,
+        seed: u64,
+        rep: ReplicationConfig,
+        logic: Option<Box<dyn GameLogic>>,
+    ) -> Result<Self, String> {
+        let (schema, logic): (Schema, Box<dyn GameLogic>) = match (schema, logic) {
+            (Some(src), Some(l)) => (Schema::parse(src).map_err(|e| e.to_string())?, l),
+            (None, Some(l)) => (Schema::parse(ARENA_SCHEMA).unwrap(), l),
+            (Some(src), None) => (
                 Schema::parse(src).map_err(|e| e.to_string())?,
                 Box::new(OwnerLogic),
             ),
-            None => (
+            (None, None) => (
                 Schema::parse(ARENA_SCHEMA).unwrap(),
                 Box::new(ArenaLogic { speed: 6.0 }),
             ),
@@ -348,6 +383,7 @@ impl SyncRoom {
         self.views.clear();
         self.avatars.clear();
         self.history = History::new(self.hz as usize * 2);
+        self.logic.reset();
         Ok(())
     }
 

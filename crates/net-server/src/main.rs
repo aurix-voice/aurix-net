@@ -93,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
         metrics: Arc::new(net_api::metrics::Metrics::new()),
         webhooks: net_api::webhooks::Dispatcher::start(pool.clone()),
         matchmaker: Default::default(),
+        games: Arc::new(net_game::GameEngine::new()),
         started: std::time::Instant::now(),
         pool: pool.clone(),
         redis: redis.clone(),
