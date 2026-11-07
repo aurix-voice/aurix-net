@@ -31,6 +31,15 @@ pub enum Shape {
     Polygon {
         vertices: Vec<FxVec2>,
     },
+    /// Segment along the body x axis from -half_len to +half_len, inflated by `radius`.
+    Capsule {
+        half_len: Fx,
+        radius: Fx,
+    },
+    /// Open polyline for terrain (static bodies); every segment collides on both sides.
+    Chain {
+        points: Vec<FxVec2>,
+    },
 }
 
 impl Shape {
@@ -51,6 +60,26 @@ impl Shape {
                 .iter()
                 .map(|v| v.length())
                 .fold(Fx::ZERO, |a, b| a.max(b)),
+            Shape::Capsule { half_len, radius } => *half_len + *radius,
+            Shape::Chain { points } => points
+                .iter()
+                .map(|v| v.length())
+                .fold(Fx::ZERO, |a, b| a.max(b)),
+        }
+    }
+    /// Core points in body space plus the rounding radius (circle = 1 point, capsule = 2).
+    fn rounded(&self) -> (Vec<FxVec2>, Fx) {
+        match self {
+            Shape::Circle { radius } => (vec![FxVec2::default()], *radius),
+            Shape::Polygon { vertices } => (vertices.clone(), Fx::ZERO),
+            Shape::Capsule { half_len, radius } => (
+                vec![
+                    FxVec2::new(-*half_len, Fx::ZERO),
+                    FxVec2::new(*half_len, Fx::ZERO),
+                ],
+                *radius,
+            ),
+            Shape::Chain { points } => (points.clone(), Fx::ZERO),
         }
     }
 }
@@ -126,6 +155,12 @@ impl Body {
             Shape::Circle { radius } => {
                 (PI * *radius * *radius, *radius * *radius / Fx::from_int(2))
             }
+            Shape::Chain { .. } => (Fx::ZERO, Fx::ZERO),
+            Shape::Capsule { half_len, radius } => {
+                let (w, h) = (*half_len * Fx::from_int(2), *radius * Fx::from_int(2));
+                let area = w * h + PI * *radius * *radius;
+                (area, (w * w + h * h) / Fx::from_int(12))
+            }
             Shape::Polygon { vertices } => {
                 // shoelace area and second moment about the origin
                 let mut area = Fx::ZERO;
@@ -169,17 +204,15 @@ impl Body {
             FxVec2::new(self.position.x + r, self.position.y + r),
         )
     }
-    fn world_vertices(&self) -> Vec<FxVec2> {
-        match &self.shape {
-            Shape::Circle { .. } => vec![self.position],
-            Shape::Polygon { vertices } => {
-                let (s, c) = (self.angle.sin(), self.angle.cos());
-                vertices
-                    .iter()
-                    .map(|v| rotate(*v, s, c) + self.position)
-                    .collect()
-            }
-        }
+    fn world_points(&self) -> (Vec<FxVec2>, Fx) {
+        let (pts, r) = self.shape.rounded();
+        let (sn, cs) = (self.angle.sin(), self.angle.cos());
+        (
+            pts.iter()
+                .map(|v| rotate(*v, sn, cs) + self.position)
+                .collect(),
+            r,
+        )
     }
 }
 
@@ -569,9 +602,15 @@ impl World {
             if b.layer & mask == 0 {
                 continue;
             }
+            let (pts, r) = b.world_points();
             let hit = match &b.shape {
-                Shape::Circle { radius } => ray_circle(from, dir, b.position, *radius),
-                Shape::Polygon { .. } => ray_polygon(from, dir, &b.world_vertices()),
+                Shape::Circle { .. } => ray_circle(from, dir, b.position, r),
+                Shape::Polygon { .. } => ray_polygon(from, dir, &pts),
+                Shape::Capsule { .. } => ray_capsule(from, dir, pts[0], pts[1], r),
+                Shape::Chain { .. } => pts
+                    .windows(2)
+                    .filter_map(|s| ray_segment(from, dir, s[0], s[1]))
+                    .min_by_key(|h| h.0),
             };
             if let Some((t, n)) = hit {
                 if best.is_none_or(|h| t < h.fraction) {
@@ -620,11 +659,58 @@ fn rotate(v: FxVec2, s: Fx, c: Fx) -> FxVec2 {
 
 /// Contacts between `a` and `b` with the normal pointing from a to b.
 fn collide(a: &Body, b: &Body) -> Vec<Contact> {
+    let (pa, ra) = a.world_points();
+    let (pb, rb) = b.world_points();
     match (&a.shape, &b.shape) {
-        (Shape::Circle { radius: ra }, Shape::Circle { radius: rb }) => {
-            let d = b.position - a.position;
+        (Shape::Chain { .. }, Shape::Chain { .. }) => Vec::new(),
+        (Shape::Chain { .. }, _) => pa
+            .windows(2)
+            .enumerate()
+            .flat_map(|(i, seg)| {
+                collide_rounded(seg, Fx::ZERO, &pb, rb)
+                    .into_iter()
+                    .map(move |mut c| {
+                        c.feature = (i as u8).wrapping_mul(16).wrapping_add(c.feature);
+                        c
+                    })
+            })
+            .collect(),
+        (_, Shape::Chain { .. }) => pb
+            .windows(2)
+            .enumerate()
+            .flat_map(|(i, seg)| {
+                collide_rounded(&pa, ra, seg, Fx::ZERO)
+                    .into_iter()
+                    .map(move |mut c| {
+                        c.feature = (i as u8).wrapping_mul(16).wrapping_add(c.feature);
+                        c
+                    })
+            })
+            .collect(),
+        _ => collide_rounded(&pa, ra, &pb, rb),
+    }
+}
+
+fn contact(point: FxVec2, normal: FxVec2, penetration: Fx, feature: u8) -> Contact {
+    Contact {
+        point,
+        normal,
+        penetration,
+        feature,
+        normal_impulse: Fx::ZERO,
+        tangent_impulse: Fx::ZERO,
+        bias: Fx::ZERO,
+    }
+}
+
+/// Rounded convex cores: a point (circle), a segment (capsule, chain edge) or a polygon, each
+/// inflated by its radius.
+fn collide_rounded(pa: &[FxVec2], ra: Fx, pb: &[FxVec2], rb: Fx) -> Vec<Contact> {
+    match (pa.len(), pb.len()) {
+        (1, 1) => {
+            let d = pb[0] - pa[0];
             let dist = d.length();
-            let pen = *ra + *rb - dist;
+            let pen = ra + rb - dist;
             if pen <= Fx::ZERO {
                 return Vec::new();
             }
@@ -633,25 +719,16 @@ fn collide(a: &Body, b: &Body) -> Vec<Contact> {
             } else {
                 FxVec2::new(Fx::ZERO, Fx::ONE)
             };
-            vec![Contact {
-                point: a.position + n.scale(*ra - pen / Fx::from_int(2)),
-                normal: n,
-                penetration: pen,
-                feature: 0,
-                normal_impulse: Fx::ZERO,
-                tangent_impulse: Fx::ZERO,
-                bias: Fx::ZERO,
-            }]
+            vec![contact(
+                pa[0] + n.scale(ra - pen / Fx::from_int(2)),
+                n,
+                pen,
+                0,
+            )]
         }
-        (Shape::Circle { radius }, Shape::Polygon { .. }) => {
-            circle_polygon(a.position, *radius, &b.world_vertices(), false)
-        }
-        (Shape::Polygon { .. }, Shape::Circle { radius }) => {
-            circle_polygon(b.position, *radius, &a.world_vertices(), true)
-        }
-        (Shape::Polygon { .. }, Shape::Polygon { .. }) => {
-            polygon_polygon(&a.world_vertices(), &b.world_vertices())
-        }
+        (1, _) => circle_polygon(pa[0], ra, pb, rb, false),
+        (_, 1) => circle_polygon(pb[0], rb, pa, ra, true),
+        _ => polygon_polygon(pa, ra, pb, rb),
     }
 }
 
@@ -660,8 +737,9 @@ fn edge_normal(v: &[FxVec2], i: usize) -> FxVec2 {
     FxVec2::new(e.y, -e.x).normalized()
 }
 
-/// `flip`: the circle is body b (normal must point from polygon to circle).
-fn circle_polygon(c: FxVec2, r: Fx, v: &[FxVec2], flip: bool) -> Vec<Contact> {
+/// `flip`: the circle is body b (normal must point from polygon to circle); `rp` inflates the polygon.
+fn circle_polygon(c: FxVec2, rc: Fx, v: &[FxVec2], rp: Fx, flip: bool) -> Vec<Contact> {
+    let r = rc + rp;
     // deepest edge: largest separation of the center along outward normals
     let mut best = (Fx::from_int(-1_000_000), 0);
     for i in 0..v.len() {
@@ -704,15 +782,8 @@ fn circle_polygon(c: FxVec2, r: Fx, v: &[FxVec2], flip: bool) -> Vec<Contact> {
     } else {
         FxVec2::new(-n_pc.x, -n_pc.y)
     };
-    vec![Contact {
-        point: closest,
-        normal,
-        penetration: pen,
-        feature: i as u8,
-        normal_impulse: Fx::ZERO,
-        tangent_impulse: Fx::ZERO,
-        bias: Fx::ZERO,
-    }]
+    let point = closest + n_pc.scale((rp + (dist - rc)) / Fx::from_int(2));
+    vec![contact(point, normal, pen, i as u8)]
 }
 
 fn least_penetration(a: &[FxVec2], b: &[FxVec2]) -> (Fx, usize) {
@@ -747,20 +818,21 @@ fn clip(v1: FxVec2, v2: FxVec2, n: FxVec2, offset: Fx) -> Vec<FxVec2> {
     out
 }
 
-fn polygon_polygon(a: &[FxVec2], b: &[FxVec2]) -> Vec<Contact> {
+fn polygon_polygon(a: &[FxVec2], ra: Fx, b: &[FxVec2], rb: Fx) -> Vec<Contact> {
+    let total = ra + rb;
     let (sa, ia) = least_penetration(a, b);
-    if sa > Fx::ZERO {
+    if sa > total {
         return Vec::new();
     }
     let (sb, ib) = least_penetration(b, a);
-    if sb > Fx::ZERO {
+    if sb > total {
         return Vec::new();
     }
     // reference face on the polygon with the smaller penetration (bias towards a for stability)
-    let (reference, incident, ri, flip) = if sb > sa + Fx::from_ratio(1, 1000) {
-        (b, a, ib, true)
+    let (reference, incident, ri, flip, rr, ri_r) = if sb > sa + Fx::from_ratio(1, 1000) {
+        (b, a, ib, true, rb, ra)
     } else {
-        (a, b, ia, false)
+        (a, b, ia, false, ra, rb)
     };
     let n = edge_normal(reference, ri);
     // incident edge: the one most anti-parallel to the reference normal
@@ -789,16 +861,15 @@ fn polygon_polygon(a: &[FxVec2], b: &[FxVec2]) -> Vec<Contact> {
     let mut out = Vec::new();
     for (k, p) in pts.into_iter().enumerate() {
         let sep = n.dot(p) - front;
-        if sep <= Fx::ZERO {
-            out.push(Contact {
-                point: p,
+        if sep <= total {
+            // midpoint between the two inflated surfaces
+            let point = p - n.scale((sep - rr + ri_r) / Fx::from_int(2));
+            out.push(contact(
+                point,
                 normal,
-                penetration: -sep,
-                feature: (ri * 8 + inc) as u8 ^ (k as u8) << 7,
-                normal_impulse: Fx::ZERO,
-                tangent_impulse: Fx::ZERO,
-                bias: Fx::ZERO,
-            });
+                total - sep,
+                (ri * 8 + inc) as u8 ^ ((k as u8) << 7),
+            ));
         }
     }
     out
@@ -822,6 +893,41 @@ fn ray_circle(from: FxVec2, dir: FxVec2, c: FxVec2, r: Fx) -> Option<(Fx, FxVec2
     }
     let p = from + dir.scale(t);
     Some((t, (p - c).normalized()))
+}
+
+fn ray_segment(from: FxVec2, dir: FxVec2, a: FxVec2, b: FxVec2) -> Option<(Fx, FxVec2)> {
+    let e = b - a;
+    let den = cross(dir, e);
+    if den == Fx::ZERO {
+        return None;
+    }
+    let t = cross(a - from, e) / den;
+    let u = cross(a - from, dir) / den;
+    if t < Fx::ZERO || t > Fx::ONE || u < Fx::ZERO || u > Fx::ONE {
+        return None;
+    }
+    let n = FxVec2::new(e.y, -e.x).normalized();
+    Some((
+        t,
+        if n.dot(dir) > Fx::ZERO {
+            FxVec2::new(-n.x, -n.y)
+        } else {
+            n
+        },
+    ))
+}
+
+fn ray_capsule(from: FxVec2, dir: FxVec2, a: FxVec2, b: FxVec2, r: Fx) -> Option<(Fx, FxVec2)> {
+    let n = FxVec2::new((b - a).y, -(b - a).x).normalized().scale(r);
+    [
+        ray_segment(from, dir, a + n, b + n),
+        ray_segment(from, dir, a - n, b - n),
+        ray_circle(from, dir, a, r),
+        ray_circle(from, dir, b, r),
+    ]
+    .into_iter()
+    .flatten()
+    .min_by_key(|h| h.0)
 }
 
 fn ray_polygon(from: FxVec2, dir: FxVec2, v: &[FxVec2]) -> Option<(Fx, FxVec2)> {
@@ -936,6 +1042,78 @@ mod tests {
         c.step();
         assert_eq!(c.hash(), a.hash());
         eprintln!("golden stack hash after 241 ticks: {:#x}", a.hash());
+    }
+
+    #[test]
+    fn capsule_rests_flat_and_ball_rolls_down_chain() {
+        let build = || {
+            let mut w = World::new(WorldConfig::default());
+            ground(&mut w);
+            let cap = w.add(Body::new(
+                BodyKind::Dynamic,
+                Shape::Capsule {
+                    half_len: fx(2),
+                    radius: Fx::from_ratio(1, 2),
+                },
+                FxVec2::new(fx(20), fx(3)),
+            ));
+            let slope = w.add(Body::new(
+                BodyKind::Static,
+                Shape::Chain {
+                    points: vec![
+                        FxVec2::new(fx(-12), fx(8)),
+                        FxVec2::new(fx(-2), fx(2)),
+                        FxVec2::new(fx(8), fx(2)),
+                        FxVec2::new(fx(8), fx(6)),
+                    ],
+                },
+                FxVec2::new(fx(-20), fx(0)),
+            ));
+            let ball = w.add(Body::new(
+                BodyKind::Dynamic,
+                Shape::Circle { radius: Fx::ONE },
+                FxVec2::new(fx(-30), fx(10)),
+            ));
+            (w, cap, slope, ball)
+        };
+        let (mut w, cap, _slope, ball) = build();
+        let (mut w2, ..) = build();
+        for _ in 0..360 {
+            w.step();
+            w2.step();
+        }
+        assert_eq!(w.hash(), w2.hash());
+        let c = w.body(cap).unwrap();
+        assert!(
+            (0.45..0.55).contains(&c.position.y.to_f64()),
+            "capsule height {}",
+            c.position.y
+        );
+        assert!(c.angle.abs().to_f64() < 0.05, "capsule tilted {}", c.angle);
+        let b = w.body(ball).unwrap();
+        assert!(
+            (-22.0..-12.0).contains(&b.position.x.to_f64()),
+            "ball not between slope and wall: x={}",
+            b.position.x
+        );
+        assert!(
+            (2.9..3.1).contains(&b.position.y.to_f64()),
+            "ball not on the chain floor: y={}",
+            b.position.y
+        );
+        let hit = w
+            .raycast(
+                FxVec2::new(fx(20), fx(5)),
+                FxVec2::new(fx(0), fx(-10)),
+                u32::MAX,
+            )
+            .unwrap();
+        assert_eq!(hit.body, cap);
+        assert!(
+            (hit.point.y.to_f64() - 1.0).abs() < 0.1,
+            "capsule top hit at {}",
+            hit.point.y
+        );
     }
 
     #[test]
