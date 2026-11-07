@@ -503,6 +503,16 @@ impl Client {
     pub async fn leave(&mut self) -> Result<()> {
         self.send(ClientMsg::Leave).await
     }
+
+    /// Sync rooms: steer area-of-interest — extra viewpoints (camera, scope target) and entities
+    /// forced into view (team mates, objectives). Entity ids as in deltas.
+    pub async fn set_view(&mut self, viewpoints: Vec<u64>, interest: Vec<u64>) -> Result<()> {
+        self.send(ClientMsg::SetView {
+            viewpoints,
+            interest,
+        })
+        .await
+    }
 }
 
 impl Drop for Client {

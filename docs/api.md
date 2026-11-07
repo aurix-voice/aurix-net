@@ -97,7 +97,8 @@ JSON messages, `"t"` is the type (snake_case). Client → server: `auth{grant}`,
 `join_or_create{name, mode, max_players, props, lobby_props, region, player_props}`,
 `join_random{...}`, `leave`, `set_room_props{props, expected?}`,
 `set_player_props{props, expected?}`, `event{code, data(base64), target, reliable, cache, group}`,
-`set_groups{join, leave}`, `set_master{actor}`, `kick{actor, reason}`, `lobby{subscribe}`,
+`set_groups{join, leave}`, `set_view{viewpoints, interest}` (sync AOI: extra viewpoints, forced entities),
+`set_master{actor}`, `kick{actor, reason}`, `lobby{subscribe}`,
 `ping{ts}`.
 
 Server → client: `hello{session, version, region}`, `authed{player_id, name}`,

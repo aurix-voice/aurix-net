@@ -167,6 +167,10 @@ export class Client {
   get stats() { return this.link.stats; }
 
   leave() { this.send({ t: "leave" }); }
+  /** Sync rooms: steer area-of-interest — extra viewpoints (camera, scope target) and entities forced into view (team mates, objectives). Entity ids as in deltas. */
+  setView(viewpoints: (number | bigint)[] = [], interest: (number | bigint)[] = []) {
+    this.send({ t: "set_view", viewpoints: viewpoints.map(Number), interest: interest.map(Number) });
+  }
   close() { this.stop(); this.path?.close(); this.ws.close(); }
   private stop() { if (this.timer) { clearInterval(this.timer); this.timer = undefined; } }
 }

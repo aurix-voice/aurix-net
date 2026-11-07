@@ -191,6 +191,9 @@ namespace Aurix.Net.Managed
         }
 
         public Task LeaveAsync() => SendControlAsync("{\"t\":\"leave\"}");
+        /// <summary>Sync rooms: steer area-of-interest — extra viewpoints (camera, scope target) and entities forced into view (team mates, objectives). Entity ids as in deltas.</summary>
+        public Task SetViewAsync(ulong[] viewpoints = null, ulong[] interest = null) =>
+            SendControlAsync("{\"t\":\"set_view\",\"viewpoints\":[" + string.Join(",", viewpoints ?? Array.Empty<ulong>()) + "],\"interest\":[" + string.Join(",", interest ?? Array.Empty<ulong>()) + "]}");
 
         async Task ReadLoop()
         {

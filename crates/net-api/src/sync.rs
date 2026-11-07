@@ -62,6 +62,9 @@ impl GameLogic for net_game::WasmLogic {
 }
 
 /// Arena: input = i8 move_x, i8 move_z, u8 buttons; server integrates velocity.
+/// Entities one client may force into view with `set_view`.
+pub const MAX_INTEREST: usize = 64;
+
 pub struct ArenaLogic {
     pub speed: f32,
 }
@@ -222,6 +225,9 @@ impl SyncRoom {
         if let Some(v) = props.get("aoi_radius").and_then(|v| v.as_u64()) {
             cfg.aoi_radius = v.min(64) as u32;
         }
+        if let Some(v) = props.get("stale_after").and_then(|v| v.as_u64()) {
+            cfg.stale_after = v.clamp(1, 3600) as u32;
+        }
         if let Some(v) = props.get("position").and_then(|v| v.as_str()) {
             cfg.position = v
                 .split_once('.')
@@ -319,6 +325,41 @@ impl SyncRoom {
         let mut v = ClientView::new(actor);
         v.viewpoint = avatar;
         self.views.insert(actor, v);
+    }
+
+    /// `set_view` control message: extra viewpoints (spectators get the first as their main
+    /// viewpoint) and forced-interest entities; unknown entities are ignored. Returns what was
+    /// applied.
+    pub fn set_view(
+        &mut self,
+        actor: ActorId,
+        viewpoints: &[u64],
+        interest: &[u64],
+    ) -> (usize, usize) {
+        let Some(v) = self.views.get_mut(&actor) else {
+            return (0, 0);
+        };
+        let live = |id: u64| {
+            let e = net_sim::EntityId::from_u64(id);
+            self.frame.entity(e).is_some().then_some(e)
+        };
+        let mut vps: Vec<net_sim::EntityId> =
+            viewpoints.iter().filter_map(|&id| live(id)).collect();
+        vps.dedup();
+        if v.viewpoint.is_none() {
+            v.viewpoint = (!vps.is_empty()).then(|| vps.remove(0));
+        }
+        vps.truncate(net_replication::MAX_VIEWPOINTS - 1);
+        v.extra_viewpoints = vps;
+        v.interest = interest
+            .iter()
+            .take(MAX_INTEREST)
+            .filter_map(|&id| live(id))
+            .collect();
+        (
+            v.extra_viewpoints.len() + v.viewpoint.is_some() as usize,
+            v.interest.len(),
+        )
     }
 
     pub fn on_leave(&mut self, actor: ActorId) {
@@ -505,6 +546,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn set_view_steers_viewpoints_and_interest() {
+        let mut room = SyncRoom::new(None, 60, 7).unwrap();
+        let (a, b, spec) = (ActorId(1), ActorId(2), ActorId(3));
+        room.on_join(a);
+        room.on_join(b);
+        room.on_join_as(spec, true);
+        let av_a = room.avatars[&a].unwrap().to_u64();
+        let av_b = room.avatars[&b].unwrap().to_u64();
+        // spectator: first viewpoint becomes the main one, unknown entities are ignored
+        assert_eq!(
+            room.set_view(spec, &[av_a, 0xdead_beef], &[av_b, 0xdead_beef]),
+            (1, 1)
+        );
+        assert_eq!(room.views[&spec].viewpoint.map(|e| e.to_u64()), Some(av_a));
+        assert!(room.views[&spec].extra_viewpoints.is_empty());
+        assert_eq!(room.views[&spec].interest.len(), 1);
+        // player keeps the avatar as main viewpoint; extras capped at MAX_VIEWPOINTS - 1
+        let many: Vec<u64> = (0..10)
+            .map(|i| if i % 2 == 0 { av_a } else { av_b })
+            .collect();
+        assert_eq!(
+            room.set_view(a, &many, &[]),
+            (net_replication::MAX_VIEWPOINTS, 0)
+        );
+        assert_eq!(
+            room.views[&a].viewpoint.map(|e| e.to_u64()),
+            Some(room.avatars[&a].unwrap().to_u64())
+        );
+        // clearing
+        assert_eq!(room.set_view(a, &[], &[]), (1, 0));
+        assert_eq!(room.set_view(ActorId(99), &[av_a], &[]), (0, 0));
+    }
+
+    #[test]
     fn arena_moves_avatars_and_replicates() {
         let mut room = SyncRoom::new(None, 60, 7).unwrap();
         let (a, b) = (ActorId(1), ActorId(2));
@@ -587,9 +662,11 @@ mod tests {
         assert_eq!(ev[0].1, 7);
         let mut props = serde_json::Map::new();
         props.insert("budget_bytes".into(), serde_json::json!(5000));
+        props.insert("stale_after".into(), serde_json::json!(90));
         props.insert("position".into(), serde_json::json!("Transform.0"));
         let cfg = SyncRoom::replication_from_props(&props);
         assert_eq!(cfg.budget_bytes, 5000);
+        assert_eq!(cfg.stale_after, 90);
         assert_eq!(cfg.position, Some(("Transform".into(), 0)));
     }
 

@@ -44,6 +44,7 @@ Create with `mode: "sync"` and optional props:
 | `schema` | built-in arena | IDL text, see below |
 | `budget_bytes` | 1100 | max delta payload per client per tick |
 | `aoi_cell`, `aoi_radius` | 32, 2 | interest grid cell size (world units) and radius in cells; `aoi_cell: 0` disables AOI |
+| `stale_after` | 30 | ticks after which an entity not sent to a client gets top priority regardless of distance (eventual consistency bound) |
 | `position` | `Transform.0` | `Component.field` holding the vec3 used for AOI |
 
 Clients send `Input` frames (last 3 ticks, redundant) on the unreliable channel; the server
@@ -86,8 +87,10 @@ component Health {
 Component flags go on the header line: `component Inventory @owner_only { ... }` is sent only
 to the entity's owner (hidden information stays on the server), `component Score @global { ... }`
 makes any entity carrying it relevant to everyone regardless of AOI. AOI itself: up to 4
-viewpoints per client (`viewpoint` + extras, e.g. camera or scope target), and an entity already
-in view stays until it is one cell further out than the radius (hysteresis against flicker).
+viewpoints per client (the avatar + extras set with the `set_view{viewpoints, interest}` control
+message — camera, scope target; spectators get their first viewpoint from it), `interest` forces up
+to 64 entities into view regardless of distance (team mates, objectives), and an entity already in
+view stays until it is one cell further out than the radius (hysteresis against flicker).
 
 Types: `bool`, `u8..u64`, `i8..i64`, `bits(n)`, `f32`, `f32 @range(min,max,res)`,
 `vec2`/`vec3 @range(...)`, `quat`, `string(max)`, `bytes(max)`. The blake3 hash of the

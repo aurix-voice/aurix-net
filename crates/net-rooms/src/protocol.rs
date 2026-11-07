@@ -114,6 +114,15 @@ pub enum ClientMsg {
         #[serde(default)]
         leave: Vec<u16>,
     },
+    /// Sync rooms: steer area-of-interest for this client — extra viewpoints (camera, scope
+    /// target; the avatar stays the first one) and entities forced into view regardless of
+    /// distance (team mates, objectives). Entity ids as in deltas (u64).
+    SetView {
+        #[serde(default)]
+        viewpoints: Vec<u64>,
+        #[serde(default)]
+        interest: Vec<u64>,
+    },
     SetMaster {
         actor: ActorId,
     },

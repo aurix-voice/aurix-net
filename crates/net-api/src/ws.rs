@@ -492,6 +492,20 @@ impl Session {
                     .set_groups(r.actor, &join, &leave)
                     .map_err(room_err)
             }
+            ClientMsg::SetView {
+                viewpoints,
+                interest,
+            } => {
+                let r = self.in_room()?;
+                let mut h = r.hosted.lock();
+                match h.sync.as_mut() {
+                    Some(sy) => {
+                        sy.set_view(r.actor, &viewpoints, &interest);
+                        Ok(())
+                    }
+                    None => Err(NetError::Invalid("set_view: sync rooms only".into())),
+                }
+            }
             ClientMsg::SetMaster { actor } => {
                 let r = self.in_room()?;
                 let mut h = r.hosted.lock();
