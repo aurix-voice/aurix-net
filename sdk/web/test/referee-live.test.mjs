@@ -21,7 +21,7 @@ test("lockstep referee: the node's own state is the reference dump (actor 0)", {
   const peers = [];
   for (const name of ["rf-a", "rf-b"]) {
     const c = await Client.connect(http, await grant(name));
-    const joined = await c.joinOrCreate(room, "lockstep", 4, { tick_hz: 30, logic: "arena" });
+    const joined = await c.joinOrCreate(room, "lockstep", 4, { tick_hz: 30, logic: process.env.NET_LOGIC ?? "arena", ...JSON.parse(process.env.NET_LOGIC_PROPS ?? "{}") });
     const ls = new LockstepClient((ch, p) => c.sendData(ch, p));
     const p = { name, c, joined, ls, ticks: 0, dumpsAsked: [], liar: name === "rf-b" };
     // honest clients do not run the sim here, so only the liar reports (a wrong) hash

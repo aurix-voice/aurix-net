@@ -1,0 +1,14 @@
+[package]
+name = "net-sim-guest"
+version = "0.1.0"
+edition = "2021"
+description = "Reference room-logic WASM module: aurix-sim fixed-point 2D physics arena run by the node as lockstep referee"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+net-fpmath = { path = "../net-fpmath" }
+net-sim-physics = { path = "../net-sim-physics" }

@@ -125,3 +125,10 @@ and wasm32 (CI matrix) — the same vectors shipped to the C# and TS ports.
   children), integer `Blackboard`, tick-based timers, JSON authoring, snapshot/hash, and navmesh
   glue (`go_to`, `follow_field`, `stop`, `sync_agent`) over `net-sim-nav` crowds. Ported to
   TS (`sdk/web/src/bots.ts`) and C# (`Aurix.Net.Sim.Bots`), replaying the shared vector fixture.
+
+## Referee module
+
+`net-sim-guest` (`physics-arena`) packages the 2D physics as a room-logic WASM module the node runs as
+lockstep referee (see docs/modes.md, "Server-verified lockstep"); the soak in docs/testing.md runs
+it under load. Guest memory is not checkpointed across failover — the world is rebuilt from the
+frame's `Transform.pos` with zero velocity, which is the documented approximation.

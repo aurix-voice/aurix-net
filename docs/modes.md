@@ -138,6 +138,12 @@ On a desync the node stores its own state at that tick as the reference dump (ac
 `GET /v1/rooms/:id/desyncs`) next to the desynced client's, so nobody has to trust the master;
 room details report `referee: true` while the node hosts such a room.
 
+`crates/net-sim-guest` is the reference module for this: `physics-arena`, avatars as fixed-point
+circles in a walled `net-sim-physics` world (input = i8 move_x, i8 move_z), built with
+`cargo build --release --target wasm32-unknown-unknown -p net-sim-guest` and uploaded via
+`aurix-net module-put physics-arena target/wasm32-unknown-unknown/release/net_sim_guest.wasm`.
+Clients running the same `net-sim-wasm` physics hash identically to the node.
+
 ### Late join and rejoin
 
 A lockstep room never stops for a joiner and never migrates a host. Every

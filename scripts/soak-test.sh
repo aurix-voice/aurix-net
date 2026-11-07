@@ -3,6 +3,7 @@
 # stats (RSS, rooms, players, sync tick avg/p99, overruns) every 60 s into a CSV. The point is
 # flat RSS and a flat tick after the first minutes: no leak per room/player churn.
 #   DURATION=3600 ./scripts/soak-test.sh
+#   LOCKSTEP_PROPS='{"schema":"component Transform {\n pos: vec3 @range(-4096, 4096, 0.01)\n speed: f32\n}","logic":"physics-arena","position":"Transform.0"}' adds a referee room per batch
 set -euo pipefail
 A="${HTTP_A:-http://127.0.0.1:8098}"; B="${HTTP_B:-http://127.0.0.1:8099}"
 TOK="${NET_OPERATOR_TOKEN:-dev-admin}"; DURATION="${DURATION:-3600}"; BATCH="${BATCH:-300}"
@@ -26,6 +27,13 @@ sample
     "$BIN" --http "$B" --operator-token "$TOK" --rooms 1 --players 8 --rate 20 --mode sync --duration-secs "$BATCH" >/dev/null 2>&1 &
     # lockstep room with a late joiner (catch-up) every batch; a web client lying about its hash forces a desync + dumps
     "$BIN" --http "$B" --operator-token "$TOK" --rooms 1 --players 4 --rate 30 --mode lockstep --tick-hz 30 --late-join-secs 30 --duration-secs "$BATCH" >/dev/null 2>&1 &
+    # referee: lockstep room whose `logic` module (LOCKSTEP_PROPS, e.g. physics-arena) the node simulates itself
+    if [ -n "${LOCKSTEP_PROPS:-}" ]; then
+        "$BIN" --http "$B" --operator-token "$TOK" --rooms 1 --players 4 --rate 30 --mode lockstep --tick-hz 30 --late-join-secs 30 --props-json "$LOCKSTEP_PROPS" --duration-secs "$BATCH" >/dev/null 2>&1 &
+        if [ -n "${WEB_KEY:-}" ]; then
+            (cd "$(dirname "$0")/../sdk/web" && NET_HTTP="$B" NET_API_KEY="$WEB_KEY" NET_LOGIC="${NET_LOGIC:-physics-arena}" NET_LOGIC_PROPS="$LOCKSTEP_PROPS" node --test test/referee-live.test.mjs >/dev/null 2>&1) &
+        fi
+    fi
     if [ -n "${WEB_KEY:-}" ] && [ -f "$(dirname "$0")/../sdk/web/test/lockstep-live.test.mjs" ]; then
         (cd "$(dirname "$0")/../sdk/web" && NET_HTTP="$B" NET_API_KEY="$WEB_KEY" node --test test/lockstep-live.test.mjs >/dev/null 2>&1) &
     fi

@@ -10,6 +10,7 @@ members = [
     "crates/net-sim-bots",
     "crates/net-sim-physics",
     "crates/net-sim-wasm",
+    "crates/net-sim-guest",
     "crates/net-replication",
     "crates/net-lagcomp",
     "crates/net-fpmath",

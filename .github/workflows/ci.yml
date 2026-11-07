@@ -36,6 +36,7 @@ jobs:
       - name: aurix-sim wasm32 == native (golden hashes)
         run: |
           cargo build --release --target wasm32-unknown-unknown -p net-sim-wasm
+          cargo build --release --target wasm32-unknown-unknown -p net-sim-guest
           cargo build --release -p net-sim-wasm
           cargo run -p net-sim-wasm --example golden_check
       - name: aurix-sim C ABI (libaurix_net + ctest/sim.c, header up to date)
