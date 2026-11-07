@@ -118,7 +118,7 @@ function ProjectBody() {
         actions={
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" className="text-danger" onClick={() => setDeletingProject(true)}>
-              {t("common.delete")}
+              {t("projects.delete")}
             </Button>
             <Button variant={p.disabled_at ? "secondary" : "ghost"} size="sm" onClick={() => setSuspending(true)}>
               {p.disabled_at ? t("projects.resume") : t("projects.suspend")}

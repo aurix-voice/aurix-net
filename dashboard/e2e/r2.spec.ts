@@ -64,8 +64,8 @@ test("project page has a Connect card and lets the operator delete a webhook", a
   await expect(page.locator("pre")).not.toContainText(project.key.key);
   await page.getByRole("tab", { name: /Webhooks/ }).click();
   await expect(page.getByText("http://127.0.0.1:9/hook")).toBeVisible();
-  await page.getByRole("button", { name: "Delete" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Delete", exact: true }).click();
   await expect(page.getByText("http://127.0.0.1:9/hook")).toHaveCount(0);
   await page.goto("/audit");
   await page.getByPlaceholder(/^Action/).fill("webhook.delete");
@@ -101,8 +101,9 @@ test("operator can suspend and resume a project; suspended keys cannot issue gra
 
 test("operator can drain another node from the console and put it back", async ({ page }) => {
   const me = await api<{ node_id: string }>(page, "GET", "/v1/me");
-  const { nodes } = await api<{ nodes: { id: string; public_host: string; quic_port: number; draining: boolean; last_heartbeat: string }[] }>(page, "GET", "/v1/operator/nodes");
-  const other = nodes.find((n) => n.id !== me.node_id && !n.draining && Date.now() - Date.parse(n.last_heartbeat) < 30_000);
+  const { nodes } = await api<{ nodes: { id: string; version: string; public_host: string; quic_port: number; draining: boolean; last_heartbeat: string }[] }>(page, "GET", "/v1/operator/nodes");
+  const self = nodes.find((n) => n.id === me.node_id);
+  const other = nodes.find((n) => n.id !== me.node_id && n.version === self?.version && !n.draining && Date.now() - Date.parse(n.last_heartbeat) < 30_000);
   test.skip(!other, "needs a second live node");
   const row = page.getByRole("row", { name: new RegExp(`${other!.public_host}:${other!.quic_port}`) });
   await page.goto("/nodes");
@@ -121,7 +122,7 @@ test("operator deletes a project after typing its name; keys stop working and hi
   const name = uniq("e2e-del");
   const project = await api<{ project: { id: string }; key: { key: string } }>(page, "POST", "/v1/operator/projects", { name });
   await page.goto(`/projects/${project.project.id}`);
-  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.getByRole("button", { name: "Delete project" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("button", { name: "Delete project" })).toBeDisabled();
   await dialog.getByLabel("Name").fill(name);
