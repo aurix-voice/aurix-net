@@ -84,6 +84,13 @@ through the same link/channels. Browsers pin the certificate via `serverCertific
 regenerated on every start. The WebSocket tunnel remains the fallback. Manual browser check:
 `sdk/web/test/browser.html` (two clients, echo over WebTransport).
 
+## Usage metering
+
+Every node adds per project and hour: `room_minutes`, `player_minutes`, `bytes_in`,
+`bytes_out` (`GET /v1/usage?from&to`). Billing is node-hours plus included traffic, never
+peak CCU. `GET /v1/regions` lists live regions with `endpoints` (node HTTP URLs) so clients
+pick the closest node; a room lookup on another node answers `conflict room_elsewhere:<url>`.
+
 ## Webhooks
 
 POST JSON `{event, project, at, data}` with `X-Aurix-Event` and

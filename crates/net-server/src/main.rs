@@ -127,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
     }
     tokio::spawn(net_api::ws::reaper(st.clone()));
     tokio::spawn(net_api::ws::flusher(st.clone()));
+    tokio::spawn(net_api::metering::meter(st.clone()));
     tokio::spawn({
         let st = st.clone();
         async move {

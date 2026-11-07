@@ -136,6 +136,10 @@ struct RegionOut {
     id: String,
     display_name: String,
     nodes: usize,
+    /// HTTP base URLs of live nodes in the region; clients pick one (lowest RTT) and use it
+    /// for grants, rooms and the WebSocket control channel. Room lookups on the wrong node
+    /// answer `room_elsewhere:<url>`.
+    endpoints: Vec<String>,
 }
 
 async fn regions(State(st): State<Shared>) -> ApiResult<Json<Vec<RegionOut>>> {
@@ -148,6 +152,11 @@ async fn regions(State(st): State<Shared>) -> ApiResult<Json<Vec<RegionOut>>> {
                     .iter()
                     .filter(|n| n.region.as_str() == r.id && !n.draining)
                     .count(),
+                endpoints: nodes
+                    .iter()
+                    .filter(|n| n.region.as_str() == r.id && !n.draining)
+                    .map(|n| n.http_url.clone())
+                    .collect(),
                 id: r.id,
                 display_name: r.display_name,
             })

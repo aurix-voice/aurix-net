@@ -27,6 +27,9 @@ pub struct DataSession {
     pub link: Mutex<Link>,
     pub sink: DataSink,
     pub metrics: Arc<Metrics>,
+    /// Byte counters already billed by the metering task (see `metering.rs`).
+    pub metered_in: std::sync::atomic::AtomicU64,
+    pub metered_out: std::sync::atomic::AtomicU64,
 }
 
 impl DataSession {
@@ -35,6 +38,8 @@ impl DataSession {
             link: Mutex::new(Link::new(Instant::now())),
             sink,
             metrics,
+            metered_in: Default::default(),
+            metered_out: Default::default(),
         })
     }
 
@@ -196,6 +201,32 @@ impl RoomHost {
         };
         self.by_name.remove(&(project, name));
         Some(h)
+    }
+
+    /// Per project: (rooms, online players, new bytes in, new bytes out) since the last call.
+    pub fn usage(&self) -> HashMap<ProjectId, (u64, u64, u64, u64)> {
+        use std::sync::atomic::Ordering;
+        let mut out: HashMap<ProjectId, (u64, u64, u64, u64)> = HashMap::new();
+        for r in self.rooms.iter() {
+            let g = r.value().lock();
+            let e = out.entry(g.project).or_default();
+            e.0 += 1;
+            e.1 += g.room.online_count() as u64;
+            for s in g.sessions.values() {
+                if let Some(d) = &s.data {
+                    let st = d.link.lock().stats();
+                    let din = st
+                        .recv_bytes
+                        .saturating_sub(d.metered_in.swap(st.recv_bytes, Ordering::Relaxed));
+                    let dout = st
+                        .sent_bytes
+                        .saturating_sub(d.metered_out.swap(st.sent_bytes, Ordering::Relaxed));
+                    e.2 += din;
+                    e.3 += dout;
+                }
+            }
+        }
+        out
     }
 
     pub fn len(&self) -> usize {
