@@ -164,6 +164,18 @@ static class Program
         var snap = a.Snapshot(); ulong h = a.Hash(); a.Step();
         Check(a.Restore(snap) && a.Hash() == h, "sim: snapshot round-trip");
         Check(a.Raycast(0, 5, 0, -10, out var hit) && hit.Body == ballA && Math.Abs(hit.Ny - 1) < 1e-6, "sim: raycast hits the ball from above");
+        Check(SimWorld.NavGoldenHash() == 0x746c5a608abe2f26UL, "nav: golden hash equals the Rust/wasm value");
+        using var n = new SimWorld(0, 0);
+        n.NavGrid(0, 0, 1, 8, 6, new (uint, uint)[] { (4, 0), (4, 1), (4, 2), (4, 3), (4, 4) });
+        var path = n.NavPath(0.5, 0.5, 7.5, 0.5);
+        Check(path != null && Array.Exists(path, p => p.x == 4 && p.y == 5), "nav: path rounds the wall");
+        Check(n.NavRaycast(0.5, 0.5, 7.5, 0.5, out _, out _), "nav: wall blocks line of sight");
+        uint field = n.NavField(7.5, 0.5);
+        uint ag = n.AddAgent(0.5, 0.5, 0.25, 3);
+        n.AgentFollow(ag, field);
+        for (int i = 0; i < 600; i++) n.CrowdStep();
+        var st = n.Agent(ag);
+        Check(Math.Sqrt((st.X - 7.5) * (st.X - 7.5) + (st.Y - 0.5) * (st.Y - 0.5)) < 0.5, "nav: agent reached the goal (" + st.X.ToString("F2") + "," + st.Y.ToString("F2") + ")");
     }
 
     static int Main()

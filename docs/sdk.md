@@ -139,3 +139,18 @@ Unity (C#): `Aurix.Net.Sim.SimWorld` has the same surface (`AddBox/AddCircle/Add
 build). Rust games use `net-sim-physics` directly (`World`, `Body`, `Joint`, `CharacterController`),
 with joints (distance/rope, revolute with limits and motor, weld) and contact events on top of what
 the flat ABI exposes today.
+
+Navigation rides on the same module (`net-sim-nav`): `navGrid`/`navLoad` (JSON from
+`NavMesh::to_bytes`), `navPath` (A* over portals + funnel), `navRaycast` (line of sight),
+`navField` (one flow field per goal, shared by any number of agents), `addAgent`/`agentTarget`/
+`agentFollow`, `crowdStep` next to `step()`, `crowdHash`/`crowdSnapshot` for lockstep checks.
+C#: `NavGrid/NavLoad/NavPath/NavRaycast/NavField/AddAgent/AgentTarget/AgentFollow/CrowdStep`.
+Reference hash `sim_nav_golden_hash()` = `0x746c5a608abe2f26` on native and wasm32.
+
+```ts
+w.navGrid({ x: 0, y: 0 }, 1, 64, 64, blockedCells);
+const toBase = w.navField({ x: 60.5, y: 60.5 });
+const unit = w.addAgent(2, 2, 0.4, 3);
+w.agentFollow(unit, toBase);
+// per tick: w.crowdStep(); w.step(); lockstep.reportHash(tick, w.hash() ^ w.crowdHash());
+```

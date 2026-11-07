@@ -96,4 +96,9 @@ and wasm32 (CI matrix) — the same vectors shipped to the C# and TS ports.
   (slide, step-up, ground snap, slope limit); contact/sensor events; snapshot/restore/FNV hash.
 - Bindings: `net-sim-wasm` flat ABI (cdylib + wasm32), Web `Sim/SimWorld`, Unity
   `Aurix.Net.Sim.SimWorld`; golden hash `0x58d9870ba45952b5` identical on native and wasm32.
-- Not yet: shapecast, joints/events over the flat ABI, 3D, navmesh/steering (phase 2), bot kit.
+- Phase 2 done: `net-sim-nav` — convex-polygon navmesh with shared-edge adjacency and a grid
+  builder, locate/nearest, A* over portals (BTreeSet frontier), funnel straightening, mesh
+  raycast, per-area cost/flags, flow fields (Dijkstra per goal), `Crowd` (arrive, separation,
+  sampled velocity-obstacle avoidance, border sliding, depenetration, snapshot/hash); exposed over
+  the flat ABI + Web/Unity wrappers; nav golden hash `0x746c5a608abe2f26` native == wasm32.
+- Not yet: shapecast, joints/contact events over the flat ABI, 3D (phase 3), bot kit (HFSM/BT).

@@ -17,6 +17,7 @@ namespace Aurix.Net.Sim
 
     public struct BodyState { public double X, Y, Angle, Vx, Vy, AngularVelocity; }
     public struct RayHit { public uint Body; public double Fraction, X, Y, Nx, Ny; }
+    public struct AgentState { public double X, Y, Vx, Vy; public bool Arrived; public uint Poly; }
 
     internal static class SimNative
     {
@@ -46,6 +47,25 @@ namespace Aurix.Net.Sim
         [DllImport(Lib)] public static extern uint sim_kcc_new(uint h, uint body, long step, long minNy);
         [DllImport(Lib)] public static extern uint sim_kcc_move(uint h, uint k, long dx, long dy);
         [DllImport(Lib)] public static extern ulong sim_golden_hash();
+        [DllImport(Lib)] public static extern uint sim_nav_grid(uint h, long ox, long oy, long cell, uint cols, uint rows);
+        [DllImport(Lib)] public static extern uint sim_nav_load(uint h);
+        [DllImport(Lib)] public static extern ulong sim_nav_hash(uint h);
+        [DllImport(Lib)] public static extern uint sim_nav_locate(uint h, long x, long y);
+        [DllImport(Lib)] public static extern uint sim_nav_path(uint h, long x0, long y0, long x1, long y1, uint mask);
+        [DllImport(Lib)] public static extern long sim_nav_point(uint h, uint i);
+        [DllImport(Lib)] public static extern uint sim_nav_raycast(uint h, long x0, long y0, long x1, long y1);
+        [DllImport(Lib)] public static extern uint sim_nav_field(uint h, long x, long y, uint mask);
+        [DllImport(Lib)] public static extern uint sim_agent_add(uint h, long x, long y, long r, long speed);
+        [DllImport(Lib)] public static extern void sim_agent_remove(uint h, uint id);
+        [DllImport(Lib)] public static extern void sim_agent_target(uint h, uint id, long x, long y);
+        [DllImport(Lib)] public static extern void sim_agent_follow(uint h, uint id, uint field);
+        [DllImport(Lib)] public static extern void sim_agent_stop(uint h, uint id);
+        [DllImport(Lib)] public static extern long sim_agent_get(uint h, uint id, uint field);
+        [DllImport(Lib)] public static extern void sim_crowd_step(uint h);
+        [DllImport(Lib)] public static extern ulong sim_crowd_hash(uint h);
+        [DllImport(Lib)] public static extern uint sim_crowd_snapshot(uint h);
+        [DllImport(Lib)] public static extern uint sim_crowd_restore(uint h);
+        [DllImport(Lib)] public static extern ulong sim_nav_golden_hash();
     }
 
     public sealed class SimWorld : IDisposable
@@ -60,6 +80,8 @@ namespace Aurix.Net.Sim
 
         /// Reference scenario hash; equals the Rust/wasm value 0x58d9870ba45952b5 on every platform.
         public static ulong GoldenHash() => SimNative.sim_golden_hash();
+        /// Navigation reference scenario hash; equals 0x746c5a608abe2f26 on every platform.
+        public static ulong NavGoldenHash() => SimNative.sim_nav_golden_hash();
 
         public void Dispose() { if (!_freed) { _freed = true; SimNative.sim_world_free(Handle); } }
         public void Step() => SimNative.sim_step(Handle);
@@ -124,5 +146,71 @@ namespace Aurix.Net.Sim
             => SimNative.sim_kcc_new(Handle, body, Fx.From(stepHeight), Fx.From(minGroundNormalY));
         /// Moves the controller; true when grounded afterwards.
         public bool MoveCharacter(uint kcc, double dx, double dy) => SimNative.sim_kcc_move(Handle, kcc, Fx.From(dx), Fx.From(dy)) == 1;
+
+        // ---- navigation: navmesh, paths, flow fields, crowd agents ----
+        void FillBuffer(byte[] bytes)
+        {
+            SimNative.sim_snapshot_set_len(Handle, (uint)bytes.Length);
+            for (uint i = 0; i < bytes.Length; i++) SimNative.sim_snapshot_set_byte(Handle, i, bytes[i]);
+        }
+        /// Grid navmesh of cols×rows cells; blocked = (col, row) cells to remove.
+        public void NavGrid(double originX, double originY, double cell, uint cols, uint rows, (uint col, uint row)[] blocked = null)
+        {
+            blocked = blocked ?? Array.Empty<(uint, uint)>();
+            var buf = new byte[blocked.Length * 8];
+            for (int i = 0; i < blocked.Length; i++)
+            {
+                BitConverter.GetBytes(blocked[i].col).CopyTo(buf, i * 8);
+                BitConverter.GetBytes(blocked[i].row).CopyTo(buf, i * 8 + 4);
+            }
+            FillBuffer(buf);
+            SimNative.sim_nav_grid(Handle, Fx.From(originX), Fx.From(originY), Fx.From(cell), cols, rows);
+        }
+        /// Load a navmesh exported by NavMesh::to_bytes (JSON).
+        public bool NavLoad(byte[] json) { FillBuffer(json); return SimNative.sim_nav_load(Handle) == 1; }
+        public ulong NavHash() => SimNative.sim_nav_hash(Handle);
+        public bool NavLocate(double x, double y, out uint poly) { poly = SimNative.sim_nav_locate(Handle, Fx.From(x), Fx.From(y)); return poly != uint.MaxValue; }
+        public (double x, double y)[] NavPath(double x0, double y0, double x1, double y1, uint mask = uint.MaxValue)
+        {
+            uint n = SimNative.sim_nav_path(Handle, Fx.From(x0), Fx.From(y0), Fx.From(x1), Fx.From(y1), mask);
+            if (n == 0) return null;
+            var pts = new (double, double)[n];
+            for (uint i = 0; i < n; i++) pts[i] = (Fx.To(SimNative.sim_nav_point(Handle, 2 * i)), Fx.To(SimNative.sim_nav_point(Handle, 2 * i + 1)));
+            return pts;
+        }
+        /// Line of sight on the mesh; false when clear, else the boundary point hit.
+        public bool NavRaycast(double x0, double y0, double x1, double y1, out double hx, out double hy)
+        {
+            bool hit = SimNative.sim_nav_raycast(Handle, Fx.From(x0), Fx.From(y0), Fx.From(x1), Fx.From(y1)) == 1;
+            hx = hit ? Fx.To(SimNative.sim_ray_get(1)) : 0; hy = hit ? Fx.To(SimNative.sim_ray_get(2)) : 0;
+            return hit;
+        }
+        /// Flow field towards a goal, shared by any number of agents; uint.MaxValue when unreachable.
+        public uint NavField(double x, double y, uint mask = uint.MaxValue) => SimNative.sim_nav_field(Handle, Fx.From(x), Fx.From(y), mask);
+        public uint AddAgent(double x, double y, double radius, double maxSpeed) => SimNative.sim_agent_add(Handle, Fx.From(x), Fx.From(y), Fx.From(radius), Fx.From(maxSpeed));
+        public void RemoveAgent(uint id) => SimNative.sim_agent_remove(Handle, id);
+        public void AgentTarget(uint id, double x, double y) => SimNative.sim_agent_target(Handle, id, Fx.From(x), Fx.From(y));
+        public void AgentFollow(uint id, uint field) => SimNative.sim_agent_follow(Handle, id, field);
+        public void AgentStop(uint id) => SimNative.sim_agent_stop(Handle, id);
+        public AgentState Agent(uint id) => new AgentState
+        {
+            X = Fx.To(SimNative.sim_agent_get(Handle, id, 0)),
+            Y = Fx.To(SimNative.sim_agent_get(Handle, id, 1)),
+            Vx = Fx.To(SimNative.sim_agent_get(Handle, id, 2)),
+            Vy = Fx.To(SimNative.sim_agent_get(Handle, id, 3)),
+            Arrived = SimNative.sim_agent_get(Handle, id, 4) == 1,
+            Poly = (uint)SimNative.sim_agent_get(Handle, id, 5),
+        };
+        /// Advance all agents one tick (call next to Step()).
+        public void CrowdStep() => SimNative.sim_crowd_step(Handle);
+        public ulong CrowdHash() => SimNative.sim_crowd_hash(Handle);
+        public byte[] CrowdSnapshot()
+        {
+            uint n = SimNative.sim_crowd_snapshot(Handle);
+            var b = new byte[n];
+            for (uint i = 0; i < n; i++) b[i] = (byte)SimNative.sim_snapshot_byte(Handle, i);
+            return b;
+        }
+        public bool CrowdRestore(byte[] bytes) { FillBuffer(bytes); return SimNative.sim_crowd_restore(Handle) == 1; }
     }
 }

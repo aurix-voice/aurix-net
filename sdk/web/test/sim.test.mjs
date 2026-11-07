@@ -40,3 +40,20 @@ test("sim wasm: ball lands, snapshot round-trips, two worlds agree", async () =>
   a.w.free();
   b.w.free();
 });
+
+test("sim wasm: navigation golden hash and crowd walk", async () => {
+  const sim = await Sim.load(await readFile(WASM));
+  assert.equal(sim.navGoldenHash(), 0x746c5a608abe2f26n);
+  const w = sim.world({ x: 0, y: 0 }, 60);
+  w.navGrid({ x: 0, y: 0 }, 1, 8, 6, [0, 1, 2, 3, 4].map((r) => [4, r]));
+  const path = w.navPath({ x: 0.5, y: 0.5 }, { x: 7.5, y: 0.5 });
+  assert.ok(path && path.some((p) => p.x === 4 && p.y === 5), "path should round the wall");
+  assert.ok(w.navRaycast({ x: 0.5, y: 0.5 }, { x: 7.5, y: 0.5 }), "wall blocks line of sight");
+  const field = w.navField({ x: 7.5, y: 0.5 });
+  const a = w.addAgent(0.5, 0.5, 0.25, 3);
+  w.agentFollow(a, field);
+  for (let i = 0; i < 600; i++) w.crowdStep();
+  const s = w.agent(a);
+  assert.ok(Math.hypot(s.x - 7.5, s.y - 0.5) < 0.5, `agent at ${s.x},${s.y}`);
+  w.free();
+});

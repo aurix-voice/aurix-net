@@ -43,6 +43,25 @@ interface SimExports {
   sim_kcc_new(h: number, body: number, step: bigint, minNy: bigint): number;
   sim_kcc_move(h: number, k: number, dx: bigint, dy: bigint): number;
   sim_golden_hash(): bigint;
+  sim_nav_grid(h: number, ox: bigint, oy: bigint, cell: bigint, cols: number, rows: number): number;
+  sim_nav_load(h: number): number;
+  sim_nav_hash(h: number): bigint;
+  sim_nav_locate(h: number, x: bigint, y: bigint): number;
+  sim_nav_path(h: number, x0: bigint, y0: bigint, x1: bigint, y1: bigint, mask: number): number;
+  sim_nav_point(h: number, i: number): bigint;
+  sim_nav_raycast(h: number, x0: bigint, y0: bigint, x1: bigint, y1: bigint): number;
+  sim_nav_field(h: number, x: bigint, y: bigint, mask: number): number;
+  sim_agent_add(h: number, x: bigint, y: bigint, r: bigint, speed: bigint): number;
+  sim_agent_remove(h: number, id: number): void;
+  sim_agent_target(h: number, id: number, x: bigint, y: bigint): void;
+  sim_agent_follow(h: number, id: number, field: number): void;
+  sim_agent_stop(h: number, id: number): void;
+  sim_agent_get(h: number, id: number, field: number): bigint;
+  sim_crowd_step(h: number): void;
+  sim_crowd_hash(h: number): bigint;
+  sim_crowd_snapshot(h: number): number;
+  sim_crowd_restore(h: number): number;
+  sim_nav_golden_hash(): bigint;
 }
 
 export interface BodyState {
@@ -78,6 +97,10 @@ export class Sim {
   /** Reference scenario hash; must equal the native Rust value (`0x58d9870ba45952b5`). */
   goldenHash(): bigint {
     return this.e.sim_golden_hash();
+  }
+  /** Navigation reference scenario hash; must equal the native value (`0x746c5a608abe2f26`). */
+  navGoldenHash(): bigint {
+    return this.e.sim_nav_golden_hash();
   }
 
   world(gravity = { x: 0, y: -10 }, tickHz = 60): SimWorld {
@@ -160,5 +183,87 @@ export class SimWorld {
   /** Moves the controller; returns true when grounded afterwards. */
   moveCharacter(kcc: number, dx: number, dy: number): boolean {
     return this.e.sim_kcc_move(this.handle, kcc, fx(dx), fx(dy)) === 1;
+  }
+
+  // ---- navigation (navmesh, paths, flow fields, crowd agents) ----
+  private fillBuffer(bytes: Uint8Array) {
+    this.e.sim_snapshot_set_len(this.handle, bytes.length);
+    for (let i = 0; i < bytes.length; i++) this.e.sim_snapshot_set_byte(this.handle, i, bytes[i]);
+  }
+  /** Grid navmesh of cols×rows cells; `blocked` lists [col, row] cells to remove. */
+  navGrid(origin: { x: number; y: number }, cell: number, cols: number, rows: number, blocked: [number, number][] = []) {
+    const buf = new Uint8Array(blocked.length * 8);
+    const dv = new DataView(buf.buffer);
+    blocked.forEach(([c, r], i) => {
+      dv.setUint32(i * 8, c, true);
+      dv.setUint32(i * 8 + 4, r, true);
+    });
+    this.fillBuffer(buf);
+    this.e.sim_nav_grid(this.handle, fx(origin.x), fx(origin.y), fx(cell), cols, rows);
+  }
+  /** Load a navmesh exported by `NavMesh::to_bytes` (JSON). */
+  navLoad(bytes: Uint8Array): boolean {
+    this.fillBuffer(bytes);
+    return this.e.sim_nav_load(this.handle) === 1;
+  }
+  navHash(): bigint {
+    return this.e.sim_nav_hash(this.handle);
+  }
+  navLocate(x: number, y: number): number | null {
+    const p = this.e.sim_nav_locate(this.handle, fx(x), fx(y));
+    return p === 0xffffffff ? null : p;
+  }
+  navPath(from: { x: number; y: number }, to: { x: number; y: number }, mask = 0xffffffff): { x: number; y: number }[] | null {
+    const n = this.e.sim_nav_path(this.handle, fx(from.x), fx(from.y), fx(to.x), fx(to.y), mask >>> 0);
+    if (!n) return null;
+    const out = [];
+    for (let i = 0; i < n; i++) out.push({ x: num(this.e.sim_nav_point(this.handle, 2 * i)), y: num(this.e.sim_nav_point(this.handle, 2 * i + 1)) });
+    return out;
+  }
+  /** Line of sight on the mesh: null when clear, else the boundary point hit. */
+  navRaycast(from: { x: number; y: number }, to: { x: number; y: number }): { x: number; y: number } | null {
+    if (this.e.sim_nav_raycast(this.handle, fx(from.x), fx(from.y), fx(to.x), fx(to.y)) !== 1) return null;
+    return { x: num(this.e.sim_ray_get(1)), y: num(this.e.sim_ray_get(2)) };
+  }
+  /** Flow field towards a goal shared by any number of agents; null when unreachable. */
+  navField(goal: { x: number; y: number }, mask = 0xffffffff): number | null {
+    const f = this.e.sim_nav_field(this.handle, fx(goal.x), fx(goal.y), mask >>> 0);
+    return f === 0xffffffff ? null : f;
+  }
+  addAgent(x: number, y: number, radius: number, maxSpeed: number): number {
+    return this.e.sim_agent_add(this.handle, fx(x), fx(y), fx(radius), fx(maxSpeed));
+  }
+  removeAgent(id: number) {
+    this.e.sim_agent_remove(this.handle, id);
+  }
+  agentTarget(id: number, x: number, y: number) {
+    this.e.sim_agent_target(this.handle, id, fx(x), fx(y));
+  }
+  agentFollow(id: number, field: number) {
+    this.e.sim_agent_follow(this.handle, id, field);
+  }
+  agentStop(id: number) {
+    this.e.sim_agent_stop(this.handle, id);
+  }
+  agent(id: number): { x: number; y: number; vx: number; vy: number; arrived: boolean; poly: number } {
+    const g = (f: number) => this.e.sim_agent_get(this.handle, id, f);
+    return { x: num(g(0)), y: num(g(1)), vx: num(g(2)), vy: num(g(3)), arrived: g(4) === 1n, poly: Number(g(5)) };
+  }
+  /** Advance all agents one tick (call next to `step()`). */
+  crowdStep() {
+    this.e.sim_crowd_step(this.handle);
+  }
+  crowdHash(): bigint {
+    return this.e.sim_crowd_hash(this.handle);
+  }
+  crowdSnapshot(): Uint8Array {
+    const n = this.e.sim_crowd_snapshot(this.handle);
+    const out = new Uint8Array(n);
+    for (let i = 0; i < n; i++) out[i] = this.e.sim_snapshot_byte(this.handle, i);
+    return out;
+  }
+  crowdRestore(bytes: Uint8Array): boolean {
+    this.fillBuffer(bytes);
+    return this.e.sim_crowd_restore(this.handle) === 1;
   }
 }
