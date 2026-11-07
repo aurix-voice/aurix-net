@@ -352,6 +352,7 @@ export interface ProjectDetail {
   webhooks: Webhook[];
   modules: Module[];
   rooms: LiveRoom[];
+  webhooks_1h: { failed: number; total: number };
 }
 export interface Health {
   ok: boolean;

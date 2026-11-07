@@ -335,6 +335,7 @@ test("operator exports the audit log as CSV", async ({ page }) => {
 test("operator issues a test grant from the project page", async ({ page }) => {
   const project = await api<{ project: { id: string } }>(page, "POST", "/v1/operator/projects", { name: uniq("e2e-grant") });
   await page.goto(`/projects/${project.project.id}`);
+  await expect(page.getByTestId("project-health")).toContainText("Active");
   await page.getByRole("button", { name: "Test grant" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Player ID").fill("qa-player");

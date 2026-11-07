@@ -769,6 +769,18 @@ pub async fn failing_webhooks_last_hour(pool: &DbPool) -> Result<Vec<FailingWebh
     .map_err(db_err)
 }
 
+/// (failed, total) deliveries of one project in the last hour — the project health card.
+pub async fn webhook_delivery_stats_last_hour(pool: &DbPool, project: Uuid) -> Result<(i64, i64)> {
+    sqlx::query_as::<_, (i64, i64)>(
+        "SELECT COUNT(*) FILTER (WHERE NOT ok), COUNT(*) FROM webhook_deliveries \
+         WHERE project_id = $1 AND created_at > now() - interval '1 hour'",
+    )
+    .bind(project)
+    .fetch_one(pool)
+    .await
+    .map_err(db_err)
+}
+
 pub async fn purge_webhook_deliveries(pool: &DbPool, days: u32) -> Result<u64> {
     if days == 0 {
         return Ok(0);

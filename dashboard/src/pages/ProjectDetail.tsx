@@ -11,6 +11,7 @@ import { NoticeDialog } from "@/components/NoticeDialog";
 import { TestGrantDialog } from "@/components/TestGrantDialog";
 import { PlayerLookup } from "@/components/PlayerLookup";
 import { RotateWebhookDialog } from "@/components/RotateWebhook";
+import { ProjectHealthCard } from "@/components/ProjectHealthCard";
 import { RejectionsCard } from "@/components/RejectionsCard";
 import { useAuth } from "@/auth/AuthProvider";
 import { NewKeyDialog } from "@/components/NewKeyDialog";
@@ -194,6 +195,7 @@ function ProjectBody() {
           toast.ok(p.disabled_at ? t("projects.resume") : t("projects.suspend"), r.live_rooms ? t("projects.suspended.live", { n: r.live_rooms }) : undefined);
         }}
       />
+      <ProjectHealthCard detail={d} rejections={rejections.data} />
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <Card className="min-w-0">
           <Tabs

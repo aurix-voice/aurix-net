@@ -2700,6 +2700,7 @@ async fn op_project(
         .list_rooms(ProjectId::from_uuid(id))
         .await
         .unwrap_or_default();
+    let (wh_failed, wh_total) = queries::webhook_delivery_stats_last_hour(&st.pool, id).await?;
     Ok(Json(json!({
         "project": p,
         "effective_limits": net_control::ProjectLimits::from_json(&p.limits).effective(&st.cfg.limits),
@@ -2707,6 +2708,7 @@ async fn op_project(
         "webhooks": webhooks,
         "modules": modules,
         "rooms": rooms,
+        "webhooks_1h": {"failed": wh_failed, "total": wh_total},
     })))
 }
 
