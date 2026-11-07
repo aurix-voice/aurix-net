@@ -813,6 +813,7 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
                 let out = sy.tick();
                 let events = sy.take_events();
                 let actors: Vec<ActorId> = sy.avatars.keys().copied().collect();
+                st.metrics.sync_lost_deltas.inc_by(sy.take_lost_deltas());
                 n += 1;
                 if n.is_multiple_of(checkpoint_every) {
                     checkpoint = Some((project, sy.checkpoint()));

@@ -45,6 +45,12 @@ Without a `schema` the room runs the built-in arena logic (one avatar per actor,
 actor owns one entity and its input is a list of full component writes that the server
 applies and replicates. Server-side game logic in a WASM sandbox is the next step.
 
+Deltas go over `UnreliableSequenced`; the client acks every delta (`0x13`: last tick + 32-bit
+history, `net_replication::AckTracker`). A delta the client never got has its entities forgotten
+on the server, so the next delta carries them in full instead of a diff against state the client
+does not have; lost despawns are repeated. Clients that never ack get the plain "baseline = last
+sent" behaviour.
+
 ### Schema IDL
 
 ```text
@@ -128,6 +134,7 @@ most the last 5 s of inputs. A `room.rehosted` webhook fires; orphans nobody ado
 | `0x10` Input | client -> server | sync, lockstep |
 | `0x11` Delta | server -> client | sync |
 | `0x12` Resync | client -> server | sync |
+| `0x13` Ack (last delta tick + 32-bit history) | client -> server | sync |
 | `0x20` InputBundle | server -> client | lockstep |
 | `0x21` Hash | client -> server | lockstep |
 | `0x22` Checkpoint | master -> server (reliable) | lockstep |

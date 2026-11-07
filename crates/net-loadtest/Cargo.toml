@@ -16,6 +16,7 @@ net-common = { path = "../net-common" }
 net-transport = { path = "../net-transport" }
 net-rooms = { path = "../net-rooms" }
 net-api = { path = "../net-api" }
+net-replication = { path = "../net-replication" }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures = { workspace = true }

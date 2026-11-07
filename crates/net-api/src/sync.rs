@@ -6,6 +6,7 @@
 //! 0x10 Input    client->server  u32 first_tick, u8 n, n x (u8 len, bytes)   (redundant ticks)
 //! 0x11 Delta    server->client  replication delta (see net-replication)
 //! 0x12 Resync   client->server  drop baselines, next delta is a full snapshot
+//! 0x13 Ack      client->server  u32 last delta tick, u32 history bits (see `AckTracker`)
 //! ```
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -19,6 +20,7 @@ use std::collections::HashMap;
 pub const KIND_INPUT: u8 = 0x10;
 pub const KIND_DELTA: u8 = 0x11;
 pub const KIND_RESYNC: u8 = 0x12;
+pub const KIND_ACK: u8 = 0x13;
 
 /// Redundant input ticks per packet (client resends the last K).
 pub const INPUT_REDUNDANCY: usize = 3;
@@ -335,6 +337,18 @@ impl SyncRoom {
                 }
                 true
             }
+            KIND_ACK => {
+                payload.advance(1);
+                if payload.len() < 8 {
+                    return true;
+                }
+                let last = payload.get_u32();
+                let bits = payload.get_u32();
+                if let Some(v) = self.views.get_mut(&actor) {
+                    v.ack(last, bits);
+                }
+                true
+            }
             _ => false,
         }
     }
@@ -385,6 +399,23 @@ impl SyncRoom {
         self.history = History::new(self.hz as usize * 2);
         self.logic.reset();
         Ok(())
+    }
+
+    /// Deltas clients lost since the last call (from their acks).
+    pub fn take_lost_deltas(&mut self) -> u64 {
+        self.views
+            .values_mut()
+            .map(|v| std::mem::take(&mut v.lost_deltas))
+            .sum()
+    }
+
+    /// Encodes a client ack frame from `AckTracker::ack()`.
+    pub fn encode_ack(last: u32, bits: u32) -> Bytes {
+        let mut b = BytesMut::with_capacity(9);
+        b.put_u8(KIND_ACK);
+        b.put_u32(last);
+        b.put_u32(bits);
+        b.freeze()
     }
 
     /// Encodes a client input packet (used by SDK/loadtest): the last K inputs ending at `tick`.

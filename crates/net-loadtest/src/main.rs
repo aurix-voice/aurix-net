@@ -61,6 +61,9 @@ struct Cli {
     /// (checkpoint + journal tail, then a gapless live stream). 0 = off.
     #[arg(long, default_value_t = 0)]
     late_join_secs: u64,
+    /// Drop this fraction of incoming datagrams on the client (simulated downstream loss).
+    #[arg(long, default_value_t = 0.0)]
+    drop_in: f64,
 }
 
 #[derive(Default)]
@@ -79,6 +82,10 @@ struct Stats {
     catchup_bundles: AtomicU64,
     checkpoints: AtomicU64,
     catchup_from_tick: AtomicU64,
+    /// Sync: datagrams dropped by --drop-in / delta gaps the client noticed / acks sent.
+    dropped: AtomicU64,
+    gaps: AtomicU64,
+    acks: AtomicU64,
 }
 
 #[tokio::main]
@@ -275,6 +282,15 @@ async fn main() -> anyhow::Result<()> {
                         / (cli.rooms * cli.players).max(1) as f64
                         / (cli.duration_secs.saturating_sub(5)).max(1) as f64
                 );
+                if cli.mode == "sync" {
+                    println!(
+                        "sync acks: sent={} client gaps noticed={} datagrams dropped (--drop-in)={} {}",
+                        stats.acks.load(Ordering::Relaxed),
+                        stats.gaps.load(Ordering::Relaxed),
+                        stats.dropped.load(Ordering::Relaxed),
+                        summarize_counter(&body, "net_sync_lost_deltas_total")
+                    );
+                }
             }
         }
     }
@@ -419,6 +435,12 @@ async fn player(
     let server_tick = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
     // Lockstep catch-up tracking (see `Catchup`).
     let catchup = Arc::new(Mutex::new(Catchup::default()));
+    let acks = Arc::new(Mutex::new(net_replication::AckTracker::default()));
+    let drop_in = cli.drop_in;
+    let run_tag = cli
+        .run
+        .wrapping_mul(1_000_003)
+        .wrapping_add((room * 1000 + idx) as u64);
     // Incoming datagrams -> link -> latency samples.
     let on_datagram = {
         let server_tick = server_tick.clone();
@@ -426,8 +448,21 @@ async fn player(
         let stats = stats.clone();
         let flush = flush.clone();
         let catchup = catchup.clone();
+        let acks = acks.clone();
+        let rng = Arc::new(AtomicU64::new(0x9E37_79B9_7F4A_7C15 ^ run_tag));
         move |d: Bytes| {
             stats.bytes_in.fetch_add(d.len() as u64, Ordering::Relaxed);
+            if drop_in > 0.0 {
+                let mut r = rng.load(Ordering::Relaxed);
+                r ^= r << 13;
+                r ^= r >> 7;
+                r ^= r << 17;
+                rng.store(r, Ordering::Relaxed);
+                if ((r >> 11) as f64) / ((1u64 << 53) as f64) < drop_in {
+                    stats.dropped.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            }
             let recv = link.lock().receive(d, Instant::now());
             flush();
             for m in recv {
@@ -435,10 +470,27 @@ async fn player(
                     continue;
                 }
                 if sync {
-                    if m.payload[0] == net_api::sync::KIND_DELTA && m.payload.len() >= 5 {
+                    if m.payload[0] == net_api::sync::KIND_DELTA && m.payload.len() >= 9 {
                         stats.received.fetch_add(1, Ordering::Relaxed);
-                        let t = u32::from_be_bytes(m.payload[1..5].try_into().unwrap());
+                        let (t, base) = net_replication::delta_header(&m.payload[1..]).unwrap();
                         server_tick.store(t, Ordering::Relaxed);
+                        let mut a = acks.lock();
+                        if a.on_delta(t, base) {
+                            stats.gaps.fetch_add(1, Ordering::Relaxed);
+                        }
+                        if let Some((last, bits)) = a.ack() {
+                            drop(a);
+                            let frame = net_api::sync::SyncRoom::encode_ack(last, bits);
+                            let mut l = link.lock();
+                            if l.send(Channel::UnreliableSequenced, frame, Instant::now())
+                                .is_ok()
+                            {
+                                stats.acks.fetch_add(1, Ordering::Relaxed);
+                            }
+                            l.flush_batch();
+                            drop(l);
+                            flush();
+                        }
                         continue;
                     }
                     if m.payload[0] == net_api::lockstep::KIND_CATCHUP {
@@ -725,4 +777,13 @@ fn summarize_hist(body: &str, name: &str) -> String {
         q(0.5),
         q(0.99)
     )
+}
+
+fn summarize_counter(body: &str, name: &str) -> String {
+    let v = body
+        .lines()
+        .find(|l| l.starts_with(name))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .unwrap_or("?");
+    format!("server {name}={v}")
 }

@@ -12,7 +12,7 @@
 use net_common::types::{ActorId, Tick};
 use net_sim::{Entity, EntityId, Frame};
 use net_wire::{BitReader, BitWriter, ComponentValue, Schema};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 #[derive(Debug, Clone)]
 pub struct ReplicationConfig {
@@ -49,11 +49,29 @@ struct Known {
     priority: f32,
 }
 
+/// One delta we sent: whose baselines it advanced, so a lost delta can be undone once the
+/// client's ack history shows it never arrived.
+#[derive(Debug)]
+struct Sent {
+    tick: u32,
+    entities: Vec<EntityId>,
+    despawned: Vec<EntityId>,
+}
+
+/// Sent deltas remembered per client while waiting for acks.
+const SENT_LOG: usize = 128;
+
 /// Replication state for one connected client.
 #[derive(Debug)]
 pub struct ClientView {
     pub actor: ActorId,
     known: HashMap<EntityId, Known>,
+    sent: VecDeque<Sent>,
+    acked_any: bool,
+    /// Despawns from lost deltas, repeated in the next delta.
+    pending_despawn: BTreeSet<EntityId>,
+    /// Deltas the client lost (reported or assumed); drained by the room for metrics.
+    pub lost_deltas: u64,
     /// Entities the game forces into view (team mates, objectives) regardless of AOI.
     pub interest: BTreeSet<EntityId>,
     /// Entity whose position defines the viewpoint (the player's avatar).
@@ -66,6 +84,10 @@ impl ClientView {
         Self {
             actor,
             known: HashMap::new(),
+            sent: VecDeque::new(),
+            acked_any: false,
+            pending_despawn: BTreeSet::new(),
+            lost_deltas: 0,
             interest: BTreeSet::new(),
             viewpoint: None,
             last_tick: None,
@@ -75,7 +97,40 @@ impl ClientView {
     /// Forget everything so the next build is a full snapshot (client asked to resync).
     pub fn reset(&mut self) {
         self.known.clear();
+        self.sent.clear();
+        self.pending_despawn.clear();
         self.last_tick = None;
+    }
+
+    /// Client ack: `last` is the newest delta tick it received and bit `i` of `bits` says it
+    /// also received tick `last - 1 - i`. Every remembered delta at or before `last` is
+    /// resolved; a lost one has its entities forgotten (the next delta re-sends them in full,
+    /// since later deltas were encoded against state the client never got) and its despawns
+    /// queued again. Returns how many deltas were lost.
+    pub fn ack(&mut self, last: u32, bits: u32) -> u32 {
+        self.acked_any = true;
+        let mut lost = 0;
+        while let Some(s) = self.sent.front() {
+            let d = last.wrapping_sub(s.tick);
+            if d >= 1 << 31 {
+                break;
+            }
+            let s = self.sent.pop_front().unwrap();
+            let received = d == 0 || (d <= 32 && (bits >> (d - 1)) & 1 == 1);
+            if !received {
+                lost += 1;
+                self.forget(s);
+            }
+        }
+        self.lost_deltas += lost as u64;
+        lost
+    }
+
+    fn forget(&mut self, s: Sent) {
+        for id in s.entities {
+            self.known.remove(&id);
+        }
+        self.pending_despawn.extend(s.despawned);
     }
 
     pub fn known_count(&self) -> usize {
@@ -161,7 +216,7 @@ impl Replicator {
             .and_then(|v| frame.entity(v))
             .and_then(|e| self.position(e));
 
-        let despawn: Vec<EntityId> = view
+        let mut despawn: Vec<EntityId> = view
             .known
             .keys()
             .filter(|id| !rel_set.contains(id))
@@ -169,6 +224,11 @@ impl Replicator {
             .collect();
         for id in &despawn {
             view.known.remove(id);
+        }
+        for id in std::mem::take(&mut view.pending_despawn) {
+            if !rel_set.contains(&id) && !despawn.contains(&id) {
+                despawn.push(id);
+            }
         }
 
         // Priority: distance-based accumulator plus staleness; new entities first.
@@ -218,6 +278,7 @@ impl Replicator {
         w.write_bits(0, 16);
         let cid_bits = frame.schema.component_id_bits();
         let mut sent = 0u16;
+        let mut sent_ids = Vec::new();
         for (prio, id) in order {
             if prio <= 0.0 && !full {
                 continue;
@@ -278,6 +339,7 @@ impl Replicator {
             k.owner = e.owner;
             k.last_sent = tick;
             k.priority = 0.0;
+            sent_ids.push(id);
             sent += 1;
             if sent == u16::MAX {
                 break;
@@ -286,6 +348,20 @@ impl Replicator {
         let mut out = w.finish();
         out[count_pos / 8..count_pos / 8 + 2].copy_from_slice(&sent.to_be_bytes());
         view.last_tick = Some(frame.tick);
+        view.sent.push_back(Sent {
+            tick,
+            entities: sent_ids,
+            despawned: despawn,
+        });
+        if view.sent.len() > SENT_LOG {
+            let s = view.sent.pop_front().unwrap();
+            // A client that acks never let a delta get this old: assume it was lost. Clients
+            // that do not ack at all (older SDKs) just get the pre-ack behaviour.
+            if view.acked_any {
+                view.lost_deltas += 1;
+                view.forget(s);
+            }
+        }
         out
     }
 
@@ -342,6 +418,61 @@ impl Replicator {
         }
         frame.tick = tick;
         Ok(tick)
+    }
+}
+
+/// Reads `(tick, baseline_tick)` from a delta payload (without the kind byte).
+pub fn delta_header(buf: &[u8]) -> Option<(u32, u32)> {
+    if buf.len() < 8 {
+        return None;
+    }
+    Some((
+        u32::from_be_bytes(buf[0..4].try_into().unwrap()),
+        u32::from_be_bytes(buf[4..8].try_into().unwrap()),
+    ))
+}
+
+/// Client side: which delta ticks arrived, in the shape the server's `ClientView::ack` wants.
+#[derive(Debug, Default)]
+pub struct AckTracker {
+    last: Option<u32>,
+    bits: u32,
+    /// Deltas the server sent (per its `baseline_tick` header) that never arrived.
+    pub gaps: u64,
+}
+
+impl AckTracker {
+    /// Records a received delta header. Returns true when the delta before it was missed.
+    pub fn on_delta(&mut self, tick: u32, baseline_tick: u32) -> bool {
+        let Some(l) = self.last else {
+            self.last = Some(tick);
+            return false;
+        };
+        let d = tick.wrapping_sub(l);
+        if d == 0 || d >= 1 << 31 {
+            // duplicate or late arrival: fill its slot in the history
+            let back = l.wrapping_sub(tick);
+            if (1..=32).contains(&back) {
+                self.bits |= 1 << (back - 1);
+            }
+            return false;
+        }
+        let gap = baseline_tick != 0 && l != baseline_tick.wrapping_sub(1);
+        if gap {
+            self.gaps += 1;
+        }
+        self.bits = if d >= 32 {
+            0
+        } else {
+            (self.bits << d) | (1 << (d - 1))
+        };
+        self.last = Some(tick);
+        gap
+    }
+
+    /// `(last, bits)` for the ack frame; None before the first delta.
+    pub fn ack(&self) -> Option<(u32, u32)> {
+        self.last.map(|l| (l, self.bits))
     }
 }
 
@@ -489,5 +620,68 @@ mod tests {
         for e in server.entities() {
             assert_eq!(pos(&client, e.id)[0], pos(&server, e.id)[0]);
         }
+    }
+
+    #[test]
+    fn ack_tracker_bits() {
+        let mut t = AckTracker::default();
+        assert!(!t.on_delta(0, 0));
+        assert!(!t.on_delta(1, 1));
+        assert!(t.on_delta(3, 3)); // tick 2 missing
+        assert_eq!(t.ack(), Some((3, 0b110)));
+        assert!(!t.on_delta(2, 2)); // late arrival fills the hole
+        assert_eq!(t.ack(), Some((3, 0b111)));
+        assert_eq!(t.gaps, 1);
+    }
+
+    #[test]
+    fn lost_deltas_are_repaired_after_ack() {
+        let mut server = Frame::new(schema(), FrameConfig::default(), 1);
+        let mut client = Frame::new(schema(), FrameConfig::default(), 1);
+        let rep = Replicator::new(
+            ReplicationConfig {
+                aoi_cell: 0.0,
+                ..Default::default()
+            },
+            &server.schema,
+        );
+        let a = server.spawn(None).unwrap();
+        let b = server.spawn(None).unwrap();
+        server.set(a, "Transform", tf(1.0, 0.0)).unwrap();
+        server.set(b, "Transform", tf(2.0, 0.0)).unwrap();
+        let mut view = ClientView::new(ActorId(1));
+        let mut tracker = AckTracker::default();
+        let d0 = rep.build(&server, &mut view);
+        tracker.on_delta(0, 0);
+        Replicator::apply(&mut client, &d0).unwrap();
+        // tick 1: a moves (lost); tick 2: b despawns (lost)
+        server.get_mut(a, "Transform").unwrap().fields[0] = Value::Vec3([5.0, 0.0, 0.0]);
+        server.advance(|_| {});
+        let _lost1 = rep.build(&server, &mut view);
+        server.despawn(b).unwrap();
+        server.advance(|_| {});
+        let _lost2 = rep.build(&server, &mut view);
+        // tick 3 arrives: nothing changed, but the client notices the hole
+        server.advance(|_| {});
+        let d3 = rep.build(&server, &mut view);
+        let (t, base) = delta_header(&d3).unwrap();
+        assert!(tracker.on_delta(t, base));
+        Replicator::apply(&mut client, &d3).unwrap();
+        assert_eq!(client.entity_count(), 2);
+        assert_eq!(pos(&client, a)[0], 1.0);
+        let (last, bits) = tracker.ack().unwrap();
+        assert_eq!(view.ack(last, bits), 2);
+        assert_eq!(view.lost_deltas, 2);
+        // next delta repairs both: a in full, b despawned again
+        server.advance(|_| {});
+        let d4 = rep.build(&server, &mut view);
+        Replicator::apply(&mut client, &d4).unwrap();
+        assert_eq!(client.entity_count(), 1);
+        assert_eq!(pos(&client, a)[0], 5.0);
+        assert_eq!(view.known_count(), 1);
+        // everything acked -> nothing more to repair
+        tracker.on_delta(4, 4);
+        let (last, bits) = tracker.ack().unwrap();
+        assert_eq!(view.ack(last, bits), 0);
     }
 }

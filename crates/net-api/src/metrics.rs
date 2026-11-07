@@ -15,6 +15,7 @@ pub struct Metrics {
     pub events: IntCounterVec,
     pub errors: IntCounterVec,
     pub sync_tick: Histogram,
+    pub sync_lost_deltas: IntCounter,
 }
 
 impl Metrics {
@@ -49,8 +50,13 @@ impl Metrics {
         )
         .unwrap();
         registry.register(Box::new(sync_tick.clone())).unwrap();
+        let sync_lost_deltas = c(
+            "net_sync_lost_deltas_total",
+            "sync deltas clients reported lost (re-sent in full)",
+        );
         Self {
             sync_tick,
+            sync_lost_deltas,
             rooms: g("net_rooms", "open rooms on this node"),
             players: g("net_players", "online players on this node"),
             control_sessions: g("net_control_sessions", "open control websockets"),
