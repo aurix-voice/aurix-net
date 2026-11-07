@@ -639,6 +639,24 @@ pub struct UsageRow {
     pub quantity: f64,
 }
 
+/// (player_minutes, bytes_in + bytes_out) since `since` — the monthly usage-cap check.
+pub async fn usage_totals_since(
+    pool: &DbPool,
+    project_id: Uuid,
+    since: DateTime<Utc>,
+) -> Result<(f64, f64)> {
+    sqlx::query_as::<_, (f64, f64)>(
+        "SELECT COALESCE(SUM(quantity) FILTER (WHERE metric = 'player_minutes'), 0)::float8, \
+                COALESCE(SUM(quantity) FILTER (WHERE metric IN ('bytes_in','bytes_out')), 0)::float8 \
+         FROM usage_hours WHERE project_id = $1 AND hour >= $2",
+    )
+    .bind(project_id)
+    .bind(since)
+    .fetch_one(pool)
+    .await
+    .map_err(db_err)
+}
+
 pub async fn usage_between(
     pool: &DbPool,
     project_id: Uuid,

@@ -22,8 +22,15 @@ export function ProjectHealthCard({ detail, rejections }: { detail: ProjectDetai
   const expiring = openKeys.filter((k) => k.expires_at && new Date(k.expires_at).getTime() - now < WEEK_MS).length;
   const wh = detail.webhooks_1h;
   const roomsTone = maxRooms !== undefined && liveRooms >= maxRooms ? "warn" : "neutral";
+  const capMinutes = typeof detail.effective_limits.monthly_player_minutes === "number" ? detail.effective_limits.monthly_player_minutes : undefined;
+  const capBytes = typeof detail.effective_limits.monthly_bytes === "number" ? detail.effective_limits.monthly_bytes : undefined;
+  const usedMinutes = Math.round(detail.usage_month.player_minutes);
+  const usedMb = Math.round(detail.usage_month.bytes / 1e6);
+  const pct = (used: number, cap?: number) => (cap ? used / cap : 0);
+  const capPct = Math.max(pct(detail.usage_month.player_minutes, capMinutes), pct(detail.usage_month.bytes, capBytes));
+  const usageTone = capPct >= 1 ? "danger" : capPct >= 0.8 ? "warn" : "neutral";
   return (
-    <div data-testid="project-health" className="grid gap-3 grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
+    <div data-testid="project-health" className="grid gap-3 grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
       <Stat label={t("health.status")} value={p.disabled_at ? t("health.suspended") : t("health.active")} tone={p.disabled_at ? "danger" : "ok"} />
       <Stat label={t("health.rooms")} value={maxRooms !== undefined ? `${liveRooms} / ${maxRooms}` : String(liveRooms)} hint={t("health.players", { n: players })} tone={roomsTone} />
       <Stat
@@ -37,6 +44,12 @@ export function ProjectHealthCard({ detail, rejections }: { detail: ProjectDetai
         value={detail.webhooks.length ? `${wh.failed} / ${wh.total}` : "—"}
         hint={detail.webhooks.length ? t("health.webhooks.hint") : t("health.webhooks.none")}
         tone={wh.failed > 0 ? "danger" : "neutral"}
+      />
+      <Stat
+        label={t("health.usage")}
+        value={capMinutes ? `${usedMinutes.toLocaleString()} / ${capMinutes.toLocaleString()}` : usedMinutes.toLocaleString()}
+        hint={capBytes ? t("health.usage.bytes.cap", { mb: usedMb.toLocaleString(), cap: Math.round(capBytes / 1e6).toLocaleString() }) : t("health.usage.bytes", { mb: usedMb.toLocaleString() })}
+        tone={usageTone}
       />
       <Stat label={t("health.keys")} value={String(openKeys.length)} hint={expiring ? t("health.keys.expiring", { n: expiring }) : t("health.none")} tone={expiring ? "warn" : "neutral"} />
     </div>

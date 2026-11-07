@@ -3,7 +3,7 @@ import { useI18n } from "@/i18n";
 import { fmtNumber } from "@/lib/format";
 import { Badge, Card } from "@/ui/Primitives";
 
-const REASONS = ["rate_limited", "quota", "capacity", "room_full", "suspended", "banned", "region", "grant"] as const;
+const REASONS = ["rate_limited", "quota", "usage_cap", "capacity", "room_full", "suspended", "banned", "region", "grant"] as const;
 
 /** Compact "who got turned away and why" panel for one project. */
 export function RejectionsCard({ data, loading }: { data: Rejections | undefined; loading?: boolean }) {

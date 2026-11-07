@@ -18,6 +18,12 @@ pub struct ProjectLimits {
     pub max_event_bytes: Option<usize>,
     #[serde(default)]
     pub allowed_regions: Option<Vec<String>>,
+    /// Calendar-month caps; once reached, new rooms are refused with `usage_cap` until the
+    /// month rolls over (`None` = unmetered). Player-minutes is the billable unit.
+    #[serde(default)]
+    pub monthly_player_minutes: Option<u64>,
+    #[serde(default)]
+    pub monthly_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -31,6 +37,8 @@ pub struct EffectiveLimits {
     pub max_player_props_bytes: usize,
     pub max_cached_events_per_room: usize,
     pub allowed_regions: Option<Vec<String>>,
+    pub monthly_player_minutes: Option<u64>,
+    pub monthly_bytes: Option<u64>,
 }
 
 impl ProjectLimits {
@@ -58,6 +66,8 @@ impl ProjectLimits {
             max_props_bytes: node.max_props_bytes,
             max_player_props_bytes: node.max_player_props_bytes,
             max_cached_events_per_room: node.max_cached_events_per_room,
+            monthly_player_minutes: self.monthly_player_minutes,
+            monthly_bytes: self.monthly_bytes,
             allowed_regions: self.allowed_regions.clone(),
         }
     }

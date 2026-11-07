@@ -626,6 +626,7 @@ impl Session {
                 limits.max_rooms
             )));
         }
+        crate::rest::check_usage_cap(&self.st, g.project.0, &limits).await?;
         if self.st.host.len() >= self.st.cfg.limits.max_rooms_per_node as usize {
             crate::rest::reject(&self.st, g.project, "capacity");
             return Err(NetError::QuotaExceeded("node is full".into()));

@@ -326,6 +326,65 @@ fn key_write(st: &Shared, key: &ApiKeyRow) -> Result<()> {
 
 /// Records why a project's player/key was turned away (hourly Redis buckets, see
 /// `RedisStore::incr_rejection`). Off the request path; failures are only logged.
+/// First instant of the current UTC calendar month.
+pub(crate) fn month_start() -> chrono::DateTime<chrono::Utc> {
+    use chrono::{Datelike, TimeZone};
+    let now = chrono::Utc::now();
+    chrono::Utc
+        .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+        .single()
+        .unwrap_or(now)
+}
+
+/// Month-to-date (player_minutes, bytes) of a project, cached 30 s per node so the join path
+/// does not add a SUM to every room creation.
+pub(crate) async fn usage_month(st: &Shared, project: Uuid) -> Result<(f64, f64)> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
+    type UsageCache = Mutex<HashMap<Uuid, (Instant, (f64, f64))>>;
+    static CACHE: OnceLock<UsageCache> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((at, v)) = cache.lock().unwrap().get(&project) {
+        if at.elapsed() < std::time::Duration::from_secs(30) {
+            return Ok(*v);
+        }
+    }
+    let v = queries::usage_totals_since(&st.pool, project, month_start()).await?;
+    let mut c = cache.lock().unwrap();
+    if c.len() > 10_000 {
+        c.clear();
+    }
+    c.insert(project, (Instant::now(), v));
+    Ok(v)
+}
+
+/// Refuses a new room once a monthly cap is reached (counted as rejection `usage_cap`).
+pub(crate) async fn check_usage_cap(
+    st: &Shared,
+    project: Uuid,
+    limits: &net_control::quotas::EffectiveLimits,
+) -> Result<()> {
+    if limits.monthly_player_minutes.is_none() && limits.monthly_bytes.is_none() {
+        return Ok(());
+    }
+    let (minutes, bytes) = usage_month(st, project).await?;
+    let hit = match (limits.monthly_player_minutes, limits.monthly_bytes) {
+        (Some(cap), _) if minutes >= cap as f64 => {
+            Some(format!("monthly cap of {cap} player-minutes reached"))
+        }
+        (_, Some(cap)) if bytes >= cap as f64 => {
+            Some(format!("monthly cap of {cap} bytes reached"))
+        }
+        _ => None,
+    };
+    if let Some(msg) = hit {
+        reject(st, ProjectId::from_uuid(project), "usage_cap");
+        return Err(NetError::QuotaExceeded(msg));
+    }
+    Ok(())
+}
+
 pub(crate) fn reject(st: &Shared, project: ProjectId, reason: &'static str) {
     let redis = st.redis.clone();
     tokio::spawn(async move {
@@ -616,6 +675,12 @@ async fn create_room(
     }
     let prow = queries::get_project(&st.pool, key.project_id).await?;
     let limits = net_control::ProjectLimits::from_json(&prow.limits).effective(&st.cfg.limits);
+    let open_rooms = queries::count_open_rooms(&st.pool, key.project_id).await?;
+    if open_rooms >= limits.max_rooms as i64 {
+        reject(&st, project, "quota");
+        return Err(NetError::QuotaExceeded(format!("max {} open rooms", limits.max_rooms)).into());
+    }
+    check_usage_cap(&st, key.project_id, &limits).await?;
     let max_players = req
         .max_players
         .unwrap_or(limits.max_players_per_room.min(16))
@@ -2402,12 +2467,31 @@ async fn op_attention(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<
     }
     rejections.sort_by_key(|r| -r["total"].as_i64().unwrap_or(0));
     rejections.truncate(20);
+    let mut usage_caps: Vec<Value> = Vec::new();
+    for p in projects.iter().filter(|p| p.deleted_at.is_none()) {
+        let l = net_control::ProjectLimits::from_json(&p.limits);
+        if l.monthly_player_minutes.is_none() && l.monthly_bytes.is_none() {
+            continue;
+        }
+        let (minutes, bytes) = usage_month(&st, p.id).await?;
+        for (metric, used, cap) in [
+            ("player_minutes", minutes, l.monthly_player_minutes),
+            ("bytes", bytes, l.monthly_bytes),
+        ] {
+            if let Some(cap) = cap.filter(|c| *c > 0) {
+                if used >= cap as f64 * 0.8 {
+                    usage_caps.push(json!({"project_id": p.id, "project_name": p.name, "metric": metric, "used": used, "cap": cap}));
+                }
+            }
+        }
+    }
     Ok(Json(json!({
         "stale_nodes": stale,
         "draining_nodes": draining,
         "suspended_projects": suspended,
         "failing_webhooks": failing_webhooks,
         "rejections": rejections,
+        "usage_caps": usage_caps,
     })))
 }
 
@@ -2701,6 +2785,7 @@ async fn op_project(
         .await
         .unwrap_or_default();
     let (wh_failed, wh_total) = queries::webhook_delivery_stats_last_hour(&st.pool, id).await?;
+    let (mtd_minutes, mtd_bytes) = usage_month(&st, id).await?;
     Ok(Json(json!({
         "project": p,
         "effective_limits": net_control::ProjectLimits::from_json(&p.limits).effective(&st.cfg.limits),
@@ -2709,6 +2794,7 @@ async fn op_project(
         "modules": modules,
         "rooms": rooms,
         "webhooks_1h": {"failed": wh_failed, "total": wh_total},
+        "usage_month": {"player_minutes": mtd_minutes, "bytes": mtd_bytes, "since": month_start()},
     })))
 }
 

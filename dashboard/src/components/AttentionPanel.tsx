@@ -8,7 +8,7 @@ import { Badge, Card, Mono } from "@/ui/Primitives";
 /** Operator "needs a look" list: empty state means the fleet is quiet. */
 export function AttentionPanel({ data, loading }: { data: Attention | undefined; loading?: boolean }) {
   const { t, locale } = useI18n();
-  const count = data ? data.stale_nodes.length + data.draining_nodes.length + data.suspended_projects.length + data.failing_webhooks.length + data.rejections.length : 0;
+  const count = data ? data.stale_nodes.length + data.draining_nodes.length + data.suspended_projects.length + data.failing_webhooks.length + data.rejections.length + (data.usage_caps?.length ?? 0) : 0;
   return (
     <Card className="p-4">
       <div className="flex items-center justify-between gap-3 mb-3">
@@ -54,6 +54,17 @@ export function AttentionPanel({ data, loading }: { data: Attention | undefined;
               <Mono className="hidden sm:inline truncate text-xs text-fg-muted">{w.url}</Mono>
             </span>
             <span className="text-xs text-fg-muted whitespace-nowrap">{t("attention.failed", { f: fmtNumber(locale, w.failed), n: fmtNumber(locale, w.total) })}</span>
+          </li>
+        ))}
+        {data?.usage_caps?.map((u) => (
+          <li key={`u-${u.project_id}-${u.metric}`} className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2 min-w-0">
+              <Badge tone={u.used >= u.cap ? "danger" : "warn"}>{t("attention.usage_cap")}</Badge>
+              <Link to="/projects/$projectId" params={{ projectId: u.project_id }} className="truncate hover:underline">{u.project_name}</Link>
+            </span>
+            <span className="text-xs text-fg-muted whitespace-nowrap">
+              {t("attention.usage", { pct: Math.round((u.used / u.cap) * 100), metric: u.metric === "bytes" ? t("health.usage.metric.bytes") : t("health.usage.metric.minutes") })}
+            </span>
           </li>
         ))}
         {data?.rejections.map((r) => (

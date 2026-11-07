@@ -39,7 +39,7 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | GET/POST | `/v1/operator/projects` | operator | projects; create returns the first key |
 | POST | `/v1/operator/projects/:id/grants` | operator | test grant for a project (`player_id`, `name`, `room`, `scopes`, `ttl_secs` ≤ 3600, default 300); suspended/banned → 403; audited `grant.issue` (token never logged) |
 | POST | `/v1/operator/projects/:id/keys` | operator | `{name, scopes, expires_in_secs?}` — expired keys fail auth like revoked ones; `expires_at` is returned in every key listing |
-| POST | `/v1/operator/projects/:id/limits` | operator | quotas: `max_open_rooms, max_players_per_room, max_events_per_sec_per_room, max_events_per_sec_per_player, max_player_props_bytes, max_event_bytes, regions` |
+| POST | `/v1/operator/projects/:id/limits` | operator | quotas: `max_rooms, max_players_per_room, max_events_per_sec_per_room, max_events_per_sec_per_player, max_event_bytes, allowed_regions[]`, and calendar-month caps `monthly_player_minutes`, `monthly_bytes` (in + out): at ≥80 % the project shows under `/v1/operator/attention.usage_caps`, at 100 % new rooms are refused (`quota_exceeded`, rejection `usage_cap`) until the month rolls over; month-to-date totals in the project detail as `usage_month` |
 | POST | `/v1/operator/projects/:id/suspend` | operator | `{suspended}`: while suspended the project's keys can only read; grants, joins, room creation and writes get 403 `project suspended`. Live rooms drain as players leave. |
 | DELETE | `/v1/rooms/:id/players/:actor` | rooms | kick a player (`?reason=` ≤64 printable ASCII chars, shown to the client as `left{reason}`); works for rooms hosted on any node; audited as `player.kick` |
 | DELETE | `/v1/operator/rooms/:id/players/:actor` | operator | same for operators |
@@ -49,7 +49,7 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | GET/POST | `/v1/bans` | read / rooms | project deny-list; POST `{player_id, reason?, duration_secs?}` (omit duration = permanent). Banned players get 403 `banned…` at `/v1/grants` and at join; counted as rejection reason `banned` |
 | DELETE | `/v1/bans/:player_id` | rooms | lift a ban |
 | GET/POST/DELETE | `/v1/operator/projects/:id/bans[/:player_id]` | operator | same for operators |
-| GET | `/v1/rejections` | read | why this project's players/keys were turned away in the last `?hours=` (≤26, default 24): hourly `series` + `total` by reason — `rate_limited`, `quota`, `capacity`, `room_full`, `suspended`, `banned`, `region`, `grant`. Counted on every node (Redis), 26 h retention |
+| GET | `/v1/rejections` | read | why this project's players/keys were turned away in the last `?hours=` (≤26, default 24): hourly `series` + `total` by reason — `rate_limited`, `quota`, `usage_cap`, `capacity`, `room_full`, `suspended`, `banned`, `region`, `grant`. Counted on every node (Redis), 26 h retention |
 | GET | `/v1/operator/projects/:id/rejections` | operator | same for operators |
 | GET | `/v1/webhooks/:id/deliveries` | read | last deliveries of a webhook (`?limit=`, ≤500): event, ok, HTTP status, attempts, latency, error; kept `retention.webhook_deliveries_days` (7) |
 | POST | `/v1/webhooks/:id/rotate` | admin | new signing secret (shown once), `{grace_secs?}` (default 24 h, max 7 d): until then deliveries also carry `X-Aurix-Signature-Previous` signed with the old secret; audited `webhook.rotate`; operators: `POST /v1/operator/projects/:id/webhooks/:wid/rotate` |

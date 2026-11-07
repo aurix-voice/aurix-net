@@ -344,3 +344,13 @@ test("operator issues a test grant from the project page", async ({ page }) => {
   const audit = await api<{ audit: { action: string; target: string }[] }>(page, "GET", `/v1/operator/audit?action=grant.issue&project=${project.project.id}`);
   expect(audit.audit.some((a) => a.target === "qa-player")).toBeTruthy();
 });
+
+test("operator sets a monthly player-minutes cap and the health strip shows it", async ({ page }) => {
+  const project = await api<{ project: { id: string } }>(page, "POST", "/v1/operator/projects", { name: uniq("e2e-cap") });
+  await page.goto(`/projects/${project.project.id}`);
+  await page.getByLabel("Monthly cap: player-minutes").fill("100");
+  await page.getByRole("button", { name: "Save quotas" }).click();
+  await expect(page.getByTestId("project-health")).toContainText("0 / 100");
+  const detail = await api<{ effective_limits: { monthly_player_minutes: number | null } }>(page, "GET", `/v1/operator/projects/${project.project.id}`);
+  expect(detail.effective_limits.monthly_player_minutes).toBe(100);
+});

@@ -305,6 +305,7 @@ export interface Attention {
   suspended_projects: { id: string; name: string; since: string }[];
   failing_webhooks: { project_id: string; project_name: string; webhook_id: string; url: string; failed: number; total: number }[];
   rejections: { project_id: string; project_name: string; total: number; by: Record<string, number> }[];
+  usage_caps: { project_id: string; project_name: string; metric: "player_minutes" | "bytes"; used: number; cap: number }[];
 }
 export interface Ban {
   project_id: string;
@@ -353,6 +354,7 @@ export interface ProjectDetail {
   modules: Module[];
   rooms: LiveRoom[];
   webhooks_1h: { failed: number; total: number };
+  usage_month: { player_minutes: number; bytes: number; since: string };
 }
 export interface Health {
   ok: boolean;
