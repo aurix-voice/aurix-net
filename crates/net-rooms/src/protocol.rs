@@ -114,6 +114,15 @@ pub enum ClientMsg {
         #[serde(default)]
         leave: Vec<u16>,
     },
+    /// Relay event cache slices (cache slice index): events cached from now on belong to the
+    /// current slice; `increase` opens a new one, `set` picks `index`, `purge` drops the events of
+    /// slice `index`, `purge_up_to` drops every slice <= `index`. Late joiners get all remaining
+    /// slices in order.
+    CacheSlice {
+        op: String,
+        #[serde(default)]
+        index: Option<u16>,
+    },
     /// Sync rooms: steer area-of-interest for this client — extra viewpoints (camera, scope
     /// target; the avatar stays the first one) and entities forced into view regardless of
     /// distance (team mates, objectives). Entity ids as in deltas (u64).

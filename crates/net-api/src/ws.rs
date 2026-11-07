@@ -492,6 +492,25 @@ impl Session {
                     .set_groups(r.actor, &join, &leave)
                     .map_err(room_err)
             }
+            ClientMsg::CacheSlice { op, index } => {
+                let r = self.in_room()?;
+                let need = |i: Option<u16>| {
+                    i.ok_or_else(|| NetError::Invalid("cache_slice: index required".into()))
+                };
+                let op = match op.as_str() {
+                    "increase" => net_rooms::room::CacheSliceOp::Increase,
+                    "set" => net_rooms::room::CacheSliceOp::Set(need(index)?),
+                    "purge" => net_rooms::room::CacheSliceOp::Purge(need(index)?),
+                    "purge_up_to" => net_rooms::room::CacheSliceOp::PurgeUpTo(need(index)?),
+                    _ => {
+                        return Err(NetError::Invalid(
+                            "cache_slice: op is increase|set|purge|purge_up_to".into(),
+                        ))
+                    }
+                };
+                r.hosted.lock().room.cache_slice_op(op);
+                Ok(())
+            }
             ClientMsg::SetView {
                 viewpoints,
                 interest,

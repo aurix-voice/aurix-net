@@ -29,6 +29,10 @@ takes over their own slot; the old session gets `left` with reason `session_repl
 ignored from then on.
 `cleanup_cache_on_leave` (default true) drops a player's cached events when they leave for good; set it
 to false to keep them for late joiners ("keep the cache on leave").
+Cache slices: the `cache_slice{op, index?}` control message stamps events
+cached from then on — `increase` opens the next slice, `set` picks one, `purge` drops the events of
+one slice, `purge_up_to` every slice up to and including `index` (e.g. per-round state a late
+joiner no longer needs). Late joiners receive the remaining slices in original order.
 
 Rate limits: a room takes `max_events_per_sec_per_room` events (default 2000) and each player
 `max_events_per_sec_per_player` (default 60, burst of 2 s worth); over the limit the event is

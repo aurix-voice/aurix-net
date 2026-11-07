@@ -151,6 +151,15 @@ struct CachedEvent {
     code: u8,
     from: ActorId,
     payload: bytes::Bytes,
+    slice: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheSliceOp {
+    Increase,
+    Set(u16),
+    Purge(u16),
+    PurgeUpTo(u16),
 }
 
 #[derive(Debug)]
@@ -160,6 +169,8 @@ pub struct Room {
     master: Option<ActorId>,
     next_actor: u16,
     cache: VecDeque<CachedEvent>,
+    /// Slice newly cached events are stamped with (see `ClientMsg::CacheSlice`).
+    cache_slice: u16,
     /// Token bucket for events.
     tokens: f64,
     last_refill: Instant,
@@ -178,6 +189,7 @@ impl Room {
             master: None,
             next_actor: 1,
             cache: VecDeque::new(),
+            cache_slice: 0,
             tokens,
             last_refill: now,
             created: now,
@@ -418,6 +430,23 @@ impl Room {
 
     pub fn player_stats(&self, now: Instant) -> Vec<PlayerStats> {
         self.players.values().map(|p| p.stats(now)).collect()
+    }
+
+    /// Current cache slice index.
+    pub fn cache_slice(&self) -> u16 {
+        self.cache_slice
+    }
+
+    /// `increase` / `set` move the slice new cached events go to; `purge` drops one slice,
+    /// `purge_up_to` every slice up to and including `index`. Returns cached events left.
+    pub fn cache_slice_op(&mut self, op: CacheSliceOp) -> usize {
+        match op {
+            CacheSliceOp::Increase => self.cache_slice = self.cache_slice.wrapping_add(1),
+            CacheSliceOp::Set(i) => self.cache_slice = i,
+            CacheSliceOp::Purge(i) => self.cache.retain(|c| c.slice != i),
+            CacheSliceOp::PurgeUpTo(i) => self.cache.retain(|c| c.slice > i),
+        }
+        self.cache.len()
     }
 
     pub fn cached_for_join(&self) -> Vec<(u8, ActorId, String)> {
@@ -695,6 +724,7 @@ impl Room {
                     code: frame.code,
                     from,
                     payload: frame.payload.clone(),
+                    slice: self.cache_slice,
                 });
             }
             CacheOp::Remove => {
@@ -1010,6 +1040,38 @@ mod tests {
         let later = t0 + Duration::from_secs(61);
         r.join("stranger", "s", Map::new(), None, false, later)
             .unwrap();
+    }
+
+    #[test]
+    fn cache_slices_group_and_purge_cached_events() {
+        let mut c = cfg();
+        c.max_cached_events = 8;
+        let t = Instant::now();
+        let mut r = Room::new(c, t);
+        let (a, _) = r.join("a", "a", Map::new(), None, false, t).unwrap();
+        let add = |r: &mut Room, code: u8| {
+            r.raise_event(
+                a,
+                ev(code, EventTarget::All, CacheOp::Add),
+                Channel::ReliableOrdered,
+                t,
+            )
+            .unwrap();
+        };
+        add(&mut r, 1);
+        assert_eq!(r.cache_slice_op(CacheSliceOp::Increase), 1);
+        assert_eq!(r.cache_slice(), 1);
+        add(&mut r, 2);
+        add(&mut r, 3);
+        r.cache_slice_op(CacheSliceOp::Set(5));
+        add(&mut r, 4);
+        let codes = |r: &Room| r.cached_for_join().iter().map(|c| c.0).collect::<Vec<_>>();
+        assert_eq!(codes(&r), vec![1, 2, 3, 4]);
+        assert_eq!(r.cache_slice_op(CacheSliceOp::Purge(1)), 2);
+        assert_eq!(codes(&r), vec![1, 4]);
+        assert_eq!(r.cache_slice_op(CacheSliceOp::PurgeUpTo(4)), 1);
+        assert_eq!(codes(&r), vec![4]);
+        assert_eq!(r.cache_slice_op(CacheSliceOp::Purge(9)), 1);
     }
 
     #[test]
