@@ -1575,7 +1575,13 @@ async fn room_detail(st: &Shared, row: net_db::models::RoomRow) -> Result<Value>
             _ => (Vec::new(), "none"),
         },
     };
-    Ok(json!({"room": row, "live": live, "players": players, "players_source": source}))
+    let referee = st
+        .host
+        .get(RoomId::from_uuid(id))
+        .map(|hr| hr.lock().lockstep.as_ref().is_some_and(|ls| ls.has_sim()));
+    Ok(
+        json!({"room": row, "live": live, "players": players, "players_source": source, "referee": referee}),
+    )
 }
 
 async fn remote_players(st: &Shared, http_url: &str, id: Uuid) -> Result<Vec<Value>> {

@@ -126,12 +126,19 @@ pub struct LockstepRoom {
     /// compared against, and checkpoints come from it instead of the master.
     sim: Option<ServerSim>,
     server_hashes: BTreeMap<u32, u64>,
+    /// Recent referee states at `SERVER_HASH_EVERY` ticks (bounded by `MAX_SERVER_STATES_BYTES`),
+    /// so a desync can be answered with the node's own state instead of trusting the master.
+    server_states: BTreeMap<u32, Bytes>,
     /// Actors that have appeared in a bundle (see `tick`).
     seen: BTreeSet<ActorId>,
 }
 
 /// Ticks between server state hashes; matches `RollbackConfig::default().hash_every`.
 pub const SERVER_HASH_EVERY: u32 = 10;
+/// Total bytes of recent referee states kept for desync dumps (the newest is always kept).
+pub const MAX_SERVER_STATES_BYTES: usize = 512 * 1024;
+/// Actor id under which the node's own (referee) state is stored among desync dumps.
+pub const REFEREE_ACTOR: ActorId = ActorId(0);
 /// Journal ticks kept in memory (4 h at 60 Hz). Beyond that the oldest ticks before the last
 /// checkpoint are dropped: late join and failover still work (checkpoint + tail), the replay
 /// of such a match starts at `from_tick`.
@@ -217,6 +224,7 @@ impl LockstepRoom {
             spectator_delay: hz.clamp(8, 128) as u32 * 3,
             sim: None,
             server_hashes: BTreeMap::new(),
+            server_states: BTreeMap::new(),
             seen: BTreeSet::new(),
         }
     }
@@ -256,6 +264,7 @@ impl LockstepRoom {
         }
         self.sim = Some(sim);
         self.server_hashes.clear();
+        self.server_states.clear();
         Ok(())
     }
 
@@ -609,6 +618,15 @@ impl LockstepRoom {
                     if let Some(&sh) = self.server_hashes.get(&t) {
                         if h != sh {
                             self.desyncs.push((t, actor));
+                            if let Some(d) = self.referee_dump(t) {
+                                if !self
+                                    .dumps
+                                    .iter()
+                                    .any(|x| x.tick == t && x.actor == REFEREE_ACTOR)
+                                {
+                                    self.dumps.push(d);
+                                }
+                            }
                         }
                     }
                 } else if t < self.tick.0 && self.tick.0 - t <= 600 {
@@ -745,6 +763,19 @@ impl LockstepRoom {
         Some(b.freeze())
     }
 
+    /// The node's own state at `tick` (lockstep rooms with a `logic` module), stored among the
+    /// desync dumps as actor `REFEREE_ACTOR` so operators diff clients against the truth.
+    pub fn referee_dump(&self, tick: u32) -> Option<Dump> {
+        let state = self.server_states.get(&tick)?.clone();
+        let hash = self.server_hashes.get(&tick).copied()?;
+        Some(Dump {
+            tick,
+            actor: REFEREE_ACTOR,
+            hash,
+            state,
+        })
+    }
+
     pub fn take_dumps(&mut self) -> Vec<Dump> {
         std::mem::take(&mut self.dumps)
     }
@@ -790,16 +821,23 @@ impl LockstepRoom {
                 self.server_hashes.insert(now, h);
                 let cutoff = now.saturating_sub(600);
                 self.server_hashes.retain(|k, _| *k >= cutoff);
-                if now.is_multiple_of(every) {
-                    let state = sim.frame.snapshot();
-                    if state.len() <= MAX_CHECKPOINT_BYTES {
-                        self.checkpoint = Some(Checkpoint {
-                            tick: now,
-                            hash: h,
-                            state: Bytes::from(state),
-                        });
-                        self.want_checkpoint = false;
+                let state = sim.frame.snapshot();
+                if state.len() <= MAX_CHECKPOINT_BYTES {
+                    self.server_states.insert(now, Bytes::from(state.clone()));
+                    let mut total: usize = self.server_states.values().map(|b| b.len()).sum();
+                    while total > MAX_SERVER_STATES_BYTES && self.server_states.len() > 1 {
+                        if let Some((&oldest, _)) = self.server_states.iter().next() {
+                            total -= self.server_states.remove(&oldest).map_or(0, |b| b.len());
+                        }
                     }
+                }
+                if now.is_multiple_of(every) && state.len() <= MAX_CHECKPOINT_BYTES {
+                    self.checkpoint = Some(Checkpoint {
+                        tick: now,
+                        hash: h,
+                        state: Bytes::from(state),
+                    });
+                    self.want_checkpoint = false;
                 }
             }
         }
@@ -1200,6 +1238,13 @@ mod tests {
             r.handle(x, LockstepRoom::encode_hash(Tick(310), 12345));
         }
         assert_eq!(r.take_desyncs(), vec![(310, a), (310, b)]);
+        // the referee's own state is the reference dump (once per tick, actor 0)
+        let dumps = r.take_dumps();
+        assert_eq!(dumps.len(), 1);
+        assert_eq!(dumps[0].actor, REFEREE_ACTOR);
+        assert_eq!(dumps[0].tick, 310);
+        assert_eq!(dumps[0].hash, mirror_hashes[&310]);
+        assert_eq!(hash_bytes(&dumps[0].state), mirror_hashes[&310]);
         r.handle(a, LockstepRoom::encode_hash(Tick(310), mirror_hashes[&310]));
         assert!(r.take_desyncs().is_empty());
         // re-host: checkpoint at 300 + journal tail resimulated to 320 gives the same hash

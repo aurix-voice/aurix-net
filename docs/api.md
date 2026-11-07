@@ -43,7 +43,7 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | GET/POST | `/v1/rooms` | `read`/`rooms` | list open rooms / create a **relay** room (`name, max_players, visible, open, props, lobby_props, reserved`); sync/lockstep rooms are created by a client through the control plane (`create`) because they need the schema/simulation setup |
 | GET/DELETE | `/v1/rooms/:id` | `read`/`rooms` | details / close; `players[]` comes from the host node (any node answers) with live per-player counters `events`, `bytes_in`, `eps` (1 s window), `idle_secs`, `since_secs` — relay events raised through the data path; reset on rehost |
 | GET | `/v1/rooms/:id/desyncs` | `read` | state dumps collected after lockstep desyncs (`{tick, actor, hash, bytes, at}`, 24 h) |
-| GET | `/v1/rooms/:id/desyncs/:tick/:actor` | `read` | one dump as `application/octet-stream` — diff the desynced client's against the master's |
+| GET | `/v1/rooms/:id/desyncs/:tick/:actor` | `read` | one dump as `application/octet-stream` — diff the desynced client's against the reference: actor `0` is the node's own referee state (rooms with a `logic` module), otherwise the master's |
 | GET | `/v1/rooms/:id/replay` | `read` | lockstep input journal: stored 24 h after close, or live from the hosting node; `?from=&to=` cuts a tick window (instant replay / kill cam) |
 | GET | `/v1/usage?format=csv` | read | same rows as CSV (`hour,metric,quantity`, attachment) for billing exports; also on `/v1/operator/usage` and `/v1/operator/projects/:id/usage` |
 | GET | `/v1/usage` | `read` | node-hours, events, bytes per hour |

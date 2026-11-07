@@ -1283,6 +1283,11 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                     if let Some(f) = ls.request_dump(*tick, *actor) {
                         dump_reqs.push((*actor, f));
                     }
+                    // With a referee sim the node's own state is the reference (already in
+                    // `dumps`); otherwise ask the master for its state at that tick.
+                    if ls.has_sim() {
+                        continue;
+                    }
                     if let Some(m) = master.filter(|m| m != actor) {
                         if let Some(f) = ls.request_dump(*tick, m) {
                             dump_reqs.push((m, f));

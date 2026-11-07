@@ -134,6 +134,9 @@ late join and failover come from the node (no master upload), and after a node f
 new node resimulates the journal tail from the last checkpoint. Clients that want to be
 compared must follow the same rule: an actor's avatar spawns at the first tick it appears in a
 bundle, state is a `net-sim` frame, hash = `hash_bytes(frame.snapshot())` every 10 ticks.
+On a desync the node stores its own state at that tick as the reference dump (actor `0` in
+`GET /v1/rooms/:id/desyncs`) next to the desynced client's, so nobody has to trust the master;
+room details report `referee: true` while the node hosts such a room.
 
 ### Late join and rejoin
 
