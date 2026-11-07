@@ -1,0 +1,11 @@
+[package]
+name = "net-sim-physics"
+version = "0.1.0"
+edition = "2021"
+description = "Deterministic fixed-point 2D rigid-body physics for lockstep games (aurix-sim phase 1)"
+license = "Apache-2.0"
+
+[dependencies]
+net-fpmath = { path = "../net-fpmath" }
+serde = { workspace = true }
+serde_json = { workspace = true }

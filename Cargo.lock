@@ -2045,6 +2045,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "net-sim-physics"
+version = "0.1.0"
+dependencies = [
+ "net-fpmath",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "net-transport"
 version = "0.1.0"
 dependencies = [
