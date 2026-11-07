@@ -34,3 +34,13 @@ cd sdk/unity/BuildCheck~/managed-live && NET_API_KEY=an_… dotnet run -c Releas
 ```
 Expects `MANAGED OK`: 1 reliable, 10 unreliable and one 5 KB fragmented relay event delivered
 between two clients, and >60 sync deltas in 2 s. Needs a node on 127.0.0.1:8090 with the tunnel on.
+
+## Rolling deploy (SIGTERM handoff)
+
+```
+KILL_SIGNAL=TERM scripts/failover-test.sh
+```
+Same pass criteria as the crash variant, but node A hands its rooms off itself on SIGTERM
+(fresh checkpoint, rooms `orphaned`), so players reconnecting 2 s later already find the room
+on B. Clients receive `left{reason:"rehost"}` and should rejoin the same room name
+(`connect_and_join` / `connectAndJoin`), which lands on whichever node adopts it.
