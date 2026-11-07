@@ -30,7 +30,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use net_common::types::{ActorId, Tick};
 use net_rollback::{Journal, TickInputs};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 /// Everything another node needs to continue this room: the newest master checkpoint and
 /// the journal from that tick on. Stored in Redis every few seconds (see `ws::run_lockstep`).
@@ -86,6 +86,10 @@ pub struct LockstepRoom {
     want_checkpoint: bool,
     /// Desyncs per actor this match; at `UNTRUSTED_AFTER` the actor is reported untrusted.
     strikes: HashMap<ActorId, u8>,
+    /// Watch-only actors: get the input stream `spectator_delay` ticks late, send nothing.
+    spectators: BTreeSet<ActorId>,
+    past: VecDeque<Bytes>,
+    pub spectator_delay: u32,
 }
 
 /// Desyncs after which an actor's results should not be trusted (its hash keeps disagreeing).
@@ -108,7 +112,27 @@ impl LockstepRoom {
             last_checkpoint_req: None,
             want_checkpoint: false,
             strikes: HashMap::new(),
+            spectators: BTreeSet::new(),
+            past: VecDeque::new(),
+            spectator_delay: hz.clamp(8, 128) as u32 * 3,
         }
+    }
+
+    /// Delay of the spectator stream in seconds (default 3, against stream sniping).
+    pub fn with_spectator_delay(mut self, secs: u32) -> Self {
+        self.spectator_delay = self.hz as u32 * secs;
+        self
+    }
+
+    pub fn spectators(&self) -> Vec<ActorId> {
+        self.spectators.iter().copied().collect()
+    }
+
+    /// The datagram spectators should get now: the one from `spectator_delay` ticks ago.
+    pub fn spectator_datagram(&self) -> Option<Bytes> {
+        (self.past.len() > self.spectator_delay as usize)
+            .then(|| self.past.front().cloned())
+            .flatten()
     }
 
     /// Records a desync for `actor`; returns its strike count so far.
@@ -230,7 +254,21 @@ impl LockstepRoom {
     /// A data link attached (join or rejoin) while the room is running: everything the
     /// client needs to reach the current tick, as reliable-ordered frames. Empty at tick 0.
     pub fn on_late_join(&mut self) -> Vec<Bytes> {
-        if self.tick.0 == 0 {
+        self.catchup_until(self.tick.0)
+    }
+
+    /// Catch-up for a joining player, or for a spectator only up to the delayed tick.
+    pub fn catchup_for(&mut self, spectator: bool) -> Vec<Bytes> {
+        let end = if spectator {
+            self.tick.0.saturating_sub(self.spectator_delay)
+        } else {
+            self.tick.0
+        };
+        self.catchup_until(end)
+    }
+
+    fn catchup_until(&mut self, end: u32) -> Vec<Bytes> {
+        if end == 0 {
             return Vec::new();
         }
         let (from, hash, state) = match &self.checkpoint {
@@ -264,7 +302,7 @@ impl LockstepRoom {
             }
             frames.push(out.freeze());
         };
-        for t in from..self.tick.0 {
+        for t in from..end {
             let inputs = self.journal.tick(Tick(t)).unwrap_or(&empty);
             let bundle = Self::encode_bundle(t, inputs);
             if chunk.len() == 255 || chunk_bytes + bundle.len() + 2 > CATCHUP_CHUNK_BYTES {
@@ -332,11 +370,20 @@ impl LockstepRoom {
     }
 
     pub fn on_join(&mut self, actor: ActorId) {
-        self.actors.insert(actor, ());
+        self.on_join_as(actor, false)
+    }
+
+    pub fn on_join_as(&mut self, actor: ActorId, spectator: bool) {
+        if spectator {
+            self.spectators.insert(actor);
+        } else {
+            self.actors.insert(actor, ());
+        }
     }
 
     pub fn on_leave(&mut self, actor: ActorId) {
         self.strikes.remove(&actor);
+        self.spectators.remove(&actor);
         self.actors.remove(&actor);
     }
 
@@ -345,6 +392,11 @@ impl LockstepRoom {
         let Some(&kind) = payload.first() else {
             return false;
         };
+        if self.spectators.contains(&actor)
+            && matches!(kind, KIND_INPUT | KIND_HASH | KIND_CHECKPOINT)
+        {
+            return true;
+        }
         match kind {
             KIND_INPUT => {
                 payload.advance(1);
@@ -474,7 +526,12 @@ impl LockstepRoom {
             out.put_u16(r.len() as u16);
             out.extend_from_slice(r);
         }
-        out.freeze()
+        let out = out.freeze();
+        self.past.push_back(out.clone());
+        while self.past.len() > self.spectator_delay as usize + 1 {
+            self.past.pop_front();
+        }
+        out
     }
 
     /// Client side: splits a server datagram into (tick, inputs) bundles.
@@ -734,5 +791,35 @@ mod tests {
         assert!(r.is_untrusted(a));
         r.on_leave(a);
         assert!(!r.is_untrusted(a));
+    }
+
+    #[test]
+    fn spectators_get_the_stream_late_and_send_nothing() {
+        let mut r = LockstepRoom::new(60, 1).with_spectator_delay(1);
+        let (a, w) = (ActorId(1), ActorId(9));
+        r.on_join(a);
+        r.on_join_as(w, true);
+        assert_eq!(r.actors.len(), 1);
+        assert!(r.handle(w, SyncRoom::encode_input(Tick(0), &[vec![5]])));
+        let mut live = Vec::new();
+        for t in 0..70u32 {
+            r.handle(a, SyncRoom::encode_input(Tick(t), &[vec![t as u8]]));
+            live.push(r.tick());
+            if t < 60 {
+                assert!(r.spectator_datagram().is_none(), "t={t}");
+            }
+        }
+        // 60 ticks of delay: at tick 69 the spectator gets the datagram of tick 9
+        assert_eq!(r.spectator_datagram(), Some(live[9].clone()));
+        assert!(r.journal.tick(Tick(0)).unwrap().get(&w).is_none());
+        // catch-up for a spectator stops at the delayed tick
+        let frames = r.catchup_for(true);
+        let mut last = 0;
+        for f in &frames[1..] {
+            for (t, _) in LockstepRoom::decode_bundles(f.clone()) {
+                last = t.0;
+            }
+        }
+        assert_eq!(last, 9);
     }
 }

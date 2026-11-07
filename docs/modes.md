@@ -132,6 +132,15 @@ the client where it enters. Start the client with `Rollback::from_checkpoint(cfg
 tick, state)` and feed the tail bundles as confirmed inputs. If a joiner had to replay from a
 stale checkpoint the server asks the master for a fresh one at once, so catch-up stays bounded.
 
+## Spectators
+
+`join{name, spectator: true}` watches a room without taking a slot: spectators are not counted
+against `max_players`, never become master and cannot send events or inputs (`forbidden`).
+Relay: they receive events like everyone else. Sync: they get a view of the whole world (no
+AOI, no avatar). Lockstep: they get the input stream `spectator_delay_secs` (room prop, default
+3) late, and catch-up only up to that delayed tick, so a streamer's viewers cannot feed live
+positions back. `player_joined.player.spectator` tells clients who is watching.
+
 ## Node failure: rooms move, they do not die
 
 Every 5 s a node writes each sync/lockstep room to Redis (`net:<project>:ckpt:<room>`, TTL

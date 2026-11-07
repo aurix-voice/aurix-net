@@ -47,7 +47,7 @@ rate_limited`.
 ## WebSocket control channel `/ws`
 
 JSON messages, `"t"` is the type (snake_case). Client → server: `auth{grant}`,
-`create{...}`, `join{name, player_props, rejoin_actor?, schema_hash?}`,
+`create{...}`, `join{name, player_props, rejoin_actor?, schema_hash?, spectator?}`,
 `join_or_create{name, mode, max_players, props, lobby_props, region, player_props}`,
 `join_random{...}`, `leave`, `set_room_props{props, expected?}`,
 `set_player_props{props, expected?}`, `event{code, data(base64), target, reliable, cache, group}`,

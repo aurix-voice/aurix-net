@@ -41,6 +41,10 @@ pub enum ClientMsg {
         /// Sync rooms: the client's compiled schema hash; mismatch is refused.
         #[serde(default)]
         schema_hash: Option<String>,
+        /// Watch only: not counted against max_players, never master, cannot send events or
+        /// inputs; sync sends the whole world, lockstep delays the input stream.
+        #[serde(default)]
+        spectator: bool,
     },
     /// Join by name, create with these settings if absent.
     JoinOrCreate {
@@ -135,6 +139,8 @@ pub struct PlayerInfo {
     pub name: String,
     pub props: serde_json::Map<String, serde_json::Value>,
     pub online: bool,
+    #[serde(default)]
+    pub spectator: bool,
 }
 
 /// Where to open the data path.
@@ -263,6 +269,7 @@ mod tests {
         assert_eq!(
             m,
             ClientMsg::Join {
+                spectator: false,
                 name: "lobby".into(),
                 player_props: Default::default(),
                 rejoin_actor: None,

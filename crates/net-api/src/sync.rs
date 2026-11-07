@@ -15,7 +15,7 @@ use net_lagcomp::{History, Hitbox};
 use net_replication::{ClientView, ReplicationConfig, Replicator};
 use net_sim::{EntityId, Frame, FrameConfig, Input};
 use net_wire::{BitReader, ComponentValue, Schema, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub const KIND_INPUT: u8 = 0x10;
 pub const KIND_DELTA: u8 = 0x11;
@@ -192,6 +192,8 @@ pub struct SyncRoom {
     pub inputs_rate_limited: u64,
     pub invalid_inputs: u64,
     pub resyncs: u64,
+    /// Watch-only actors: a view of the whole world, no avatar, inputs ignored.
+    spectators: HashSet<ActorId>,
 }
 
 /// Input frames a client may send in a burst before the per-tick allowance applies.
@@ -281,6 +283,7 @@ impl SyncRoom {
             inputs_rate_limited: 0,
             invalid_inputs: 0,
             resyncs: 0,
+            spectators: HashSet::new(),
         })
     }
 
@@ -289,6 +292,17 @@ impl SyncRoom {
     }
 
     pub fn on_join(&mut self, actor: ActorId) {
+        self.on_join_as(actor, false)
+    }
+
+    pub fn on_join_as(&mut self, actor: ActorId, spectator: bool) {
+        if spectator {
+            self.spectators.insert(actor);
+            self.views
+                .entry(actor)
+                .or_insert_with(|| ClientView::new(actor));
+            return;
+        }
         if self.avatars.contains_key(&actor) {
             return;
         }
@@ -309,6 +323,7 @@ impl SyncRoom {
 
     pub fn on_leave(&mut self, actor: ActorId) {
         self.input_tokens.remove(&actor);
+        self.spectators.remove(&actor);
         if let Some(avatar) = self.avatars.remove(&actor) {
             self.logic.on_leave(&mut self.frame, actor, avatar);
         }
@@ -323,6 +338,9 @@ impl SyncRoom {
         };
         match kind {
             KIND_INPUT => {
+                if self.spectators.contains(&actor) {
+                    return true;
+                }
                 payload.advance(1);
                 if payload.len() < 5 {
                     self.invalid_inputs += 1;
@@ -620,5 +638,23 @@ mod tests {
         let _ = room.tick();
         room.handle(a, far);
         assert_eq!(room.take_input_stats(), (0, 1));
+    }
+
+    #[test]
+    fn spectator_sees_everything_and_cannot_move() {
+        let mut room = SyncRoom::new(None, 60, 3).unwrap();
+        let (a, w) = (ActorId(1), ActorId(9));
+        room.on_join(a);
+        room.on_join_as(w, true);
+        assert_eq!(room.avatars.len(), 1);
+        room.handle(w, SyncRoom::encode_input(Tick(0), &[vec![127, 0, 0]]));
+        let out = room.tick();
+        let to_w = out
+            .iter()
+            .find(|(x, _)| *x == w)
+            .map(|(_, d)| d.len())
+            .unwrap();
+        assert!(to_w > 12, "spectator got a delta with the avatar");
+        assert_eq!(room.frame.entity_count(), 1);
     }
 }

@@ -202,13 +202,14 @@ impl Session {
                         region,
                     )
                     .await?;
-                self.join_hosted(h, player_props, None).await
+                self.join_hosted(h, player_props, None, false).await
             }
             ClientMsg::Join {
                 name,
                 player_props,
                 rejoin_actor,
                 schema_hash,
+                spectator,
             } => {
                 let g = self.grant()?.clone();
                 self.ensure_not_in_room()?;
@@ -225,7 +226,8 @@ impl Session {
                         }
                     }
                 }
-                self.join_hosted(h, player_props, rejoin_actor).await
+                self.join_hosted(h, player_props, rejoin_actor, spectator)
+                    .await
             }
             ClientMsg::JoinOrCreate {
                 name,
@@ -283,7 +285,7 @@ impl Session {
                         Err(e) => return Err(e),
                     }
                 };
-                self.join_hosted(h, player_props, None).await
+                self.join_hosted(h, player_props, None, false).await
             }
             ClientMsg::JoinRandom {
                 filter,
@@ -308,7 +310,7 @@ impl Session {
                     }
                 }
                 let h = pick.ok_or_else(|| NetError::NotFound("no matching room".into()))?;
-                self.join_hosted(h, player_props, None).await
+                self.join_hosted(h, player_props, None, false).await
             }
             ClientMsg::Leave => {
                 self.leave(false).await;
@@ -511,7 +513,14 @@ impl Session {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(1);
-            Some(crate::lockstep::LockstepRoom::new(hz, seed))
+            Some(
+                crate::lockstep::LockstepRoom::new(hz, seed).with_spectator_delay(prop_secs(
+                    &props,
+                    "spectator_delay_secs",
+                    3,
+                )
+                    as u32),
+            )
         } else {
             None
         };
@@ -628,6 +637,7 @@ impl Session {
         h: Arc<Mutex<HostedRoom>>,
         player_props: Map<String, Value>,
         rejoin: Option<ActorId>,
+        spectator: bool,
     ) -> Result<()> {
         let g = self.grant()?.clone();
         let joined = {
@@ -646,7 +656,14 @@ impl Session {
             }
             let (actor, out) = hr
                 .room
-                .join(&g.player_id, &g.name, player_props, rejoin, Instant::now())
+                .join(
+                    &g.player_id,
+                    &g.name,
+                    player_props,
+                    rejoin,
+                    spectator,
+                    Instant::now(),
+                )
                 .map_err(room_err)?;
             hr.sessions.insert(
                 actor,
@@ -662,10 +679,10 @@ impl Session {
                 serde_json::json!({"room": hr.room.id().to_string(), "actor": actor.0}),
             );
             if let Some(sy) = hr.sync.as_mut() {
-                sy.on_join(actor);
+                sy.on_join_as(actor, spectator);
             }
             if let Some(ls) = hr.lockstep.as_mut() {
-                ls.on_join(actor);
+                ls.on_join_as(actor, spectator);
             }
             dispatch(&hr, out, &self.st.metrics);
             let ticket = self.st.tickets.issue(self.id, hr.room.id(), actor);
@@ -816,8 +833,9 @@ pub fn attach_data(
     // An empty reliable frame tells the client the path is open; a lockstep room past
     // tick 0 then streams the catch-up (checkpoint + journal tail) on the same channel.
     ds.send(net_common::Channel::ReliableOrdered, Bytes::new());
+    let spectator = g.room.player(actor).is_some_and(|p| p.spectator);
     if let Some(ls) = g.lockstep.as_mut() {
-        for f in ls.on_late_join() {
+        for f in ls.catchup_for(spectator) {
             ds.send(net_common::Channel::ReliableOrdered, f);
         }
     }
@@ -947,7 +965,7 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                 checkpoint = Some((g.project, RoomCheckpoint::of(&g, None, snap).encode()));
             }
             let master = g.room.master();
-            let (bundle, desyncs, actors, ckpt_req) = {
+            let (bundle, desyncs, actors, ckpt_req, watch) = {
                 let Some(ls) = g.lockstep.as_mut() else {
                     return;
                 };
@@ -966,8 +984,16 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                     })
                     .collect();
                 let actors: Vec<ActorId> = ls.actors.keys().copied().collect();
-                (bundle, desyncs, actors, ckpt_req)
+                let watch = ls.spectator_datagram().map(|d| (ls.spectators(), d));
+                (bundle, desyncs, actors, ckpt_req, watch)
             };
+            if let Some((spectators, d)) = watch {
+                for a in &spectators {
+                    if let Some(ds) = g.sessions.get(a).and_then(|s| s.data.as_ref()) {
+                        ds.send(net_common::Channel::UnreliableSequenced, d.clone());
+                    }
+                }
+            }
             if let Some((req, m)) = ckpt_req.zip(master) {
                 if let Some(ds) = g.sessions.get(&m).and_then(|s| s.data.as_ref()) {
                     ds.send(net_common::Channel::ReliableOrdered, req);
@@ -1097,6 +1123,7 @@ impl RoomCheckpoint {
             players: g
                 .room
                 .players()
+                .filter(|p| !p.spectator)
                 .map(|p| (p.actor, p.player_id.clone(), p.name.clone()))
                 .collect(),
             master: g.room.master(),
@@ -1176,7 +1203,8 @@ pub async fn adopt_room(
             sync = Some(sy);
         }
         if let (RoomMode::Lockstep, Some(snap)) = (mode, c.lockstep) {
-            let mut ls = crate::lockstep::LockstepRoom::restore(snap);
+            let mut ls = crate::lockstep::LockstepRoom::restore(snap)
+                .with_spectator_delay(prop_secs(&props, "spectator_delay_secs", 3) as u32);
             match st.redis.get_journal(project, room_id).await {
                 Ok(entries) => {
                     let applied = ls.apply_journal(&entries);
@@ -1192,7 +1220,13 @@ pub async fn adopt_room(
         sync = Some(build_sync(st, project, &props, 0).await?);
     }
     if mode == RoomMode::Lockstep && lockstep.is_none() {
-        lockstep = Some(crate::lockstep::LockstepRoom::new(hz, 1));
+        lockstep = Some(
+            crate::lockstep::LockstepRoom::new(hz, 1).with_spectator_delay(prop_secs(
+                &props,
+                "spectator_delay_secs",
+                3,
+            ) as u32),
+        );
     }
     let h = st.host.insert(project, room);
     if let Some(sy) = sync {
@@ -1346,7 +1380,7 @@ fn room_err(e: RoomError) -> NetError {
         RoomError::Full => NetError::RoomFull { max: 0 },
         RoomError::Closed => NetError::RoomClosed,
         RoomError::NotMember | RoomError::NoActor => NetError::NotFound(e.to_string()),
-        RoomError::NotMaster => NetError::Forbidden(e.to_string()),
+        RoomError::NotMaster | RoomError::Spectator => NetError::Forbidden(e.to_string()),
         RoomError::EventRate | RoomError::PlayerEventRate => NetError::RateLimited,
         RoomError::EventTooLarge | RoomError::PropsTooLarge | RoomError::CasFailed => {
             NetError::Invalid(e.to_string())
