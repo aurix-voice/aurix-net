@@ -74,6 +74,11 @@ impl<S: Simulation> Rollback<S> {
         self.confirmed
     }
 
+    /// State after the last confirmed tick: hash *this* for `hash_frame`, never the predicted head.
+    pub fn confirmed_snapshot(&self) -> &S::Snapshot {
+        &self.history[&self.confirmed]
+    }
+
     /// Next tick the simulation will run; `head() - confirmed_tick()` ticks are predicted.
     pub fn head(&self) -> u32 {
         self.head
@@ -207,7 +212,7 @@ mod tests {
         assert_eq!(rb.rollbacks, 0);
         assert_eq!(rb.confirmed_tick(), 10);
         // head ran ahead; the confirmed snapshot equals a pure confirmed simulation
-        sim.restore(&rb.history[&rb.confirmed_tick()]);
+        sim.restore(rb.confirmed_snapshot());
         assert_eq!(sim.state, reference(&script));
     }
 
@@ -226,7 +231,7 @@ mod tests {
         // ticks 0 (actor 2 unknown yet), 4, 5 and 6: identical across the Rust/Web/C# cores
         assert_eq!(rb.rollbacks, 4);
         assert!(rb.resimulated_ticks > 0);
-        sim.restore(&rb.history[&rb.confirmed_tick()]);
+        sim.restore(rb.confirmed_snapshot());
         assert_eq!(sim.state, reference(&script));
         assert_eq!(rb.head(), 11);
     }

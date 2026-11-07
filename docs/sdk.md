@@ -64,7 +64,7 @@ snapshots cheap (value copies of the game state) because one is taken per predic
 ```ts
 const ls = new LockstepClient((ch, p) => c.sendData(ch, p));
 const rb = new LockstepRollback(game, joined.actor, 0, 8);   // up to 8 predicted ticks
-ls.onTick = (t, inputs) => { if (rb.confirm(t, inputs)) stats.rollbacks++; ls.reportHash(t, game.hash()); };
+ls.onTick = (t, inputs) => { rb.confirm(t, inputs); ls.reportHash(t, hashOf(rb.confirmedSnapshot())); };
 ls.onRestore = (t, _h, state) => { game.load(state); rb.reset(t); };
 // per frame
 const tick = ls.sendInput(input); rb.localInput(tick, input);
@@ -74,6 +74,6 @@ render(game);                                                 // predicted state
 
 Rollback counters (`rollbacks`, `resimulatedTicks`, `predictedTicks`) tell you how often remote
 players change their input unexpectedly; a high ratio means lower `maxPrediction` or smoothing in
-the view. Hash reports must be computed on the *confirmed* state (inside `onTick`, after
-`confirm`), never on the predicted head.
+the view. Hash reports must be computed on the *confirmed* state (`confirmedSnapshot()` after `confirm`),
+never on the predicted head — the head is speculative and differs between players.
 

@@ -141,6 +141,8 @@ export class LockstepRollback<S = unknown> {
   get confirmedTick(): number { return this.confirmed; }
   /** Next tick the simulation will run; head - confirmedTick ticks are predicted. */
   get headTick(): number { return this.head; }
+  /** State after the last confirmed tick: hash *this* for reportHash, never the predicted head. */
+  confirmedSnapshot(): S { return this.history.get(this.confirmed) as S; }
 
   /** After the game restored a catch-up checkpoint at `tick`: forget every prediction. */
   reset(tick: number): void {

@@ -32,6 +32,8 @@ namespace Aurix.Net.Managed
         /// <summary>Next tick the simulation will run; HeadTick - ConfirmedTick ticks are predicted.</summary>
         public uint HeadTick { get; private set; }
         public long Rollbacks, ResimulatedTicks, PredictedTicks;
+        /// <summary>State after the last confirmed tick: hash <em>this</em> for ReportHash, never the predicted head.</summary>
+        public TSnapshot ConfirmedSnapshot => _history[ConfirmedTick];
 
         /// <param name="sim">Must be at tick <paramref name="start"/> (fresh game, or restored from a catch-up checkpoint).</param>
         public LockstepRollback(ISimulation<TSnapshot> sim, ushort localActor, uint start = 0, uint maxPrediction = 8)
