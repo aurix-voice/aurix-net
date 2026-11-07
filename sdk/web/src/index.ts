@@ -5,6 +5,7 @@ export { Channel } from "./packet.js";
 export { Link } from "./link.js";
 export { encodeEvent, decodeEvent } from "./event.js";
 export type { Target, EventFrame } from "./event.js";
+export * from "./sync.js";
 
 export type RoomMode = "relay" | "sync" | "lockstep";
 export interface Joined { room: string; name: string; mode: RoomMode; actor: number; master: number; tick_hz?: number; schema_hash?: string; data: { host: string; port: number; cert_sha256: string; ticket: string; ws_tunnel: boolean; webtransport_url?: string } }

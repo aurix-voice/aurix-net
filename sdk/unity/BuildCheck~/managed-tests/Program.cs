@@ -44,9 +44,28 @@ static class Program
         r.Reset(0); Check(r.Pending == 0 && r.Predicted == 0, "reset");
     }
 
+    static string Hex(byte[] b) { var sb = new System.Text.StringBuilder(); foreach (var x in b) sb.Append(x.ToString("x2")); return sb.ToString(); }
+
+    // Golden vectors shared with the Web SDK tests (sdk/web/test/sync.test.mjs): the same schema + values
+    // must encode to the same bytes in C# and TypeScript.
+    static void CodecVectors()
+    {
+        var schema = Schema.Parse("component Transform {\n  pos: vec3 @range(-4096, 4096, 0.01)\n  rot: quat\n}\ncomponent Stats {\n  hp: u16\n  name: string(16)\n  speed: f32\n  team: i8\n  flags: bits(5)\n  seed: u64\n}\n");
+        var tr = schema.ByName("Transform"); var st = schema.ByName("Stats");
+        var world = new SyncWorld(schema);
+        var pos = new ComponentValue { Fields = new[] { new Value { X = 1.25f, Y = -2.5f, Z = 300.75f }, new Value { X = 0.1f, Y = 0.2f, Z = 0.3f, W = 0.9f } } };
+        var stats = new ComponentValue { Fields = new[] { new Value { U = 4242 }, new Value { S = "zé" }, new Value { F = 3.5f }, new Value { I = -3 }, new Value { U = 21 }, new Value { U = 0x0123456789abcdefUL } } };
+        Console.WriteLine("VECTOR writes " + Hex(world.EncodeWrites(new List<(ComponentDef, ComponentValue)> { (tr, pos), (st, stats) })));
+        var w = new BitWriter(); w.WriteBits(0x1ff, 9); w.WriteInt(-77, 12); w.WriteQuantized(12.345f, -100, 100, 0.001f); w.WriteF32(1.5f); w.WriteBits(ulong.MaxValue, 64); w.WriteBool(true);
+        Console.WriteLine("VECTOR bits " + Hex(w.Finish()));
+        Console.WriteLine("VECTOR input " + Hex(SyncWorld.EncodeInput(0x01020304, new List<byte[]> { new byte[] { 1, 2 }, new byte[0], new byte[] { 9 } })));
+        Console.WriteLine("VECTOR ack " + Hex(SyncWorld.EncodeAck(0xdeadbeef, 0x80000001)));
+    }
+
     static int Main()
     {
         PredictorTests();
+        CodecVectors();
         Console.WriteLine(_fails == 0 ? "all managed checks passed" : _fails + " check(s) failed");
         return _fails == 0 ? 0 : 1;
     }
