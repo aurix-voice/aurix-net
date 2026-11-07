@@ -535,6 +535,23 @@ impl FxMat3 {
     pub fn rotated(self, r: FxMat3) -> FxMat3 {
         r * self * r.transpose()
     }
+    pub fn determinant(self) -> Fx {
+        let [a, b, c] = self.cols;
+        a.dot(b.cross(c))
+    }
+    /// Inverse via the adjugate; `None` when (numerically) singular.
+    pub fn inverse(self) -> Option<FxMat3> {
+        let det = self.determinant();
+        if det.abs() < Fx::from_ratio(1, 1_000_000) {
+            return None;
+        }
+        let [a, b, c] = self.cols;
+        // rows of the inverse are the cross products of the columns / det
+        let r0 = b.cross(c).scale(Fx::ONE / det);
+        let r1 = c.cross(a).scale(Fx::ONE / det);
+        let r2 = a.cross(b).scale(Fx::ONE / det);
+        Some(FxMat3::from_cols(r0, r1, r2).transpose())
+    }
     pub fn scale(self, s: Fx) -> FxMat3 {
         FxMat3::from_cols(
             self.cols[0].scale(s),

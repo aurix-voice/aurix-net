@@ -179,6 +179,53 @@ fn mass_props(shape: &Shape, density: Fx) -> (Fx, FxVec3) {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+pub struct JointId(pub u32);
+
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum JointKind {
+    /// Point-to-point (ball-and-socket).
+    Ball,
+    /// Ball joint plus a shared rotation axis; optional angle limits (radians) and motor.
+    Hinge {
+        axis_a: FxVec3,
+        axis_b: FxVec3,
+        lower: Option<Fx>,
+        upper: Option<Fx>,
+        motor_speed: Fx,
+        max_motor_torque: Fx,
+    },
+    /// Keeps the anchors between `min_length` and `length` (equal = rod, `min_length` 0 = rope).
+    Distance { length: Fx, min_length: Fx },
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct Joint {
+    pub a: BodyId,
+    pub b: BodyId,
+    /// Anchors in each body's local space.
+    pub anchor_a: FxVec3,
+    pub anchor_b: FxVec3,
+    pub kind: JointKind,
+    acc_lin: FxVec3,
+    /// Accumulated angular impulses: two perpendicular axes, limit, motor.
+    acc_ang: [Fx; 4],
+}
+
+impl Joint {
+    pub fn new(a: BodyId, b: BodyId, anchor_a: FxVec3, anchor_b: FxVec3, kind: JointKind) -> Joint {
+        Joint {
+            a,
+            b,
+            anchor_a,
+            anchor_b,
+            kind,
+            acc_lin: FxVec3::ZERO,
+            acc_ang: [Fx::ZERO; 4],
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct WorldConfig {
     pub dt: Fx,
@@ -244,6 +291,8 @@ pub struct World {
     next_id: u32,
     manifolds: Vec<Manifold>,
     touching: BTreeSet<(BodyId, BodyId)>,
+    joints: BTreeMap<JointId, Joint>,
+    next_joint: u32,
     #[serde(skip)]
     events: Vec<ContactEvent>,
     pub tick: u64,
@@ -257,6 +306,8 @@ impl World {
             next_id: 1,
             manifolds: Vec::new(),
             touching: BTreeSet::new(),
+            joints: BTreeMap::new(),
+            next_joint: 1,
             events: Vec::new(),
             tick: 0,
         }
@@ -268,9 +319,34 @@ impl World {
         self.bodies.insert(id, body);
         id
     }
+    pub fn add_joint(&mut self, joint: Joint) -> JointId {
+        let id = JointId(self.next_joint);
+        self.next_joint += 1;
+        self.joints.insert(id, joint);
+        id
+    }
+    pub fn remove_joint(&mut self, id: JointId) -> Option<Joint> {
+        self.joints.remove(&id)
+    }
+    pub fn joint(&self, id: JointId) -> Option<&Joint> {
+        self.joints.get(&id)
+    }
+    pub fn joint_mut(&mut self, id: JointId) -> Option<&mut Joint> {
+        self.joints.get_mut(&id)
+    }
+    /// Current hinge angle (radians) of a hinge joint, measured around the shared axis.
+    pub fn hinge_angle(&self, id: JointId) -> Option<Fx> {
+        let j = self.joints.get(&id)?;
+        let (a, b) = (self.bodies.get(&j.a)?, self.bodies.get(&j.b)?);
+        match &j.kind {
+            JointKind::Hinge { axis_a, .. } => Some(hinge_angle(a, b, *axis_a)),
+            _ => None,
+        }
+    }
     pub fn remove(&mut self, id: BodyId) -> Option<Body> {
         self.manifolds.retain(|m| m.a != id && m.b != id);
         self.touching.retain(|(a, b)| *a != id && *b != id);
+        self.joints.retain(|_, j| j.a != id && j.b != id);
         self.bodies.remove(&id)
     }
     pub fn body(&self, id: BodyId) -> Option<&Body> {
@@ -366,7 +442,9 @@ impl World {
                 self.apply_pair(m.a, m.b, p.point, imp);
             }
         }
+        self.warm_start_joints();
         for _ in 0..self.cfg.iterations {
+            self.solve_joints();
             for &i in &solid {
                 let (a_id, b_id, n) = (
                     self.manifolds[i].a,
@@ -428,6 +506,7 @@ impl World {
                 b.rotation = b.rotation.integrate(b.angular_velocity, dt);
             }
         }
+        self.correct_joint_positions();
         // positional correction (linear split by inverse mass)
         for &i in &solid {
             let m = &self.manifolds[i];
@@ -464,6 +543,238 @@ impl World {
         self.tick += 1;
     }
 
+    fn apply_angular(&mut self, a_id: BodyId, b_id: BodyId, l: FxVec3) {
+        let a = self.bodies.get_mut(&a_id).unwrap();
+        if a.kind == BodyKind::Dynamic {
+            a.angular_velocity = a.angular_velocity - a.inv_inertia_world.mul_vec(l);
+        }
+        let b = self.bodies.get_mut(&b_id).unwrap();
+        if b.kind == BodyKind::Dynamic {
+            b.angular_velocity = b.angular_velocity + b.inv_inertia_world.mul_vec(l);
+        }
+    }
+
+    fn warm_start_joints(&mut self) {
+        let ids: Vec<JointId> = self.joints.keys().copied().collect();
+        for id in ids {
+            let j = self.joints[&id].clone();
+            if !self.bodies.contains_key(&j.a) || !self.bodies.contains_key(&j.b) {
+                continue;
+            }
+            let (pa, pb) = self.anchors(&j);
+            match &j.kind {
+                JointKind::Distance { .. } => {
+                    let d = pb - pa;
+                    if d.length_sq().0 != 0 {
+                        self.apply_pair_two(j.a, j.b, pa, pb, d.normalized().scale(j.acc_lin.x));
+                    }
+                }
+                _ => self.apply_pair_two(j.a, j.b, pa, pb, j.acc_lin),
+            }
+            if let JointKind::Hinge { axis_a, .. } = &j.kind {
+                let u = self.bodies[&j.a].rotation.rotate(*axis_a).normalized();
+                let (t1, t2) = tangents(u);
+                let l = t1.scale(j.acc_ang[0])
+                    + t2.scale(j.acc_ang[1])
+                    + u.scale(j.acc_ang[2] + j.acc_ang[3]);
+                self.apply_angular(j.a, j.b, l);
+            }
+        }
+    }
+
+    fn anchors(&self, j: &Joint) -> (FxVec3, FxVec3) {
+        let (a, b) = (&self.bodies[&j.a], &self.bodies[&j.b]);
+        (
+            a.position + a.rotation.rotate(j.anchor_a),
+            b.position + b.rotation.rotate(j.anchor_b),
+        )
+    }
+
+    /// Impulse `imp` pushes b at `pb` and pulls a at `pa`.
+    fn apply_pair_two(&mut self, a_id: BodyId, b_id: BodyId, pa: FxVec3, pb: FxVec3, imp: FxVec3) {
+        let a = self.bodies.get_mut(&a_id).unwrap();
+        if a.kind == BodyKind::Dynamic {
+            let ra = pa - a.position;
+            a.velocity = a.velocity - imp.scale(a.inv_mass);
+            a.angular_velocity = a.angular_velocity - a.inv_inertia_world.mul_vec(ra.cross(imp));
+        }
+        let b = self.bodies.get_mut(&b_id).unwrap();
+        if b.kind == BodyKind::Dynamic {
+            let rb = pb - b.position;
+            b.velocity = b.velocity + imp.scale(b.inv_mass);
+            b.angular_velocity = b.angular_velocity + b.inv_inertia_world.mul_vec(rb.cross(imp));
+        }
+    }
+
+    fn solve_joints(&mut self) {
+        let dt = self.cfg.dt;
+        let ids: Vec<JointId> = self.joints.keys().copied().collect();
+        for id in ids {
+            let mut j = self.joints[&id].clone();
+            let (Some(a), Some(b)) = (self.bodies.get(&j.a), self.bodies.get(&j.b)) else {
+                continue;
+            };
+            if a.kind != BodyKind::Dynamic && b.kind != BodyKind::Dynamic {
+                continue;
+            }
+            let (pa, pb) = self.anchors(&j);
+            let (ra, rb) = (pa - a.position, pb - b.position);
+            let va = a.velocity + a.angular_velocity.cross(ra);
+            let vb = b.velocity + b.angular_velocity.cross(rb);
+            let rel = vb - va;
+            match &j.kind {
+                JointKind::Ball | JointKind::Hinge { .. } => {
+                    let k = k_matrix(a, b, ra, rb);
+                    if let Some(inv) = k.inverse() {
+                        let imp = inv.mul_vec(neg(rel));
+                        j.acc_lin = j.acc_lin + imp;
+                        self.apply_pair_two(j.a, j.b, pa, pb, imp);
+                    }
+                }
+                JointKind::Distance { length, min_length } => {
+                    let d = pb - pa;
+                    let len = d.length();
+                    if len.0 == 0 {
+                        continue;
+                    }
+                    let n = d.scale(Fx::ONE / len);
+                    let rod = *min_length >= *length;
+                    if !rod && len < *length && len > *min_length {
+                        j.acc_lin = FxVec3::ZERO;
+                        self.joints.insert(id, j);
+                        continue;
+                    }
+                    let k = eff_mass(a, b, ra, rb, n);
+                    if k.0 == 0 {
+                        continue;
+                    }
+                    let target = if len > *length { *length } else { *min_length };
+                    let bias = (target - len) * self.cfg.baumgarte / dt;
+                    let mut dj = (bias - rel.dot(n)) / k;
+                    let old = j.acc_lin.x;
+                    let acc = if rod {
+                        old + dj
+                    } else if len > *length {
+                        (old + dj).min(Fx::ZERO)
+                    } else {
+                        (old + dj).max(Fx::ZERO)
+                    };
+                    dj = acc - old;
+                    j.acc_lin.x = acc;
+                    self.apply_pair_two(j.a, j.b, pa, pb, n.scale(dj));
+                }
+            }
+            if let JointKind::Hinge {
+                axis_a,
+                axis_b,
+                lower,
+                upper,
+                motor_speed,
+                max_motor_torque,
+            } = &j.kind
+            {
+                let (ua, align) = {
+                    let (a, b) = (&self.bodies[&j.a], &self.bodies[&j.b]);
+                    let ua = a.rotation.rotate(*axis_a).normalized();
+                    let ub = b.rotation.rotate(*axis_b).normalized();
+                    (ua, ub.cross(ua)) // rotate b by `align` to line its axis up with a's
+                };
+                let (t1, t2) = tangents(ua);
+                for (t, slot) in [(t1, 0usize), (t2, 1usize)] {
+                    let (kt, wt) = {
+                        let (a, b) = (&self.bodies[&j.a], &self.bodies[&j.b]);
+                        (
+                            ang_mass(a, b, t),
+                            (b.angular_velocity - a.angular_velocity).dot(t),
+                        )
+                    };
+                    if kt.0 == 0 {
+                        continue;
+                    }
+                    let target = align.dot(t) * self.cfg.baumgarte / dt;
+                    let dj = (target - wt) / kt;
+                    j.acc_ang[slot] += dj;
+                    self.apply_angular(j.a, j.b, t.scale(dj));
+                }
+                let ku = {
+                    let (a, b) = (&self.bodies[&j.a], &self.bodies[&j.b]);
+                    ang_mass(a, b, ua)
+                };
+                if ku.0 != 0 {
+                    let (a, b) = (&self.bodies[&j.a], &self.bodies[&j.b]);
+                    let wrel = b.angular_velocity - a.angular_velocity;
+                    let angle = hinge_angle(a, b, *axis_a);
+                    if let Some(lo) = lower {
+                        if angle < *lo {
+                            let bias = (*lo - angle) * self.cfg.baumgarte / dt;
+                            let mut dj = (bias - wrel.dot(ua)) / ku;
+                            let old = j.acc_ang[2];
+                            j.acc_ang[2] = (old + dj).max(Fx::ZERO);
+                            dj = j.acc_ang[2] - old;
+                            self.apply_angular(j.a, j.b, ua.scale(dj));
+                        }
+                    }
+                    if let Some(hi) = upper {
+                        if angle > *hi {
+                            let (a, b) = (&self.bodies[&j.a], &self.bodies[&j.b]);
+                            let wrel = b.angular_velocity - a.angular_velocity;
+                            let bias = (*hi - angle) * self.cfg.baumgarte / dt;
+                            let mut dj = (bias - wrel.dot(ua)) / ku;
+                            let old = j.acc_ang[2];
+                            j.acc_ang[2] = (old + dj).min(Fx::ZERO);
+                            dj = j.acc_ang[2] - old;
+                            self.apply_angular(j.a, j.b, ua.scale(dj));
+                        }
+                    }
+                    if max_motor_torque.0 > 0 {
+                        let (a, b) = (&self.bodies[&j.a], &self.bodies[&j.b]);
+                        let wrel = b.angular_velocity - a.angular_velocity;
+                        let max = *max_motor_torque * dt;
+                        let mut dj = (*motor_speed - wrel.dot(ua)) / ku;
+                        let old = j.acc_ang[3];
+                        j.acc_ang[3] = (old + dj).clamp(-max, max);
+                        dj = j.acc_ang[3] - old;
+                        self.apply_angular(j.a, j.b, ua.scale(dj));
+                    }
+                }
+            }
+            self.joints.insert(id, j);
+        }
+    }
+
+    /// Pull ball/hinge anchors together (linear split by inverse mass, like contacts).
+    fn correct_joint_positions(&mut self) {
+        let ids: Vec<JointId> = self.joints.keys().copied().collect();
+        for id in ids {
+            let j = self.joints[&id].clone();
+            if !matches!(j.kind, JointKind::Ball | JointKind::Hinge { .. }) {
+                continue;
+            }
+            let (Some(a), Some(b)) = (self.bodies.get(&j.a), self.bodies.get(&j.b)) else {
+                continue;
+            };
+            let (ima, imb) = (a.inv_mass, b.inv_mass);
+            let sum = ima + imb;
+            if sum.0 == 0 {
+                continue;
+            }
+            let (pa, pb) = self.anchors(&j);
+            let err = pb - pa;
+            if err.length_sq() < Fx::from_ratio(1, 1_000_000) {
+                continue;
+            }
+            let corr = err.scale(self.cfg.baumgarte / sum);
+            let a = self.bodies.get_mut(&j.a).unwrap();
+            if a.kind == BodyKind::Dynamic {
+                a.position = a.position + corr.scale(ima);
+            }
+            let b = self.bodies.get_mut(&j.b).unwrap();
+            if b.kind == BodyKind::Dynamic {
+                b.position = b.position - corr.scale(imb);
+            }
+        }
+    }
+
     fn apply_pair(&mut self, a_id: BodyId, b_id: BodyId, point: FxVec3, imp: FxVec3) {
         let a = self.bodies.get_mut(&a_id).unwrap();
         if a.kind == BodyKind::Dynamic {
@@ -493,6 +804,11 @@ impl World {
                 }
             }
         }
+        let jointed: BTreeSet<(BodyId, BodyId)> = self
+            .joints
+            .values()
+            .map(|j| (j.a.min(j.b), j.a.max(j.b)))
+            .collect();
         let mut pairs = BTreeSet::new();
         for ids in cells.values() {
             for i in 0..ids.len() {
@@ -515,7 +831,11 @@ impl World {
                     {
                         continue;
                     }
-                    pairs.insert((ids[i].min(ids[j]), ids[i].max(ids[j])));
+                    let key = (ids[i].min(ids[j]), ids[i].max(ids[j]));
+                    if jointed.contains(&key) {
+                        continue;
+                    }
+                    pairs.insert(key);
                 }
             }
         }
@@ -643,6 +963,15 @@ impl World {
             mix(b.rotation.z.0);
             mix(b.rotation.w.0);
         }
+        for (id, j) in &self.joints {
+            mix(id.0 as i64);
+            mix(j.acc_lin.x.0);
+            mix(j.acc_lin.y.0);
+            mix(j.acc_lin.z.0);
+            for a in j.acc_ang {
+                mix(a.0);
+            }
+        }
         h
     }
     pub fn snapshot(&self) -> Vec<u8> {
@@ -674,6 +1003,49 @@ fn eff_mass(a: &Body, b: &Body, ra: FxVec3, rb: FxVec3, n: FxVec3) -> Fx {
         k += b.inv_inertia_world.mul_vec(rn).cross(rb).dot(n);
     }
     k
+}
+
+/// Point-constraint effective-mass matrix K so that K·P = Δ(relative anchor velocity).
+fn k_matrix(a: &Body, b: &Body, ra: FxVec3, rb: FxVec3) -> FxMat3 {
+    let axes = [
+        FxVec3::new(Fx::ONE, Fx::ZERO, Fx::ZERO),
+        FxVec3::new(Fx::ZERO, Fx::ONE, Fx::ZERO),
+        FxVec3::new(Fx::ZERO, Fx::ZERO, Fx::ONE),
+    ];
+    let col = |e: FxVec3| {
+        let mut v = e.scale(a.inv_mass + b.inv_mass);
+        if a.kind == BodyKind::Dynamic {
+            v = v + a.inv_inertia_world.mul_vec(ra.cross(e)).cross(ra);
+        }
+        if b.kind == BodyKind::Dynamic {
+            v = v + b.inv_inertia_world.mul_vec(rb.cross(e)).cross(rb);
+        }
+        v
+    };
+    FxMat3::from_cols(col(axes[0]), col(axes[1]), col(axes[2]))
+}
+
+/// Angular effective mass of the pair along unit axis `t`.
+fn ang_mass(a: &Body, b: &Body, t: FxVec3) -> Fx {
+    let mut k = Fx::ZERO;
+    if a.kind == BodyKind::Dynamic {
+        k += t.dot(a.inv_inertia_world.mul_vec(t));
+    }
+    if b.kind == BodyKind::Dynamic {
+        k += t.dot(b.inv_inertia_world.mul_vec(t));
+    }
+    k
+}
+
+/// Angle of b relative to a around the hinge axis, using a reference perpendicular shared at
+/// creation (bodies are assumed aligned when the joint is made).
+fn hinge_angle(a: &Body, b: &Body, axis_a: FxVec3) -> Fx {
+    let (perp, _) = tangents(axis_a.normalized());
+    let ua = a.rotation.rotate(axis_a).normalized();
+    let pa = a.rotation.rotate(perp);
+    let pb = b.rotation.rotate(perp);
+    let pb = (pb - ua.scale(pb.dot(ua))).normalized();
+    Fx::atan2(pa.cross(pb).dot(ua), pa.dot(pb))
 }
 
 fn tangents(n: FxVec3) -> (FxVec3, FxVec3) {
@@ -1266,6 +1638,156 @@ mod tests {
             up.y.abs() > Fx::from_ratio(98, 100),
             "box face not flat: {:?}",
             up
+        );
+    }
+
+    #[test]
+    fn joints_pendulum_rope_hinge_and_motor() {
+        let w = run_twice(
+            || {
+                let mut w = World::new(WorldConfig::default());
+                let anchor = w.add(Body::new(
+                    BodyKind::Static,
+                    Shape::Sphere {
+                        radius: Fx::from_ratio(1, 10),
+                    },
+                    v(0, 10, 0),
+                ));
+                // ball-joint pendulum: bob 3 m to the side of the anchor
+                let bob = w.add(Body::new(
+                    BodyKind::Dynamic,
+                    Shape::Sphere {
+                        radius: Fx::from_ratio(1, 4),
+                    },
+                    v(3, 10, 0),
+                ));
+                w.add_joint(Joint::new(
+                    anchor,
+                    bob,
+                    FxVec3::ZERO,
+                    v(-3, 0, 0),
+                    JointKind::Ball,
+                ));
+                // rope: starts slack 1 m under a second anchor, max length 3
+                let anchor2 = w.add(Body::new(
+                    BodyKind::Static,
+                    Shape::Sphere {
+                        radius: Fx::from_ratio(1, 10),
+                    },
+                    v(10, 10, 0),
+                ));
+                let rope_end = w.add(Body::new(
+                    BodyKind::Dynamic,
+                    Shape::Sphere {
+                        radius: Fx::from_ratio(1, 4),
+                    },
+                    v(10, 9, 0),
+                ));
+                w.add_joint(Joint::new(
+                    anchor2,
+                    rope_end,
+                    FxVec3::ZERO,
+                    FxVec3::ZERO,
+                    JointKind::Distance {
+                        length: fx(3),
+                        min_length: Fx::ZERO,
+                    },
+                ));
+                // hinged door on a static post, limits 0..=90°, pushed open
+                let post = w.add(Body::new(
+                    BodyKind::Static,
+                    Shape::Box {
+                        half: FxVec3::new(Fx::from_ratio(1, 10), fx(1), Fx::from_ratio(1, 10)),
+                    },
+                    v(-10, 1, 0),
+                ));
+                let mut door = Body::new(
+                    BodyKind::Dynamic,
+                    Shape::Box {
+                        half: FxVec3::new(Fx::HALF, fx(1), Fx::from_ratio(1, 20)),
+                    },
+                    FxVec3::new(fx(-10) + Fx::from_ratio(6, 10), fx(1), Fx::ZERO),
+                );
+                door.velocity = FxVec3::ZERO;
+                let door = w.add(door);
+                w.add_joint(Joint::new(
+                    post,
+                    door,
+                    FxVec3::new(Fx::from_ratio(1, 10), Fx::ZERO, Fx::ZERO),
+                    FxVec3::new(-Fx::HALF, Fx::ZERO, Fx::ZERO),
+                    JointKind::Hinge {
+                        axis_a: v(0, 1, 0),
+                        axis_b: v(0, 1, 0),
+                        lower: Some(Fx::ZERO),
+                        upper: Some(Fx::HALF_PI),
+                        motor_speed: Fx::ZERO,
+                        max_motor_torque: Fx::ZERO,
+                    },
+                ));
+                w.apply_impulse(
+                    door,
+                    v(0, 0, 8),
+                    Some(FxVec3::new(fx(-10) + Fx::ONE, fx(1), Fx::ZERO)),
+                );
+                // motorised wheel on a static axle
+                let axle = w.add(Body::new(
+                    BodyKind::Static,
+                    Shape::Sphere {
+                        radius: Fx::from_ratio(1, 10),
+                    },
+                    v(20, 5, 0),
+                ));
+                let wheel = w.add(Body::new(
+                    BodyKind::Dynamic,
+                    Shape::Sphere { radius: Fx::ONE },
+                    v(20, 5, 0),
+                ));
+                w.add_joint(Joint::new(
+                    axle,
+                    wheel,
+                    FxVec3::ZERO,
+                    FxVec3::ZERO,
+                    JointKind::Hinge {
+                        axis_a: v(0, 0, 1),
+                        axis_b: v(0, 0, 1),
+                        lower: None,
+                        upper: None,
+                        motor_speed: fx(4),
+                        max_motor_torque: fx(50),
+                    },
+                ));
+                w
+            },
+            300,
+        );
+        let bob = w.body(BodyId(2)).unwrap();
+        let dist = (bob.position + bob.rotation.rotate(v(-3, 0, 0)) - v(0, 10, 0)).length();
+        assert!(dist < Fx::from_ratio(5, 100), "ball joint drifted {dist}");
+        assert!(
+            bob.position.y < fx(9),
+            "pendulum did not swing: {:?}",
+            bob.position
+        );
+        let rope_end = w.body(BodyId(4)).unwrap();
+        let rl = (rope_end.position - v(10, 10, 0)).length();
+        assert!(
+            rl > Fx::from_ratio(29, 10) && rl < Fx::from_ratio(31, 10),
+            "rope length {rl}"
+        );
+        let angle = w.hinge_angle(JointId(3)).unwrap();
+        assert!(
+            angle > Fx::from_ratio(3, 10) && angle < Fx::HALF_PI + Fx::from_ratio(1, 10),
+            "door angle {angle}"
+        );
+        let wheel = w.body(BodyId(8)).unwrap();
+        assert!(
+            (wheel.angular_velocity.z - fx(4)).abs() < Fx::from_ratio(2, 10),
+            "motor speed {:?}",
+            wheel.angular_velocity
+        );
+        assert!(
+            (wheel.position - v(20, 5, 0)).length() < Fx::from_ratio(5, 100),
+            "wheel stayed on the axle"
         );
     }
 
