@@ -29,7 +29,20 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use net_common::types::{ActorId, Tick};
 use net_rollback::{Journal, TickInputs};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
+
+/// Everything another node needs to continue this room: the newest master checkpoint and
+/// the journal from that tick on. Stored in Redis every few seconds (see `ws::run_lockstep`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LockstepSnapshot {
+    pub hz: u16,
+    pub seed: u64,
+    pub tick: u32,
+    pub checkpoint: Option<(u32, u64, Vec<u8>)>,
+    pub journal_from: u32,
+    pub journal: Vec<TickInputs>,
+}
 
 pub const KIND_INPUT: u8 = crate::sync::KIND_INPUT;
 pub const KIND_BUNDLE: u8 = 0x20;
@@ -90,6 +103,36 @@ impl LockstepRoom {
             last_checkpoint_req: None,
             want_checkpoint: false,
         }
+    }
+
+    pub fn snapshot(&self) -> LockstepSnapshot {
+        let from = self.checkpoint.as_ref().map(|c| c.tick).unwrap_or(0);
+        LockstepSnapshot {
+            hz: self.hz,
+            seed: self.seed,
+            tick: self.tick.0,
+            checkpoint: self
+                .checkpoint
+                .as_ref()
+                .map(|c| (c.tick, c.hash, c.state.to_vec())),
+            journal_from: from,
+            journal: self.journal.tail(from),
+        }
+    }
+
+    /// Re-hosts a room on this node: the clock continues from the snapshot tick, late
+    /// joiners catch up from the stored checkpoint + journal tail as usual.
+    pub fn restore(snap: LockstepSnapshot) -> Self {
+        let mut r = Self::new(snap.hz, snap.seed);
+        r.tick = Tick(snap.tick);
+        r.checkpoint = snap.checkpoint.map(|(tick, hash, state)| Checkpoint {
+            tick,
+            hash,
+            state: Bytes::from(state),
+        });
+        r.journal = Journal::from_parts(snap.journal_from, snap.journal);
+        r.want_checkpoint = true;
+        r
     }
 
     fn checkpoint_every(&self) -> u32 {
@@ -516,5 +559,25 @@ mod tests {
             let _ = r2.tick();
         }
         assert!(r2.checkpoint_request().is_some());
+
+        // Snapshot -> restore on another node continues the clock and serves catch-up.
+        let snap = r.snapshot();
+        assert_eq!(
+            (snap.tick, snap.journal_from, snap.journal.len()),
+            (400, 300, 100)
+        );
+        let json = serde_json::to_vec(&snap).unwrap();
+        let mut r3 = LockstepRoom::restore(serde_json::from_slice(&json).unwrap());
+        assert_eq!(r3.tick, Tick(400));
+        let _ = r3.tick();
+        let frames = r3.on_late_join();
+        let ck = LockstepRoom::decode_catchup(frames[0].clone()).unwrap();
+        assert_eq!(ck.tick, 300);
+        let n: usize = frames[1..]
+            .iter()
+            .map(|f| LockstepRoom::decode_bundles(f.clone()).len())
+            .sum();
+        assert_eq!(n, 101);
+        assert_eq!(r3.replay("").inputs.len(), r.replay("").inputs.len());
     }
 }

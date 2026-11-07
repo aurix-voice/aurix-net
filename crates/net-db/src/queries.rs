@@ -259,7 +259,7 @@ pub async fn find_open_room(
     name: &str,
 ) -> Result<Option<RoomRow>> {
     sqlx::query_as::<_, RoomRow>(
-        "SELECT * FROM rooms WHERE project_id = $1 AND name = $2 AND state = 'open'",
+        "SELECT * FROM rooms WHERE project_id = $1 AND name = $2 AND state IN ('open', 'orphaned') ORDER BY state LIMIT 1",
     )
     .bind(project_id)
     .bind(name)
@@ -320,6 +320,46 @@ pub async fn close_rooms_of_node(pool: &DbPool, node_id: Uuid) -> Result<u64> {
         .execute(pool)
         .await
         .map_err(db_err)?;
+    Ok(r.rows_affected())
+}
+
+/// Rooms of a dead node become `orphaned`: the next node a player of that room reaches
+/// adopts them (see `adopt_room`) and re-hosts from the Redis checkpoint.
+pub async fn orphan_rooms_of_node(pool: &DbPool, node_id: Uuid) -> Result<u64> {
+    let r = sqlx::query(
+        "UPDATE rooms SET state = 'orphaned', node_id = NULL, closed_at = now() WHERE node_id = $1 AND state = 'open'",
+    )
+    .bind(node_id)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(r.rows_affected())
+}
+
+/// Atomically takes over an orphaned room; false when another node won the race.
+pub async fn adopt_room(pool: &DbPool, room_id: Uuid, node_id: Uuid, region: &str) -> Result<bool> {
+    let r = sqlx::query(
+        "UPDATE rooms SET state = 'open', node_id = $2, region = $3, closed_at = NULL WHERE id = $1 AND state = 'orphaned'",
+    )
+    .bind(room_id)
+    .bind(node_id)
+    .bind(region)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(r.rows_affected() == 1)
+}
+
+/// Orphaned rooms nobody adopted within `max_age_secs` (closed_at = when they were
+/// orphaned) are closed for good.
+pub async fn close_stale_orphans(pool: &DbPool, max_age_secs: i64) -> Result<u64> {
+    let r = sqlx::query(
+        "UPDATE rooms SET state = 'closed', closed_at = now() WHERE state = 'orphaned' AND closed_at < now() - ($1 * interval '1 second')",
+    )
+    .bind(max_age_secs)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
     Ok(r.rows_affected())
 }
 

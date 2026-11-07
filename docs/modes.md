@@ -95,6 +95,20 @@ the client where it enters. Start the client with `Rollback::from_checkpoint(cfg
 tick, state)` and feed the tail bundles as confirmed inputs. If a joiner had to replay from a
 stale checkpoint the server asks the master for a fresh one at once, so catch-up stays bounded.
 
+## Node failure: rooms move, they do not die
+
+Every 5 s a node writes each sync/lockstep room to Redis (`net:<project>:ckpt:<room>`, TTL
+10 min): the player list (actor ids, player ids, names, master), the simulation snapshot for
+sync, and for lockstep the newest master checkpoint plus the input journal from that tick.
+When a node misses three heartbeats the others mark its rooms `orphaned` instead of closing
+them. The first node a player of that room reaches (plain `join` / `join_or_create` by name
+on any node of the region) atomically adopts the row, rebuilds the room from the DB config,
+restores the simulation from the checkpoint, recreates every player as an offline slot (so
+reconnects get the same actor ids, `rejoin_actor` works) and restarts the tick loop. Lockstep
+joiners then get the normal catch-up; sync clients get fresh baselines. Expect to lose at
+most the last 5 s of inputs. A `room.rehosted` webhook fires; orphans nobody adopts within
+10 min are closed. Relay rooms are re-created with name/props/slots but no event cache.
+
 ## Data frames (first byte)
 
 | kind | direction | mode |

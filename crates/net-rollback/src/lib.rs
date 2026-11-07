@@ -340,6 +340,21 @@ impl Journal {
         self.ticks.get(t.0 as usize)
     }
 
+    /// Inputs from tick `from` to the end (for re-hosting from a checkpoint).
+    pub fn tail(&self, from: u32) -> Vec<TickInputs> {
+        self.ticks
+            .get(from as usize..)
+            .map(|t| t.to_vec())
+            .unwrap_or_default()
+    }
+
+    /// Rebuilds a journal whose first `from` ticks are unknown (empty) and the rest is `tail`.
+    pub fn from_parts(from: u32, tail: Vec<TickInputs>) -> Self {
+        let mut ticks = vec![TickInputs::new(); from as usize];
+        ticks.extend(tail);
+        Self { ticks }
+    }
+
     pub fn into_replay(
         self,
         seed: u64,

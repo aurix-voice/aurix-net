@@ -79,7 +79,7 @@ event frame or a mode frame (`docs/modes.md`).
 POST JSON `{event, project, at, data}` with `X-Aurix-Event` and
 `X-Aurix-Signature: sha256=<hex HMAC-SHA256(secret, body)>`. Events: `room.created
 {room, name, mode, region}`, `room.closed {room}`, `player.joined {room, actor}`,
-`player.left {room, actor}`, `desync {room, tick, actor}`. Three attempts; 4xx stops retries.
+`player.left {room, actor}`, `desync {room, tick, actor}`, `room.rehosted {room, name, mode, node, restored}` (room adopted by another node after a node failure). Three attempts; 4xx stops retries.
 
 ## Matchmaking flow
 

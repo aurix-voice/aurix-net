@@ -17,6 +17,7 @@ use net_db::queries;
 use net_rooms::protocol::{ClientMsg, DataEndpoint, RoomSummary, ServerMsg};
 use net_rooms::{EventFrame, Room, RoomConfig, RoomError};
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -443,6 +444,7 @@ impl Session {
         }
         match queries::find_open_room(&self.st.pool, project.0, name).await? {
             None => Err(NetError::NotFound(format!("room {name}"))),
+            Some(row) if row.state == "orphaned" => adopt_room(&self.st, row).await,
             Some(row) => {
                 let node = row
                     .node_id
@@ -821,6 +823,9 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
                 }
                 (out, events, actors)
             };
+            if let Some((_, body)) = checkpoint.take() {
+                checkpoint = Some((project, RoomCheckpoint::of(&g, Some(body), None).encode()));
+            }
             for (actor, d) in out {
                 if let Some(ds) = g.sessions.get(&actor).and_then(|s| s.data.as_ref()) {
                     ds.send(net_common::Channel::UnreliableSequenced, d);
@@ -874,12 +879,20 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
 pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration) {
     let mut iv = tokio::time::interval(period);
     iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let checkpoint_every = (5_000_000 / period.as_micros().max(1)) as u64;
+    let mut n: u64 = 0;
     loop {
         iv.tick().await;
         let Some(h) = st.host.get(room) else { return };
         let t0 = Instant::now();
+        let mut checkpoint: Option<(ProjectId, Vec<u8>)> = None;
         {
             let mut g = h.lock();
+            n += 1;
+            if n.is_multiple_of(checkpoint_every) {
+                let snap = g.lockstep.as_ref().map(|l| l.snapshot());
+                checkpoint = Some((g.project, RoomCheckpoint::of(&g, None, snap).encode()));
+            }
             let master = g.room.master();
             let (bundle, desyncs, actors, ckpt_req) = {
                 let Some(ls) = g.lockstep.as_mut() else {
@@ -921,7 +934,164 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
             }
         }
         st.metrics.sync_tick.observe(t0.elapsed().as_secs_f64());
+        if let Some((project, body)) = checkpoint {
+            let redis = st.redis.clone();
+            tokio::spawn(async move {
+                if let Err(e) = redis.put_checkpoint(project, room, &body, 600).await {
+                    tracing::warn!(%room, error = %e, "checkpoint write failed");
+                }
+            });
+        }
     }
+}
+
+/// What a node writes to Redis every few seconds per sync/lockstep room so that any other
+/// node can continue the room after this one dies (`adopt_room`).
+#[derive(Serialize, Deserialize)]
+pub struct RoomCheckpoint {
+    /// (actor, player_id, name) of every player, so reconnects get their actor ids back.
+    pub players: Vec<(ActorId, String, String)>,
+    pub master: Option<ActorId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lockstep: Option<crate::lockstep::LockstepSnapshot>,
+}
+
+impl RoomCheckpoint {
+    pub fn of(
+        g: &HostedRoom,
+        sync: Option<Vec<u8>>,
+        lockstep: Option<crate::lockstep::LockstepSnapshot>,
+    ) -> Self {
+        Self {
+            players: g
+                .room
+                .players()
+                .map(|p| (p.actor, p.player_id.clone(), p.name.clone()))
+                .collect(),
+            master: g.room.master(),
+            sync,
+            lockstep,
+        }
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        serde_json::to_vec(self).unwrap_or_default()
+    }
+}
+
+/// Takes over an orphaned room (its node was reaped): rebuilds the room from the DB row,
+/// restores simulation state from the Redis checkpoint, recreates the players as offline
+/// slots and restarts the tick loop. Relay rooms come back empty but keep name/props/slots.
+pub async fn adopt_room(
+    st: &Shared,
+    row: net_db::models::RoomRow,
+) -> Result<Arc<Mutex<HostedRoom>>> {
+    let project = ProjectId(row.project_id);
+    let room_id = RoomId(row.id);
+    if st.host.len() >= st.cfg.limits.max_rooms_per_node as usize {
+        return Err(NetError::QuotaExceeded("node is full".into()));
+    }
+    if !queries::adopt_room(&st.pool, row.id, st.node_id.0, st.region.as_str()).await? {
+        return Err(NetError::Conflict("room_pending".into()));
+    }
+    let ckpt = match st.redis.get_checkpoint(project, room_id).await {
+        Ok(Some(b)) => serde_json::from_slice::<RoomCheckpoint>(&b).ok(),
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!(room = %room_id, error = %e, "checkpoint read failed");
+            None
+        }
+    };
+    let proj = queries::get_project(&st.pool, row.project_id).await?;
+    let limits = ProjectLimits::from_json(&proj.limits).effective(&st.cfg.limits);
+    let mode = match row.mode.as_str() {
+        "sync" => RoomMode::Sync,
+        "lockstep" => RoomMode::Lockstep,
+        _ => RoomMode::Relay,
+    };
+    let props = row.props.as_object().cloned().unwrap_or_default();
+    let cfg = RoomConfig {
+        id: room_id,
+        project,
+        name: row.name.clone(),
+        mode,
+        max_players: row.max_players.clamp(1, i32::from(u16::MAX)) as u16,
+        visible: row.visible,
+        open: row.open,
+        props: props.clone(),
+        lobby_props: row.lobby_props.clone(),
+        max_events_per_sec: limits.max_events_per_sec_per_room,
+        max_event_bytes: limits.max_event_bytes,
+        max_props_bytes: limits.max_props_bytes,
+        max_cached_events: limits.max_cached_events_per_room,
+        offline_ttl: Duration::from_secs(30),
+        empty_ttl: Duration::from_secs(5),
+    };
+    let hz = props.get("tick_hz").and_then(|v| v.as_u64()).unwrap_or(60) as u16;
+    let mut room = Room::new(cfg, Instant::now());
+    let mut sync = None;
+    let mut lockstep = None;
+    let mut restored = "none";
+    if let Some(c) = ckpt {
+        room.restore_offline(c.players, c.master, Instant::now());
+        if mode == RoomMode::Sync {
+            let schema = props.get("schema").and_then(|v| v.as_str());
+            let mut sy = crate::sync::SyncRoom::with_replication(
+                schema,
+                hz,
+                0,
+                crate::sync::SyncRoom::replication_from_props(&props),
+            )
+            .map_err(|e| NetError::Invalid(format!("schema: {e}")))?;
+            if let Some(body) = c.sync {
+                sy.restore(&body).map_err(NetError::Invalid)?;
+                restored = "sync";
+            }
+            sync = Some(sy);
+        }
+        if let (RoomMode::Lockstep, Some(snap)) = (mode, c.lockstep) {
+            lockstep = Some(crate::lockstep::LockstepRoom::restore(snap));
+            restored = "lockstep";
+        }
+    }
+    if mode == RoomMode::Sync && sync.is_none() {
+        let schema = props.get("schema").and_then(|v| v.as_str());
+        sync = Some(
+            crate::sync::SyncRoom::with_replication(
+                schema,
+                hz,
+                0,
+                crate::sync::SyncRoom::replication_from_props(&props),
+            )
+            .map_err(|e| NetError::Invalid(format!("schema: {e}")))?,
+        );
+    }
+    if mode == RoomMode::Lockstep && lockstep.is_none() {
+        lockstep = Some(crate::lockstep::LockstepRoom::new(hz, 1));
+    }
+    let h = st.host.insert(project, room);
+    if let Some(sy) = sync {
+        let period = sy.tick_period();
+        h.lock().sync = Some(sy);
+        tokio::spawn(run_sync(st.clone(), room_id, period));
+    }
+    if let Some(ls) = lockstep {
+        let period = ls.tick_period();
+        h.lock().lockstep = Some(ls);
+        tokio::spawn(run_lockstep(st.clone(), room_id, period));
+    }
+    st.metrics.rooms.set(st.host.len() as i64);
+    st.metrics.errors.with_label_values(&["room_adopted"]).inc();
+    tracing::info!(room = %room_id, name = %row.name, mode = %row.mode, restored, "adopted orphaned room");
+    st.webhooks.emit(
+        project,
+        "room.rehosted",
+        serde_json::json!({"room": room_id.to_string(), "name": row.name, "mode": row.mode, "node": st.node_id.to_string(), "restored": restored}),
+    );
+    publish_room(st, &h).await;
+    Ok(h)
 }
 
 /// Drives every data link every FLUSH_EVERY: coalesced batches, acks, retransmits.

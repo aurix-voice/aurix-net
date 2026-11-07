@@ -602,6 +602,12 @@ async fn player(
     }
     // Drain window for late deliveries.
     tokio::time::sleep(Duration::from_secs(2)).await;
+    {
+        let cu = catchup.lock();
+        if cu.next.is_some() {
+            tracing::warn!(room, idx, next = ?cu.next, live_oldest = ?cu.live_oldest, server_tick = server_tick.load(Ordering::Relaxed), "still catching up at exit");
+        }
+    }
     reader.abort();
     ticker.abort();
     let _ = ws_tx.send(Message::Close(None)).await;

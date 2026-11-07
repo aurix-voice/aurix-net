@@ -195,6 +195,9 @@ impl Room {
                 }
                 let info = p.info();
                 self.empty_since = None;
+                if self.master.is_none() {
+                    self.master = Some(a);
+                }
                 let out = self.broadcast_except(a, ServerMsg::PlayerJoined { player: info });
                 return Ok((a, out));
             }
@@ -226,6 +229,39 @@ impl Room {
         }
         out.extend(self.broadcast_except(actor, ServerMsg::PlayerJoined { player: info }));
         Ok((actor, out))
+    }
+
+    /// Re-host: recreates the players of a checkpointed room as offline slots so they get
+    /// their old actor ids back when they reconnect (`offline_ttl` applies from `now`).
+    pub fn restore_offline(
+        &mut self,
+        players: Vec<(ActorId, String, String)>,
+        master: Option<ActorId>,
+        now: Instant,
+    ) {
+        for (actor, player_id, name) in players {
+            if self.players.contains_key(&actor) || self.by_player.contains_key(&player_id) {
+                continue;
+            }
+            self.players.insert(
+                actor,
+                Player {
+                    actor,
+                    player_id: player_id.clone(),
+                    name,
+                    props: Map::new(),
+                    online: false,
+                    offline_since: Some(now),
+                    groups: HashSet::new(),
+                },
+            );
+            self.by_player.insert(player_id, actor);
+            self.next_actor = self.next_actor.max(actor.0.wrapping_add(1).max(1));
+        }
+        if let Some(m) = master.filter(|m| self.players.contains_key(m)) {
+            self.master = Some(m);
+        }
+        self.empty_since = Some(now);
     }
 
     pub fn player_infos(&self) -> Vec<PlayerInfo> {

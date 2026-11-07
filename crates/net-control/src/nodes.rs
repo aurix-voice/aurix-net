@@ -40,6 +40,9 @@ impl From<NodeRow> for NodeInfo {
     }
 }
 
+/// Orphaned rooms (node died) stay adoptable this long — matches the checkpoint TTL.
+pub const ORPHAN_TTL_SECS: i64 = 600;
+
 pub struct NodeRegistry {
     pool: DbPool,
     cache: RwLock<Vec<NodeInfo>>,
@@ -113,12 +116,16 @@ impl NodeRegistry {
             .map(|r| r.id)
             .collect();
         let all = queries::list_all_nodes(&self.pool).await?;
+        let expired = queries::close_stale_orphans(&self.pool, ORPHAN_TTL_SECS).await?;
+        if expired > 0 {
+            tracing::info!(rooms = expired, "closed orphaned rooms nobody adopted");
+        }
         let mut removed = Vec::new();
         for n in all {
             if !live.contains(&n.id) {
-                let closed = queries::close_rooms_of_node(&self.pool, n.id).await?;
+                let orphaned = queries::orphan_rooms_of_node(&self.pool, n.id).await?;
                 queries::delete_node(&self.pool, n.id).await?;
-                tracing::warn!(node = %n.id, closed_rooms = closed, "node reaped after missed heartbeats");
+                tracing::warn!(node = %n.id, orphaned_rooms = orphaned, "node reaped after missed heartbeats");
                 removed.push(NodeId::from_uuid(n.id));
             }
         }
