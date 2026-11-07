@@ -85,7 +85,7 @@ test("operator can suspend and resume a project; suspended keys cannot issue gra
   await page.goto(`/projects/${project.project.id}`);
   await page.getByRole("button", { name: "Suspend" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Suspend" }).click();
-  await expect(page.getByText("Suspended", { exact: true })).toBeVisible();
+  await expect(page.getByText("Suspended", { exact: true }).first()).toBeVisible();
   await expect(page.getByText(/This project is suspended since/)).toBeVisible();
   expect((await grant()).status()).toBe(403);
   await page.goto("/projects");
