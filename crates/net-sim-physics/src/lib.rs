@@ -247,6 +247,49 @@ impl Default for WorldConfig {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+pub struct JointId(pub u32);
+
+/// Joint definitions; anchors are in each body's local space.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum JointKind {
+    /// Keeps `|anchor_b - anchor_a|` at `length` (rope with `min_length` < `length` for slack).
+    Distance { length: Fx, min_length: Fx },
+    /// Pin: anchors coincide; optional angle limits (relative angle b - a) and motor.
+    Revolute {
+        lower: Option<Fx>,
+        upper: Option<Fx>,
+        motor_speed: Fx,
+        max_motor_torque: Fx,
+    },
+    /// Pin plus fixed relative angle.
+    Weld { rel_angle: Fx },
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct Joint {
+    pub a: BodyId,
+    pub b: BodyId,
+    pub anchor_a: FxVec2,
+    pub anchor_b: FxVec2,
+    pub kind: JointKind,
+    /// Accumulated impulses for warm starting: linear (x, y), angular/motor, limit.
+    acc: [Fx; 4],
+}
+
+impl Joint {
+    pub fn new(a: BodyId, b: BodyId, anchor_a: FxVec2, anchor_b: FxVec2, kind: JointKind) -> Joint {
+        Joint {
+            a,
+            b,
+            anchor_a,
+            anchor_b,
+            kind,
+            acc: [Fx::ZERO; 4],
+        }
+    }
+}
+
 /// One contact point with its accumulated impulses (kept between steps for warm starting).
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 struct Contact {
@@ -292,6 +335,10 @@ pub struct World {
     manifolds: Vec<Manifold>,
     pub tick: u32,
     events: Vec<ContactEvent>,
+    #[serde(default)]
+    joints: BTreeMap<JointId, Joint>,
+    #[serde(default)]
+    next_joint: u32,
 }
 
 impl World {
@@ -303,7 +350,24 @@ impl World {
             manifolds: Vec::new(),
             tick: 0,
             events: Vec::new(),
+            joints: BTreeMap::new(),
+            next_joint: 1,
         }
+    }
+    pub fn add_joint(&mut self, joint: Joint) -> JointId {
+        let id = JointId(self.next_joint);
+        self.next_joint += 1;
+        self.joints.insert(id, joint);
+        id
+    }
+    pub fn remove_joint(&mut self, id: JointId) -> Option<Joint> {
+        self.joints.remove(&id)
+    }
+    pub fn joint(&self, id: JointId) -> Option<&Joint> {
+        self.joints.get(&id)
+    }
+    pub fn joint_mut(&mut self, id: JointId) -> Option<&mut Joint> {
+        self.joints.get_mut(&id)
     }
     pub fn add(&mut self, body: Body) -> BodyId {
         let id = BodyId(self.next_id);
@@ -313,6 +377,7 @@ impl World {
     }
     pub fn remove(&mut self, id: BodyId) -> Option<Body> {
         self.manifolds.retain(|m| m.a != id && m.b != id);
+        self.joints.retain(|_, j| j.a != id && j.b != id);
         self.bodies.remove(&id)
     }
     pub fn body(&self, id: BodyId) -> Option<&Body> {
@@ -359,7 +424,9 @@ impl World {
         self.update_manifolds();
         self.prepare_contacts();
         self.warm_start();
+        self.warm_start_joints();
         for _ in 0..self.cfg.velocity_iterations {
+            self.solve_joints();
             self.solve_velocities();
         }
         for b in self.bodies.values_mut() {
@@ -370,12 +437,19 @@ impl World {
         }
         for _ in 0..self.cfg.position_iterations {
             self.solve_positions();
+            self.solve_joint_positions();
         }
         self.tick += 1;
     }
 
     fn pairs(&self) -> Vec<(BodyId, BodyId)> {
         let cell = self.cfg.cell;
+        // bodies connected by a joint never collide with each other (Box2D's collideConnected = false)
+        let jointed: std::collections::BTreeSet<(BodyId, BodyId)> = self
+            .joints
+            .values()
+            .map(|j| (j.a.min(j.b), j.a.max(j.b)))
+            .collect();
         let mut grid: BTreeMap<(i32, i32), Vec<BodyId>> = BTreeMap::new();
         for (id, b) in &self.bodies {
             let (lo, hi) = b.aabb();
@@ -392,6 +466,9 @@ impl World {
             for i in 0..ids.len() {
                 for j in i + 1..ids.len() {
                     let (a, b) = (ids[i].min(ids[j]), ids[i].max(ids[j]));
+                    if jointed.contains(&(a, b)) {
+                        continue;
+                    }
                     let (ba, bb) = (&self.bodies[&a], &self.bodies[&b]);
                     if ba.kind != BodyKind::Dynamic && bb.kind != BodyKind::Dynamic {
                         continue;
@@ -593,6 +670,217 @@ impl World {
             }
         }
         self.manifolds = manifolds;
+    }
+
+    fn warm_start_joints(&mut self) {
+        let ids: Vec<JointId> = self.joints.keys().copied().collect();
+        for id in ids {
+            let j = self.joints[&id].clone();
+            let (pa, pb) = (self.anchor(j.a, j.anchor_a), self.anchor(j.b, j.anchor_b));
+            let p = FxVec2::new(j.acc[0], j.acc[1]);
+            self.impulse_at(j.a, pa, FxVec2::new(-p.x, -p.y));
+            self.impulse_at(j.b, pb, p);
+            self.angular_impulse(j.a, -(j.acc[2] + j.acc[3]));
+            self.angular_impulse(j.b, j.acc[2] + j.acc[3]);
+        }
+    }
+
+    fn anchor(&self, id: BodyId, local: FxVec2) -> FxVec2 {
+        let b = &self.bodies[&id];
+        rotate(local, b.angle.sin(), b.angle.cos()) + b.position
+    }
+    fn impulse_at(&mut self, id: BodyId, point: FxVec2, p: FxVec2) {
+        let b = self.bodies.get_mut(&id).unwrap();
+        let r = point - b.position;
+        b.velocity = b.velocity + p.scale(b.inv_mass);
+        b.angular_velocity += cross(r, p) * b.inv_inertia;
+    }
+    fn angular_impulse(&mut self, id: BodyId, l: Fx) {
+        let b = self.bodies.get_mut(&id).unwrap();
+        b.angular_velocity += l * b.inv_inertia;
+    }
+    fn point_velocity(&self, id: BodyId, point: FxVec2) -> FxVec2 {
+        let b = &self.bodies[&id];
+        b.velocity + perp(point - b.position).scale(b.angular_velocity)
+    }
+    /// Effective mass of a unit impulse along `n` applied at the two anchors.
+    fn pair_k(&self, j: &Joint, pa: FxVec2, pb: FxVec2, n: FxVec2) -> Fx {
+        let (a, b) = (&self.bodies[&j.a], &self.bodies[&j.b]);
+        a.inv_mass
+            + b.inv_mass
+            + sq(cross(pa - a.position, n)) * a.inv_inertia
+            + sq(cross(pb - b.position, n)) * b.inv_inertia
+    }
+    fn angular_k(&self, j: &Joint) -> Fx {
+        self.bodies[&j.a].inv_inertia + self.bodies[&j.b].inv_inertia
+    }
+
+    fn solve_joints(&mut self) {
+        let dt = self.cfg.dt;
+        let ids: Vec<JointId> = self.joints.keys().copied().collect();
+        for id in ids {
+            let mut j = self.joints[&id].clone();
+            let (pa, pb) = (self.anchor(j.a, j.anchor_a), self.anchor(j.b, j.anchor_b));
+            let rel = self.point_velocity(j.b, pb) - self.point_velocity(j.a, pa);
+            match j.kind.clone() {
+                JointKind::Distance { length, min_length } => {
+                    let d = pb - pa;
+                    let dist = d.length();
+                    if min_length < length && dist < length {
+                        // slack rope: no constraint this step
+                        j.acc[0] = Fx::ZERO;
+                        j.acc[1] = Fx::ZERO;
+                        self.joints.insert(id, j);
+                        continue;
+                    }
+                    if dist == Fx::ZERO {
+                        continue;
+                    }
+                    let n = d.scale(Fx::ONE / dist);
+                    let k = self.pair_k(&j, pa, pb, n);
+                    if k == Fx::ZERO {
+                        continue;
+                    }
+                    // Baumgarte on the length error, with slack between min_length and length
+                    let err = if dist > length {
+                        dist - length
+                    } else if dist < min_length {
+                        dist - min_length
+                    } else {
+                        Fx::ZERO
+                    };
+                    let bias = err * self.cfg.baumgarte / dt;
+                    let mut lambda = -(rel.dot(n) + bias) / k;
+                    let acc = FxVec2::new(j.acc[0], j.acc[1]);
+                    let old = acc.dot(n);
+                    if min_length < length {
+                        // rope: only pull, never push
+                        let new = (old + lambda).min(Fx::ZERO);
+                        lambda = new - old;
+                    }
+                    let p = n.scale(lambda);
+                    j.acc[0] = acc.x + p.x;
+                    j.acc[1] = acc.y + p.y;
+                    self.impulse_at(j.a, pa, FxVec2::new(-p.x, -p.y));
+                    self.impulse_at(j.b, pb, p);
+                }
+                JointKind::Revolute {
+                    lower,
+                    upper,
+                    motor_speed,
+                    max_motor_torque,
+                } => {
+                    let ka = self.angular_k(&j);
+                    if ka > Fx::ZERO {
+                        let (wa, wb) = (
+                            self.bodies[&j.a].angular_velocity,
+                            self.bodies[&j.b].angular_velocity,
+                        );
+                        if max_motor_torque > Fx::ZERO {
+                            let cdot = wb - wa - motor_speed;
+                            let max = max_motor_torque * dt;
+                            let old = j.acc[2];
+                            j.acc[2] = (old - cdot / ka).clamp(-max, max);
+                            let l = j.acc[2] - old;
+                            self.angular_impulse(j.a, -l);
+                            self.angular_impulse(j.b, l);
+                        }
+                        let angle = self.bodies[&j.b].angle - self.bodies[&j.a].angle;
+                        let (wa, wb) = (
+                            self.bodies[&j.a].angular_velocity,
+                            self.bodies[&j.b].angular_velocity,
+                        );
+                        let limit = match (lower, upper) {
+                            (Some(lo), _) if angle <= lo => Some((angle - lo, true)),
+                            (_, Some(hi)) if angle >= hi => Some((angle - hi, false)),
+                            _ => None,
+                        };
+                        if let Some((err, at_lower)) = limit {
+                            let bias = err * self.cfg.baumgarte / dt;
+                            let old = j.acc[3];
+                            let raw = old - (wb - wa + bias) / ka;
+                            j.acc[3] = if at_lower {
+                                raw.max(Fx::ZERO)
+                            } else {
+                                raw.min(Fx::ZERO)
+                            };
+                            let l = j.acc[3] - old;
+                            self.angular_impulse(j.a, -l);
+                            self.angular_impulse(j.b, l);
+                        } else {
+                            j.acc[3] = Fx::ZERO;
+                        }
+                        let _ = (wa, wb);
+                    }
+                    self.solve_point(&mut j, pa, pb);
+                }
+                JointKind::Weld { rel_angle } => {
+                    let ka = self.angular_k(&j);
+                    if ka > Fx::ZERO {
+                        let angle = self.bodies[&j.b].angle - self.bodies[&j.a].angle - rel_angle;
+                        let (wa, wb) = (
+                            self.bodies[&j.a].angular_velocity,
+                            self.bodies[&j.b].angular_velocity,
+                        );
+                        let bias = angle * self.cfg.baumgarte / dt;
+                        let l = -(wb - wa + bias) / ka;
+                        j.acc[2] += l;
+                        self.angular_impulse(j.a, -l);
+                        self.angular_impulse(j.b, l);
+                    }
+                    self.solve_point(&mut j, pa, pb);
+                }
+            }
+            self.joints.insert(id, j);
+        }
+    }
+
+    /// Point-to-point constraint (both anchors coincide), solved per axis with Baumgarte bias.
+    fn solve_point(&mut self, j: &mut Joint, pa: FxVec2, pb: FxVec2) {
+        let dt = self.cfg.dt;
+        let err = pb - pa;
+        for (axis, n) in [
+            FxVec2::new(Fx::ONE, Fx::ZERO),
+            FxVec2::new(Fx::ZERO, Fx::ONE),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let k = self.pair_k(j, pa, pb, n);
+            if k == Fx::ZERO {
+                continue;
+            }
+            let rel = self.point_velocity(j.b, pb) - self.point_velocity(j.a, pa);
+            let bias = err.dot(n) * self.cfg.baumgarte / dt;
+            let lambda = -(rel.dot(n) + bias) / k;
+            j.acc[axis] += lambda;
+            let p = n.scale(lambda);
+            self.impulse_at(j.a, pa, FxVec2::new(-p.x, -p.y));
+            self.impulse_at(j.b, pb, p);
+        }
+    }
+
+    /// Position-level cleanup of pin joints so drift does not accumulate over long games.
+    fn solve_joint_positions(&mut self) {
+        let ids: Vec<JointId> = self.joints.keys().copied().collect();
+        for id in ids {
+            let j = self.joints[&id].clone();
+            if matches!(j.kind, JointKind::Distance { .. }) {
+                continue;
+            }
+            let (pa, pb) = (self.anchor(j.a, j.anchor_a), self.anchor(j.b, j.anchor_b));
+            let err = pb - pa;
+            let (ia, ib) = (self.bodies[&j.a].inv_mass, self.bodies[&j.b].inv_mass);
+            let total = ia + ib;
+            if total == Fx::ZERO {
+                continue;
+            }
+            let corr = err.scale(self.cfg.baumgarte / total);
+            let a = self.bodies.get_mut(&j.a).unwrap();
+            a.position = a.position + corr.scale(ia);
+            let b = self.bodies.get_mut(&j.b).unwrap();
+            b.position = b.position - corr.scale(ib);
+        }
     }
 
     /// Closest hit along `from + dir * t`, `t` in 0..=1, bodies whose layer matches `mask`.
@@ -1114,6 +1402,118 @@ mod tests {
             "capsule top hit at {}",
             hit.point.y
         );
+    }
+
+    #[test]
+    fn joints_pendulum_rope_and_motor() {
+        let build = || {
+            let mut w = World::new(WorldConfig::default());
+            let pivot = w.add(Body::new(
+                BodyKind::Static,
+                Shape::Circle {
+                    radius: Fx::from_ratio(1, 10),
+                },
+                FxVec2::new(fx(0), fx(10)),
+            ));
+            let bob = w.add(Body::new(
+                BodyKind::Dynamic,
+                Shape::Circle {
+                    radius: Fx::from_ratio(1, 2),
+                },
+                FxVec2::new(fx(4), fx(10)),
+            ));
+            w.add_joint(Joint::new(
+                pivot,
+                bob,
+                FxVec2::default(),
+                FxVec2::default(),
+                JointKind::Revolute {
+                    lower: None,
+                    upper: None,
+                    motor_speed: Fx::ZERO,
+                    max_motor_torque: Fx::ZERO,
+                },
+            ));
+            // the bob is pinned at its centre: a revolute with coincident anchors at the pivot
+            w.joint_mut(JointId(1)).unwrap().anchor_b = FxVec2::new(fx(-4), fx(0));
+            let hang = w.add(Body::new(
+                BodyKind::Dynamic,
+                Shape::Circle {
+                    radius: Fx::from_ratio(1, 2),
+                },
+                FxVec2::new(fx(20), fx(10)),
+            ));
+            let hook = w.add(Body::new(
+                BodyKind::Static,
+                Shape::Circle {
+                    radius: Fx::from_ratio(1, 10),
+                },
+                FxVec2::new(fx(20), fx(13)),
+            ));
+            w.add_joint(Joint::new(
+                hook,
+                hang,
+                FxVec2::default(),
+                FxVec2::default(),
+                JointKind::Distance {
+                    length: fx(5),
+                    min_length: fx(0),
+                },
+            ));
+            let wheel = w.add(Body::new(
+                BodyKind::Dynamic,
+                Shape::Circle { radius: Fx::ONE },
+                FxVec2::new(fx(40), fx(10)),
+            ));
+            let axle = w.add(Body::new(
+                BodyKind::Static,
+                Shape::Circle {
+                    radius: Fx::from_ratio(1, 10),
+                },
+                FxVec2::new(fx(40), fx(10)),
+            ));
+            w.add_joint(Joint::new(
+                axle,
+                wheel,
+                FxVec2::default(),
+                FxVec2::default(),
+                JointKind::Revolute {
+                    lower: None,
+                    upper: None,
+                    motor_speed: fx(3),
+                    max_motor_torque: fx(1000),
+                },
+            ));
+            (w, bob, hang, wheel)
+        };
+        let (mut w, bob, hang, wheel) = build();
+        let (mut w2, ..) = build();
+        let mut max_len_err = Fx::ZERO;
+        let mut min_y = fx(100);
+        for _ in 0..300 {
+            w.step();
+            w2.step();
+            min_y = min_y.min(w.body(bob).unwrap().position.y);
+            let len = (w.body(bob).unwrap().position - FxVec2::new(fx(0), fx(10))).length();
+            max_len_err = max_len_err.max((len - fx(4)).abs());
+        }
+        assert_eq!(w.hash(), w2.hash());
+        assert!(
+            max_len_err.to_f64() < 0.15,
+            "pendulum arm drifted by {max_len_err}"
+        );
+        assert!(
+            min_y.to_f64() < 7.0,
+            "pendulum did not swing down: min y {min_y}"
+        );
+        let h = w.body(hang).unwrap().position;
+        assert!(
+            (h.y.to_f64() - 8.0).abs() < 0.2 && (h.x.to_f64() - 20.0).abs() < 0.1,
+            "rope bob at {:?}",
+            h
+        );
+        let wv = w.body(wheel).unwrap().angular_velocity.to_f64();
+        assert!((wv - 3.0).abs() < 0.1, "motor speed {wv}");
     }
 
     #[test]
