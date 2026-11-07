@@ -22,3 +22,6 @@ self-signed certificate works without installing anything) and falls back to the
 binary tunnel when WebTransport is unavailable or fails. Node (tests) uses the tunnel.
 `client.dataPath` tells you which one is active; set `client.forceTunnel = true` to skip
 WebTransport.
+
+`Client.connectAndJoin(httpUrl, grant, msg)` connects and joins in one call and follows a
+`room_elsewhere:<url>` redirect to the node hosting the room (rooms are pinned to one node).

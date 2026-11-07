@@ -90,6 +90,8 @@ Every node adds per project and hour: `room_minutes`, `player_minutes`, `bytes_i
 `bytes_out` (`GET /v1/usage?from&to`). Billing is node-hours plus included traffic, never
 peak CCU. `GET /v1/regions` lists live regions with `endpoints` (node HTTP URLs) so clients
 pick the closest node; a room lookup on another node answers `conflict room_elsewhere:<url>`.
+`Client::connect_and_join` (Rust) and `Client.connectAndJoin` (Web) follow that redirect
+automatically; the C ABI returns the error and the caller reconnects to the URL.
 
 ## Webhooks
 

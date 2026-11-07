@@ -242,6 +242,36 @@ impl Client {
             .map_err(|_| ClientError::Disconnected)
     }
 
+    /// `connect` + `join`, following one `room_elsewhere:<url>` redirect: rooms are pinned to
+    /// the node that hosts them, so a join sent to another node of the region answers with
+    /// the hosting node's URL and the client reconnects there with the same grant.
+    pub async fn connect_and_join(
+        http_url: &str,
+        grant: &str,
+        opts: Options,
+        msg: ClientMsg,
+    ) -> Result<(Client, Joined)> {
+        let mut c = Client::connect(http_url, grant, opts.clone()).await?;
+        match c.join(msg.clone()).await {
+            Ok(j) => Ok((c, j)),
+            Err(ClientError::Server { code, message })
+                if code == "conflict" && message.contains("room_elsewhere:") =>
+            {
+                let url = message
+                    .split("room_elsewhere:")
+                    .nth(1)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                drop(c);
+                let mut c = Client::connect(&url, grant, opts).await?;
+                let j = c.join(msg).await?;
+                Ok((c, j))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Joins (or creates) a room and opens the data path. Returns when the data path is ready.
     pub async fn join(&mut self, msg: ClientMsg) -> Result<Joined> {
         self.send(msg).await?;

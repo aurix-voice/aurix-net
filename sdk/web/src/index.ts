@@ -67,6 +67,20 @@ export class Client {
   /** Any control message, e.g. {t:"set_room_props", props:{...}}. */
   send(msg: object) { this.ws.send(JSON.stringify(msg)); }
 
+  /** connect + join, following one `room_elsewhere:<url>` redirect to the node hosting the room. */
+  static async connectAndJoin(httpUrl: string, grant: string, msg: object, opts: { timeoutMs?: number } = {}): Promise<{ client: Client; joined: Joined }> {
+    const c = await Client.connect(httpUrl, grant, opts);
+    try { return { client: c, joined: await c.join(msg) }; }
+    catch (e) {
+      const m = String((e as Error).message ?? e);
+      const i = m.indexOf("room_elsewhere:");
+      if (i < 0) throw e;
+      c.close();
+      const url = m.slice(i + "room_elsewhere:".length).trim();
+      const c2 = await Client.connect(url, grant, opts);
+      return { client: c2, joined: await c2.join(msg) };
+    }
+  }
   async joinOrCreate(name: string, mode: RoomMode = "relay", maxPlayers = 8, props: Record<string, unknown> = {}): Promise<Joined> {
     return this.join({ t: "join_or_create", name, mode, max_players: maxPlayers, props });
   }
