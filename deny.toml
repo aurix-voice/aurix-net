@@ -4,9 +4,9 @@ all-features = false
 [advisories]
 version = 2
 yanked = "deny"
-ignore = [
-  { id = "RUSTSEC-2023-0071", reason = "rsa is only pulled by sqlx-mysql, which is not enabled or compiled" },
-]
+# RUSTSEC-2023-0071 (rsa) stays only in Cargo.lock via the disabled sqlx-mysql feature; cargo-deny
+# resolves the enabled graph and does not see it (the ignore lives in .cargo/audit.toml for cargo-audit).
+ignore = []
 
 [licenses]
 version = 2
@@ -14,6 +14,18 @@ allow = [
   "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause",
   "ISC", "Zlib", "Unicode-3.0", "Unicode-DFS-2016", "MPL-2.0", "CC0-1.0", "OpenSSL", "BSL-1.0",
   "CDLA-Permissive-2.0", "0BSD",
+]
+# Our own server-side crates are AGPL-3.0-only by design; third-party AGPL stays rejected.
+exceptions = [
+  { allow = ["AGPL-3.0-only"], crate = "net-server" },
+  { allow = ["AGPL-3.0-only"], crate = "net-rooms" },
+  { allow = ["AGPL-3.0-only"], crate = "net-loadtest" },
+  { allow = ["AGPL-3.0-only"], crate = "net-db" },
+  { allow = ["AGPL-3.0-only"], crate = "net-control" },
+  { allow = ["AGPL-3.0-only"], crate = "net-auth" },
+  { allow = ["AGPL-3.0-only"], crate = "net-api" },
+  { allow = ["AGPL-3.0-only"], crate = "net-game" },
+  { allow = ["AGPL-3.0-only"], crate = "net-cli" },
 ]
 
 [bans]

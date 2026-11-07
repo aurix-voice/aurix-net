@@ -28,12 +28,17 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let cfg = NetConfig::load(cli.config.as_deref())?;
     let startup_warnings = cfg.production_warnings();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,quinn=warn,sqlx=warn".into()),
-        )
-        .init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info,quinn=warn,sqlx=warn".into());
+    if cfg.server.log_format == "json" {
+        tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_env_filter(filter)
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
     let _ = rustls::crypto::ring::default_provider().install_default();
     for w in &startup_warnings {
         warn!("production check: {w}");

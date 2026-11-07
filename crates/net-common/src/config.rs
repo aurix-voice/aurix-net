@@ -33,6 +33,9 @@ pub struct ServerConfig {
     /// origin (fine for development; production should list the game's origins).
     #[serde(default)]
     pub allowed_origins: Vec<String>,
+    /// `text` (default, human-readable) or `json` (one event per line for log shippers).
+    #[serde(default = "d_log_format")]
+    pub log_format: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +120,9 @@ fn d_auth_failures() -> u32 {
 fn d_key_writes() -> u32 {
     20
 }
+fn d_log_format() -> String {
+    "text".into()
+}
 
 pub const DEFAULTS: &str = r#"
 [server]
@@ -128,6 +134,7 @@ heartbeat_secs = 30
 trusted_proxies = []
 metrics_token = ""
 allowed_origins = []
+log_format = "text"
 
 [transport]
 quic_addr = "0.0.0.0:7000"
@@ -201,6 +208,11 @@ impl NetConfig {
         if self.limits.max_players_per_room == 0 || self.limits.max_players_per_room > 1024 {
             return Err(NetError::Config(
                 "limits.max_players_per_room must be 1..=1024".into(),
+            ));
+        }
+        if !matches!(self.server.log_format.as_str(), "text" | "json") {
+            return Err(NetError::Config(
+                "server.log_format must be \"text\" or \"json\"".into(),
             ));
         }
         if self.server.environment != "development" {
