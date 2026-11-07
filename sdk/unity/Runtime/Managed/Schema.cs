@@ -8,18 +8,18 @@ namespace Aurix.Net.Managed
     public enum FieldKind { Bool, UInt, Int, F32, Quant, Vec2, Vec3, Quat, String, Bytes }
     public sealed class FieldType { public FieldKind Kind; public int Bits; public float Min, Max, Res; public uint Max_; }
     public sealed class Field { public string Name; public FieldType Type; }
-    public sealed class Component { public ushort Id; public string Name; public bool OwnerOnly, Global; public List<Field> Fields = new List<Field>(); public int IndexOf(string f) { for (int i = 0; i < Fields.Count; i++) if (Fields[i].Name == f) return i; return -1; } }
+    public sealed class ComponentDef { public ushort Id; public string Name; public bool OwnerOnly, Global; public List<Field> Fields = new List<Field>(); public int IndexOf(string f) { for (int i = 0; i < Fields.Count; i++) if (Fields[i].Name == f) return i; return -1; } }
 
     public sealed class Schema
     {
-        public List<Component> Components = new List<Component>();
-        public Component ById(int id) => id >= 0 && id < Components.Count ? Components[id] : null;
-        public Component ByName(string n) { foreach (var c in Components) if (c.Name == n) return c; return null; }
+        public List<ComponentDef> Components = new List<ComponentDef>();
+        public ComponentDef ById(int id) => id >= 0 && id < Components.Count ? Components[id] : null;
+        public ComponentDef ByName(string n) { foreach (var c in Components) if (c.Name == n) return c; return null; }
         public int ComponentIdBits => Math.Max(1, 64 - Bits.LeadingZeros((ulong)Math.Max(2, Components.Count) - 1));
 
         public static Schema Parse(string text)
         {
-            var s = new Schema(); Component cur = null; int line = 0;
+            var s = new Schema(); ComponentDef cur = null; int line = 0;
             foreach (var raw in text.Split('\n'))
             {
                 line++;
@@ -31,7 +31,7 @@ namespace Aurix.Net.Managed
                     var rest = l.Substring(10).Trim();
                     if (!rest.EndsWith("{")) throw new NetException($"schema line {line}: expected '{{'");
                     var parts = rest.Substring(0, rest.Length - 1).Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-                    cur = new Component { Id = (ushort)s.Components.Count, Name = parts[0] };
+                    cur = new ComponentDef { Id = (ushort)s.Components.Count, Name = parts[0] };
                     for (int i = 1; i < parts.Length; i++) { if (parts[i] == "@owner_only") cur.OwnerOnly = true; else if (parts[i] == "@global") cur.Global = true; else throw new NetException($"schema line {line}: unknown flag {parts[i]}"); }
                     continue;
                 }

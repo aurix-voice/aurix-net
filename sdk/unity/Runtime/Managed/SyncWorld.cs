@@ -9,7 +9,7 @@ namespace Aurix.Net.Managed
     {
         public ulong Id; public ushort? Owner; public uint LastTick;
         public Dictionary<ushort, ComponentValue> Components = new Dictionary<ushort, ComponentValue>();
-        public ComponentValue Get(Component c) => c != null && Components.TryGetValue(c.Id, out var v) ? v : null;
+        public ComponentValue Get(ComponentDef c) => c != null && Components.TryGetValue(c.Id, out var v) ? v : null;
     }
 
     public sealed class SyncWorld
@@ -75,7 +75,7 @@ namespace Aurix.Net.Managed
         }
 
         /// <summary>Owner-authoritative input body: full writes of the given components (applied to the actor's avatar).</summary>
-        public byte[] EncodeWrites(IList<(Component, ComponentValue)> writes)
+        public byte[] EncodeWrites(IList<(ComponentDef, ComponentValue)> writes)
         {
             var w = new BitWriter(); w.WriteBits((ulong)writes.Count, 8); int cb = Schema.ComponentIdBits;
             foreach (var (c, v) in writes) { w.WriteBits(c.Id, cb); v.EncodeFull(c, w); }

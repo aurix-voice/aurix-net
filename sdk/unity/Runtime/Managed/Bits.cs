@@ -41,7 +41,7 @@ namespace Aurix.Net.Managed
         {
             if (nbits > BitsLeft) throw new NetException("delta truncated");
             ulong v = 0;
-            for (int i = 0; i < nbits; i++) { int p = _pos + i; v = (v << 1) | (ulong)((_b[_off + (p >> 3)] >> (7 - (p & 7))) & 1); }
+            for (int i = 0; i < nbits; i++) { int p = _pos + i; v = (v << 1) | (uint)((_b[_off + (p >> 3)] >> (7 - (p & 7))) & 1); }
             _pos += nbits; return v;
         }
         public bool ReadBool() => ReadBits(1) == 1;

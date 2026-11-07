@@ -1,0 +1,7 @@
+{
+  "name": "Aurix.Net.Editor",
+  "rootNamespace": "Aurix.Net.Unity.Editor",
+  "references": [ "Aurix.Net" ],
+  "includePlatforms": [ "Editor" ],
+  "autoReferenced": true
+}

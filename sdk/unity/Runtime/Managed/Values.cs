@@ -17,7 +17,7 @@ namespace Aurix.Net.Managed
     public sealed class ComponentValue
     {
         public Value[] Fields;
-        public static ComponentValue Zero(Component c) { var v = new ComponentValue { Fields = new Value[c.Fields.Count] }; for (int i = 0; i < c.Fields.Count; i++) v.Fields[i] = Value.Zero(c.Fields[i].Type); return v; }
+        public static ComponentValue Zero(ComponentDef c) { var v = new ComponentValue { Fields = new Value[c.Fields.Count] }; for (int i = 0; i < c.Fields.Count; i++) v.Fields[i] = Value.Zero(c.Fields[i].Type); return v; }
         public ComponentValue Clone() => new ComponentValue { Fields = (Value[])Fields.Clone() };
 
         public static void WriteField(BitWriter w, FieldType t, in Value v)
@@ -73,9 +73,9 @@ namespace Aurix.Net.Managed
             throw new NetException("bad field type");
         }
 
-        public void EncodeFull(Component c, BitWriter w) { for (int i = 0; i < c.Fields.Count; i++) WriteField(w, c.Fields[i].Type, Fields[i]); }
-        public static ComponentValue DecodeFull(Component c, BitReader r) { var v = new ComponentValue { Fields = new Value[c.Fields.Count] }; for (int i = 0; i < c.Fields.Count; i++) v.Fields[i] = ReadField(r, c.Fields[i].Type); return v; }
-        public static ComponentValue DecodeDelta(ComponentValue b, Component c, BitReader r)
+        public void EncodeFull(ComponentDef c, BitWriter w) { for (int i = 0; i < c.Fields.Count; i++) WriteField(w, c.Fields[i].Type, Fields[i]); }
+        public static ComponentValue DecodeFull(ComponentDef c, BitReader r) { var v = new ComponentValue { Fields = new Value[c.Fields.Count] }; for (int i = 0; i < c.Fields.Count; i++) v.Fields[i] = ReadField(r, c.Fields[i].Type); return v; }
+        public static ComponentValue DecodeDelta(ComponentValue b, ComponentDef c, BitReader r)
         {
             var changed = new bool[c.Fields.Count]; for (int i = 0; i < changed.Length; i++) changed[i] = r.ReadBool();
             var o = b.Clone(); for (int i = 0; i < changed.Length; i++) if (changed[i]) o.Fields[i] = ReadField(r, c.Fields[i].Type);

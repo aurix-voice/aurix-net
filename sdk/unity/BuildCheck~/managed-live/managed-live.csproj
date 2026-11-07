@@ -12,5 +12,7 @@
     <Compile Include="../../Runtime/Client.cs" />
     <Compile Include="../../Runtime/Native.cs" />
     <Compile Include="../../Runtime/Managed/*.cs" />
+    <Compile Include="../../Runtime/Unity/*.cs" />
+    <Compile Include="Stubs/*.cs" />
   </ItemGroup>
 </Project>
