@@ -1,0 +1,19 @@
+<!doctype html>
+<html><body><pre id="result">running</pre>
+<script type="module">
+  import { Client, Channel } from "../dist/index.js";
+  const q = new URLSearchParams(location.search);
+  const http = q.get("http"), ga = q.get("ga"), gb = q.get("gb"), room = q.get("room");
+  const out = (t) => { document.getElementById("result").textContent = t; };
+  try {
+    const a = await Client.connect(http, ga); const b = await Client.connect(http, gb);
+    let hello = 0, ticks = 0;
+    a.on("event", (f) => { if (f.code === 1) hello++; if (f.code === 2) ticks++; });
+    await a.joinOrCreate(room, "relay", 4); await b.joinOrCreate(room, "relay", 4);
+    const enc = new TextEncoder();
+    b.sendEvent(1, enc.encode("hello"), "others", true);
+    for (let i = 0; i < 10; i++) { b.sendEvent(2, new Uint8Array([i]), "others", false); b.flush(); await new Promise(r => setTimeout(r, 20)); }
+    await new Promise(r => setTimeout(r, 800));
+    out(`path=${a.dataPath}/${b.dataPath} hello=${hello} ticks=${ticks}/10 rtt=${a.stats.rttMs ?? "?"}`);
+  } catch (e) { out("error: " + (e && e.message || e)); }
+</script></body></html>

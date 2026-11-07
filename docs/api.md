@@ -74,6 +74,16 @@ fragment flags; `0x40` has-ack, `0x20` batch (payload = `u16 len, bytes` repeate
 ack-only. Max datagram 1200 bytes, messages up to 64 KiB fragmented. Frames inside: relay
 event frame or a mode frame (`docs/modes.md`).
 
+### WebTransport (browsers)
+
+Nodes also listen for WebTransport sessions (`transport.webtransport_addr`, default
+`0.0.0.0:7443`; `joined.data.webtransport_url` = `https://host:7443/`). The protocol is the
+same as raw QUIC: the first datagram is the ticket, then packets flow as HTTP/3 datagrams
+through the same link/channels. Browsers pin the certificate via `serverCertificateHashes`
+(= `cert_sha256`), so the self-signed dev certificate works; it is valid 13 days and
+regenerated on every start. The WebSocket tunnel remains the fallback. Manual browser check:
+`sdk/web/test/browser.html` (two clients, echo over WebTransport).
+
 ## Webhooks
 
 POST JSON `{event, project, at, data}` with `X-Aurix-Event` and
