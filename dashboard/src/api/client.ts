@@ -223,7 +223,7 @@ export interface RoomRow {
 export interface RoomDetail {
   room: RoomRow;
   live: LiveRoom | null;
-  players: Array<{ actor: number; player_id: string; name: string; online: boolean; events?: number; bytes_in?: number; eps?: number; idle_secs?: number | null; since_secs?: number }>;
+  players: Array<{ actor: number; player_id: string; name: string; online: boolean; events?: number; bytes_in?: number; eps?: number; idle_secs?: number | null; since_secs?: number; rtt_ms?: number | null }>;
   players_source?: "local" | "remote" | "unavailable" | "none";
 }
 export interface UsageRow {

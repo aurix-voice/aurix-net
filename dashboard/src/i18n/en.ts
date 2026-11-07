@@ -338,6 +338,7 @@ export const en = {
   "rejections.ip_denied": "Key used from a blocked IP",
   "rooms.eps": "Events/s",
   "rooms.events": "Events · bytes in",
+  "rooms.rtt": "RTT",
   "rooms.idle": "Idle",
   "rooms.idle.never": "no events yet",
   "rooms.idle.secs": (v) => `${v.s} s`,

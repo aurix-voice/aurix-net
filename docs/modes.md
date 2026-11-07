@@ -27,6 +27,8 @@ disconnected player keeps their slot and how long an empty room stays open (both
 300). Interest groups are `u16` (65 535 groups). A player who connects again while still online
 takes over their own slot; the old session gets `left` with reason `session_replaced` and is
 ignored from then on.
+`cleanup_cache_on_leave` (default true) drops a player's cached events when they leave for good; set it
+to false to keep them for late joiners ("keep the cache on leave").
 
 Rate limits: a room takes `max_events_per_sec_per_room` events (default 2000) and each player
 `max_events_per_sec_per_player` (default 60, burst of 2 s worth); over the limit the event is

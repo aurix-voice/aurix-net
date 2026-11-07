@@ -711,6 +711,7 @@ impl Session {
             reserved: reserved.iter().take(32).cloned().collect(),
             reserved_until: (!reserved.is_empty())
                 .then(|| std::time::Instant::now() + Duration::from_secs(60)),
+            cleanup_cache_on_leave: prop_bool(&props, "cleanup_cache_on_leave", true),
             max_events_per_sec: limits.max_events_per_sec_per_room,
             max_events_per_sec_per_player: limits.max_events_per_sec_per_player,
             max_event_bytes: limits.max_event_bytes,
@@ -1461,6 +1462,7 @@ pub async fn adopt_room(
         lobby_props: row.lobby_props.clone(),
         reserved: Vec::new(),
         reserved_until: None,
+        cleanup_cache_on_leave: prop_bool(&props, "cleanup_cache_on_leave", true),
         max_events_per_sec: limits.max_events_per_sec_per_room,
         max_events_per_sec_per_player: limits.max_events_per_sec_per_player,
         max_event_bytes: limits.max_event_bytes,
@@ -1821,6 +1823,10 @@ fn room_err(e: RoomError) -> NetError {
 }
 
 /// Room TTL props (`player_ttl_secs`, `empty_ttl_secs`), capped at 300 s.
+pub fn prop_bool(props: &Map<String, Value>, key: &str, default: bool) -> bool {
+    props.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
+}
+
 pub fn prop_secs(props: &Map<String, Value>, key: &str, default: u64) -> u64 {
     props
         .get(key)

@@ -22,6 +22,9 @@ pub struct RoomConfig {
     /// until `reserved_until` passes.
     pub reserved: Vec<String>,
     pub reserved_until: Option<Instant>,
+    /// Drop a player's cached events when they leave for good (room prop `cleanup_cache_on_leave`,
+    /// default true); false keeps them for late joiners, the "keep the cache on leave" behaviour.
+    pub cleanup_cache_on_leave: bool,
     pub max_events_per_sec: u32,
     /// Events one player may send per second (burst = 2 s worth).
     pub max_events_per_sec_per_player: u32,
@@ -452,7 +455,9 @@ impl Room {
                 return out;
             };
             self.by_player.remove(&p.player_id);
-            self.cache.retain(|c| c.from != actor);
+            if self.cfg.cleanup_cache_on_leave {
+                self.cache.retain(|c| c.from != actor);
+            }
             out.extend(self.broadcast_except(
                 actor,
                 ServerMsg::PlayerLeft {
@@ -781,6 +786,7 @@ mod tests {
             lobby_props: vec!["map".into()],
             reserved: Vec::new(),
             reserved_until: None,
+            cleanup_cache_on_leave: true,
             max_events_per_sec: 4,
             max_events_per_sec_per_player: 3,
             max_event_bytes: 100,
@@ -1004,5 +1010,27 @@ mod tests {
         let later = t0 + Duration::from_secs(61);
         r.join("stranger", "s", Map::new(), None, false, later)
             .unwrap();
+    }
+
+    #[test]
+    fn cached_events_survive_a_leave_when_cleanup_is_off() {
+        for (cleanup, left) in [(true, 0usize), (false, 1usize)] {
+            let mut c = cfg();
+            c.cleanup_cache_on_leave = cleanup;
+            let t = Instant::now();
+            let mut r = Room::new(c, t);
+            let (a, _) = r.join("a", "a", Map::new(), None, false, t).unwrap();
+            r.join("b", "b", Map::new(), None, false, t).unwrap();
+            r.raise_event(
+                a,
+                ev(4, EventTarget::All, CacheOp::Add),
+                Channel::ReliableOrdered,
+                t,
+            )
+            .unwrap();
+            assert_eq!(r.cached_for_join().len(), 1);
+            r.leave(a, false, t);
+            assert_eq!(r.cached_for_join().len(), left, "cleanup={cleanup}");
+        }
     }
 }

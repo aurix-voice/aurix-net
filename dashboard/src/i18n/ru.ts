@@ -329,6 +329,7 @@ export const ru: Messages = {
   "rejections.ip_denied": "Ключ с чужого IP",
   "rooms.eps": "Событий/с",
   "rooms.events": "События · байт принято",
+  "rooms.rtt": "RTT",
   "rooms.idle": "Простой",
   "rooms.idle.never": "событий не было",
   "rooms.idle.secs": (v) => `${v.s} с`,

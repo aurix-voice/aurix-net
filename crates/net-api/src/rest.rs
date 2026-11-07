@@ -1004,6 +1004,7 @@ async fn create_room(
         reserved: req.reserved.iter().take(32).cloned().collect(),
         reserved_until: (!req.reserved.is_empty())
             .then(|| std::time::Instant::now() + std::time::Duration::from_secs(60)),
+        cleanup_cache_on_leave: crate::ws::prop_bool(&req.props, "cleanup_cache_on_leave", true),
         max_events_per_sec: limits.max_events_per_sec_per_room,
         max_events_per_sec_per_player: limits.max_events_per_sec_per_player,
         max_event_bytes: limits.max_event_bytes,
@@ -1085,11 +1086,17 @@ fn local_players(st: &Shared, id: Uuid) -> Option<Vec<Value>> {
             .into_iter()
             .map(|p| {
                 let s = stats.get(&p.actor);
+                let rtt_ms = g
+                    .sessions
+                    .get(&p.actor)
+                    .and_then(|s| s.data.as_ref())
+                    .map(|d| d.link.lock().stats().rtt.as_secs_f64() * 1000.0)
+                    .filter(|r| *r > 0.0);
                 json!({
                     "actor": p.actor, "player_id": p.player_id, "name": p.name, "online": p.online,
                     "events": s.map(|s| s.events), "bytes_in": s.map(|s| s.bytes_in),
                     "eps": s.map(|s| s.eps), "idle_secs": s.and_then(|s| s.idle_secs),
-                    "since_secs": s.map(|s| s.since_secs),
+                    "since_secs": s.map(|s| s.since_secs), "rtt_ms": rtt_ms,
                 })
             })
             .collect()
