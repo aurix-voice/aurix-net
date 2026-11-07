@@ -1482,6 +1482,37 @@ pub async fn publish_room(st: &Shared, h: &Arc<Mutex<HostedRoom>>) {
 /// Shutdown: every hosted room gets a fresh checkpoint in Redis and becomes `orphaned` in the
 /// DB, so the next node a player reaches adopts it (same path as a crashed node, minus the
 /// heartbeat wait). Players get `left{reason:"rehost"}` and rejoin by room name.
+/// Server-side kick (REST): removes the actor from a room hosted on this node, tells the client
+/// `left{reason}`, updates sync/lockstep membership and republishes the room.
+pub async fn kick_player(st: &Shared, room: RoomId, actor: ActorId, reason: &str) -> Result<()> {
+    let hr = st
+        .host
+        .get(room)
+        .ok_or_else(|| NetError::NotFound("room not hosted here".into()))?;
+    {
+        let mut h = hr.lock();
+        let out = h
+            .room
+            .admin_kick(actor, reason, Instant::now())
+            .map_err(room_err)?;
+        dispatch(&h, out, &st.metrics);
+        h.sessions.remove(&actor);
+        st.webhooks.emit(
+            h.project,
+            "player.left",
+            serde_json::json!({"room": h.room.id().to_string(), "actor": actor.0, "kicked": true}),
+        );
+        if let Some(sy) = h.sync.as_mut() {
+            sy.on_leave(actor);
+        }
+        if let Some(ls) = h.lockstep.as_mut() {
+            ls.on_leave(actor);
+        }
+    }
+    publish_room(st, &hr).await;
+    Ok(())
+}
+
 pub async fn handoff_all(st: &Shared) -> usize {
     let rooms = st.host.all();
     for h in &rooms {

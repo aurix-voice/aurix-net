@@ -98,6 +98,16 @@ export function useRoom(id: string) {
   const path = operator ? `/v1/operator/rooms/${id}` : `/v1/rooms/${id}`;
   return useQuery({ queryKey: qk.room(id), queryFn: () => api.get<RoomDetail>(path), refetchInterval: LIVE });
 }
+export function useKickPlayer(roomId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  const { operator } = useAuth();
+  return useMutation({
+    mutationFn: ({ actor, reason }: { actor: number; reason?: string }) =>
+      api.request<void>(operator ? `/v1/operator/rooms/${roomId}/players/${actor}` : `/v1/rooms/${roomId}/players/${actor}`, { method: "DELETE", query: { reason } }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.room(roomId) }),
+  });
+}
 export function useCloseRoom() {
   const api = useApi();
   const qc = useQueryClient();

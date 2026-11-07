@@ -105,6 +105,15 @@ pub fn router(st: Shared) -> Router {
             post(op_webhook_test),
         )
         .route("/v1/internal/rooms/:id", delete(internal_close_room))
+        .route(
+            "/v1/internal/rooms/:id/players/:actor",
+            delete(internal_kick),
+        )
+        .route("/v1/rooms/:id/players/:actor", delete(kick_player))
+        .route(
+            "/v1/operator/rooms/:id/players/:actor",
+            delete(op_kick_player),
+        )
         .route("/v1/operator/nodes/:id/drain", post(op_drain_node))
         .route("/v1/operator/rooms/:id/replay", get(op_replay))
         .route(
@@ -1149,6 +1158,139 @@ async fn close_room_anywhere(st: &Shared, project: ProjectId, id: Uuid) {
     close_room(st, project, room).await;
 }
 
+#[derive(Deserialize)]
+struct KickQuery {
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// Reason shown to the kicked player: short, printable ASCII only, so it can travel in a URL
+/// between nodes and in a control frame unchanged.
+fn kick_reason(q: &KickQuery) -> String {
+    let r: String = q
+        .reason
+        .as_deref()
+        .unwrap_or("")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || " _.,:-".contains(*c))
+        .take(64)
+        .collect();
+    let r = r.trim().to_string();
+    if r.is_empty() {
+        "kicked".into()
+    } else {
+        r
+    }
+}
+
+/// Kicks wherever the room is hosted: locally, or on the hosting node via the internal route.
+async fn kick_anywhere(
+    st: &Shared,
+    project: ProjectId,
+    id: Uuid,
+    actor: u16,
+    reason: &str,
+) -> Result<()> {
+    let room = RoomId::from_uuid(id);
+    let actor_id = net_common::ActorId(actor);
+    if st.host.get(room).is_some() {
+        return crate::ws::kick_player(st, room, actor_id, reason).await;
+    }
+    let live = st
+        .redis
+        .get_room(project, room)
+        .await?
+        .ok_or_else(|| NetError::NotFound("room is not live".into()))?;
+    let node = Uuid::parse_str(&live.node)
+        .ok()
+        .and_then(|n| st.registry.get(net_common::NodeId::from_uuid(n)))
+        .ok_or_else(|| NetError::NotFound("hosting node unknown".into()))?;
+    let path = format!(
+        "/v1/internal/rooms/{id}/players/{actor}?reason={}",
+        reason.replace(' ', "%20")
+    );
+    internal_delete(st, &node.http_url, &path).await
+}
+
+async fn internal_kick(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((id, actor)): Path<(Uuid, u16)>,
+    Query(q): Query<KickQuery>,
+) -> ApiResult<StatusCode> {
+    operator(&st, &h)?;
+    crate::ws::kick_player(
+        &st,
+        RoomId::from_uuid(id),
+        net_common::ActorId(actor),
+        &kick_reason(&q),
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Project backend kicks a player (`rooms` scope); the room must belong to the key's project.
+async fn kick_player(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((id, actor)): Path<(Uuid, u16)>,
+    Query(q): Query<KickQuery>,
+) -> ApiResult<StatusCode> {
+    let key = api_key(&st, &h, Scope::Rooms).await?;
+    let row = queries::get_room(&st.pool, id).await?;
+    if row.project_id != key.project_id {
+        return Err(NetError::NotFound("room not found".into()).into());
+    }
+    let reason = kick_reason(&q);
+    kick_anywhere(
+        &st,
+        ProjectId::from_uuid(row.project_id),
+        id,
+        actor,
+        &reason,
+    )
+    .await?;
+    audit_log(
+        &st,
+        Some(row.project_id),
+        &format!("key:{}", key.id),
+        "player.kick",
+        &id.to_string(),
+        json!({"actor": actor, "reason": reason}),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn op_kick_player(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((id, actor)): Path<(Uuid, u16)>,
+    Query(q): Query<KickQuery>,
+) -> ApiResult<StatusCode> {
+    operator(&st, &h)?;
+    let row = queries::get_room(&st.pool, id).await?;
+    let reason = kick_reason(&q);
+    kick_anywhere(
+        &st,
+        ProjectId::from_uuid(row.project_id),
+        id,
+        actor,
+        &reason,
+    )
+    .await?;
+    audit_log(
+        &st,
+        Some(row.project_id),
+        "operator",
+        "player.kick",
+        &id.to_string(),
+        json!({"actor": actor, "reason": reason}),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn internal_close_room(
     State(st): State<Shared>,
     h: HeaderMap,
@@ -1182,6 +1324,9 @@ async fn internal_delete(st: &Shared, http_url: &str, path: &str) -> Result<()> 
         .send()
         .await
         .map_err(|e| NetError::Internal(e.to_string()))?;
+    if res.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(NetError::NotFound("not found on hosting node".into()));
+    }
     if !res.status().is_success() {
         return Err(NetError::Internal(format!(
             "node answered {}",

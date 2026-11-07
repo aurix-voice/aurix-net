@@ -496,6 +496,16 @@ impl Room {
         if self.master != Some(by) {
             return Err(RoomError::NotMaster);
         }
+        self.admin_kick(target, reason, now)
+    }
+
+    /// Kick by the operator/project backend: no master check, same `left{reason}` to the target.
+    pub fn admin_kick(
+        &mut self,
+        target: ActorId,
+        reason: &str,
+        now: Instant,
+    ) -> Result<Vec<Outgoing>, RoomError> {
         if !self.players.contains_key(&target) {
             return Err(RoomError::NoActor);
         }

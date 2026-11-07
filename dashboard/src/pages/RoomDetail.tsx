@@ -1,21 +1,30 @@
 import { Link, useParams } from "@tanstack/react-router";
 import { ArrowLeft, Download } from "lucide-react";
+import { useState } from "react";
 
-import { useRoom } from "@/api/hooks";
+import type { RoomDetail } from "@/api/client";
+import { useKickPlayer, useRoom } from "@/api/hooks";
 import { useAuth } from "@/auth/AuthProvider";
 import { useI18n } from "@/i18n";
 import { fmtDateTimeShort } from "@/lib/format";
 import { modeTone } from "@/lib/rooms";
 import { Button } from "@/ui/Button";
+import { ConfirmDialog } from "@/ui/Dialog";
+import { Input } from "@/ui/Input";
 import { Loading, PageHeader, QueryError, Section, SplitLayout } from "@/ui/Page";
 import { Badge, Callout, Card, CodeBlock, IdChip, KV, Mono } from "@/ui/Primitives";
 import { DataTable } from "@/ui/Table";
+import { useToast } from "@/ui/Toast";
 
 export function RoomDetailPage() {
   const { roomId } = useParams({ from: "/shell/rooms/$roomId" });
   const { t, locale } = useI18n();
   const { token, operator } = useAuth();
   const q = useRoom(roomId);
+  const toast = useToast();
+  const kick = useKickPlayer(roomId);
+  const [kicking, setKicking] = useState<RoomDetail["players"][number] | null>(null);
+  const [kickReason, setKickReason] = useState("");
   if (q.isLoading) return <Loading />;
   if (q.isError) return <QueryError error={q.error} onRetry={() => void q.refetch()} />;
   const d = q.data!;
@@ -71,10 +80,40 @@ export function RoomDetailPage() {
                     { key: "name", header: t("common.name"), cell: (p) => p.name || "—" },
                     { key: "pid", header: t("rooms.playerId"), cell: (p) => <Mono>{p.player_id}</Mono> },
                     { key: "online", header: t("rooms.state"), cell: (p) => <Badge tone={p.online ? "ok" : "neutral"} dot>{p.online ? t("rooms.online") : t("rooms.offline")}</Badge> },
+                    {
+                      key: "actions",
+                      header: "",
+                      align: "right",
+                      cell: (p) => (
+                        <Button variant="ghost" size="sm" disabled={!live} onClick={() => setKicking(p)}>
+                          {t("rooms.kick")}
+                        </Button>
+                      ),
+                    },
                   ]}
                 />
               </Card>
             </Section>
+            <ConfirmDialog
+              open={kicking !== null}
+              onOpenChange={(o) => {
+                if (!o) {
+                  setKicking(null);
+                  setKickReason("");
+                }
+              }}
+              title={t("rooms.kick")}
+              description={kicking ? t("rooms.kick.confirm", { name: kicking.name || kicking.player_id, actor: kicking.actor }) : ""}
+              confirmLabel={t("rooms.kick")}
+              variant="danger"
+              onConfirm={async () => {
+                if (!kicking) return;
+                await kick.mutateAsync({ actor: kicking.actor, reason: kickReason.trim() || undefined });
+                toast.ok(t("rooms.kick.done", { name: kicking.name || kicking.player_id }));
+              }}
+            >
+              <Input aria-label={t("rooms.kick.reason")} placeholder={t("rooms.kick.reason")} value={kickReason} maxLength={64} onChange={(e) => setKickReason(e.target.value)} />
+            </ConfirmDialog>
             <Section title={t("rooms.detail.props")}>
               <CodeBlock value={JSON.stringify(live?.props ?? room.props, null, 2)} />
             </Section>
