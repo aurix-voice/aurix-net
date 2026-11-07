@@ -8,3 +8,7 @@ Dockerfile
 docs
 deploy
 *.md
+dashboard/node_modules
+dashboard/dist
+dashboard/test-results
+dashboard/playwright-report
