@@ -67,5 +67,9 @@ versioned in JSON and tolerates added fields.
 for list values such as `trusted_proxies` / `allowed_origins`). `deploy/docker-compose.prod.yml` is a
 two-node reference layout.
 
+Postgres over TLS: `database.url = "postgres://user:pw@host/aurix_net?sslmode=verify-full&sslrootcert=/etc/aurix-net/pg-ca.pem"`
+(`require` for a public CA; the node fails at start on a certificate it cannot verify, it never falls back
+to plaintext).
+
 Redis over TLS: `redis.url = "rediss://:password@host:6390/"`; for a private CA set `redis.ca_cert` to the
 PEM path (`NET__REDIS__CA_CERT=/etc/aurix-net/redis-ca.pem`), otherwise WebPKI roots are used.
