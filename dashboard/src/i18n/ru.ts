@@ -39,6 +39,7 @@ export const ru: Messages = {
   "common.notFound.desc": "Адрес не соответствует ни одной странице консоли.",
   "common.forbidden": "Недоступно",
   "common.forbidden.desc": "Токен, с которым вы вошли, не может использовать этот раздел.",
+  "common.forbidden.operator": "Этот раздел управляется API-ключом самого проекта. Как оператор, выпускайте ключи и задавайте квоты на странице проекта.",
   "common.forbidden.scope": (v) => `Нужно: ${v.scope}`,
   "common.selectProject": "Выберите проект",
   "common.selectProject.desc": "Страницам проекта нужен проект в области видимости; выберите его в верхней панели.",

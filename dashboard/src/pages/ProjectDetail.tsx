@@ -2,8 +2,8 @@ import { Link, useParams } from "@tanstack/react-router";
 import { ArrowLeft, Plus } from "lucide-react";
 import { useState } from "react";
 
-import type { LiveRoom, Module, Webhook } from "@/api/client";
-import { useCreateKey, useProject, useSetLimits } from "@/api/hooks";
+import type { ApiKey, LiveRoom, Module, Webhook } from "@/api/client";
+import { useCreateKey, useProject, useRevokeProjectKey, useSetLimits } from "@/api/hooks";
 import { useAuth } from "@/auth/AuthProvider";
 import { NewKeyDialog } from "@/components/NewKeyDialog";
 import { useI18n } from "@/i18n";
@@ -12,6 +12,7 @@ import { modeTone } from "@/lib/rooms";
 import { keyColumns } from "@/pages/Keys";
 import { RequireOperator } from "@/shell/Guards";
 import { Button } from "@/ui/Button";
+import { ConfirmDialog } from "@/ui/Dialog";
 import { Input } from "@/ui/Input";
 import { Tabs, TabPanel } from "@/ui/Menu";
 import { Loading, PageHeader, QueryError, Section } from "@/ui/Page";
@@ -79,6 +80,8 @@ function ProjectBody() {
   const { selectProject } = useAuth();
   const q = useProject(projectId);
   const createKey = useCreateKey(projectId);
+  const revokeKey = useRevokeProjectKey(projectId);
+  const [revoking, setRevoking] = useState<ApiKey | null>(null);
   const [tab, setTab] = useState("keys");
   const [newKey, setNewKey] = useState(false);
   if (q.isLoading) return <Loading />;
@@ -125,7 +128,7 @@ function ProjectBody() {
                   <Plus className="size-3.5" /> {t("projects.issueKey")}
                 </Button>
               </div>
-              <DataTable rows={d.keys} columns={keyColumns(t, locale)} rowKey={(k) => k.id} dense />
+              <DataTable rows={d.keys} columns={keyColumns(t, locale, setRevoking)} rowKey={(k) => k.id} dense />
             </TabPanel>
             <TabPanel value="rooms">
               <DataTable
@@ -176,6 +179,18 @@ function ProjectBody() {
         </div>
       </div>
       <NewKeyDialog open={newKey} onOpenChange={setNewKey} create={(b) => createKey.mutateAsync(b)} />
+      <ConfirmDialog
+        open={!!revoking}
+        onOpenChange={(o) => !o && setRevoking(null)}
+        title={t("keys.revoke")}
+        description={revoking ? t("keys.revoke.confirm", { name: revoking.name }) : ""}
+        confirmLabel={t("keys.revoke")}
+        variant="danger"
+        onConfirm={async () => {
+          if (revoking) await revokeKey.mutateAsync(revoking.id);
+          setRevoking(null);
+        }}
+      />
     </>
   );
 }

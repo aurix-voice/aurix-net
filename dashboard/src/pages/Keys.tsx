@@ -84,7 +84,7 @@ function KeysBody() {
 
 export function KeysPage() {
   return (
-    <RequireScope scope="admin">
+    <RequireScope scope="admin" projectKey>
       <KeysBody />
     </RequireScope>
   );

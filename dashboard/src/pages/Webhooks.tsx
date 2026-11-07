@@ -98,7 +98,7 @@ function WebhooksBody() {
 
 export function WebhooksPage() {
   return (
-    <RequireScope scope="admin">
+    <RequireScope scope="admin" projectKey>
       <WebhooksBody />
     </RequireScope>
   );

@@ -41,6 +41,7 @@ export const en = {
   "common.notFound.desc": "The address does not match any console page.",
   "common.forbidden": "Not available",
   "common.forbidden.desc": "The token you signed in with cannot use this section.",
+  "common.forbidden.operator": "This section is managed with the project's own API key. As operator, issue keys and quotas from the project page.",
   "common.forbidden.scope": (v) => `Required: ${v.scope}`,
   "common.selectProject": "Select a project",
   "common.selectProject.desc": "Project pages need a project in scope; pick one in the top bar.",

@@ -71,6 +71,7 @@ pub fn router(st: Shared) -> Router {
             get(op_list_projects).post(op_create_project),
         )
         .route("/v1/operator/projects/:id/keys", post(op_create_key))
+        .route("/v1/operator/projects/:id/keys/:kid", delete(op_revoke_key))
         .route("/v1/operator/projects/:id/limits", post(op_set_limits))
         .route("/v1/operator/nodes", get(op_nodes))
         .route("/v1/operator/rooms", get(op_rooms))
@@ -770,6 +771,27 @@ async fn op_create_key(
     )
     .await;
     Ok(Json(out))
+}
+
+async fn op_revoke_key(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((id, kid)): Path<(Uuid, Uuid)>,
+) -> ApiResult<StatusCode> {
+    operator(&st, &h)?;
+    if !queries::revoke_api_key(&st.pool, id, kid).await? {
+        return Err(NetError::NotFound("key".into()).into());
+    }
+    audit_log(
+        &st,
+        Some(id),
+        "operator",
+        "key.revoke",
+        &kid.to_string(),
+        json!({}),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn op_set_limits(

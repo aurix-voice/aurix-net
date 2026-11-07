@@ -29,8 +29,12 @@ export function RequireOperator({ children }: { children: ReactNode }) {
 }
 
 /** API-key scope gate for project pages. */
-export function RequireScope({ scope, children }: { scope: "rooms" | "read" | "admin"; children: ReactNode }) {
-  const { can } = useAuth();
+export function RequireScope({ scope, projectKey, children }: { scope: "rooms" | "read" | "admin"; projectKey?: boolean; children: ReactNode }) {
+  const { t } = useI18n();
+  const { can, operator } = useAuth();
+  if (projectKey && operator) {
+    return <EmptyState icon={<Lock className="size-5" />} title={t("common.forbidden")} description={t("common.forbidden.operator")} />;
+  }
   if (!can(scope)) return <Forbidden scope={scope} />;
   return <>{children}</>;
 }

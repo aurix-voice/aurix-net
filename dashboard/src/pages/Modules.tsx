@@ -91,7 +91,7 @@ function ModulesBody() {
 
 export function ModulesPage() {
   return (
-    <RequireScope scope="admin">
+    <RequireScope scope="admin" projectKey>
       <ModulesBody />
     </RequireScope>
   );

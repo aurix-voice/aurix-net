@@ -131,6 +131,14 @@ export function useCreateKey(projectId?: string) {
     },
   });
 }
+export function useRevokeProjectKey(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.del(`/v1/operator/projects/${projectId}/keys/${id}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.project(projectId) }),
+  });
+}
 export function useRevokeKey() {
   const api = useApi();
   const qc = useQueryClient();

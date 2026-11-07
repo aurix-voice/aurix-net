@@ -15,6 +15,7 @@ interface NavItem {
   icon: ReactNode;
   operator?: boolean;
   scope?: "rooms" | "read" | "admin";
+  projectKey?: boolean;
   exact?: boolean;
 }
 
@@ -32,10 +33,10 @@ const SECTIONS: Array<{ label: MessageKey; items: NavItem[] }> = [
     items: [
       { to: "/rooms", label: "nav.rooms", icon: <DoorOpen className="size-4" /> },
       { to: "/usage", label: "nav.usage", icon: <BarChart3 className="size-4" />, scope: "read" },
-      { to: "/keys", label: "nav.keys", icon: <KeyRound className="size-4" />, scope: "admin" },
-      { to: "/webhooks", label: "nav.webhooks", icon: <Webhook className="size-4" />, scope: "admin" },
-      { to: "/modules", label: "nav.modules", icon: <Cpu className="size-4" />, scope: "admin" },
-      { to: "/matchmaking", label: "nav.matchmaking", icon: <Shuffle className="size-4" />, scope: "rooms" },
+      { to: "/keys", projectKey: true, label: "nav.keys", icon: <KeyRound className="size-4" />, scope: "admin" },
+      { to: "/webhooks", projectKey: true, label: "nav.webhooks", icon: <Webhook className="size-4" />, scope: "admin" },
+      { to: "/modules", projectKey: true, label: "nav.modules", icon: <Cpu className="size-4" />, scope: "admin" },
+      { to: "/matchmaking", projectKey: true, label: "nav.matchmaking", icon: <Shuffle className="size-4" />, scope: "rooms" },
     ],
   },
   {
@@ -47,7 +48,7 @@ const SECTIONS: Array<{ label: MessageKey; items: NavItem[] }> = [
 export function Sidebar({ className, onNavigate }: { className?: string; onNavigate?: () => void }) {
   const { t } = useI18n();
   const { operator, can } = useAuth();
-  const visible = (i: NavItem) => (i.operator ? operator : true) && (i.scope ? operator || can(i.scope) : true);
+  const visible = (i: NavItem) => (i.operator ? operator : true) && (i.projectKey ? !operator : true) && (i.scope ? operator || can(i.scope) : true);
   return (
     <aside className={cn("w-60 shrink-0 border-r border-border bg-surface flex-col", className)}>
       <div className="h-14 flex items-center gap-2.5 px-5 border-b border-border">

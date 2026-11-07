@@ -82,7 +82,7 @@ function MatchmakingBody() {
 
 export function MatchmakingPage() {
   return (
-    <RequireScope scope="rooms">
+    <RequireScope scope="rooms" projectKey>
       <MatchmakingBody />
     </RequireScope>
   );
