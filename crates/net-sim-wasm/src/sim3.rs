@@ -12,6 +12,9 @@ struct Slot3 {
     world: World,
     snapshot: Vec<u8>,
     kcc: Vec<CharacterController>,
+    hull_verts: Vec<FxVec3>,
+    hull_faces: Vec<Vec<u32>>,
+    hull_face: Vec<u32>,
 }
 
 thread_local! {
@@ -52,6 +55,9 @@ pub extern "C" fn sim3_world_new(gx: i64, gy: i64, gz: i64, tick_hz: u32) -> u32
         world: World::new(cfg),
         snapshot: Vec::new(),
         kcc: Vec::new(),
+        hull_verts: Vec::new(),
+        hull_faces: Vec::new(),
+        hull_face: Vec::new(),
     };
     WORLDS3.with(|w| {
         let mut w = w.borrow_mut();
@@ -648,6 +654,203 @@ pub extern "C" fn sim3_kcc_get(h: u32, k: u32, field: u32) -> i64 {
             .unwrap_or(0)
     })
     .unwrap_or(0)
+}
+
+// ---- convex hulls (staged per world: verts, then faces as index loops) and sweeps ----
+
+/// Clear the staged hull.
+#[no_mangle]
+pub extern "C" fn sim3_convex_reset(h: u32) {
+    with3(h, |s| {
+        s.hull_verts.clear();
+        s.hull_faces.clear();
+        s.hull_face.clear();
+    });
+}
+
+/// Push a body-space vertex (raw Fx); at most 32.
+#[no_mangle]
+pub extern "C" fn sim3_convex_vert(h: u32, x: i64, y: i64, z: i64) -> u32 {
+    with3(h, |s| {
+        if s.hull_verts.len() < 32 {
+            s.hull_verts.push(v3(x, y, z));
+        }
+        s.hull_verts.len() as u32
+    })
+    .unwrap_or(0)
+}
+
+/// Push a vertex index onto the face being built.
+#[no_mangle]
+pub extern "C" fn sim3_convex_index(h: u32, i: u32) {
+    with3(h, |s| {
+        if s.hull_face.len() < 32 {
+            s.hull_face.push(i);
+        }
+    });
+}
+
+/// Close the current face (>= 3 indices, any winding); at most 32 faces.
+#[no_mangle]
+pub extern "C" fn sim3_convex_face_end(h: u32) -> u32 {
+    with3(h, |s| {
+        let f = std::mem::take(&mut s.hull_face);
+        if f.len() >= 3
+            && s.hull_faces.len() < 32
+            && f.iter().all(|i| (*i as usize) < s.hull_verts.len())
+        {
+            s.hull_faces.push(f);
+        }
+        s.hull_faces.len() as u32
+    })
+    .unwrap_or(0)
+}
+
+/// Add a convex body from the staged hull (which stays staged for reuse); 0 if the hull is invalid.
+#[no_mangle]
+pub extern "C" fn sim3_add_convex(h: u32, k: u32, x: i64, y: i64, z: i64, density: i64) -> u32 {
+    with3(h, |s| {
+        if s.hull_verts.len() < 4 || s.hull_faces.len() < 4 {
+            return 0;
+        }
+        s.world
+            .add(Body::with_density(
+                kind3(k),
+                Shape::Convex {
+                    verts: s.hull_verts.clone(),
+                    faces: s.hull_faces.clone(),
+                },
+                v3(x, y, z),
+                Fx(density),
+            ))
+            .0
+            + 1
+    })
+    .unwrap_or(0)
+}
+
+/// Sphere sweep; result fields as `sim3_ray_get`. Returns body id + 1 or 0.
+#[no_mangle]
+pub extern "C" fn sim3_spherecast(
+    h: u32,
+    x: i64,
+    y: i64,
+    z: i64,
+    dx: i64,
+    dy: i64,
+    dz: i64,
+    radius: i64,
+    mask: u32,
+) -> u32 {
+    with3(h, |s| {
+        match s
+            .world
+            .sphere_cast(v3(x, y, z), v3(dx, dy, dz), Fx(radius), mask)
+        {
+            Some(hit) => {
+                LAST_RAY3.with(|r| {
+                    *r.borrow_mut() = [
+                        hit.fraction.0,
+                        hit.point.x.0,
+                        hit.point.y.0,
+                        hit.point.z.0,
+                        hit.normal.x.0,
+                        hit.normal.y.0,
+                        hit.normal.z.0,
+                    ];
+                });
+                hit.body.0 + 1
+            }
+            None => 0,
+        }
+    })
+    .unwrap_or(0)
+}
+
+/// Convex reference scenario: three pyramids dropped in a column, a box sliding off a static
+/// wedge, a sphere rolling onto a pyramid, plus a sphere sweep mixed into the hash; 300 ticks.
+#[no_mangle]
+pub extern "C" fn sim3_hull_golden_hash() -> u64 {
+    let h = sim3_world_new(0, Fx::from_int(-10).0, 0, 60);
+    let one = Fx::ONE.0;
+    let half = Fx::HALF.0;
+    let q = Fx::from_ratio(1, 4).0;
+    sim3_add_box(
+        h,
+        0,
+        0,
+        -half,
+        0,
+        Fx::from_int(30).0,
+        half,
+        Fx::from_int(30).0,
+        one,
+    );
+    sim3_convex_reset(h);
+    for (x, z) in [(-half, -half), (half, -half), (half, half), (-half, half)] {
+        sim3_convex_vert(h, x, -q, z);
+    }
+    sim3_convex_vert(h, 0, Fx::from_ratio(3, 4).0, 0);
+    for f in [
+        [0, 1, 2, 3],
+        [0, 1, 4, u32::MAX],
+        [1, 2, 4, u32::MAX],
+        [2, 3, 4, u32::MAX],
+        [3, 0, 4, u32::MAX],
+    ] {
+        for i in f {
+            if i != u32::MAX {
+                sim3_convex_index(h, i);
+            }
+        }
+        sim3_convex_face_end(h);
+    }
+    for i in 0..3i32 {
+        sim3_add_convex(
+            h,
+            2,
+            Fx::from_ratio(i as i64, 20).0,
+            Fx::from_int(1 + 2 * i).0,
+            0,
+            one,
+        );
+    }
+    sim3_add_convex(h, 0, Fx::from_int(6).0, 0, 0, one);
+    sim3_add_box(
+        h,
+        2,
+        Fx::from_ratio(62, 10).0,
+        Fx::from_int(2).0,
+        0,
+        q,
+        q,
+        q,
+        one,
+    );
+    let ball = sim3_add_sphere(h, 2, Fx::from_int(-4).0, half, 0, half, one) - 1;
+    sim3_set_velocity(h, ball, Fx::from_int(4).0, 0, 0, 0, 0, 0);
+    for _ in 0..300 {
+        sim3_step(h);
+    }
+    let mut x = sim3_hash(h);
+    if sim3_spherecast(
+        h,
+        Fx::from_int(-8).0,
+        half,
+        0,
+        Fx::from_int(30).0,
+        0,
+        0,
+        q,
+        u32::MAX,
+    ) != 0
+    {
+        for i in 0..7 {
+            x ^= (sim3_ray_get(i) as u64).rotate_left(i * 7);
+        }
+    }
+    sim3_world_free(h);
+    x
 }
 
 /// 3D joint/character reference scenario: ball pendulum, rope, limited hinge door, motor wheel and
