@@ -915,6 +915,127 @@ impl World {
     }
 }
 
+/// Kinematic character controller: moves a kinematic body by a displacement, sliding along
+/// static/kinematic geometry, stepping over small ledges and reporting ground contact.
+/// Deterministic by construction (pure fixed-point geometry, no engine callbacks).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct CharacterController {
+    pub body: BodyId,
+    /// Highest ledge the character steps onto without jumping.
+    pub step_height: Fx,
+    /// cos(max slope): a contact normal with `n.y >= min_ground_normal_y` counts as ground.
+    pub min_ground_normal_y: Fx,
+    /// Extra pull towards the ground to keep contact walking down slopes/stairs.
+    pub snap_distance: Fx,
+    pub grounded: bool,
+    pub ground_normal: FxVec2,
+    pub ground_body: Option<BodyId>,
+    pub velocity: FxVec2,
+}
+
+impl CharacterController {
+    pub fn new(body: BodyId) -> CharacterController {
+        CharacterController {
+            body,
+            step_height: Fx::from_ratio(1, 2),
+            min_ground_normal_y: Fx::from_ratio(7, 10),
+            snap_distance: Fx::from_ratio(1, 4),
+            grounded: false,
+            ground_normal: FxVec2::new(Fx::ZERO, Fx::ONE),
+            ground_body: None,
+            velocity: FxVec2::default(),
+        }
+    }
+
+    /// Move by `delta` this tick: horizontal slide with step-up, then vertical move with ground
+    /// detection. Returns the displacement actually applied.
+    pub fn step(&mut self, world: &mut World, delta: FxVec2) -> FxVec2 {
+        let start = match world.body(self.body) {
+            Some(b) => b.position,
+            None => return FxVec2::default(),
+        };
+        self.grounded = false;
+        self.ground_body = None;
+        let horizontal = FxVec2::new(delta.x, Fx::ZERO);
+        let moved = self.slide(world, horizontal);
+        if moved.x.abs() < horizontal.x.abs() - Fx::from_ratio(1, 100)
+            && self.step_height > Fx::ZERO
+        {
+            // blocked: try from step_height above, then settle back down
+            let before = world.body(self.body).unwrap().position;
+            let up = FxVec2::new(Fx::ZERO, self.step_height);
+            if self.slide(world, up).y >= self.step_height - Fx::from_ratio(1, 100) {
+                let rest = FxVec2::new(horizontal.x - moved.x, Fx::ZERO);
+                let gained = self.slide(world, rest);
+                let down = self.slide(world, FxVec2::new(Fx::ZERO, -self.step_height));
+                if gained.x.abs() <= Fx::from_ratio(1, 100) || down.y > -Fx::from_ratio(1, 100) {
+                    world.body_mut(self.body).unwrap().position = before;
+                }
+            } else {
+                world.body_mut(self.body).unwrap().position = before;
+            }
+        }
+        let vertical = FxVec2::new(Fx::ZERO, delta.y);
+        self.slide(world, vertical);
+        if !self.grounded && delta.y <= Fx::ZERO && self.snap_distance > Fx::ZERO {
+            let before = world.body(self.body).unwrap().position;
+            self.slide(world, FxVec2::new(Fx::ZERO, -self.snap_distance));
+            if !self.grounded {
+                world.body_mut(self.body).unwrap().position = before;
+            }
+        }
+        let end = world.body(self.body).unwrap().position;
+        self.velocity = (end - start).scale(if world.cfg.dt > Fx::ZERO {
+            Fx::ONE / world.cfg.dt
+        } else {
+            Fx::ZERO
+        });
+        end - start
+    }
+
+    /// Translate, then push out of every overlapping static/kinematic body (up to 4 passes),
+    /// recording ground normals. Returns the net translation.
+    fn slide(&mut self, world: &mut World, delta: FxVec2) -> FxVec2 {
+        let start = world.body(self.body).unwrap().position;
+        world.body_mut(self.body).unwrap().position = start + delta;
+        for _ in 0..4 {
+            let me = world.body(self.body).unwrap().clone();
+            let (lo, hi) = me.aabb();
+            let mut push = FxVec2::default();
+            let mut hits = 0;
+            for (id, other) in world.bodies.iter() {
+                if *id == self.body || other.kind == BodyKind::Dynamic || other.sensor {
+                    continue;
+                }
+                if me.layer & other.mask == 0 || other.layer & me.mask == 0 {
+                    continue;
+                }
+                let (olo, ohi) = other.aabb();
+                if hi.x < olo.x || ohi.x < lo.x || hi.y < olo.y || ohi.y < lo.y {
+                    continue;
+                }
+                for c in collide(&me, other) {
+                    // normal points from me to other: push the opposite way
+                    let out = FxVec2::new(-c.normal.x, -c.normal.y);
+                    if out.y >= self.min_ground_normal_y {
+                        self.grounded = true;
+                        self.ground_normal = out;
+                        self.ground_body = Some(*id);
+                    }
+                    push = push + out.scale(c.penetration);
+                    hits += 1;
+                }
+            }
+            if hits == 0 {
+                break;
+            }
+            let b = world.body_mut(self.body).unwrap();
+            b.position = b.position + push;
+        }
+        world.body(self.body).unwrap().position - start
+    }
+}
+
 fn set_vel(bodies: &mut BTreeMap<BodyId, Body>, id: BodyId, v: FxVec2, w: Fx) {
     let b = bodies.get_mut(&id).unwrap();
     b.velocity = v;
@@ -1514,6 +1635,81 @@ mod tests {
         );
         let wv = w.body(wheel).unwrap().angular_velocity.to_f64();
         assert!((wv - 3.0).abs() < 0.1, "motor speed {wv}");
+    }
+
+    #[test]
+    fn character_walks_steps_and_stops_at_walls() {
+        let build = || {
+            let mut w = World::new(WorldConfig::default());
+            ground(&mut w);
+            // small step (0.4 high) at x=5..7, then a tall wall at x=12
+            w.add(Body::new(
+                BodyKind::Static,
+                Shape::rect(Fx::ONE, Fx::from_ratio(2, 10)),
+                FxVec2::new(fx(6), Fx::from_ratio(2, 10)),
+            ));
+            w.add(Body::new(
+                BodyKind::Static,
+                Shape::rect(Fx::from_ratio(1, 2), fx(3)),
+                FxVec2::new(fx(12), fx(3)),
+            ));
+            let hero = w.add(Body::new(
+                BodyKind::Kinematic,
+                Shape::Capsule {
+                    half_len: Fx::from_ratio(1, 2),
+                    radius: Fx::from_ratio(1, 2),
+                },
+                FxVec2::new(fx(0), fx(1)),
+            ));
+            w.body_mut(hero).unwrap().angle = PI / Fx::from_int(2); // upright capsule
+            (w, CharacterController::new(hero))
+        };
+        let (mut w, mut kcc) = build();
+        let (mut w2, mut kcc2) = build();
+        let mut vy = Fx::ZERO;
+        let mut grounded_ticks = 0;
+        for _ in 0..240 {
+            vy -= fx(10) * w.cfg.dt;
+            let d = FxVec2::new(Fx::from_ratio(6, 60), vy * w.cfg.dt);
+            kcc.step(&mut w, d);
+            kcc2.step(&mut w2, d);
+            w.step();
+            w2.step();
+            if kcc.grounded {
+                grounded_ticks += 1;
+                vy = Fx::ZERO;
+            }
+        }
+        assert_eq!(w.hash(), w2.hash());
+        let p = w.body(kcc.body).unwrap().position;
+        assert!(grounded_ticks > 200, "grounded only {grounded_ticks} ticks");
+        assert!(
+            (10.9..11.6).contains(&p.x.to_f64()),
+            "hero should stop at the wall, x={}",
+            p.x
+        );
+        assert!(
+            (0.9..1.1).contains(&p.y.to_f64()),
+            "hero should be back on the floor after the step, y={}",
+            p.y
+        );
+        // mid-way check: on top of the step the hero stands 0.4 higher
+        let (mut w3, mut k3) = build();
+        let dt = w3.cfg.dt;
+        let mut vy = Fx::ZERO;
+        let mut top = Fx::ZERO;
+        for _ in 0..120 {
+            vy -= fx(10) * dt;
+            k3.step(&mut w3, FxVec2::new(Fx::from_ratio(6, 60), vy * dt));
+            if k3.grounded {
+                vy = Fx::ZERO;
+            }
+            top = top.max(w3.body(k3.body).unwrap().position.y);
+        }
+        assert!(
+            (1.3..1.5).contains(&top.to_f64()),
+            "hero never stood on the step: max y {top}"
+        );
     }
 
     #[test]
