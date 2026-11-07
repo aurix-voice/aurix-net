@@ -1,0 +1,736 @@
+{
+  "fsm": {
+    "current": 1,
+    "last_action": "Running",
+    "states": {
+      "1": {
+        "action": null,
+        "id": 1,
+        "initial": 2,
+        "on_enter": 100,
+        "on_exit": 101,
+        "parent": null,
+        "transitions": [
+          {
+            "condition": 2,
+            "to": 4
+          }
+        ]
+      },
+      "2": {
+        "action": 20,
+        "id": 2,
+        "initial": null,
+        "on_enter": null,
+        "on_exit": null,
+        "parent": 1,
+        "transitions": [
+          {
+            "condition": 1,
+            "to": 3
+          }
+        ]
+      },
+      "3": {
+        "action": 30,
+        "id": 3,
+        "initial": null,
+        "on_enter": 102,
+        "on_exit": null,
+        "parent": 1,
+        "transitions": [
+          {
+            "condition": null,
+            "to": 2
+          },
+          {
+            "condition": 3,
+            "to": 2
+          }
+        ]
+      },
+      "4": {
+        "action": null,
+        "id": 4,
+        "initial": null,
+        "on_enter": 103,
+        "on_exit": null,
+        "parent": null,
+        "transitions": []
+      }
+    },
+    "tick": 0,
+    "ticks_in_state": 0
+  },
+  "fsm_ticks": [
+    {
+      "bb": {
+        "100": 1
+      },
+      "current": 2,
+      "hash": "0x9e3779b87f4a7c17"
+    },
+    {
+      "bb": {
+        "100": 1
+      },
+      "current": 2,
+      "hash": "0x3c6ef370fe94f828"
+    },
+    {
+      "bb": {
+        "100": 1
+      },
+      "current": 2,
+      "hash": "0xdaa66d2f7ddf743d"
+    },
+    {
+      "bb": {
+        "100": 1
+      },
+      "current": 2,
+      "hash": "0x78dde6e1fd29f056"
+    },
+    {
+      "bb": {
+        "100": 1
+      },
+      "current": 2,
+      "hash": "0x1715609a7c746c6b"
+    },
+    {
+      "bb": {
+        "100": 1
+      },
+      "current": 2,
+      "hash": "0xb54cda5efbbee87c"
+    },
+    {
+      "bb": {
+        "100": 1
+      },
+      "current": 2,
+      "hash": "0x538454157b096491"
+    },
+    {
+      "bb": {
+        "100": 1
+      },
+      "current": 2,
+      "hash": "0xf1bbcdc3fa53e0aa"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "102": 1
+      },
+      "current": 3,
+      "hash": "0x8ff34784799e5cbe"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "102": 1
+      },
+      "current": 3,
+      "hash": "0x2e2ac13cf8e8d8d1"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "102": 1
+      },
+      "current": 3,
+      "hash": "0xcc623afb783354e4"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "102": 1
+      },
+      "current": 3,
+      "hash": "0x6a99b4b5f77dd0ff"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "102": 1
+      },
+      "current": 3,
+      "hash": "0x8d12e6e76c84d12"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "102": 1
+      },
+      "current": 3,
+      "hash": "0xa708a822f612c925"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "102": 1
+      },
+      "current": 3,
+      "hash": "0x454021d9755d4538"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "102": 1
+      },
+      "current": 3,
+      "hash": "0xe3779b9ff4a7c153"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "102": 1
+      },
+      "current": 3,
+      "hash": "0x81af155873f23d66"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "102": 1
+      },
+      "current": 3,
+      "hash": "0x1fe68f00f33cb979"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "102": 1
+      },
+      "current": 3,
+      "hash": "0xbe1e08cf7287358c"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "102": 1
+      },
+      "current": 3,
+      "hash": "0x5c558271f1d1b1a7"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "102": 1
+      },
+      "current": 3,
+      "hash": "0xfa8cfc3a711c2dba"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "102": 1
+      },
+      "current": 3,
+      "hash": "0x98c475fef066a9cd"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "102": 1
+      },
+      "current": 3,
+      "hash": "0x36fbefa56fb125e0"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "102": 1
+      },
+      "current": 3,
+      "hash": "0xd5336973eefba1fb"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "102": 1
+      },
+      "current": 3,
+      "hash": "0x736ae30c6e461e0e"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "101": 1,
+        "102": 1,
+        "103": 1,
+        "50": 1
+      },
+      "current": 4,
+      "hash": "0x11a25cd7ed909a26"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "101": 1,
+        "102": 1,
+        "103": 1,
+        "50": 1
+      },
+      "current": 4,
+      "hash": "0xafd9d6926cdb1633"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "101": 1,
+        "102": 1,
+        "103": 1,
+        "50": 1
+      },
+      "current": 4,
+      "hash": "0x4e11504aec259248"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "101": 1,
+        "102": 1,
+        "103": 1,
+        "50": 1
+      },
+      "current": 4,
+      "hash": "0xec48ca076b700e65"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "101": 1,
+        "102": 1,
+        "103": 1,
+        "50": 1
+      },
+      "current": 4,
+      "hash": "0x8a8043b9eaba8a72"
+    }
+  ],
+  "script": {
+    "dead_at": 25,
+    "patrol_left_start": 2,
+    "see_ticks": "8..=12, 20..=22"
+  },
+  "tree": {
+    "Selector": [
+      {
+        "Sequence": [
+          {
+            "Condition": 1
+          },
+          {
+            "Timeout": {
+              "child": {
+                "Action": 11
+              },
+              "ticks": 4
+            }
+          }
+        ]
+      },
+      {
+        "Sequence": [
+          {
+            "Cooldown": {
+              "child": {
+                "Action": 10
+              },
+              "ticks": 2
+            }
+          },
+          {
+            "Wait": 2
+          },
+          {
+            "Repeat": {
+              "child": {
+                "Action": 12
+              },
+              "times": 2
+            }
+          },
+          {
+            "Compare": {
+              "key": 101,
+              "op": 5,
+              "value": 4
+            }
+          },
+          {
+            "Set": {
+              "key": 7,
+              "value": 1
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "tree_ticks": [
+    {
+      "bb": {},
+      "hash": "0x23f7104eb5e1f0c5",
+      "status": "Running"
+    },
+    {
+      "bb": {},
+      "hash": "0x3e1c5277a6f833c6",
+      "status": "Running"
+    },
+    {
+      "bb": {},
+      "hash": "0xaafc336a21b17ec5",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "101": 1
+      },
+      "hash": "0x34eb76dbaad5b912",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "101": 2
+      },
+      "hash": "0x7f35559ed1669b20",
+      "status": "Failure"
+    },
+    {
+      "bb": {
+        "101": 2
+      },
+      "hash": "0xb231fcc84e310cc2",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "101": 2
+      },
+      "hash": "0x71cdacac056d0a43",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "101": 2
+      },
+      "hash": "0x6976c6f36958484c",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "101": 2
+      },
+      "hash": "0xc25f1d10e9d7de8f",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "101": 3
+      },
+      "hash": "0xe6a15f697aa4b09c",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "101": 4,
+        "7": 1
+      },
+      "hash": "0x8209b704c07c43ae",
+      "status": "Success"
+    },
+    {
+      "bb": {
+        "100": 1,
+        "101": 4,
+        "7": 1
+      },
+      "hash": "0xe40bb4eac51e5729",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 4,
+        "7": 1
+      },
+      "hash": "0x56c24478c087f3ab",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 4,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0x2186c6b96918daca",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 4,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0x239175814395454b",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 4,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0xdfe8b441b9aa2254",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 4,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0x4862d69cf3535997",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 5,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0x6ca518f584202ba4",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 6,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0xf15e80f5db6411b6",
+      "status": "Success"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 6,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0x815c3dc83e0a5550",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 6,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0x5df31e7705ef05d1",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 6,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0x9bee5ecc612268d2",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 6,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0x8bbd5ab45d4a46d1",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 7,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0xe5285b84be0f3d2e",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 8,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0x84de186aaf91ec3c",
+      "status": "Success"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 8,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0xc2ed8db6097e1dde",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 8,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0x6c63a15606769b5f",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 8,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0xf0b107b958f22358",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 8,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0xe1dd32e301cec69b",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 9,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0xda08e53230065a8",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 10,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0xa908e5ee68d7f8ba",
+      "status": "Success"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 10,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0x43ebf89b183b4e24",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 10,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0x904fb763e087c5a5",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 10,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0x8bdbf8d5187abba6",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 10,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0x90bc146b5abbaca5",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 11,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0x222c70f47444b3f2",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 12,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0xc1e22dda65c76300",
+      "status": "Success"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 12,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0xfff1a325bfb394a2",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 12,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0x8aceb60e0388c523",
+      "status": "Running"
+    },
+    {
+      "bb": {
+        "100": 2,
+        "101": 12,
+        "102": 1,
+        "7": 1
+      },
+      "hash": "0xb340c28c33231c2c",
+      "status": "Running"
+    }
+  ]
+}

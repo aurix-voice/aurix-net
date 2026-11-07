@@ -948,4 +948,185 @@ mod tests {
         assert_eq!(a1, a2);
         assert_eq!(h1, h2);
     }
+    /// Cross-SDK vectors: a scripted brain drives the guard tree and the HFSM; per-tick status,
+    /// tree hash and blackboard are recorded. `BOTS_WRITE_VECTORS=1` rewrites the fixture that
+    /// the TS and C# ports replay.
+    #[test]
+    fn vectors_match_the_fixture() {
+        struct Scripted {
+            t: u32,
+            patrol_left: u32,
+        }
+        impl Brain for Scripted {
+            fn condition(&mut self, id: u32, bb: &Blackboard) -> bool {
+                match id {
+                    C_SEE => (8..=12).contains(&self.t) || (20..=22).contains(&self.t),
+                    2 => bb.get(50) == 1,
+                    _ => false,
+                }
+            }
+            fn action(&mut self, id: u32, bb: &mut Blackboard) -> Status {
+                match id {
+                    A_PATROL => {
+                        if self.patrol_left == 0 {
+                            self.patrol_left = 3;
+                            Status::Success
+                        } else {
+                            self.patrol_left -= 1;
+                            Status::Running
+                        }
+                    }
+                    A_CHASE => {
+                        bb.set(100, bb.get(100) + 1);
+                        Status::Running
+                    }
+                    A_LOG => {
+                        bb.set(101, bb.get(101) + 1);
+                        Status::Success
+                    }
+                    20 => Status::Success,
+                    30 => Status::Running,
+                    100..=103 => {
+                        bb.set(id as u32, bb.get(id as u32) + 1);
+                        Status::Success
+                    }
+                    _ => Status::Failure,
+                }
+            }
+            fn abort(&mut self, _id: u32, bb: &mut Blackboard) {
+                bb.set(102, bb.get(102) + 1);
+            }
+        }
+        let tree_root = Node::Selector(vec![
+            Node::Sequence(vec![
+                Node::Condition(C_SEE),
+                Node::Timeout {
+                    ticks: 4,
+                    child: Box::new(Node::Action(A_CHASE)),
+                },
+            ]),
+            Node::Sequence(vec![
+                Node::Cooldown {
+                    ticks: 2,
+                    child: Box::new(Node::Action(A_PATROL)),
+                },
+                Node::Wait(2),
+                Node::Repeat {
+                    times: 2,
+                    child: Box::new(Node::Action(A_LOG)),
+                },
+                Node::Compare {
+                    key: 101,
+                    op: 5,
+                    value: 4,
+                },
+                Node::Set { key: 7, value: 1 },
+            ]),
+        ]);
+        let mut tree = BehaviorTree::new(tree_root.clone());
+        let mut bb = Blackboard::default();
+        let mut brain = Scripted {
+            t: 0,
+            patrol_left: 2,
+        };
+        let mut ticks = Vec::new();
+        for t in 0..40u32 {
+            brain.t = t;
+            let st = tree.tick(&mut brain, &mut bb);
+            ticks.push(serde_json::json!({
+                "status": format!("{st:?}"), "hash": format!("{:#x}", tree.hash()),
+                "bb": bb.values.iter().map(|(k, v)| (k.to_string(), *v)).collect::<BTreeMap<_, _>>(),
+            }));
+        }
+        let states = vec![
+            State {
+                id: 1,
+                parent: None,
+                initial: Some(2),
+                on_enter: Some(100),
+                on_exit: Some(101),
+                action: None,
+                transitions: vec![Transition {
+                    condition: Some(2),
+                    to: 4,
+                }],
+            },
+            State {
+                id: 2,
+                parent: Some(1),
+                initial: None,
+                on_enter: None,
+                on_exit: None,
+                action: Some(20),
+                transitions: vec![Transition {
+                    condition: Some(C_SEE),
+                    to: 3,
+                }],
+            },
+            State {
+                id: 3,
+                parent: Some(1),
+                initial: None,
+                on_enter: Some(102),
+                on_exit: None,
+                action: Some(30),
+                transitions: vec![
+                    Transition {
+                        condition: None,
+                        to: 2,
+                    },
+                    Transition {
+                        condition: Some(3),
+                        to: 2,
+                    },
+                ],
+            },
+            State {
+                id: 4,
+                parent: None,
+                initial: None,
+                on_enter: Some(103),
+                on_exit: None,
+                action: None,
+                transitions: vec![],
+            },
+        ];
+        let mut fsm = StateMachine::new(states, 1);
+        let mut fbb = Blackboard::default();
+        let mut fbrain = Scripted {
+            t: 0,
+            patrol_left: 0,
+        };
+        fsm.start(&mut fbrain, &mut fbb);
+        let mut fsm_ticks = Vec::new();
+        for t in 0..30u32 {
+            fbrain.t = t;
+            if t == 25 {
+                fbb.set(50, 1);
+            }
+            fsm.tick(&mut fbrain, &mut fbb);
+            fsm_ticks.push(serde_json::json!({
+                "current": fsm.current, "hash": format!("{:#x}", fsm.hash()),
+                "bb": fbb.values.iter().map(|(k, v)| (k.to_string(), *v)).collect::<BTreeMap<_, _>>(),
+            }));
+        }
+        let doc = serde_json::json!({
+            "tree": tree_root, "tree_ticks": ticks,
+            "fsm": StateMachine::new(serde_json::from_slice::<StateMachine>(&fsm.to_json()).unwrap().states.into_values().collect(), 1),
+            "fsm_ticks": fsm_ticks,
+            "script": {"see_ticks": "8..=12, 20..=22", "dead_at": 25, "patrol_left_start": 2},
+        });
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/vectors.json");
+        let text = serde_json::to_string_pretty(&doc).unwrap();
+        if std::env::var("BOTS_WRITE_VECTORS").is_ok() {
+            std::fs::write(path, &text).unwrap();
+        }
+        let on_disk = std::fs::read_to_string(path)
+            .expect("fixtures/vectors.json (run with BOTS_WRITE_VECTORS=1)");
+        assert_eq!(
+            on_disk.trim(),
+            text.trim(),
+            "bot vectors drifted from the fixture"
+        );
+    }
 }
