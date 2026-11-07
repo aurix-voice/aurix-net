@@ -910,18 +910,67 @@ async fn delete_room(
 struct UsageQuery {
     from: Option<DateTime<Utc>>,
     to: Option<DateTime<Utc>>,
+    /// `json` (default) or `csv` (hour,metric,quantity; attachment for billing exports).
+    format: Option<String>,
+}
+
+fn usage_out(
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    rows: Vec<net_db::queries::UsageRow>,
+    q: &UsageQuery,
+    name: &str,
+) -> Result<axum::response::Response> {
+    use axum::response::IntoResponse;
+    match q.format.as_deref() {
+        None | Some("json") => {
+            Ok(Json(json!({"from": from, "to": to, "usage": rows})).into_response())
+        }
+        Some("csv") => {
+            let mut csv = String::with_capacity(rows.len() * 48 + 32);
+            csv.push_str("hour,metric,quantity\n");
+            for r in &rows {
+                csv.push_str(&format!(
+                    "{},{},{}\n",
+                    r.hour.to_rfc3339(),
+                    r.metric,
+                    r.quantity
+                ));
+            }
+            let file = format!(
+                "aurix-net-usage-{name}-{}-{}.csv",
+                from.format("%Y%m%d"),
+                to.format("%Y%m%d")
+            );
+            Ok((
+                [
+                    (
+                        axum::http::header::CONTENT_TYPE,
+                        "text/csv; charset=utf-8".to_string(),
+                    ),
+                    (
+                        axum::http::header::CONTENT_DISPOSITION,
+                        format!("attachment; filename=\"{file}\""),
+                    ),
+                ],
+                csv,
+            )
+                .into_response())
+        }
+        Some(other) => Err(NetError::Invalid(format!("unknown format {other:?}"))),
+    }
 }
 
 async fn usage(
     State(st): State<Shared>,
     h: HeaderMap,
     Query(q): Query<UsageQuery>,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<axum::response::Response> {
     let key = api_key(&st, &h, Scope::Read).await?;
     let to = q.to.unwrap_or_else(Utc::now);
     let from = q.from.unwrap_or(to - chrono::Duration::days(30));
     let rows = queries::usage_between(&st.pool, key.project_id, from, to).await?;
-    Ok(Json(json!({"from": from, "to": to, "usage": rows})))
+    Ok(usage_out(from, to, rows, &q, &key.project_id.to_string())?)
 }
 
 #[derive(Deserialize)]
@@ -2094,12 +2143,12 @@ async fn op_fleet_usage(
     State(st): State<Shared>,
     h: HeaderMap,
     Query(q): Query<UsageQuery>,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<axum::response::Response> {
     operator(&st, &h)?;
     let to = q.to.unwrap_or_else(Utc::now);
     let from = q.from.unwrap_or(to - chrono::Duration::days(30));
     let rows = queries::usage_fleet_between(&st.pool, from, to).await?;
-    Ok(Json(json!({"from": from, "to": to, "usage": rows})))
+    Ok(usage_out(from, to, rows, &q, "fleet")?)
 }
 
 async fn op_replay(
@@ -2123,12 +2172,12 @@ async fn op_usage(
     h: HeaderMap,
     Path(id): Path<Uuid>,
     Query(q): Query<UsageQuery>,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<axum::response::Response> {
     operator(&st, &h)?;
     let to = q.to.unwrap_or_else(Utc::now);
     let from = q.from.unwrap_or(to - chrono::Duration::days(30));
     let rows = queries::usage_between(&st.pool, id, from, to).await?;
-    Ok(Json(json!({"from": from, "to": to, "usage": rows})))
+    Ok(usage_out(from, to, rows, &q, &id.to_string())?)
 }
 
 async fn op_project_rooms(

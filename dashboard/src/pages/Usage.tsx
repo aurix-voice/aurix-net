@@ -1,6 +1,7 @@
-import { useMemo } from "react";
+import { Download } from "lucide-react";
+import { useMemo, useState } from "react";
 
-import type { Usage as UsageData } from "@/api/client";
+import { baseUrl, type Usage as UsageData } from "@/api/client";
 import { useRejections, useUsage } from "@/api/hooks";
 import { ChartCard, TimeSeriesChart, type Point, type SeriesDef } from "@/components/charts";
 import { RangePicker, useRange } from "@/components/RangePicker";
@@ -8,7 +9,9 @@ import { useI18n } from "@/i18n";
 import { fmtBytes, fmtNumber } from "@/lib/format";
 import { useAuth } from "@/auth/AuthProvider";
 import { RequireScope } from "@/shell/Guards";
+import { Button } from "@/ui/Button";
 import { PageHeader } from "@/ui/Page";
+import { useToast } from "@/ui/Toast";
 import { RejectionsCard } from "@/components/RejectionsCard";
 import { Stat } from "@/ui/Primitives";
 
@@ -35,8 +38,33 @@ export function totals(u: UsageData | undefined): Record<Metric, number> {
 function UsageBody() {
   const { t, locale } = useI18n();
   const [range, setRange] = useRange("7d");
-  const { operator, projectId } = useAuth();
+  const { operator, projectId, token } = useAuth();
+  const toast = useToast();
+  const [exporting, setExporting] = useState(false);
   const q = useUsage(range.from, range.to);
+  async function exportCsv() {
+    const path = operator ? (projectId ? `/v1/operator/projects/${projectId}/usage` : "/v1/operator/usage") : "/v1/usage";
+    const url = new URL(path, baseUrl());
+    url.searchParams.set("from", range.from);
+    url.searchParams.set("to", range.to);
+    url.searchParams.set("format", "csv");
+    setExporting(true);
+    try {
+      const res = await fetch(url, { headers: token ? { authorization: `Bearer ${token}` } : undefined });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1] ?? "usage.csv";
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExporting(false);
+    }
+  }
   const rejections = useRejections(24);
   const points = useMemo(() => toPoints(q.data), [q.data]);
   const sum = useMemo(() => totals(q.data), [q.data]);
@@ -50,7 +78,16 @@ function UsageBody() {
   ];
   return (
     <>
-      <PageHeader title={operator && !projectId ? t("usage.fleetTitle") : t("usage.title")} description={t("usage.desc")} actions={<RangePicker value={range} onChange={setRange} />} />
+      <PageHeader title={operator && !projectId ? t("usage.fleetTitle") : t("usage.title")} description={t("usage.desc")} actions={
+          <div className="flex items-center gap-2">
+            <RangePicker value={range} onChange={setRange} />
+            <Button variant="secondary" size="sm" disabled={exporting} onClick={() => void exportCsv()}>
+              <Download className="size-4" />
+              {t("usage.export")}
+            </Button>
+          </div>
+        }
+      />
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 mb-5">
         <Stat label={t("usage.room_minutes")} value={fmtNumber(locale, Math.round(sum.room_minutes))} hint={t("usage.total")} />
         <Stat label={t("usage.player_minutes")} value={fmtNumber(locale, Math.round(sum.player_minutes))} hint={t("usage.total")} />

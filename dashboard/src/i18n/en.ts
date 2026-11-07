@@ -247,6 +247,7 @@ export const en = {
   "players.unreachable": (v) => `${v.n} node(s) unreachable`,
   "players.noRooms": "Not in any live room on any node.",
   "players.history": "History",
+  "usage.export": "Export CSV",
   "rooms.title": "Rooms",
   "rooms.desc": "Rooms currently hosted in the region. Closing a room disconnects its players.",
   "rooms.mode": "Mode",

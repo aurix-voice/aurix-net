@@ -246,3 +246,14 @@ test("operator looks up a player and bans from the lookup", async ({ page }) => 
   await page.getByRole("tab", { name: /Bans/ }).click();
   await expect(page.getByRole("row").filter({ hasText: "ghost-7" })).toBeVisible();
 });
+
+test("operator exports fleet usage as CSV", async ({ page }) => {
+  await page.goto("/usage");
+  const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Export CSV" }).click()]);
+  expect(download.suggestedFilename()).toMatch(/^aurix-net-usage-fleet-\d{8}-\d{8}\.csv$/);
+  const path = await download.path();
+  expect(path).toBeTruthy();
+  const fs = await import("node:fs/promises");
+  const text = await fs.readFile(path, "utf8");
+  expect(text.split("\n")[0]).toBe("hour,metric,quantity");
+});

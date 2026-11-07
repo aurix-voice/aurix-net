@@ -238,6 +238,7 @@ export const ru: Messages = {
   "players.unreachable": (v) => `Нод недоступно: ${v.n}`,
   "players.noRooms": "Ни в одной живой комнате ни на одной ноде.",
   "players.history": "История",
+  "usage.export": "Экспорт CSV",
   "rooms.title": "Комнаты",
   "rooms.desc": "Комнаты, которые сейчас хостятся в регионе. Закрытие комнаты отключает игроков.",
   "rooms.mode": "Режим",
