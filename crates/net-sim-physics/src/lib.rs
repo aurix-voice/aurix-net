@@ -470,7 +470,7 @@ impl World {
             let friction = self.bodies[&m.a].friction.max(self.bodies[&m.b].friction);
             let restitution = self.bodies[&m.a]
                 .restitution
-                .min(self.bodies[&m.b].restitution);
+                .max(self.bodies[&m.b].restitution);
             for c in &mut m.contacts {
                 let a = &self.bodies[&m.a];
                 let b = &self.bodies[&m.b];
