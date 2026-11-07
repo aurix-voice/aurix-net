@@ -19,6 +19,7 @@ use net_rooms::{EventFrame, Room, RoomConfig, RoomError};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -912,6 +913,7 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
     let mut iv = tokio::time::interval(period);
     iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let checkpoint_every = (2_000_000 / period.as_micros().max(1)) as u64;
+    let writer = RoomWriter::spawn(st.clone(), room);
     let mut n: u64 = 0;
     loop {
         iv.tick().await;
@@ -985,12 +987,99 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
         }
         st.metrics.sync_tick.observe(took.as_secs_f64());
         if let Some((project, body)) = checkpoint {
-            let redis = st.redis.clone();
-            tokio::spawn(async move {
-                if let Err(e) = redis.put_checkpoint(project, room, &body, 600).await {
-                    tracing::warn!(%room, error = %e, "checkpoint write failed");
+            writer.push(RedisWrite::Checkpoint(project, body));
+        }
+    }
+}
+
+/// One Redis write of a room's tick loop.
+pub enum RedisWrite {
+    Checkpoint(ProjectId, Vec<u8>),
+    Journal(ProjectId, Vec<Vec<u8>>, isize),
+}
+
+/// Per-room single writer: checkpoints and journal batches reach Redis in tick order, each
+/// write bounded by a timeout, with a bounded queue, so a Redis outage never stalls the tick
+/// loop, piles up tasks or lets an older checkpoint land after a newer one.
+pub struct RoomWriter {
+    tx: mpsc::Sender<RedisWrite>,
+    room: RoomId,
+    /// Set when a journal batch was lost (failed, timed out or dropped): the journal in Redis
+    /// has a gap, so the tick loop must write a fresh checkpoint before appending more.
+    journal_broken: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl RoomWriter {
+    const QUEUE: usize = 32;
+    const TIMEOUT: Duration = Duration::from_secs(3);
+
+    pub fn spawn(st: Shared, room: RoomId) -> Self {
+        let (tx, mut rx) = mpsc::channel::<RedisWrite>(Self::QUEUE);
+        let journal_broken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let broken = journal_broken.clone();
+        tokio::spawn(async move {
+            while let Some(w) = rx.recv().await {
+                let redis = st.redis.clone();
+                let is_journal = matches!(w, RedisWrite::Journal(..));
+                let (what, fut): (&str, std::pin::Pin<Box<dyn Future<Output = _> + Send>>) = match w
+                {
+                    RedisWrite::Checkpoint(project, body) => (
+                        "checkpoint",
+                        Box::pin(
+                            async move { redis.put_checkpoint(project, room, &body, 600).await },
+                        ),
+                    ),
+                    RedisWrite::Journal(project, entries, keep) => (
+                        "journal",
+                        Box::pin(async move {
+                            redis
+                                .append_journal(project, room, &entries, keep, 600)
+                                .await
+                        }),
+                    ),
+                };
+                let ok = match tokio::time::timeout(Self::TIMEOUT, fut).await {
+                    Ok(Ok(())) => true,
+                    Ok(Err(e)) => {
+                        tracing::warn!(%room, what, error = %e, "redis write failed");
+                        false
+                    }
+                    Err(_) => {
+                        tracing::warn!(%room, what, "redis write timed out");
+                        false
+                    }
+                };
+                if !ok {
+                    st.metrics.errors.with_label_values(&["redis_write"]).inc();
+                    if is_journal {
+                        broken.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                 }
-            });
+            }
+        });
+        Self {
+            tx,
+            room,
+            journal_broken,
+        }
+    }
+
+    /// True once after journal batches were lost; the caller writes a checkpoint that tick.
+    pub fn take_journal_broken(&self) -> bool {
+        self.journal_broken
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Queues a write; when Redis is far behind the write is dropped (bounded memory) and the
+    /// next checkpoint supersedes it.
+    pub fn push(&self, w: RedisWrite) {
+        let is_journal = matches!(w, RedisWrite::Journal(..));
+        if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(w) {
+            if is_journal {
+                self.journal_broken
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            tracing::debug!(room = %self.room, "redis write queue full, dropping write");
         }
     }
 }
@@ -1007,6 +1096,7 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
     // JOURNAL_FLUSH ticks, so an adopting node loses at most that many ticks of inputs.
     let journal_keep = (10_000_000 / period.as_micros().max(1)) as isize;
     let mut journal_buf: Vec<Vec<u8>> = Vec::new();
+    let writer = RoomWriter::spawn(st.clone(), room);
     let mut n: u64 = 0;
     loop {
         iv.tick().await;
@@ -1018,7 +1108,7 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
             let mut g = h.lock();
             project = g.project;
             n += 1;
-            if n.is_multiple_of(checkpoint_every) {
+            if n.is_multiple_of(checkpoint_every) || writer.take_journal_broken() {
                 let snap = g.lockstep.as_ref().map(|l| l.snapshot());
                 checkpoint = Some((g.project, RoomCheckpoint::of(&g, None, snap).encode()));
             }
@@ -1094,15 +1184,7 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
         }
         if journal_buf.len() >= JOURNAL_FLUSH {
             let entries = std::mem::take(&mut journal_buf);
-            let redis = st.redis.clone();
-            tokio::spawn(async move {
-                if let Err(e) = redis
-                    .append_journal(project, room, &entries, journal_keep, 600)
-                    .await
-                {
-                    tracing::warn!(%room, error = %e, "journal write failed");
-                }
-            });
+            writer.push(RedisWrite::Journal(project, entries, journal_keep));
         }
         let took = t0.elapsed();
         if took > period {
@@ -1110,12 +1192,7 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
         }
         st.metrics.sync_tick.observe(took.as_secs_f64());
         if let Some((project, body)) = checkpoint {
-            let redis = st.redis.clone();
-            tokio::spawn(async move {
-                if let Err(e) = redis.put_checkpoint(project, room, &body, 600).await {
-                    tracing::warn!(%room, error = %e, "checkpoint write failed");
-                }
-            });
+            writer.push(RedisWrite::Checkpoint(project, body));
         }
     }
 }

@@ -283,6 +283,15 @@ impl LockstepRoom {
             if t.0.wrapping_sub(self.tick.0) >= 1 << 31 {
                 continue;
             }
+            if t != self.tick {
+                // A gap means journal batches were lost; everything after it is unusable.
+                tracing::warn!(
+                    expected = self.tick.0,
+                    got = t.0,
+                    "journal gap, stopping replay"
+                );
+                break;
+            }
             for (a, d) in inputs {
                 self.journal.record(t, a, d);
             }

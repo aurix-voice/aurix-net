@@ -55,6 +55,14 @@ pure-C# client in one relay room on A, sends A SIGTERM and expects both to see `
 joins on B afterwards (`WEB_REHOST_OK`, `CS_REHOST_OK`). The Rust client has the same check as
 `cargo run -p net-client --example rehost`.
 
+## Redis outage (chaos)
+
+Stop Redis for ~12 s in the middle of a lockstep or sync match (`docker stop aurix-redis`, later
+`docker start`): play must continue untouched (tick loops never await Redis), the node logs a few
+`redis write failed/timed out` warnings during the outage and none after Redis is back, journal keys
+reappear, and the first lockstep tick after a lost journal batch writes a fresh checkpoint (an adopting
+node replays the journal only up to the first gap). Verified: 4/4 players, 5 warnings in 12 s, 0 after.
+
 ## Capacity reference (one 8-core dev box, bots and nodes sharing CPU, release build)
 
 | Scenario | Result |
