@@ -75,7 +75,40 @@ class P
         Console.WriteLine($"schema sync: entities on B={wb.Entities.Count} spawns={spawns} changes={changes} gaps={wb.Gaps} A.pos=({sp?.X:F2},{sp?.Y:F2},{sp?.Z:F2}) rot.y={sq?.Y:F3} tag={st?.Fields[0].S}/{st?.Fields[1].U}");
         bool schemaOk = seen != null && wb.Entities.Count == 2 && Math.Abs((sp?.X ?? 0) - 5f) < 0.02 && Math.Abs((sp?.Z ?? 0) + 2f) < 0.02 && Math.Abs((sq?.Y ?? 0) - 0.7071f) < 0.01 && st?.Fields[0].S == "alice" && st?.Fields[1].U == 77;
         await oa.LeaveAsync(); await ob.LeaveAsync(); oa.Dispose(); ob.Dispose();
-        bool ok = schemaOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60;
+        // lockstep: A (master) and B confirm identical input streams, C joins late and catches up contiguously
+        var lsRoom = "cs-ls-" + room; var clients = new List<ManagedClient>(); var ls = new List<LockstepClient>(); var journals = new List<List<string>>(); var seenTicks = new List<HashSet<uint>>();
+        int ckReqs = 0, restores = 0; uint cStart = 0;
+        for (int i = 0; i < 3; i++)
+        {
+            var c = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-ls-" + i));
+            var cl = c; var l = new LockstepClient((ch, b) => cl.SendData(ch, b)); var j = new List<string>(); var sn = new HashSet<uint>(); int idx = i;
+            l.OnTick += (t, inputs) => { if (!sn.Add(t)) j.Add("DUP" + t); var sb = new StringBuilder(); sb.Append(t).Append(':'); foreach (var kv in inputs) sb.Append(kv.Key).Append('=').Append(kv.Value.Length > 0 ? kv.Value[0] : -1).Append(','); j.Add(sb.ToString()); if ((t + 1) % 10 == 0) l.ReportHash(t + 1, 1234); };
+            l.OnRestore += (t, hh, st) => { restores++; if (idx == 2) cStart = t; };
+            l.OnCheckpointRequested += t => { ckReqs++; l.SendCheckpoint(Math.Min(t, l.ConfirmedTick), 0xA0, new byte[64]); };
+            c.OnData += (ch, t, p) => l.Receive(p);
+            clients.Add(c); ls.Add(l); journals.Add(j); seenTicks.Add(sn);
+        }
+        await clients[0].JoinOrCreateAsync(lsRoom, "lockstep", 8, "{\"tick_hz\":60}");
+        await clients[1].JoinAsync(lsRoom);
+        until = DateTime.UtcNow.AddSeconds(8.5); bool cJoined = false; int frame = 0;
+        while (DateTime.UtcNow < until)
+        {
+            frame++;
+            if (!cJoined && DateTime.UtcNow > until.AddSeconds(-2)) { cJoined = true; await clients[2].JoinAsync(lsRoom); }
+            for (int i = 0; i < (cJoined ? 3 : 2); i++) { ls[i].SendInput(new[] { (byte)(i * 16 + frame % 7) }); clients[i].Flush(); clients[i].Poll(); }
+            await Task.Delay(16);
+        }
+        for (int i = 0; i < 3; i++) clients[i].Poll();
+        // compare A vs B on the common range, and C vs A from C's catch-up start
+        int cmpAB = 0, cmpAC = 0; bool sameAB = true, sameAC = true;
+        var mapA = new Dictionary<uint, string>(); foreach (var e in journals[0]) { var k = uint.Parse(e.Substring(0, e.IndexOf(':'))); mapA[k] = e; }
+        foreach (var e in journals[1]) { var k = uint.Parse(e.Substring(0, e.IndexOf(':'))); if (mapA.TryGetValue(k, out var ea)) { cmpAB++; if (ea != e) sameAB = false; } }
+        foreach (var e in journals[2]) { var k = uint.Parse(e.Substring(0, e.IndexOf(':'))); if (mapA.TryGetValue(k, out var ea)) { cmpAC++; if (ea != e) sameAC = false; } }
+        bool contiguousC = true; uint exp = cStart; foreach (var e in journals[2]) { var k = uint.Parse(e.Substring(0, e.IndexOf(':'))); if (k != exp) { contiguousC = false; break; } exp++; }
+        Console.WriteLine($"lockstep: A ticks={journals[0].Count} B ticks={journals[1].Count} C ticks={journals[2].Count} from {cStart} (restores={restores}, checkpoint reqs answered={ckReqs}) A==B on {cmpAB}: {sameAB}, A==C on {cmpAC}: {sameAC}, C contiguous: {contiguousC}, dropped={ls[0].Dropped + ls[1].Dropped + ls[2].Dropped}");
+        bool lsOk = journals[0].Count > 150 && sameAB && sameAC && contiguousC && cmpAC > 60 && restores >= 1;
+        foreach (var c in clients) { await c.LeaveAsync(); c.Dispose(); }
+        bool ok = lsOk && schemaOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");
         return ok ? 0 : 1;
     }

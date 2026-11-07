@@ -20,6 +20,8 @@ namespace Aurix.Net.Unity
         public ManagedClient Client { get; private set; }
         public Schema Schema { get; private set; }
         public SyncWorld World { get; private set; }
+        /// <summary>Lockstep rooms: confirmed inputs per tick, catch-up, hashes (see LockstepClient).</summary>
+        public LockstepClient Lockstep { get; private set; }
         public int Actor => Client?.Actor ?? -1;
         public RoomMode Mode { get; private set; }
         public bool IsJoined { get; private set; }
@@ -92,6 +94,7 @@ namespace Aurix.Net.Unity
                 World = new SyncWorld(Schema);
                 World.OnSpawn += Spawn; World.OnChange += Change; World.OnDespawn += Despawn;
             }
+            if (Mode == RoomMode.Lockstep) Lockstep = new LockstepClient((ch, b) => Client.SendData(ch, b));
             IsJoined = true; OnJoined?.Invoke();
         }
 
@@ -99,6 +102,7 @@ namespace Aurix.Net.Unity
 
         void HandleData(Channel ch, ushort tick, byte[] p)
         {
+            if (Lockstep != null) { Lockstep.Receive(p); return; }
             if (World == null) return;
             var ack = World.Receive(p);
             if (ack != null) { Client.SendData(Channel.Unreliable, ack); RenderTick = Mathf.Max(RenderTick, World.ServerTick - Settings.InterpolationTicks); _lastDeltaTime = Time.unscaledTime; }

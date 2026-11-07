@@ -47,7 +47,13 @@ reliable relay events (`bool, int, long, float, string, byte[], Vector3, Quatern
 Relay rooms (no simulation): `Runner.SendEvent(code, bytes, Target.All, reliable: true)` and
 `Runner.OnEvent`. Event codes `0x10–0x13` and `0x20–0x24` are reserved for sync/lockstep frames.
 
-Samples (`Samples~`): `SyncArena/PlayerController.cs`, `RelayChat/ChatSample.cs`.
+Lockstep rooms (deterministic, every client simulates): `Runner.Lockstep` delivers confirmed inputs
+per tick in order (`OnTick`), restores state on late join / rehost (`OnRestore`), uploads the master's
+checkpoint when the node asks (`OnCheckpointRequested` → `SendCheckpoint`); you send `SendInput(bytes)`
+every tick and `ReportHash(tick, hash)` so the node can flag desyncs. Keep the simulation integer or
+fixed-point; see `Samples~/LockstepDuel/DuelSim.cs`.
+
+Samples (`Samples~`): `SyncArena/PlayerController.cs`, `RelayChat/ChatSample.cs`, `LockstepDuel/DuelSim.cs`.
 
 ## Layers
 
@@ -71,5 +77,6 @@ void Update() { c.Poll(); }  void LateUpdate() { c.Flush(); }
 
 `BuildCheck~/managed-live`: .NET console test of the managed core against a local node
 (`NET_API_KEY=… dotnet run -c Release`): relay reliable/unreliable/fragmented events, sync deltas,
-and a custom-schema owner room (vec3/quat/string/u8 decode, acks with 0 gaps). The Unity layer is
+a custom-schema owner room (vec3/quat/string/u8 decode, acks with 0 gaps) and a lockstep room
+(identical confirmed input streams on 3 clients, late join catch-up from the master's checkpoint). The Unity layer is
 compiled there against `Stubs/UnityEngine.cs`; the real editor build is a separate step.
