@@ -52,6 +52,16 @@ pub enum TicketState {
     Cancelled,
 }
 
+/// A group of tickets that became one room during a cycle (`match.found` webhook).
+#[derive(Debug, Clone)]
+pub struct MatchFound {
+    pub project: ProjectId,
+    pub room: String,
+    pub mode: RoomMode,
+    pub players: Vec<String>,
+    pub tickets: Vec<Uuid>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ticket {
     pub id: Uuid,
@@ -273,9 +283,9 @@ impl Matchmaker {
         }
     }
 
-    /// One matching cycle; only the node holding the leader lock does work. Returns the rooms
-    /// started (empty when not leader or nothing matched).
-    pub async fn run_cycle(&self, redis: &RedisStore, node: &str) -> Result<Vec<String>> {
+    /// One matching cycle; only the node holding the leader lock does work. Returns the matches
+    /// formed (empty when not leader or nothing matched) so the caller can notify webhooks.
+    pub async fn run_cycle(&self, redis: &RedisStore, node: &str) -> Result<Vec<MatchFound>> {
         let mut c = redis.raw();
         let got: Option<String> = redis::cmd("SET")
             .arg(LEADER_KEY)
@@ -297,27 +307,48 @@ impl Matchmaker {
         let mut tickets = self.load_many(redis, &ids).await?;
         let now = now_ms();
         tickets.retain(|t| t.searching() && t.age_secs(now) < SEARCH_TTL_SECS);
-        let (changed, rooms) = match_tickets(&mut tickets, now);
-        let mut formed: std::collections::HashMap<ProjectId, std::collections::HashSet<&str>> =
-            Default::default();
+        let (changed, _rooms) = match_tickets(&mut tickets, now);
+        let mut found: Vec<MatchFound> = Vec::new();
         for t in tickets.iter().filter(|t| changed.contains(&t.id)) {
             self.put(redis, t).await?;
-            if let TicketState::Matched { room, .. } = &t.state {
-                formed.entry(t.project).or_default().insert(room.as_str());
+            if let TicketState::Matched {
+                room,
+                mode,
+                players,
+                ..
+            } = &t.state
+            {
+                match found
+                    .iter_mut()
+                    .find(|m| m.project == t.project && m.room == *room)
+                {
+                    Some(m) => m.tickets.push(t.id),
+                    None => found.push(MatchFound {
+                        project: t.project,
+                        room: room.clone(),
+                        mode: *mode,
+                        players: players.clone(),
+                        tickets: vec![t.id],
+                    }),
+                }
             }
         }
         let hour = now / 3_600_000;
-        for (project, rooms) in formed {
+        let mut per_project: std::collections::HashMap<ProjectId, i64> = Default::default();
+        for m in &found {
+            *per_project.entry(m.project).or_default() += 1;
+        }
+        for (project, n) in per_project {
             let key = stats_key(project, hour);
             let mut p = redis::pipe();
             p.atomic()
-                .incr(&key, rooms.len() as i64)
+                .incr(&key, n)
                 .ignore()
                 .expire(&key, 26 * 3600)
                 .ignore();
             p.query_async::<()>(&mut c).await.map_err(rerr)?;
         }
-        Ok(rooms)
+        Ok(found)
     }
 
     /// Tickets of one project still waiting, oldest first.

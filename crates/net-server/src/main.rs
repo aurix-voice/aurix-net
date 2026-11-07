@@ -155,9 +155,19 @@ async fn main() -> anyhow::Result<()> {
                     .run_cycle(&st.redis, &st.node_id.to_string())
                     .await
                 {
-                    Ok(rooms) => {
-                        for room in rooms {
-                            tracing::debug!(room, "match started");
+                    Ok(found) => {
+                        for m in found {
+                            tracing::debug!(room = %m.room, players = m.players.len(), "match started");
+                            st.webhooks.emit(
+                                m.project,
+                                "match.found",
+                                serde_json::json!({
+                                    "room": m.room,
+                                    "mode": format!("{:?}", m.mode).to_lowercase(),
+                                    "players": m.players,
+                                    "tickets": m.tickets,
+                                }),
+                            );
                         }
                     }
                     Err(e) => tracing::warn!(error = %e, "matchmaking cycle failed"),

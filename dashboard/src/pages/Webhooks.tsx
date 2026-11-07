@@ -1,4 +1,4 @@
-import { Plus } from "lucide-react";
+import { BookOpen, Plus } from "lucide-react";
 import { useState } from "react";
 
 import type { Webhook } from "@/api/client";
@@ -12,10 +12,11 @@ import { Input } from "@/ui/Input";
 import { PageHeader } from "@/ui/Page";
 import { RotateWebhookDialog } from "@/components/RotateWebhook";
 import { WebhookDeliveriesDialog } from "@/components/WebhookDeliveries";
+import { WEBHOOK_EVENTS, WebhookEventCatalog } from "@/components/WebhookEventCatalog";
 import { Badge, Callout, Card, CodeBlock, Field, IdChip, Mono } from "@/ui/Primitives";
 import { DataTable, type Column } from "@/ui/Table";
 
-const EVENTS = ["room.created", "room.closed", "player.joined", "player.left", "match.found"];
+const EVENTS = WEBHOOK_EVENTS.map((e) => e.name).filter((n) => n !== "test");
 
 function WebhooksBody() {
   const { t, locale } = useI18n();
@@ -24,6 +25,7 @@ function WebhooksBody() {
   const del = useDeleteWebhook();
   const [inspecting, setInspecting] = useState<Webhook | null>(null);
   const [open, setOpen] = useState(false);
+  const [catalog, setCatalog] = useState(false);
   const [url, setUrl] = useState("");
   const [events, setEvents] = useState("");
   const [created, setCreated] = useState<Webhook | null>(null);
@@ -59,9 +61,14 @@ function WebhooksBody() {
         title={t("webhooks.title")}
         description={t("webhooks.desc")}
         actions={
-          <Button onClick={() => setOpen(true)}>
-            <Plus className="size-3.5" /> {t("webhooks.new")}
-          </Button>
+          <span className="flex gap-2">
+            <Button variant="secondary" onClick={() => setCatalog(true)}>
+              <BookOpen className="size-3.5" /> {t("webhooks.catalog")}
+            </Button>
+            <Button onClick={() => setOpen(true)}>
+              <Plus className="size-3.5" /> {t("webhooks.new")}
+            </Button>
+          </span>
         }
       />
       <Card>
@@ -92,6 +99,7 @@ function WebhooksBody() {
         <Callout tone="warn">{t("webhooks.secret")}</Callout>
         {created?.secret ? <CodeBlock value={created.secret} className="mt-3" /> : null}
       </Dialog>
+      <WebhookEventCatalog open={catalog} onOpenChange={setCatalog} />
       <WebhookDeliveriesDialog webhook={inspecting} onClose={() => setInspecting(null)} />
       <RotateWebhookDialog webhook={rotating} onClose={() => setRotating(null)} />
       <ConfirmDialog

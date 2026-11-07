@@ -32,7 +32,7 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | GET | `/v1/usage?format=csv` | read | same rows as CSV (`hour,metric,quantity`, attachment) for billing exports; also on `/v1/operator/usage` and `/v1/operator/projects/:id/usage` |
 | GET | `/v1/usage` | `read` | node-hours, events, bytes per hour |
 | GET/POST/DELETE | `/v1/keys[/:id]` | `admin` | API keys (plaintext shown once) |
-| GET/POST/DELETE | `/v1/webhooks[/:id]` | `admin` | webhooks (`url, events[]`), secret shown once |
+| GET/POST/DELETE | `/v1/webhooks[/:id]` | `admin` | webhooks (`url, events[]` — names from [webhooks.md](webhooks.md), empty = all), secret shown once |
 | GET | `/v1/matchmaking` | read | live queue: `searching[]` (ticket, player, mode, region, max_players, age_secs) and `matched.last_hour` / `matched.last_24h` (rooms formed); operators: `GET /v1/operator/projects/:id/matchmaking` |
 | POST | `/v1/matchmaking/tickets` | `rooms` | `{player_id, mode, region?, max_players, min_players, max_wait_secs, props}` → `{ticket, state}` |
 | GET/DELETE | `/v1/matchmaking/tickets/:id` | `read`/`rooms` | `state: searching{waiting} | matched{room, mode, max_players, players} | cancelled` |

@@ -1546,6 +1546,7 @@ async fn create_webhook(
     let key = api_key(&st, &h, Scope::Admin).await?;
     key_write(&st, &key)?;
     crate::webhooks::validate_webhook_url(&req.url, st.cfg.server.environment == "development")?;
+    crate::webhooks::validate_events(&req.events)?;
     let secret = ApiKeyMaterial::generate().plaintext;
     let row =
         queries::insert_webhook(&st.pool, key.project_id, &req.url, &secret, &req.events).await?;

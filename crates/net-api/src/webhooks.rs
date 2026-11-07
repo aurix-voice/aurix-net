@@ -16,6 +16,33 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+/// Every event a webhook can subscribe to (`events: []` means all). Kept in sync with docs/webhooks.md.
+pub const EVENTS: &[&str] = &[
+    "room.created",
+    "room.closed",
+    "room.rehosted",
+    "player.joined",
+    "player.left",
+    "match.found",
+    "test",
+];
+
+/// Registration-time check so a typo (`room.create`) does not silently subscribe to nothing.
+pub fn validate_events(events: &[String]) -> Result<(), NetError> {
+    if events.len() > EVENTS.len() {
+        return Err(NetError::Invalid("events: too many entries".into()));
+    }
+    for e in events {
+        if !EVENTS.contains(&e.as_str()) {
+            return Err(NetError::Invalid(format!(
+                "events: unknown event {e:?}; known: {}",
+                EVENTS.join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct WebhookEvent {
     pub project: ProjectId,
