@@ -407,6 +407,154 @@ impl Sub for FxVec3 {
     }
 }
 
+/// Unit quaternion (x, y, z, w) in Q32.32 for deterministic 3D rotations.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub struct FxQuat {
+    pub x: Fx,
+    pub y: Fx,
+    pub z: Fx,
+    pub w: Fx,
+}
+
+impl Default for FxQuat {
+    fn default() -> Self {
+        FxQuat::IDENTITY
+    }
+}
+
+impl FxQuat {
+    pub const IDENTITY: FxQuat = FxQuat {
+        x: Fx::ZERO,
+        y: Fx::ZERO,
+        z: Fx::ZERO,
+        w: Fx::ONE,
+    };
+    pub const fn new(x: Fx, y: Fx, z: Fx, w: Fx) -> Self {
+        Self { x, y, z, w }
+    }
+    /// Rotation of `angle` radians around a unit `axis`.
+    pub fn from_axis_angle(axis: FxVec3, angle: Fx) -> FxQuat {
+        let half = angle * Fx::HALF;
+        let (s, c) = (half.sin(), half.cos());
+        FxQuat::new(axis.x * s, axis.y * s, axis.z * s, c)
+    }
+    pub fn conjugate(self) -> FxQuat {
+        FxQuat::new(-self.x, -self.y, -self.z, self.w)
+    }
+    pub fn length_sq(self) -> Fx {
+        self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w
+    }
+    pub fn normalized(self) -> FxQuat {
+        let l = self.length_sq().sqrt();
+        if l.0 == 0 {
+            FxQuat::IDENTITY
+        } else {
+            FxQuat::new(self.x / l, self.y / l, self.z / l, self.w / l)
+        }
+    }
+    /// Rotate a vector: q v q*.
+    pub fn rotate(self, v: FxVec3) -> FxVec3 {
+        let u = FxVec3::new(self.x, self.y, self.z);
+        let uv = u.cross(v);
+        let uuv = u.cross(uv);
+        v + (uv.scale(self.w) + uuv).scale(Fx::from_int(2))
+    }
+    pub fn inverse_rotate(self, v: FxVec3) -> FxVec3 {
+        self.conjugate().rotate(v)
+    }
+    /// Advance by angular velocity `w` (rad/s) over `dt`, renormalising.
+    pub fn integrate(self, w: FxVec3, dt: Fx) -> FxQuat {
+        let hw = w.scale(dt * Fx::HALF);
+        let dq = FxQuat::new(hw.x, hw.y, hw.z, Fx::ZERO) * self;
+        FxQuat::new(self.x + dq.x, self.y + dq.y, self.z + dq.z, self.w + dq.w).normalized()
+    }
+    /// Rotation matrix rows (basis vectors as columns: `col(i)` is the rotated axis i).
+    pub fn to_mat3(self) -> FxMat3 {
+        FxMat3::from_cols(
+            self.rotate(FxVec3::new(Fx::ONE, Fx::ZERO, Fx::ZERO)),
+            self.rotate(FxVec3::new(Fx::ZERO, Fx::ONE, Fx::ZERO)),
+            self.rotate(FxVec3::new(Fx::ZERO, Fx::ZERO, Fx::ONE)),
+        )
+    }
+}
+
+impl Mul for FxQuat {
+    type Output = FxQuat;
+    /// Hamilton product: `self * o` applies `o` first, then `self`.
+    fn mul(self, o: FxQuat) -> FxQuat {
+        FxQuat::new(
+            self.w * o.x + self.x * o.w + self.y * o.z - self.z * o.y,
+            self.w * o.y - self.x * o.z + self.y * o.w + self.z * o.x,
+            self.w * o.z + self.x * o.y - self.y * o.x + self.z * o.w,
+            self.w * o.w - self.x * o.x - self.y * o.y - self.z * o.z,
+        )
+    }
+}
+
+/// Column-major 3×3 matrix in Q32.32 (inertia tensors, rotation matrices).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Serialize, Deserialize)]
+pub struct FxMat3 {
+    pub cols: [FxVec3; 3],
+}
+
+impl FxMat3 {
+    pub const ZERO: FxMat3 = FxMat3 {
+        cols: [FxVec3::ZERO, FxVec3::ZERO, FxVec3::ZERO],
+    };
+    pub fn identity() -> FxMat3 {
+        FxMat3::diagonal(FxVec3::new(Fx::ONE, Fx::ONE, Fx::ONE))
+    }
+    pub const fn from_cols(a: FxVec3, b: FxVec3, c: FxVec3) -> FxMat3 {
+        FxMat3 { cols: [a, b, c] }
+    }
+    pub fn diagonal(d: FxVec3) -> FxMat3 {
+        FxMat3::from_cols(
+            FxVec3::new(d.x, Fx::ZERO, Fx::ZERO),
+            FxVec3::new(Fx::ZERO, d.y, Fx::ZERO),
+            FxVec3::new(Fx::ZERO, Fx::ZERO, d.z),
+        )
+    }
+    pub fn col(self, i: usize) -> FxVec3 {
+        self.cols[i]
+    }
+    pub fn row(self, i: usize) -> FxVec3 {
+        let g = |v: FxVec3| match i {
+            0 => v.x,
+            1 => v.y,
+            _ => v.z,
+        };
+        FxVec3::new(g(self.cols[0]), g(self.cols[1]), g(self.cols[2]))
+    }
+    pub fn transpose(self) -> FxMat3 {
+        FxMat3::from_cols(self.row(0), self.row(1), self.row(2))
+    }
+    pub fn mul_vec(self, v: FxVec3) -> FxVec3 {
+        self.cols[0].scale(v.x) + self.cols[1].scale(v.y) + self.cols[2].scale(v.z)
+    }
+    /// R · self · Rᵀ — a body-space tensor expressed in world space.
+    pub fn rotated(self, r: FxMat3) -> FxMat3 {
+        r * self * r.transpose()
+    }
+    pub fn scale(self, s: Fx) -> FxMat3 {
+        FxMat3::from_cols(
+            self.cols[0].scale(s),
+            self.cols[1].scale(s),
+            self.cols[2].scale(s),
+        )
+    }
+}
+
+impl Mul for FxMat3 {
+    type Output = FxMat3;
+    fn mul(self, o: FxMat3) -> FxMat3 {
+        FxMat3::from_cols(
+            self.mul_vec(o.cols[0]),
+            self.mul_vec(o.cols[1]),
+            self.mul_vec(o.cols[2]),
+        )
+    }
+}
+
 /// Deterministic PRNG (xoshiro256**) for lockstep games.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FxRng([u64; 4]);
@@ -450,6 +598,48 @@ impl FxRng {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quaternions_rotate_and_integrate() {
+        let q = FxQuat::from_axis_angle(FxVec3::new(Fx::ZERO, Fx::ZERO, Fx::ONE), Fx::HALF_PI);
+        let v = q.rotate(FxVec3::new(Fx::ONE, Fx::ZERO, Fx::ZERO));
+        assert!(
+            (v.x).abs() < Fx::from_ratio(1, 1000)
+                && (v.y - Fx::ONE).abs() < Fx::from_ratio(1, 1000),
+            "{v:?}"
+        );
+        let back = q.inverse_rotate(v);
+        assert!(
+            (back.x - Fx::ONE).abs() < Fx::from_ratio(1, 1000),
+            "{back:?}"
+        );
+        let m = q.to_mat3();
+        let mv = m.mul_vec(FxVec3::new(Fx::ONE, Fx::ZERO, Fx::ZERO));
+        assert!((mv.y - Fx::ONE).abs() < Fx::from_ratio(1, 1000));
+        let mut r = FxQuat::IDENTITY;
+        let dt = Fx::from_ratio(1, 60);
+        for _ in 0..60 {
+            r = r.integrate(FxVec3::new(Fx::ZERO, Fx::ZERO, Fx::HALF_PI), dt);
+        }
+        let rv = r.rotate(FxVec3::new(Fx::ONE, Fx::ZERO, Fx::ZERO));
+        assert!(
+            (rv.y - Fx::ONE).abs() < Fx::from_ratio(2, 100),
+            "integrated quarter turn: {rv:?}"
+        );
+        assert!((r.length_sq() - Fx::ONE).abs() < Fx::from_ratio(1, 1000));
+        let i = FxMat3::diagonal(FxVec3::new(
+            Fx::from_int(1),
+            Fx::from_int(2),
+            Fx::from_int(3),
+        ))
+        .rotated(m);
+        // rotating a diagonal tensor 90° about z swaps the x/y entries
+        assert!(
+            (i.cols[0].x - Fx::from_int(2)).abs() < Fx::from_ratio(1, 100)
+                && (i.cols[1].y - Fx::ONE).abs() < Fx::from_ratio(1, 100),
+            "{i:?}"
+        );
+    }
+
     use super::*;
 
     fn close(a: Fx, b: f64, eps: f64) -> bool {
