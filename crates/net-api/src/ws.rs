@@ -1437,6 +1437,29 @@ pub async fn handoff_all(st: &Shared) -> usize {
     n
 }
 
+/// Upper bound for one stored replay; longer matches keep their most recent ticks.
+pub const MAX_REPLAY_BYTES: usize = 16 << 20;
+
+/// Serializes `r`, dropping the oldest ticks (and their hashes) until it fits `max_bytes`;
+/// `from_tick` moves forward accordingly. None only if even an empty replay does not fit.
+pub fn fit_replay(r: &mut net_rollback::Replay, max_bytes: usize) -> Option<Vec<u8>> {
+    loop {
+        let body = serde_json::to_vec(r).ok()?;
+        if body.len() <= max_bytes {
+            return Some(body);
+        }
+        if r.inputs.is_empty() {
+            return None;
+        }
+        let drop = (r.inputs.len() / 2).max(1);
+        r.inputs.drain(..drop);
+        r.from_tick += drop as u32;
+        let from = r.from_tick;
+        r.hashes.retain(|(t, _)| *t >= from);
+        tracing::info!(from_tick = from, "replay trimmed to fit the size cap");
+    }
+}
+
 pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {
     st.webhooks.emit(
         project,
@@ -1459,8 +1482,8 @@ pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {
                 replay,
             )
         };
-        if let Some(r) = replay {
-            if let Ok(body) = serde_json::to_vec(&r) {
+        if let Some(mut r) = replay {
+            if let Some(body) = fit_replay(&mut r, MAX_REPLAY_BYTES) {
                 if let Err(e) = st.redis.put_replay(project, id, &body, 86_400).await {
                     tracing::warn!(error = %e, room = %id, "replay store");
                 }
@@ -1591,5 +1614,37 @@ pub async fn reaper(st: Shared) {
             }
         }
         st.metrics.players.set(st.host.players() as i64);
+    }
+}
+
+#[cfg(test)]
+mod replay_fit_tests {
+    use super::fit_replay;
+
+    #[test]
+    fn trims_oldest_ticks_until_it_fits() {
+        let mut r = net_rollback::Replay {
+            seed: 1,
+            schema_hash: "h".into(),
+            tick_hz: 60,
+            actors: vec![net_common::ActorId(1)],
+            from_tick: 0,
+            inputs: (0..1000)
+                .map(|_| {
+                    [(net_common::ActorId(1), vec![7u8; 16])]
+                        .into_iter()
+                        .collect()
+                })
+                .collect(),
+            hash_every: 100,
+            hashes: (1..=10).map(|i| (i * 100, i as u64)).collect(),
+        };
+        let full = serde_json::to_vec(&r).unwrap().len();
+        let body = fit_replay(&mut r, full / 4).unwrap();
+        assert!(body.len() <= full / 4);
+        assert!(r.from_tick >= 750 && r.inputs.len() + r.from_tick as usize == 1000);
+        assert!(r.hashes.iter().all(|(t, _)| *t >= r.from_tick));
+        let mut tiny = r.clone();
+        assert!(fit_replay(&mut tiny, 10).is_none());
     }
 }
