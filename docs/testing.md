@@ -26,3 +26,11 @@ Redis). Build once: `cargo build --release`. Create a project and key with the o
 Known limits of the local setup: bots and server share CPU, so the 500 events/s/room figure
 needs bots on a second machine; the dev certificate changes on every node start (browser pins
 the fingerprint from `joined.data`, nothing to install).
+
+## Unity managed client (pure C#)
+
+```
+cd sdk/unity/BuildCheck~/managed-live && NET_API_KEY=an_… dotnet run -c Release
+```
+Expects `MANAGED OK`: 1 reliable, 10 unreliable and one 5 KB fragmented relay event delivered
+between two clients, and >60 sync deltas in 2 s. Needs a node on 127.0.0.1:8090 with the tunnel on.
