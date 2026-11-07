@@ -5,6 +5,9 @@ using System.Linq;
 using Aurix.Net;
 using Aurix.Net.Managed;
 using Aurix.Net.Sim;
+using Aurix.Net.Sim.Bots;
+using System.Text.Json;
+using System.IO;
 
 static class Program
 {
@@ -144,6 +147,57 @@ static class Program
     }
 
 
+    sealed class Scripted : IBrain
+    {
+        public uint T; public uint PatrolLeft;
+        public bool Condition(uint id, Blackboard bb) => id == 1 ? (T >= 8 && T <= 12) || (T >= 20 && T <= 22) : id == 2 && bb.Get(50) == 1;
+        public Status Action(uint id, Blackboard bb)
+        {
+            switch (id)
+            {
+                case 10: if (PatrolLeft == 0) { PatrolLeft = 3; return Status.Success; } PatrolLeft--; return Status.Running;
+                case 11: bb.Set(100, bb.Get(100) + 1); return Status.Running;
+                case 12: bb.Set(101, bb.Get(101) + 1); return Status.Success;
+                case 20: return Status.Success;
+                case 30: return Status.Running;
+                default: if (id >= 100 && id <= 103) { bb.Set(id, bb.Get(id) + 1); return Status.Success; } return Status.Failure;
+            }
+        }
+        public void Abort(uint id, Blackboard bb) => bb.Set(102, bb.Get(102) + 1);
+    }
+
+    static string BbJson(Blackboard bb) => "{" + string.Join(",", bb.Values.Select(kv => "\"" + kv.Key + "\":" + kv.Value)) + "}";
+    static string BbJson(JsonElement e) => "{" + string.Join(",", e.EnumerateObject().OrderBy(p => uint.Parse(p.Name)).Select(p => "\"" + p.Name + "\":" + p.Value.GetInt64())) + "}";
+
+    static void BotsTests()
+    {
+        var dir = AppContext.BaseDirectory;
+        while (dir != null && !Directory.Exists(Path.Combine(dir, "crates"))) dir = Path.GetDirectoryName(dir.TrimEnd(Path.DirectorySeparatorChar));
+        var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir, "crates/net-sim-bots/fixtures/vectors.json"))).RootElement;
+        var tree = new BehaviorTree(BtNode.Parse(doc.GetProperty("tree")));
+        var bb = new Blackboard(); var brain = new Scripted { PatrolLeft = 2 };
+        bool ok = true; uint t = 0;
+        foreach (var exp in doc.GetProperty("tree_ticks").EnumerateArray())
+        {
+            brain.T = t; var st = tree.Step(brain, bb);
+            ok &= st.ToString() == exp.GetProperty("status").GetString() && "0x" + tree.Hash().ToString("x") == exp.GetProperty("hash").GetString() && BbJson(bb) == BbJson(exp.GetProperty("bb"));
+            t++;
+        }
+        Check(ok, "bots: behavior tree replays the Rust vectors (" + t + " ticks)");
+        var fsm = StateMachine.FromJson(doc.GetProperty("fsm").GetRawText());
+        var fbb = new Blackboard(); var fbrain = new Scripted();
+        fsm.Start(fbrain, fbb);
+        bool fok = true; t = 0;
+        foreach (var exp in doc.GetProperty("fsm_ticks").EnumerateArray())
+        {
+            fbrain.T = t; if (t == 25) fbb.Set(50, 1);
+            fsm.Step(fbrain, fbb);
+            fok &= fsm.Current == exp.GetProperty("current").GetUInt32() && "0x" + fsm.Hash().ToString("x") == exp.GetProperty("hash").GetString() && BbJson(fbb) == BbJson(exp.GetProperty("bb"));
+            t++;
+        }
+        Check(fok, "bots: state machine replays the Rust vectors (" + t + " ticks)");
+    }
+
     static void SimTests()
     {
         Check(SimWorld.GoldenHash() == 0x58d9870ba45952b5UL, "sim: golden hash equals the Rust/wasm value");
@@ -220,6 +274,7 @@ static class Program
     static int Main()
     {
         SimTests();
+        BotsTests();
         PredictorTests();
         LockstepTests();
         RollbackTests();

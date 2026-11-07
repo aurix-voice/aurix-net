@@ -181,3 +181,4 @@ export class Client {
 }
 
 export * from "./sim.js";
+export * from "./bots.js";

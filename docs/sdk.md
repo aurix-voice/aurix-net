@@ -186,3 +186,8 @@ w3.setRotation(crate, Sim3World.axisAngle({ x: 0, y: 0, z: 1 }, 0.3));
 reports `characterState(k).grounded`. C#: `JointBall/JointHinge/JointDistance/HingeAngle/
 Character/MoveCharacter/CharacterState`. Reference hash `sim3_joint_golden_hash()` =
 `0x5db56af63cceee85` on native and wasm32.
+
+Bot kit ports: Web `BehaviorTree/StateMachine/Blackboard` (`sdk/web/src/bots.ts`) and C#
+`Aurix.Net.Sim.Bots` load the same JSON as the Rust `net-sim-bots` crate and produce identical
+per-tick statuses and hashes — verified against `crates/net-sim-bots/fixtures/vectors.json`
+(regenerate with `BOTS_WRITE_VECTORS=1 cargo test -p net-sim-bots vectors`).
