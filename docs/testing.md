@@ -63,6 +63,13 @@ Stop Redis for ~12 s in the middle of a lockstep or sync match (`docker stop aur
 reappear, and the first lockstep tick after a lost journal batch writes a fresh checkpoint (an adopting
 node replays the journal only up to the first gap). Verified: 4/4 players, 5 warnings in 12 s, 0 after.
 
+## Postgres outage (chaos)
+
+Stop Postgres for ~12 s mid-match: play continues (no tick loop touches the pool), joins/REST fail
+fast (5 s pool acquire timeout) instead of hanging, heartbeats and metering resume on their own, and
+rooms that emptied meanwhile still close after `player_ttl` + `empty_ttl`. Verified: sync 8/8 players,
+only sqlx "slow acquire" warnings, node healthy afterwards.
+
 ## Capacity reference (one 8-core dev box, bots and nodes sharing CPU, release build)
 
 | Scenario | Result |
