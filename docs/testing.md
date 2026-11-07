@@ -44,3 +44,7 @@ Same pass criteria as the crash variant, but node A hands its rooms off itself o
 (fresh checkpoint, rooms `orphaned`), so players reconnecting 2 s later already find the room
 on B. Clients receive `left{reason:"rehost"}` and should rejoin the same room name
 (`connect_and_join` / `connectAndJoin`), which lands on whichever node adopts it.
+
+Client-side check of the same path (Rust SDK `rejoin`): `cargo build --example rehost -p net-client`, run
+`target/debug/examples/rehost http://127.0.0.1:8090 <grant> <room> http://127.0.0.1:8091`, send SIGTERM
+to node A; expected output ends with `rejoined ... (same actor: true)` and `REHOST_OK`.
