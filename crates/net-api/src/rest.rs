@@ -2487,13 +2487,68 @@ struct AuditQuery {
     action: Option<String>,
     #[serde(default)]
     actor: Option<String>,
+    /// `json` (default) or `csv` (attachment: id,created_at,project_id,actor,action,target,details).
+    #[serde(default)]
+    format: Option<String>,
+}
+
+fn csv_cell(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+fn audit_out(
+    rows: Vec<net_db::models::AuditRow>,
+    q: &AuditQuery,
+) -> Result<axum::response::Response> {
+    use axum::response::IntoResponse;
+    match q.format.as_deref() {
+        None | Some("json") => Ok(Json(json!({"audit": rows})).into_response()),
+        Some("csv") => {
+            let mut csv = String::from("id,created_at,project_id,actor,action,target,details\n");
+            for r in &rows {
+                csv.push_str(&format!(
+                    "{},{},{},{},{},{},{}\n",
+                    r.id,
+                    r.created_at.to_rfc3339(),
+                    r.project_id.map(|p| p.to_string()).unwrap_or_default(),
+                    csv_cell(&r.actor),
+                    csv_cell(&r.action),
+                    csv_cell(&r.target),
+                    csv_cell(&r.details.to_string()),
+                ));
+            }
+            let file = format!(
+                "aurix-net-audit-{}.csv",
+                chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
+            );
+            Ok((
+                [
+                    (
+                        axum::http::header::CONTENT_TYPE,
+                        "text/csv; charset=utf-8".to_string(),
+                    ),
+                    (
+                        axum::http::header::CONTENT_DISPOSITION,
+                        format!("attachment; filename=\"{file}\""),
+                    ),
+                ],
+                csv,
+            )
+                .into_response())
+        }
+        Some(other) => Err(NetError::Invalid(format!("unknown format {other:?}"))),
+    }
 }
 
 async fn list_audit(
     State(st): State<Shared>,
     h: HeaderMap,
     Query(q): Query<AuditQuery>,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<axum::response::Response> {
     let key = api_key(&st, &h, Scope::Read).await?;
     let rows = queries::list_audit(
         &st.pool,
@@ -2503,14 +2558,14 @@ async fn list_audit(
         q.limit.unwrap_or(100),
     )
     .await?;
-    Ok(Json(json!({"audit": rows})))
+    Ok(audit_out(rows, &q)?)
 }
 
 async fn op_audit(
     State(st): State<Shared>,
     h: HeaderMap,
     Query(q): Query<AuditQuery>,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<axum::response::Response> {
     operator(&st, &h).await?;
     let rows = queries::list_audit(
         &st.pool,
@@ -2520,7 +2575,7 @@ async fn op_audit(
         q.limit.unwrap_or(100),
     )
     .await?;
-    Ok(Json(json!({"audit": rows})))
+    Ok(audit_out(rows, &q)?)
 }
 
 /// Operator removes a project's webhook (e.g. a leaked secret or an abusive endpoint); audited.

@@ -322,3 +322,12 @@ test("operator broadcasts a notice to a project from its page", async ({ page })
   const audit = await api<{ audit: { action: string; details: { text: string } }[] }>(page, "GET", `/v1/operator/audit?action=project.notice&project=${project.project.id}`);
   expect(audit.audit.some((a) => a.details.text === "Maintenance in 5 minutes")).toBeTruthy();
 });
+
+test("operator exports the audit log as CSV", async ({ page }) => {
+  await page.goto("/audit");
+  const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Export CSV" }).click()]);
+  expect(download.suggestedFilename()).toMatch(/^aurix-net-audit-.*\.csv$/);
+  const fs = await import("node:fs/promises");
+  const text = await fs.readFile((await download.path()), "utf8");
+  expect(text.split("\n")[0]).toBe("id,created_at,project_id,actor,action,target,details");
+});

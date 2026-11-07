@@ -1,4 +1,5 @@
-import type { AuditRow } from "@/api/client";
+import { baseUrl, type AuditRow } from "@/api/client";
+import { Download } from "lucide-react";
 import { useAudit } from "@/api/hooks";
 import { useAuth } from "@/auth/AuthProvider";
 import { useI18n } from "@/i18n";
@@ -10,16 +11,39 @@ import { Button } from "@/ui/Button";
 import { Input, NativeSelect } from "@/ui/Input";
 import { PageHeader, Toolbar } from "@/ui/Page";
 import { Badge, Card, IdChip, Mono } from "@/ui/Primitives";
+import { useToast } from "@/ui/Toast";
 import { DataTable, type Column } from "@/ui/Table";
 
 const ACTIONS = ["key.create", "key.revoke", "webhook.create", "webhook.delete", "module.put", "module.delete", "project.create", "project.limits", "room.close"];
 
 function AuditTable() {
   const { t, locale } = useI18n();
-  const { operator, projectId } = useAuth();
+  const { operator, projectId, token } = useAuth();
+  const toast = useToast();
   const [action, setAction] = useState("");
   const [actor, setActor] = useState("");
   const [limit, setLimit] = useState(200);
+  async function exportCsv() {
+    const url = new URL(operator ? "/v1/operator/audit" : "/v1/audit", baseUrl());
+    if (action.trim()) url.searchParams.set("action", action.trim());
+    if (actor.trim()) url.searchParams.set("actor", actor.trim());
+    if (operator && projectId) url.searchParams.set("project", projectId);
+    url.searchParams.set("limit", String(limit));
+    url.searchParams.set("format", "csv");
+    try {
+      const res = await fetch(url, { headers: token ? { authorization: `Bearer ${token}` } : undefined });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1] ?? "audit.csv";
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  }
   const q = useAudit({ action: action.trim(), actor: actor.trim(), limit });
   const cols: Column<AuditRow>[] = [
     { key: "when", header: t("audit.when"), width: "160px", cell: (r) => <span className="text-fg-muted tabular-nums">{fmtDateTimeShort(locale, r.created_at)}</span> },
@@ -58,6 +82,10 @@ function AuditTable() {
             {t("rooms.filter.clear")}
           </Button>
         ) : null}
+        <Button variant="secondary" size="sm" onClick={() => void exportCsv()}>
+          <Download className="size-4" />
+          {t("usage.export")}
+        </Button>
       </Toolbar>
       <DataTable rows={q.data} columns={cols} rowKey={(r) => String(r.id)} loading={q.isLoading} error={q.error} dense />
     </Card>
