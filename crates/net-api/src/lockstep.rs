@@ -8,6 +8,11 @@
 //! 0x10 Input        client->server  u32 first_tick, u8 n, n x (u8 len, bytes)   (same as sync)
 //! 0x20 InputBundle  server->client  u32 tick, u8 n, n x (u16 actor, u8 len, bytes)
 //! 0x21 Hash         client->server  u32 tick, u64 hash
+//! 0x25 InputStats   server->client  u32 tick, i8 min_margin, u8 late   every 30 ticks per actor:
+//!                                   how early its inputs arrived (negative = late) -> clients
+//!                                   tune their input delay instead of guessing from ping
+//! 0x26 DumpReq      server->client  u32 tick            after a desync: "send your state at tick"
+//! 0x27 Dump         client->server  u32 tick, u64 hash, bytes state (<= 60 KiB, reliable)
 //! ```
 //! Bundles for the last `BUNDLE_REDUNDANCY` ticks are re-sent each tick, so a lost datagram
 //! costs nothing unless several in a row disappear.
@@ -53,6 +58,26 @@ pub const KIND_HASH: u8 = 0x21;
 pub const KIND_CHECKPOINT: u8 = 0x22;
 pub const KIND_CHECKPOINT_REQ: u8 = 0x23;
 pub const KIND_CATCHUP: u8 = 0x24;
+/// server->client  u32 tick, i8 min_margin (ticks the actor's inputs arrived before they were
+/// needed over the last report window; negative = late), u8 late_count. Clients tune their
+/// input delay from it.
+pub const KIND_INPUT_STATS: u8 = 0x25;
+/// server->client  u32 tick: "send me your state at this tick" (after a desync).
+pub const KIND_DUMP_REQ: u8 = 0x26;
+/// client->server  u32 tick, u64 hash, bytes state (<= MAX_CHECKPOINT_BYTES).
+pub const KIND_DUMP: u8 = 0x27;
+/// Ticks between input-margin reports (per actor).
+pub const INPUT_REPORT_EVERY: u32 = 30;
+const MAX_PENDING_DUMPS: usize = 16;
+
+/// A client's state at the tick a desync was detected, for offline comparison.
+#[derive(Debug, Clone)]
+pub struct Dump {
+    pub tick: u32,
+    pub actor: ActorId,
+    pub hash: u64,
+    pub state: Bytes,
+}
 pub const BUNDLE_REDUNDANCY: usize = 3;
 pub const CHECKPOINT_EVERY_SECS: u32 = 5;
 pub const MAX_CHECKPOINT_BYTES: usize = 60 * 1024;
@@ -81,6 +106,10 @@ pub struct LockstepRoom {
     /// Hash reports per tick: actor -> hash.
     hashes: BTreeMap<u32, HashMap<ActorId, u64>>,
     pub desyncs: Vec<(u32, ActorId)>,
+    /// Per actor since the last report: (min input margin in ticks, late inputs).
+    margins: HashMap<ActorId, (i32, u16)>,
+    pending_dumps: std::collections::HashSet<(u32, ActorId)>,
+    dumps: Vec<Dump>,
     pub seed: u64,
     /// Current master (set by the host loop); only its checkpoints are accepted.
     pub master: Option<ActorId>,
@@ -174,6 +203,9 @@ impl LockstepRoom {
             recent: VecDeque::new(),
             hashes: BTreeMap::new(),
             desyncs: Vec::new(),
+            margins: HashMap::new(),
+            pending_dumps: Default::default(),
+            dumps: Vec::new(),
             seed,
             master: None,
             checkpoint: None,
@@ -522,7 +554,7 @@ impl LockstepRoom {
             return false;
         };
         if self.spectators.contains(&actor)
-            && matches!(kind, KIND_INPUT | KIND_HASH | KIND_CHECKPOINT)
+            && matches!(kind, KIND_INPUT | KIND_HASH | KIND_CHECKPOINT | KIND_DUMP)
         {
             return true;
         }
@@ -544,6 +576,15 @@ impl LockstepRoom {
                     }
                     let data = payload.split_to(len).to_vec();
                     let t = first.wrapping_add(i as u32);
+                    if i + 1 == n.min(8) {
+                        // the newest input in the packet tells how much slack this actor has
+                        let margin = (t as i64 - self.tick.0 as i64).clamp(-127, 127) as i32;
+                        let e = self.margins.entry(actor).or_insert((i32::MAX, 0));
+                        e.0 = e.0.min(margin);
+                        if margin < 0 {
+                            e.1 = e.1.saturating_add(1);
+                        }
+                    }
                     // Late inputs are stamped onto the next tick so the player keeps acting.
                     let t = t.max(self.tick.0);
                     if t > self.tick.0 + MAX_AHEAD {
@@ -573,6 +614,23 @@ impl LockstepRoom {
                 } else if t < self.tick.0 && self.tick.0 - t <= 600 {
                     self.hashes.entry(t).or_default().insert(actor, h);
                     self.check_hashes(t);
+                }
+                true
+            }
+            KIND_DUMP => {
+                payload.advance(1);
+                if payload.len() < 12 || payload.len() - 12 > MAX_CHECKPOINT_BYTES {
+                    return true;
+                }
+                let t = payload.get_u32();
+                let h = payload.get_u64();
+                if self.pending_dumps.remove(&(t, actor)) {
+                    self.dumps.push(Dump {
+                        tick: t,
+                        actor,
+                        hash: h,
+                        state: payload,
+                    });
                 }
                 true
             }
@@ -637,6 +695,59 @@ impl LockstepRoom {
 
     pub fn take_desyncs(&mut self) -> Vec<(u32, ActorId)> {
         std::mem::take(&mut self.desyncs)
+    }
+
+    /// Every `INPUT_REPORT_EVERY` ticks: one `KIND_INPUT_STATS` frame per actor that sent input
+    /// since the last report. Call right after `tick()`.
+    pub fn input_reports(&mut self) -> Vec<(ActorId, Bytes)> {
+        if !self.tick.0.is_multiple_of(INPUT_REPORT_EVERY) || self.margins.is_empty() {
+            return Vec::new();
+        }
+        let t = self.tick.0;
+        std::mem::take(&mut self.margins)
+            .into_iter()
+            .map(|(a, (min, late))| {
+                let mut b = BytesMut::with_capacity(7);
+                b.put_u8(KIND_INPUT_STATS);
+                b.put_u32(t);
+                b.put_i8(min.clamp(-127, 127) as i8);
+                b.put_u8(late.min(255) as u8);
+                (a, b.freeze())
+            })
+            .collect()
+    }
+
+    pub fn decode_input_stats(mut d: Bytes) -> Option<(u32, i8, u8)> {
+        if d.len() < 7 || d.get_u8() != KIND_INPUT_STATS {
+            return None;
+        }
+        Some((d.get_u32(), d.get_i8(), d.get_u8()))
+    }
+
+    /// Asks `actor` for its state at `tick` (after a desync); the answer lands in `take_dumps`.
+    pub fn request_dump(&mut self, tick: u32, actor: ActorId) -> Option<Bytes> {
+        if self.pending_dumps.len() >= MAX_PENDING_DUMPS
+            || !self.pending_dumps.insert((tick, actor))
+        {
+            return None;
+        }
+        let mut b = BytesMut::with_capacity(5);
+        b.put_u8(KIND_DUMP_REQ);
+        b.put_u32(tick);
+        Some(b.freeze())
+    }
+
+    pub fn take_dumps(&mut self) -> Vec<Dump> {
+        std::mem::take(&mut self.dumps)
+    }
+
+    pub fn encode_dump(tick: u32, hash: u64, state: &[u8]) -> Bytes {
+        let mut b = BytesMut::with_capacity(13 + state.len());
+        b.put_u8(KIND_DUMP);
+        b.put_u32(tick);
+        b.put_u64(hash);
+        b.extend_from_slice(state);
+        b.freeze()
     }
 
     /// Closes the current tick: records inputs, builds the bundle, advances the clock.
@@ -1050,5 +1161,53 @@ mod tests {
         let mut r2 = LockstepRoom::restore(snap);
         r2.attach_sim(schema, logic()).unwrap();
         assert_eq!(r2.sim.as_ref().unwrap().hash(), mirror_hashes[&320]);
+    }
+
+    #[test]
+    fn input_margins_are_reported_and_dumps_only_when_requested() {
+        let mut r = LockstepRoom::new(60, 1);
+        let a = ActorId(1);
+        r.on_join_as(a, false);
+        for _ in 0..5 {
+            r.tick();
+        }
+        // input stamped 3 ticks ahead, then one late (stamped at an old tick)
+        let early =
+            crate::sync::SyncRoom::encode_input(net_common::types::Tick(r.tick.0 + 3), &[vec![1]]);
+        r.handle(a, early);
+        let late = crate::sync::SyncRoom::encode_input(
+            net_common::types::Tick(r.tick.0.saturating_sub(2)),
+            &[vec![2]],
+        );
+        r.handle(a, late);
+        let mut reports = Vec::new();
+        for _ in 0..(INPUT_REPORT_EVERY * 2) {
+            r.tick();
+            reports = r.input_reports();
+            if !reports.is_empty() {
+                break;
+            }
+        }
+        assert_eq!(reports.len(), 1);
+        let (_, min, late_n) = LockstepRoom::decode_input_stats(reports[0].1.clone()).unwrap();
+        assert_eq!(min, -2);
+        assert_eq!(late_n, 1);
+        assert!(r.input_reports().is_empty(), "report window reset");
+
+        // an unsolicited dump is ignored; a requested one is kept once
+        r.handle(a, LockstepRoom::encode_dump(7, 0xabc, b"state"));
+        assert!(r.take_dumps().is_empty());
+        let req = r.request_dump(7, a).expect("request frame");
+        assert_eq!(req[0], KIND_DUMP_REQ);
+        assert!(r.request_dump(7, a).is_none(), "no duplicate request");
+        r.handle(a, LockstepRoom::encode_dump(7, 0xabc, b"state"));
+        let d = r.take_dumps();
+        assert_eq!(d.len(), 1);
+        assert_eq!(
+            (d[0].tick, d[0].actor, d[0].hash, &d[0].state[..]),
+            (7, a, 0xabc, &b"state"[..])
+        );
+        r.handle(a, LockstepRoom::encode_dump(7, 0xabc, b"again"));
+        assert!(r.take_dumps().is_empty());
     }
 }

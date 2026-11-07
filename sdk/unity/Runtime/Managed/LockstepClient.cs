@@ -8,7 +8,7 @@ namespace Aurix.Net.Managed
 {
     public sealed class LockstepClient
     {
-        public const byte KindInput = 0x10, KindBundle = 0x20, KindHash = 0x21, KindCheckpoint = 0x22, KindCheckpointReq = 0x23, KindCatchup = 0x24;
+        public const byte KindInput = 0x10, KindBundle = 0x20, KindHash = 0x21, KindCheckpoint = 0x22, KindCheckpointReq = 0x23, KindCatchup = 0x24, KindInputStats = 0x25, KindDumpReq = 0x26, KindDump = 0x27;
 
         /// <summary>Confirmed inputs for one tick, in tick order, every tick exactly once (empty dictionary = nobody sent).</summary>
         public event Action<uint, Dictionary<ushort, byte[]>> OnTick;
@@ -16,6 +16,8 @@ namespace Aurix.Net.Managed
         public event Action<uint, ulong, byte[]> OnRestore;
         /// <summary>The node asked us (the master) for the confirmed state at a tick ≤ this one: answer with SendCheckpoint.</summary>
         public event Action<uint> OnCheckpointRequested;
+        /// <summary>The node flagged a desync and wants our state at this tick (from your rollback history): answer with SendDump, or ignore.</summary>
+        public event Action<uint> OnDumpRequested;
 
         readonly Action<Channel, byte[]> _send;
         readonly SortedDictionary<uint, Dictionary<ushort, byte[]>> _pending = new SortedDictionary<uint, Dictionary<ushort, byte[]>>();
@@ -25,8 +27,16 @@ namespace Aurix.Net.Managed
         public uint ConfirmedTick => _next;
         /// <summary>Newest tick the node has bundled (+1).</summary>
         public uint ServerTick { get; private set; }
-        /// <summary>How many ticks ahead of the server clock inputs are stamped (≥1).</summary>
+        /// <summary>How many ticks ahead of the server clock inputs are stamped (≥1). Tuned automatically between
+        /// InputDelayMin and InputDelayMax from the node's input-margin reports when AdaptiveDelay is on.</summary>
         public uint InputDelay = 2;
+        public uint InputDelayMin = 1, InputDelayMax = 8;
+        public bool AdaptiveDelay = true;
+        /// <summary>Inputs repeated per datagram (1..8): higher survives more loss at the cost of bytes.</summary>
+        public int InputRedundancy = 3;
+        /// <summary>Last reported margin (ticks of slack; negative = inputs arrived late) and late inputs so far.</summary>
+        public sbyte LastMargin; public long LateInputs;
+        int _slackStreak;
         public long Delivered, Catchups, Dropped;
 
         public LockstepClient(Action<Channel, byte[]> send) { _send = send; }
@@ -61,10 +71,27 @@ namespace Aurix.Net.Managed
                 case KindCheckpointReq:
                     if (p.Length >= 5) OnCheckpointRequested?.Invoke(U32(p, 1));
                     return true;
+                case KindDumpReq:
+                    if (p.Length >= 5) OnDumpRequested?.Invoke(U32(p, 1));
+                    return true;
+                case KindInputStats:
+                    if (p.Length >= 7) OnInputStats((sbyte)p[5], p[6]);
+                    return true;
                 case KindCheckpoint: case KindHash: case KindInput:
                     return true;
             }
             return false;
+        }
+
+        /// <summary>Raises the input delay as soon as inputs arrive late, lowers it one tick at a time after three
+        /// consecutive reports with two or more ticks of slack.</summary>
+        internal void OnInputStats(sbyte margin, byte late)
+        {
+            LastMargin = margin; LateInputs += late;
+            if (!AdaptiveDelay) return;
+            if (margin < 0) { InputDelay = Math.Min(InputDelayMax, InputDelay + (uint)Math.Min(4, -margin)); _slackStreak = 0; }
+            else if (margin >= 2) { if (++_slackStreak >= 3) { _slackStreak = 0; if (InputDelay > InputDelayMin) InputDelay--; } }
+            else _slackStreak = 0;
         }
 
         void DecodeBundle(byte[] b, int o, int len)
@@ -104,7 +131,7 @@ namespace Aurix.Net.Managed
         public void SendInput(byte[] input)
         {
             uint tick = Math.Max(ServerTick + InputDelay, _lastInput + 1); _lastInput = tick;
-            _recentInputs.Add(input); while (_recentInputs.Count > 3) _recentInputs.RemoveAt(0);
+            _recentInputs.Add(input); int keep = Math.Max(1, Math.Min(8, InputRedundancy)); while (_recentInputs.Count > keep) _recentInputs.RemoveAt(0);
             _send(Channel.Unreliable, SyncWorld.EncodeInput(tick - (uint)(_recentInputs.Count - 1), _recentInputs));
         }
 
@@ -117,6 +144,14 @@ namespace Aurix.Net.Managed
         public void SendCheckpoint(uint tick, ulong hash, byte[] state)
         {
             var b = new byte[13 + state.Length]; b[0] = KindCheckpoint; W32(b, 1, tick); W64(b, 5, hash); Array.Copy(state, 0, b, 13, state.Length);
+            _send(Channel.Reliable, b);
+        }
+
+        /// <summary>Answer to OnDumpRequested: your state at `tick` (≤ 60 KiB) — stored by the node for 24 h next to
+        /// the master's, so the two can be diffed offline.</summary>
+        public void SendDump(uint tick, ulong hash, byte[] state)
+        {
+            var b = new byte[13 + state.Length]; b[0] = KindDump; W32(b, 1, tick); W64(b, 5, hash); Array.Copy(state, 0, b, 13, state.Length);
             _send(Channel.Reliable, b);
         }
 

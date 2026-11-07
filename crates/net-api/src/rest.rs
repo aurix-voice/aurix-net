@@ -53,6 +53,8 @@ pub fn router(st: Shared) -> Router {
         .route("/v1/rooms", get(list_rooms).post(create_room))
         .route("/v1/rooms/:id", get(get_room).delete(delete_room))
         .route("/v1/rooms/:id/replay", get(get_replay))
+        .route("/v1/rooms/:id/desyncs", get(list_desyncs))
+        .route("/v1/rooms/:id/desyncs/:tick/:actor", get(get_desync))
         .route("/v1/usage", get(usage))
         .route("/v1/keys", get(list_keys).post(create_key))
         .route("/v1/keys/:id", delete(revoke_key))
@@ -168,6 +170,11 @@ pub fn router(st: Shared) -> Router {
         )
         .route("/v1/operator/nodes/:id/drain", post(op_drain_node))
         .route("/v1/operator/rooms/:id/replay", get(op_replay))
+        .route("/v1/operator/rooms/:id/desyncs", get(op_list_desyncs))
+        .route(
+            "/v1/operator/rooms/:id/desyncs/:tick/:actor",
+            get(op_get_desync),
+        )
         .route(
             "/v1/operator/projects/:id",
             get(op_project).delete(op_delete_project),
@@ -1640,6 +1647,87 @@ async fn get_replay(
         .ok_or_else(|| NetError::NotFound("replay".into()))?;
     let v: Value = serde_json::from_slice(&body).map_err(|e| NetError::Internal(e.to_string()))?;
     Ok(Json(v))
+}
+
+/// State dumps collected after lockstep desyncs (the desynced client's and the master's state
+/// at the flagged tick), kept 24 h: compare them offline to find the non-deterministic code.
+async fn list_desyncs(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Read).await?;
+    let row = queries::get_room(&st.pool, id).await?;
+    if row.project_id != key.project_id {
+        return Err(NetError::NotFound("room".into()).into());
+    }
+    let list = st
+        .redis
+        .list_desyncs(ProjectId::from_uuid(key.project_id), RoomId::from_uuid(id))
+        .await?;
+    Ok(Json(json!({"room": id, "desyncs": list})))
+}
+
+type Blob = ([(axum::http::header::HeaderName, &'static str); 1], Vec<u8>);
+
+async fn desync_blob(
+    st: &Shared,
+    project: Uuid,
+    room: Uuid,
+    tick: u32,
+    actor: u16,
+) -> ApiResult<Blob> {
+    let body = st
+        .redis
+        .get_desync(
+            ProjectId::from_uuid(project),
+            RoomId::from_uuid(room),
+            tick,
+            actor,
+        )
+        .await?
+        .ok_or_else(|| NetError::NotFound("dump".into()))?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+        body,
+    ))
+}
+
+async fn get_desync(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((id, tick, actor)): Path<(Uuid, u32, u16)>,
+) -> ApiResult<Blob> {
+    let key = api_key(&st, &h, Scope::Read).await?;
+    let row = queries::get_room(&st.pool, id).await?;
+    if row.project_id != key.project_id {
+        return Err(NetError::NotFound("room".into()).into());
+    }
+    desync_blob(&st, key.project_id, id, tick, actor).await
+}
+
+async fn op_list_desyncs(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h).await?;
+    let row = queries::get_room(&st.pool, id).await?;
+    let list = st
+        .redis
+        .list_desyncs(ProjectId::from_uuid(row.project_id), RoomId::from_uuid(id))
+        .await?;
+    Ok(Json(json!({"room": id, "desyncs": list})))
+}
+
+async fn op_get_desync(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((id, tick, actor)): Path<(Uuid, u32, u16)>,
+) -> ApiResult<Blob> {
+    operator(&st, &h).await?;
+    let row = queries::get_room(&st.pool, id).await?;
+    desync_blob(&st, row.project_id, id, tick, actor).await
 }
 
 async fn mm_stats_json(st: &Shared, project: ProjectId) -> Result<Value> {

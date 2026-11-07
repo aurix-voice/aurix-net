@@ -1192,7 +1192,7 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                 checkpoint = Some((g.project, RoomCheckpoint::of(&g, None, snap).encode()));
             }
             let master = g.room.master();
-            let (bundle, desyncs, actors, ckpt_req, watch) = {
+            let (bundle, desyncs, actors, ckpt_req, watch, reports, dump_reqs, dumps) = {
                 let Some(ls) = g.lockstep.as_mut() else {
                     return;
                 };
@@ -1212,8 +1212,44 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                     .collect();
                 let actors: Vec<ActorId> = ls.actors.keys().copied().collect();
                 let watch = ls.spectator_datagram().map(|d| (ls.spectators(), d));
-                (bundle, desyncs, actors, ckpt_req, watch)
+                let reports = ls.input_reports();
+                let mut dump_reqs: Vec<(ActorId, Bytes)> = Vec::new();
+                for (tick, actor, _, _) in &desyncs {
+                    if let Some(f) = ls.request_dump(*tick, *actor) {
+                        dump_reqs.push((*actor, f));
+                    }
+                    if let Some(m) = master.filter(|m| m != actor) {
+                        if let Some(f) = ls.request_dump(*tick, m) {
+                            dump_reqs.push((m, f));
+                        }
+                    }
+                }
+                let dumps = ls.take_dumps();
+                (
+                    bundle, desyncs, actors, ckpt_req, watch, reports, dump_reqs, dumps,
+                )
             };
+            for (a, f) in reports {
+                if let Some(ds) = g.sessions.get(&a).and_then(|s| s.data.as_ref()) {
+                    ds.send(net_common::Channel::UnreliableSequenced, f);
+                }
+            }
+            for (a, f) in dump_reqs {
+                if let Some(ds) = g.sessions.get(&a).and_then(|s| s.data.as_ref()) {
+                    ds.send(net_common::Channel::ReliableOrdered, f);
+                }
+            }
+            for d in dumps {
+                let redis = st.redis.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = redis
+                        .put_desync(project, room, d.tick, d.actor.0, d.hash, &d.state)
+                        .await
+                    {
+                        tracing::warn!(room = %room, error = %e, "desync dump not stored");
+                    }
+                });
+            }
             if let Some((spectators, d)) = watch {
                 for a in &spectators {
                     if let Some(ds) = g.sessions.get(a).and_then(|s| s.data.as_ref()) {

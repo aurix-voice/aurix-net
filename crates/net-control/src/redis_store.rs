@@ -204,6 +204,84 @@ impl RedisStore {
             .map_err(|e| NetError::Redis(e.to_string()))
     }
 
+    fn desync_index_key(project: ProjectId, room: RoomId) -> String {
+        format!("net:{project}:desyncs:{room}")
+    }
+    fn desync_blob_key(project: ProjectId, room: RoomId, tick: u32, actor: u16) -> String {
+        format!("net:{project}:desync:{room}:{tick}:{actor}")
+    }
+
+    /// Stores a client's state dump taken after a desync (24 h), listed under the room.
+    pub async fn put_desync(
+        &self,
+        project: ProjectId,
+        room: RoomId,
+        tick: u32,
+        actor: u16,
+        hash: u64,
+        state: &[u8],
+    ) -> Result<()> {
+        const TTL: i64 = 86_400;
+        let mut c = self.conn.clone();
+        let meta = serde_json::json!({
+            "tick": tick, "actor": actor, "hash": format!("{hash:016x}"), "bytes": state.len(),
+            "at": chrono::Utc::now().to_rfc3339(),
+        })
+        .to_string();
+        let _: () = redis::pipe()
+            .set_ex(
+                Self::desync_blob_key(project, room, tick, actor),
+                state,
+                TTL as u64,
+            )
+            .hset(
+                Self::desync_index_key(project, room),
+                format!("{tick}:{actor}"),
+                meta,
+            )
+            .expire(Self::desync_index_key(project, room), TTL)
+            .query_async(&mut c)
+            .await
+            .map_err(|e| NetError::Redis(e.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn list_desyncs(
+        &self,
+        project: ProjectId,
+        room: RoomId,
+    ) -> Result<Vec<serde_json::Value>> {
+        let mut c = self.conn.clone();
+        let all: Vec<(String, String)> = c
+            .hgetall(Self::desync_index_key(project, room))
+            .await
+            .map_err(|e| NetError::Redis(e.to_string()))?;
+        let mut out: Vec<serde_json::Value> = all
+            .into_iter()
+            .filter_map(|(_, v)| serde_json::from_str(&v).ok())
+            .collect();
+        out.sort_by_key(|v| {
+            (
+                v["tick"].as_u64().unwrap_or(0),
+                v["actor"].as_u64().unwrap_or(0),
+            )
+        });
+        Ok(out)
+    }
+
+    pub async fn get_desync(
+        &self,
+        project: ProjectId,
+        room: RoomId,
+        tick: u32,
+        actor: u16,
+    ) -> Result<Option<Vec<u8>>> {
+        let mut c = self.conn.clone();
+        c.get::<_, Option<Vec<u8>>>(Self::desync_blob_key(project, room, tick, actor))
+            .await
+            .map_err(|e| NetError::Redis(e.to_string()))
+    }
+
     pub async fn remove_room(&self, project: ProjectId, room: RoomId) -> Result<()> {
         let mut c = self.conn.clone();
         let gone = serde_json::json!({"room": room, "removed": true}).to_string();

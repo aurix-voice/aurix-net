@@ -1,6 +1,7 @@
 // Offline unit checks for the managed core (no node needed): `dotnet run`.
 using System;
 using System.Collections.Generic;
+using Aurix.Net;
 using Aurix.Net.Managed;
 
 static class Program
@@ -62,9 +63,39 @@ static class Program
         Console.WriteLine("VECTOR ack " + Hex(SyncWorld.EncodeAck(0xdeadbeef, 0x80000001)));
     }
 
+    static void LockstepTests()
+    {
+        var sent = new List<(Channel, byte[])>();
+        var ls = new LockstepClient((ch, b) => sent.Add((ch, b)));
+        // adaptive delay: late inputs raise it at once, steady slack lowers it slowly
+        ls.OnInputStats(-2, 2);
+        Check(ls.InputDelay == 4 && ls.LateInputs == 2, "late by 2 -> delay 2 -> 4");
+        ls.OnInputStats(3, 0); ls.OnInputStats(3, 0);
+        Check(ls.InputDelay == 4, "two slack reports: unchanged");
+        ls.OnInputStats(3, 0);
+        Check(ls.InputDelay == 3, "third slack report: -1");
+        ls.OnInputStats(1, 0); ls.OnInputStats(3, 0); ls.OnInputStats(3, 0); ls.OnInputStats(3, 0);
+        Check(ls.InputDelay == 2, "streak resets on a tight report");
+        ls.InputDelay = ls.InputDelayMax; ls.OnInputStats(-9, 1);
+        Check(ls.InputDelay == ls.InputDelayMax, "capped at max");
+        // the same frame through Receive
+        Check(ls.Receive(new byte[] { 0x25, 0, 0, 0, 10, unchecked((byte)(sbyte)-1), 1 }) && ls.LastMargin == -1, "0x25 parsed");
+        // dump request -> event -> SendDump frame on the reliable channel
+        uint asked = 0; ls.OnDumpRequested += t => asked = t;
+        ls.Receive(new byte[] { 0x26, 0, 0, 1, 0 });
+        Check(asked == 256, "dump requested for tick 256");
+        ls.SendDump(256, 0x1122334455667788UL, new byte[] { 7, 7 });
+        var d = sent[sent.Count - 1];
+        Check(d.Item1 == Channel.Reliable && Hex(d.Item2) == "27000001001122334455667788" + "0707", "dump frame layout");
+        // input redundancy window
+        ls.InputRedundancy = 2; ls.SendInput(new byte[] { 1 }); ls.SendInput(new byte[] { 2 }); ls.SendInput(new byte[] { 3 });
+        Check(sent[sent.Count - 1].Item2[5] == 2, "two inputs per datagram");
+    }
+
     static int Main()
     {
         PredictorTests();
+        LockstepTests();
         CodecVectors();
         Console.WriteLine(_fails == 0 ? "all managed checks passed" : _fails + " check(s) failed");
         return _fails == 0 ? 0 : 1;

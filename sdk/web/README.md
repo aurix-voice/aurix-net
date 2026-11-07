@@ -47,3 +47,11 @@ WebTransport.
 
 `Client.connectAndJoin(httpUrl, grant, msg)` connects and joins in one call and follows a
 `room_elsewhere:<url>` redirect to the node hosting the room (rooms are pinned to one node).
+
+## Lockstep rooms
+
+`LockstepClient` (same frames as the managed core): feed data-path payloads to `receive`, get confirmed
+inputs tick by tick in `onTick`, restore from `onRestore` on late join, `sendInput` each tick, `reportHash`
+every N ticks; `inputDelay` adapts to the node's margin reports between `inputDelayMin`/`inputDelayMax`,
+`inputRedundancy` sets the per-datagram repeat; answer `onDumpRequested` with `sendDump` so a desync leaves
+two comparable state blobs on the node.
