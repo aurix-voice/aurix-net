@@ -19,6 +19,8 @@ pub struct RoomConfig {
     pub props: Map<String, Value>,
     pub lobby_props: Vec<String>,
     pub max_events_per_sec: u32,
+    /// Events one player may send per second (burst = 2 s worth).
+    pub max_events_per_sec_per_player: u32,
     pub max_event_bytes: usize,
     pub max_props_bytes: usize,
     pub max_cached_events: usize,
@@ -37,6 +39,8 @@ pub struct Player {
     pub online: bool,
     pub offline_since: Option<Instant>,
     pub groups: HashSet<u8>,
+    tokens: f64,
+    last_refill: Instant,
 }
 
 impl Player {
@@ -76,6 +80,8 @@ pub enum RoomError {
     EventTooLarge,
     #[error("too many events per second")]
     EventRate,
+    #[error("you send too many events per second")]
+    PlayerEventRate,
     #[error("properties too large")]
     PropsTooLarge,
     #[error("expected values did not match")]
@@ -174,7 +180,7 @@ impl Room {
         name: &str,
         props: Map<String, Value>,
         rejoin: Option<ActorId>,
-        _now: Instant,
+        now: Instant,
     ) -> Result<(ActorId, Vec<Outgoing>), RoomError> {
         if props_len(&props) > self.cfg.max_props_bytes {
             return Err(RoomError::PropsTooLarge);
@@ -219,6 +225,8 @@ impl Room {
             online: true,
             offline_since: None,
             groups: HashSet::new(),
+            tokens: 2.0 * self.cfg.max_events_per_sec_per_player as f64,
+            last_refill: now,
         };
         let info = p.info();
         self.players.insert(actor, p);
@@ -254,6 +262,8 @@ impl Room {
                     online: false,
                     offline_since: Some(now),
                     groups: HashSet::new(),
+                    tokens: 2.0 * self.cfg.max_events_per_sec_per_player as f64,
+                    last_refill: now,
                 },
             );
             self.by_player.insert(player_id, actor);
@@ -499,6 +509,17 @@ impl Room {
         if self.tokens < 1.0 {
             return Err(RoomError::EventRate);
         }
+        {
+            let rate = self.cfg.max_events_per_sec_per_player as f64;
+            let p = self.players.get_mut(&from).unwrap();
+            let dt = now.duration_since(p.last_refill).as_secs_f64();
+            p.last_refill = now;
+            p.tokens = (p.tokens + dt * rate).min(2.0 * rate);
+            if p.tokens < 1.0 {
+                return Err(RoomError::PlayerEventRate);
+            }
+            p.tokens -= 1.0;
+        }
         self.tokens -= 1.0;
         frame.from = from;
 
@@ -601,6 +622,7 @@ mod tests {
             props: Map::new(),
             lobby_props: vec!["map".into()],
             max_events_per_sec: 4,
+            max_events_per_sec_per_player: 3,
             max_event_bytes: 100,
             max_props_bytes: 200,
             max_cached_events: 2,

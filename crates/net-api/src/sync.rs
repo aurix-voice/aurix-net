@@ -187,7 +187,16 @@ pub struct SyncRoom {
     pub avatars: HashMap<ActorId, Option<EntityId>>,
     pub hz: u16,
     pub schema_hash: String,
+    /// Per-actor input-frame tokens: +1.1 per tick (tick rate + 10 %), burst `INPUT_BURST`.
+    input_tokens: HashMap<ActorId, f32>,
+    pub inputs_rate_limited: u64,
+    pub invalid_inputs: u64,
 }
+
+/// Input frames a client may send in a burst before the per-tick allowance applies.
+pub const INPUT_BURST: f32 = 8.0;
+/// Inputs further ahead of the room tick than this are dropped as invalid.
+pub const INPUT_MAX_AHEAD: u32 = 64;
 
 impl SyncRoom {
     /// `schema`: IDL text from room props, or None for the built-in arena.
@@ -267,6 +276,9 @@ impl SyncRoom {
             views: HashMap::new(),
             avatars: HashMap::new(),
             hz,
+            input_tokens: HashMap::new(),
+            inputs_rate_limited: 0,
+            invalid_inputs: 0,
         })
     }
 
@@ -294,6 +306,7 @@ impl SyncRoom {
     }
 
     pub fn on_leave(&mut self, actor: ActorId) {
+        self.input_tokens.remove(&actor);
         if let Some(avatar) = self.avatars.remove(&actor) {
             self.logic.on_leave(&mut self.frame, actor, avatar);
         }
@@ -310,10 +323,23 @@ impl SyncRoom {
             KIND_INPUT => {
                 payload.advance(1);
                 if payload.len() < 5 {
+                    self.invalid_inputs += 1;
                     return true;
                 }
+                let tokens = self.input_tokens.entry(actor).or_insert(INPUT_BURST);
+                if *tokens < 1.0 {
+                    self.inputs_rate_limited += 1;
+                    return true;
+                }
+                *tokens -= 1.0;
                 let first = payload.get_u32();
                 let n = payload.get_u8() as usize;
+                if first.wrapping_sub(self.frame.tick.0) < 1 << 31
+                    && first > self.frame.tick.0 + INPUT_MAX_AHEAD
+                {
+                    self.invalid_inputs += 1;
+                    return true;
+                }
                 for i in 0..n.min(INPUT_REDUNDANCY + 1) {
                     if payload.is_empty() {
                         break;
@@ -355,6 +381,9 @@ impl SyncRoom {
 
     /// One simulation step. Returns the delta frame for each actor with a view.
     pub fn tick(&mut self) -> Vec<(ActorId, Bytes)> {
+        for t in self.input_tokens.values_mut() {
+            *t = (*t + 1.1).min(INPUT_BURST);
+        }
         let actors: Vec<ActorId> = self.avatars.keys().copied().collect();
         let mut inputs = Vec::with_capacity(actors.len());
         for a in &actors {
@@ -399,6 +428,14 @@ impl SyncRoom {
         self.history = History::new(self.hz as usize * 2);
         self.logic.reset();
         Ok(())
+    }
+
+    /// (rate-limited, invalid) input frames since the last call.
+    pub fn take_input_stats(&mut self) -> (u64, u64) {
+        (
+            std::mem::take(&mut self.inputs_rate_limited),
+            std::mem::take(&mut self.invalid_inputs),
+        )
     }
 
     /// Deltas clients lost since the last call (from their acks).
@@ -550,5 +587,25 @@ mod tests {
             })
         );
         assert!(SyncRoom::new(Some("component {"), 30, 1).is_err());
+    }
+
+    #[test]
+    fn input_frames_are_rate_limited_per_actor() {
+        let mut room = SyncRoom::new(None, 60, 1).unwrap();
+        let a = ActorId(1);
+        room.on_join(a);
+        let frame = SyncRoom::encode_input(Tick(1), &[vec![1, 0, 0]]);
+        for _ in 0..20 {
+            room.handle(a, frame.clone());
+        }
+        assert_eq!(room.take_input_stats(), (20 - INPUT_BURST as u64, 0));
+        let _ = room.tick();
+        assert!(room.handle(a, frame.clone()));
+        assert!(room.handle(a, frame.clone()));
+        assert_eq!(room.take_input_stats(), (1, 0));
+        let far = SyncRoom::encode_input(Tick(1000), &[vec![1, 0, 0]]);
+        let _ = room.tick();
+        room.handle(a, far);
+        assert_eq!(room.take_input_stats(), (0, 1));
     }
 }

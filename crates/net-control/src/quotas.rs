@@ -13,6 +13,8 @@ pub struct ProjectLimits {
     #[serde(default)]
     pub max_events_per_sec_per_room: Option<u32>,
     #[serde(default)]
+    pub max_events_per_sec_per_player: Option<u32>,
+    #[serde(default)]
     pub max_event_bytes: Option<usize>,
     #[serde(default)]
     pub allowed_regions: Option<Vec<String>>,
@@ -23,6 +25,7 @@ pub struct EffectiveLimits {
     pub max_rooms: u32,
     pub max_players_per_room: u16,
     pub max_events_per_sec_per_room: u32,
+    pub max_events_per_sec_per_player: u32,
     pub max_event_bytes: usize,
     pub max_props_bytes: usize,
     pub max_cached_events_per_room: usize,
@@ -44,6 +47,9 @@ impl ProjectLimits {
             max_events_per_sec_per_room: self
                 .max_events_per_sec_per_room
                 .unwrap_or(node.max_events_per_sec_per_room),
+            max_events_per_sec_per_player: self
+                .max_events_per_sec_per_player
+                .unwrap_or(node.max_events_per_sec_per_player),
             max_event_bytes: self
                 .max_event_bytes
                 .unwrap_or(node.max_event_bytes)
@@ -65,6 +71,7 @@ mod tests {
             max_players_per_room: 128,
             max_rooms_per_node: 2000,
             max_events_per_sec_per_room: 500,
+            max_events_per_sec_per_player: 60,
             max_event_bytes: 65536,
             max_props_bytes: 16384,
             max_cached_events_per_room: 1000,

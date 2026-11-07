@@ -36,7 +36,7 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | GET/DELETE | `/v1/matchmaking/tickets/:id` | `read`/`rooms` | `state: searching{waiting} | matched{room, mode, max_players, players} | cancelled` |
 | GET/POST | `/v1/operator/projects` | operator | projects; create returns the first key |
 | POST | `/v1/operator/projects/:id/keys` | operator | |
-| POST | `/v1/operator/projects/:id/limits` | operator | quotas: `max_open_rooms, max_players_per_room, max_events_per_sec_per_room, max_event_bytes, regions` |
+| POST | `/v1/operator/projects/:id/limits` | operator | quotas: `max_open_rooms, max_players_per_room, max_events_per_sec_per_room, max_events_per_sec_per_player, max_event_bytes, regions` |
 | GET | `/v1/operator/nodes` | operator | all nodes incl. draining |
 | DELETE | `/v1/operator/nodes/:id` | operator | forget a node |
 

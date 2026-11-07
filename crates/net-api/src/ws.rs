@@ -553,6 +553,7 @@ impl Session {
             props: props.clone(),
             lobby_props: lobby_props.clone(),
             max_events_per_sec: limits.max_events_per_sec_per_room,
+            max_events_per_sec_per_player: limits.max_events_per_sec_per_player,
             max_event_bytes: limits.max_event_bytes,
             max_props_bytes: limits.max_props_bytes,
             max_cached_events: limits.max_cached_events_per_room,
@@ -814,6 +815,9 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
                 let events = sy.take_events();
                 let actors: Vec<ActorId> = sy.avatars.keys().copied().collect();
                 st.metrics.sync_lost_deltas.inc_by(sy.take_lost_deltas());
+                let (limited, invalid) = sy.take_input_stats();
+                st.metrics.sync_inputs_rate_limited.inc_by(limited);
+                st.metrics.sync_invalid_inputs.inc_by(invalid);
                 n += 1;
                 if n.is_multiple_of(checkpoint_every) {
                     checkpoint = Some((project, sy.checkpoint()));
@@ -1058,6 +1062,7 @@ pub async fn adopt_room(
         props: props.clone(),
         lobby_props: row.lobby_props.clone(),
         max_events_per_sec: limits.max_events_per_sec_per_room,
+        max_events_per_sec_per_player: limits.max_events_per_sec_per_player,
         max_event_bytes: limits.max_event_bytes,
         max_props_bytes: limits.max_props_bytes,
         max_cached_events: limits.max_cached_events_per_room,
@@ -1244,7 +1249,7 @@ fn room_err(e: RoomError) -> NetError {
         RoomError::Duplicate => NetError::Conflict("player already in room".into()),
         RoomError::NotMember | RoomError::NoActor => NetError::NotFound(e.to_string()),
         RoomError::NotMaster => NetError::Forbidden(e.to_string()),
-        RoomError::EventRate => NetError::RateLimited,
+        RoomError::EventRate | RoomError::PlayerEventRate => NetError::RateLimited,
         RoomError::EventTooLarge | RoomError::PropsTooLarge | RoomError::CasFailed => {
             NetError::Invalid(e.to_string())
         }

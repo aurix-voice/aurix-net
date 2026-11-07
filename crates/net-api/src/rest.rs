@@ -279,6 +279,7 @@ async fn create_room(
         props: req.props.clone(),
         lobby_props: req.lobby_props.clone(),
         max_events_per_sec: limits.max_events_per_sec_per_room,
+        max_events_per_sec_per_player: limits.max_events_per_sec_per_player,
         max_event_bytes: limits.max_event_bytes,
         max_props_bytes: limits.max_props_bytes,
         max_cached_events: limits.max_cached_events_per_room,

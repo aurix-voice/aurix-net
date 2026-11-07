@@ -22,6 +22,10 @@ Create with `mode: "relay"` (default). Events are opaque bytes with a code, a ta
 (`all`, `others`, `master`, explicit actors), an optional interest group and a cache flag so
 late joiners receive them. Rate and size limits come from the project quota.
 
+Rate limits: a room takes `max_events_per_sec_per_room` events (default 500) and each player
+`max_events_per_sec_per_player` (default 60, burst of 2 s worth); over the limit the event is
+dropped with `rate_limited`. Both are project quotas (`/v1/operator/projects/:id/limits`).
+
 ## sync
 
 Create with `mode: "sync"` and optional props:
@@ -50,6 +54,10 @@ history, `net_replication::AckTracker`). A delta the client never got has its en
 on the server, so the next delta carries them in full instead of a diff against state the client
 does not have; lost despawns are repeated. Clients that never ack get the plain "baseline = last
 sent" behaviour.
+
+Input frames are limited per client to tick rate + 10 % (burst of 8 frames); inputs more than
+64 ticks ahead of the room are dropped. Counters: `net_sync_inputs_rate_limited_total`,
+`net_sync_invalid_inputs_total`.
 
 ### Schema IDL
 

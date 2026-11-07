@@ -16,6 +16,8 @@ pub struct Metrics {
     pub errors: IntCounterVec,
     pub sync_tick: Histogram,
     pub sync_lost_deltas: IntCounter,
+    pub sync_inputs_rate_limited: IntCounter,
+    pub sync_invalid_inputs: IntCounter,
 }
 
 impl Metrics {
@@ -54,9 +56,19 @@ impl Metrics {
             "net_sync_lost_deltas_total",
             "sync deltas clients reported lost (re-sent in full)",
         );
+        let sync_inputs_rate_limited = c(
+            "net_sync_inputs_rate_limited_total",
+            "input frames dropped: client sent faster than tick rate + 10%",
+        );
+        let sync_invalid_inputs = c(
+            "net_sync_invalid_inputs_total",
+            "input frames dropped as malformed or too far ahead of the room tick",
+        );
         Self {
             sync_tick,
             sync_lost_deltas,
+            sync_inputs_rate_limited,
+            sync_invalid_inputs,
             rooms: g("net_rooms", "open rooms on this node"),
             players: g("net_players", "online players on this node"),
             control_sessions: g("net_control_sessions", "open control websockets"),
