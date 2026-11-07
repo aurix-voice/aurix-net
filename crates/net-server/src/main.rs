@@ -133,8 +133,17 @@ async fn main() -> anyhow::Result<()> {
             let mut iv = tokio::time::interval(std::time::Duration::from_millis(500));
             loop {
                 iv.tick().await;
-                for room in st.matchmaker.run_once() {
-                    tracing::debug!(room, "match started");
+                match st
+                    .matchmaker
+                    .run_cycle(&st.redis, &st.node_id.to_string())
+                    .await
+                {
+                    Ok(rooms) => {
+                        for room in rooms {
+                            tracing::debug!(room, "match started");
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e, "matchmaking cycle failed"),
                 }
             }
         }

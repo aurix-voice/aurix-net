@@ -99,6 +99,11 @@ POST JSON `{event, project, at, data}` with `X-Aurix-Event` and
 Tickets group by `(mode, region, max_players, props)`; a match starts when the group is full
 or the oldest ticket waited `max_wait_secs` with at least `min_players`.
 
+Tickets live in Redis (`net:mm:*`), so a ticket filed on any node of the region matches
+tickets filed on every other node and `GET` works from any node; one node at a time runs the
+matching pass behind a 1.5 s leader lock, so a dead node is replaced within a cycle.
+Searching tickets expire after 5 minutes, results stay readable for 2 minutes.
+
 ## CLI
 
 `aurix-net` (crate `net-cli`): `health, regions, project-create, projects, nodes, key-create,

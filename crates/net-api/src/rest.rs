@@ -368,7 +368,8 @@ async fn mm_file(
     }
     let t = st
         .matchmaker
-        .file(ProjectId::from_uuid(key.project_id), req);
+        .file(&st.redis, ProjectId::from_uuid(key.project_id), req)
+        .await?;
     Ok(Json(json!({"ticket": t.id, "state": t.state})))
 }
 
@@ -380,10 +381,11 @@ async fn mm_get(
     let key = api_key(&st, &h, Scope::Read).await?;
     let t = st
         .matchmaker
-        .get(ProjectId::from_uuid(key.project_id), id)
+        .get(&st.redis, ProjectId::from_uuid(key.project_id), id)
+        .await?
         .ok_or_else(|| NetError::NotFound("ticket".into()))?;
     Ok(Json(
-        json!({"ticket": t.id, "state": t.state, "age_secs": t.created.elapsed().as_secs()}),
+        json!({"ticket": t.id, "state": t.state, "age_secs": t.age_secs(crate::matchmaking::now_ms())}),
     ))
 }
 
@@ -395,7 +397,8 @@ async fn mm_cancel(
     let key = api_key(&st, &h, Scope::Rooms).await?;
     if st
         .matchmaker
-        .cancel(ProjectId::from_uuid(key.project_id), id)
+        .cancel(&st.redis, ProjectId::from_uuid(key.project_id), id)
+        .await?
     {
         Ok(StatusCode::NO_CONTENT)
     } else {
