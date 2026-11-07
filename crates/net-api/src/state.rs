@@ -21,6 +21,7 @@ pub struct AppState {
     pub quic_port: u16,
     pub metrics: Arc<Metrics>,
     pub webhooks: crate::webhooks::Dispatcher,
+    pub matchmaker: crate::matchmaking::Matchmaker,
     pub started: std::time::Instant,
 }
 

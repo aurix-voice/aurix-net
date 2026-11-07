@@ -3,6 +3,7 @@
 pub mod data;
 pub mod host;
 pub mod lockstep;
+pub mod matchmaking;
 pub mod metrics;
 pub mod rest;
 pub mod state;

@@ -53,6 +53,8 @@ pub fn router(st: Shared) -> Router {
         .route("/v1/keys", get(list_keys).post(create_key))
         .route("/v1/keys/:id", delete(revoke_key))
         .route("/v1/webhooks", get(list_webhooks).post(create_webhook))
+        .route("/v1/matchmaking/tickets", post(mm_file))
+        .route("/v1/matchmaking/tickets/:id", get(mm_get).delete(mm_cancel))
         .route("/v1/webhooks/:id", delete(delete_webhook))
         .route(
             "/v1/operator/projects",
@@ -343,6 +345,54 @@ async fn get_replay(
         .ok_or_else(|| NetError::NotFound("replay".into()))?;
     let v: Value = serde_json::from_slice(&body).map_err(|e| NetError::Internal(e.to_string()))?;
     Ok(Json(v))
+}
+
+/// Files a matchmaking ticket. Poll `GET /v1/matchmaking/tickets/:id` until `matched`, then
+/// `join_or_create` the returned room name with the same mode.
+async fn mm_file(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Json(req): Json<crate::matchmaking::TicketReq>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Rooms).await?;
+    if req.max_players == 0 || req.min_players == 0 || req.min_players > req.max_players {
+        return Err(NetError::Invalid("min_players must be 1..=max_players".into()).into());
+    }
+    let t = st
+        .matchmaker
+        .file(ProjectId::from_uuid(key.project_id), req);
+    Ok(Json(json!({"ticket": t.id, "state": t.state})))
+}
+
+async fn mm_get(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Read).await?;
+    let t = st
+        .matchmaker
+        .get(ProjectId::from_uuid(key.project_id), id)
+        .ok_or_else(|| NetError::NotFound("ticket".into()))?;
+    Ok(Json(
+        json!({"ticket": t.id, "state": t.state, "age_secs": t.created.elapsed().as_secs()}),
+    ))
+}
+
+async fn mm_cancel(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    let key = api_key(&st, &h, Scope::Rooms).await?;
+    if st
+        .matchmaker
+        .cancel(ProjectId::from_uuid(key.project_id), id)
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(NetError::NotFound("ticket".into()).into())
+    }
 }
 
 async fn delete_room(
