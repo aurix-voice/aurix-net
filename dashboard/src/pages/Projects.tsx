@@ -26,7 +26,7 @@ function ProjectsBody() {
   const cols: Column<Project>[] = [
     { key: "name", header: t("common.name"), sort: (p) => p.name, cell: (p) => <span className="font-medium">{p.name}</span> },
     { key: "id", header: "ID", cell: (p) => <IdChip id={p.id} /> },
-    { key: "plan", header: t("projects.plan"), cell: (p) => <Badge>{p.plan}</Badge> },
+    { key: "plan", header: t("projects.plan"), cell: (p) => <span className="flex items-center gap-1.5"><Badge>{p.plan}</Badge>{p.disabled_at ? <Badge tone="warn">{t("projects.suspended")}</Badge> : null}</span> },
     { key: "limits", header: t("projects.limits"), cell: (p) => <span className="text-fg-muted text-xs">{Object.keys(p.limits ?? {}).length ? Object.entries(p.limits).map(([k, v]) => `${k}=${String(v)}`).join(" · ") : t("common.unlimited")}</span> },
     { key: "created", header: t("common.created"), sort: (p) => p.created_at, cell: (p) => <span className="text-fg-muted">{fmtDateTimeShort(locale, p.created_at)}</span> },
   ];

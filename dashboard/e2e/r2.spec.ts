@@ -71,3 +71,30 @@ test("project page has a Connect card and lets the operator delete a webhook", a
   await page.getByPlaceholder(/^Action/).fill("webhook.delete");
   await expect(page.getByRole("row").filter({ hasText: "webhook.delete" }).first()).toBeVisible();
 });
+
+test("operator can suspend and resume a project; suspended keys cannot issue grants", async ({ page }) => {
+  const name = uniq("e2e-susp");
+  const project = await api<{ project: { id: string }; key: { key: string } }>(page, "POST", "/v1/operator/projects", { name });
+  const grant = () =>
+    page.request.post("/v1/grants", {
+      headers: { authorization: `Bearer ${project.key.key}`, "content-type": "application/json" },
+      data: { player_id: "p1", name: "P" },
+    });
+  expect((await grant()).status()).toBe(200);
+  await page.goto(`/projects/${project.project.id}`);
+  await page.getByRole("button", { name: "Suspend" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Suspend" }).click();
+  await expect(page.getByText("Suspended", { exact: true })).toBeVisible();
+  await expect(page.getByText(/This project is suspended since/)).toBeVisible();
+  expect((await grant()).status()).toBe(403);
+  await page.goto("/projects");
+  await expect(page.getByRole("row", { name: new RegExp(name) }).getByText("Suspended")).toBeVisible();
+  await page.goto(`/projects/${project.project.id}`);
+  await page.getByRole("button", { name: "Resume" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Resume" }).click();
+  await expect(page.getByText(/This project is suspended since/)).toHaveCount(0);
+  expect((await grant()).status()).toBe(200);
+  await page.goto("/audit");
+  await page.getByPlaceholder(/^Action/).fill("project.suspend");
+  await expect(page.getByRole("row").filter({ hasText: "project.suspend" }).first()).toBeVisible();
+});

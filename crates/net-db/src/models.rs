@@ -26,6 +26,13 @@ pub struct ApiKeyRow {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, FromRow)]
+pub struct ApiKeyAuth {
+    #[sqlx(flatten)]
+    pub key: ApiKeyRow,
+    pub project_disabled_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize)]
 pub struct RegionRow {
     pub id: String,

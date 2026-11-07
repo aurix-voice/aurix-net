@@ -67,9 +67,24 @@ pub async fn insert_api_key(
     .map_err(db_err)
 }
 
-pub async fn find_api_key(pool: &DbPool, key_hash: &str) -> Result<Option<ApiKeyRow>> {
-    sqlx::query_as::<_, ApiKeyRow>(
-        "SELECT * FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL",
+pub async fn set_project_disabled(pool: &DbPool, id: Uuid, disabled: bool) -> Result<bool> {
+    let r = sqlx::query(
+        "UPDATE projects SET disabled_at = CASE WHEN $2 THEN COALESCE(disabled_at, now()) ELSE NULL END WHERE id = $1",
+    )
+    .bind(id)
+    .bind(disabled)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(r.rows_affected() > 0)
+}
+
+/// Key row plus the owning project's suspension marker, so one lookup authenticates both.
+pub async fn find_api_key(pool: &DbPool, key_hash: &str) -> Result<Option<ApiKeyAuth>> {
+    sqlx::query_as::<_, ApiKeyAuth>(
+        "SELECT k.*, p.disabled_at AS project_disabled_at FROM api_keys k \
+         JOIN projects p ON p.id = k.project_id \
+         WHERE k.key_hash = $1 AND k.revoked_at IS NULL",
     )
     .bind(key_hash)
     .fetch_optional(pool)

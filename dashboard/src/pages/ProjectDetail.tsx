@@ -3,7 +3,7 @@ import { ArrowLeft, Plus } from "lucide-react";
 import { useState } from "react";
 
 import type { ApiKey, LiveRoom, Module, Webhook } from "@/api/client";
-import { useCreateKey, useOpDeleteModule, useOpDeleteWebhook, useProject, useRegions, useRevokeProjectKey, useSetLimits } from "@/api/hooks";
+import { useCreateKey, useOpDeleteModule, useOpDeleteWebhook, useProject, useRegions, useRevokeProjectKey, useSetLimits, useSetSuspended } from "@/api/hooks";
 import { ConnectCard } from "@/components/ConnectCard";
 import { useAuth } from "@/auth/AuthProvider";
 import { NewKeyDialog } from "@/components/NewKeyDialog";
@@ -17,7 +17,7 @@ import { ConfirmDialog } from "@/ui/Dialog";
 import { Input } from "@/ui/Input";
 import { Tabs, TabPanel } from "@/ui/Menu";
 import { Loading, PageHeader, QueryError, Section } from "@/ui/Page";
-import { Badge, Card, Field, IdChip, KV, Mono } from "@/ui/Primitives";
+import { Badge, Callout, Card, Field, IdChip, KV, Mono } from "@/ui/Primitives";
 import { DataTable } from "@/ui/Table";
 import { useToast } from "@/ui/Toast";
 
@@ -85,6 +85,8 @@ function ProjectBody() {
   const revokeKey = useRevokeProjectKey(projectId);
   const [revoking, setRevoking] = useState<ApiKey | null>(null);
   const regions = useRegions();
+  const setSuspended = useSetSuspended(projectId);
+  const [suspending, setSuspending] = useState(false);
   const delWebhook = useOpDeleteWebhook(projectId);
   const delModule = useOpDeleteModule(projectId);
   const [deleting, setDeleting] = useState<{ kind: "webhook" | "module"; id: string; label: string } | null>(null);
@@ -105,16 +107,40 @@ function ProjectBody() {
             </Link>
             {p.name}
             <Badge>{p.plan}</Badge>
+            {p.disabled_at ? <Badge tone="warn">{t("projects.suspended")}</Badge> : null}
           </span>
         }
         description={<IdChip id={p.id} short={36} />}
         actions={
-          <Link to="/rooms" onClick={() => selectProject(p.id)}>
-            <Button variant="secondary" size="sm">
-              {t("projects.open")} →
+          <div className="flex items-center gap-2">
+            <Button variant={p.disabled_at ? "secondary" : "ghost"} size="sm" onClick={() => setSuspending(true)}>
+              {p.disabled_at ? t("projects.resume") : t("projects.suspend")}
             </Button>
-          </Link>
+            <Link to="/rooms" onClick={() => selectProject(p.id)}>
+              <Button variant="secondary" size="sm">
+                {t("projects.open")} →
+              </Button>
+            </Link>
+          </div>
         }
+      />
+      {p.disabled_at ? (
+        <Callout tone="warn" className="mb-4">
+          {t("projects.suspended.callout", { since: fmtDateTimeShort(locale, p.disabled_at) })}
+          {d.rooms.length ? ` ${t("projects.suspended.live", { n: d.rooms.length })}` : ""}
+        </Callout>
+      ) : null}
+      <ConfirmDialog
+        open={suspending}
+        onOpenChange={setSuspending}
+        title={p.disabled_at ? t("projects.resume") : t("projects.suspend")}
+        description={p.disabled_at ? t("projects.resume.confirm", { name: p.name }) : t("projects.suspend.confirm", { name: p.name })}
+        confirmLabel={p.disabled_at ? t("projects.resume") : t("projects.suspend")}
+        variant={p.disabled_at ? "primary" : "danger"}
+        onConfirm={async () => {
+          const r = await setSuspended.mutateAsync(!p.disabled_at);
+          toast.ok(p.disabled_at ? t("projects.resume") : t("projects.suspend"), r.live_rooms ? t("projects.suspended.live", { n: r.live_rooms }) : undefined);
+        }}
       />
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <Card>

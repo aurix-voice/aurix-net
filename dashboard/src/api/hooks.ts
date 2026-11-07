@@ -225,6 +225,17 @@ export function useSetLimits(projectId: string) {
   const qc = useQueryClient();
   return useMutation({ mutationFn: (limits: Record<string, unknown>) => api.post(`/v1/operator/projects/${projectId}/limits`, limits), onSuccess: () => void qc.invalidateQueries({ queryKey: qk.project(projectId) }) });
 }
+export function useSetSuspended(projectId: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (suspended: boolean) => api.post<{ project: Project; live_rooms: number }>(`/v1/operator/projects/${projectId}/suspend`, { suspended }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.project(projectId) });
+      void qc.invalidateQueries({ queryKey: qk.projects });
+    },
+  });
+}
 export function useFileTicket() {
   const api = useApi();
   return useMutation({ mutationFn: (body: Record<string, unknown>) => api.post<Ticket>("/v1/matchmaking/tickets", body) });

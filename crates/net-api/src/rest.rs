@@ -73,6 +73,7 @@ pub fn router(st: Shared) -> Router {
         .route("/v1/operator/projects/:id/keys", post(op_create_key))
         .route("/v1/operator/projects/:id/keys/:kid", delete(op_revoke_key))
         .route("/v1/operator/projects/:id/limits", post(op_set_limits))
+        .route("/v1/operator/projects/:id/suspend", post(op_set_suspended))
         .route("/v1/operator/nodes", get(op_nodes))
         .route("/v1/operator/rooms", get(op_rooms))
         .route(
@@ -110,9 +111,15 @@ async fn api_key(st: &Shared, h: &HeaderMap, scope: Scope) -> Result<ApiKeyRow> 
     if !looks_like_key(k) {
         return Err(NetError::Unauthorized("malformed api key".into()));
     }
-    let row = queries::find_api_key(&st.pool, &hash_key(k))
+    let auth = queries::find_api_key(&st.pool, &hash_key(k))
         .await?
         .ok_or_else(|| NetError::Unauthorized("unknown api key".into()))?;
+    // A suspended project keeps read access so the team can see its state; everything that
+    // creates load (grants, rooms, matchmaking, uploads) is refused.
+    if auth.project_disabled_at.is_some() && scope != Scope::Read {
+        return Err(NetError::Forbidden("project suspended".into()));
+    }
+    let row = auth.key;
     let has = row
         .scopes
         .iter()
@@ -874,6 +881,47 @@ async fn op_revoke_key(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+struct SuspendReq {
+    suspended: bool,
+}
+
+/// Suspend (or resume) a project. While suspended: no grants, no joins, no room creation, no
+/// writes with its keys; reads keep working. Live rooms are not torn down — they drain as players
+/// leave — so the response carries the current live count for the console to show.
+async fn op_set_suspended(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<SuspendReq>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    if !queries::set_project_disabled(&st.pool, id, req.suspended).await? {
+        return Err(NetError::NotFound("project not found".into()).into());
+    }
+    let live = st
+        .redis
+        .list_rooms(ProjectId::from_uuid(id))
+        .await
+        .map(|r| r.len())
+        .unwrap_or(0);
+    audit_log(
+        &st,
+        Some(id),
+        "operator",
+        if req.suspended {
+            "project.suspend"
+        } else {
+            "project.resume"
+        },
+        &id.to_string(),
+        json!({"live_rooms": live}),
+    )
+    .await;
+    let p = queries::get_project(&st.pool, id).await?;
+    Ok(Json(json!({"project": p, "live_rooms": live})))
+}
+
 async fn op_set_limits(
     State(st): State<Shared>,
     h: HeaderMap,
@@ -1000,11 +1048,12 @@ async fn me(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
     }
     let row = queries::find_api_key(&st.pool, &hash_key(k))
         .await?
-        .ok_or_else(|| NetError::Unauthorized("unknown api key".into()))?;
+        .ok_or_else(|| NetError::Unauthorized("unknown api key".into()))?
+        .key;
     let p = queries::get_project(&st.pool, row.project_id).await?;
     Ok(Json(json!({
         "kind": "project",
-        "project": {"id": p.id, "name": p.name, "plan": p.plan, "limits": p.limits, "created_at": p.created_at},
+        "project": {"id": p.id, "name": p.name, "plan": p.plan, "limits": p.limits, "created_at": p.created_at, "disabled_at": p.disabled_at},
         "key": key_json(&row),
         "region": st.region,
     })))
