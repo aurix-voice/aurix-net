@@ -55,3 +55,14 @@ failures/min per IP, 20 writes/s per API key, 500 events/s per room, 60 per play
 
 Nodes of one deployment should run the same minor version; the room checkpoint format is
 versioned in JSON and tolerates added fields.
+
+## Docker
+
+`Dockerfile` builds a release node image: Debian slim, runs as uid 10001 (`aurix`), `STOPSIGNAL SIGTERM`
+(the node drains and hands rooms off; give it `stop_grace_period: 30s`), container healthcheck on
+`/healthz` (503 while draining, so orchestrators stop routing to it). Ports: 8090/tcp (HTTP/WS),
+7000/udp (QUIC), 7443/udp (WebTransport). Configure with `NET__SECTION__KEY` env vars
+(`NET__AUTH__GRANT_SECRET`, `NET__AUTH__ADMIN_TOKEN`, `NET__DATABASE__URL`, `NET__REDIS__URL`,
+`NET__SERVER__PUBLIC_HOST`, ...) or mount a TOML and pass `--config /etc/aurix-net/net.toml` (needed
+for list values such as `trusted_proxies` / `allowed_origins`). `deploy/docker-compose.prod.yml` is a
+two-node reference layout.

@@ -1,0 +1,10 @@
+target
+sdk/*/node_modules
+sdk/unity/BuildCheck~/*/bin
+sdk/unity/BuildCheck~/*/obj
+.git
+*.log
+Dockerfile
+docs
+deploy
+*.md

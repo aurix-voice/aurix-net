@@ -1,0 +1,52 @@
+# Reference production layout for one region: two nodes behind your TLS terminator / load
+# balancer, Postgres and Redis on the internal network only. Secrets come from the environment
+# (`.env`), never from this file. Replace the example hostnames before use. List values
+# (trusted_proxies, allowed_origins) go in a mounted net.toml passed as `command: [--config, ...]`.
+services:
+  node-a:
+    image: aurix-net:latest
+    build: ..
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      NET__SERVER__ENVIRONMENT: production
+      NET__SERVER__REGION: ${REGION:-eu}
+      NET__SERVER__PUBLIC_HOST: node-a.net.example.com
+      NET__AUTH__GRANT_SECRET: ${GRANT_SECRET}
+      NET__AUTH__ADMIN_TOKEN: ${ADMIN_TOKEN}
+      NET__SERVER__METRICS_TOKEN: ${METRICS_TOKEN}
+      NET__DATABASE__URL: postgres://aurix:${PG_PASSWORD}@postgres:5432/aurix_net?sslmode=disable
+      NET__REDIS__URL: redis://:${REDIS_PASSWORD}@redis:6379
+    ports: ["8090:8090/tcp", "7000:7000/udp", "7443:7443/udp"]
+    depends_on: [postgres, redis]
+  node-b:
+    image: aurix-net:latest
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      NET__SERVER__ENVIRONMENT: production
+      NET__SERVER__REGION: ${REGION:-eu}
+      NET__SERVER__PUBLIC_HOST: node-b.net.example.com
+      NET__AUTH__GRANT_SECRET: ${GRANT_SECRET}
+      NET__AUTH__ADMIN_TOKEN: ${ADMIN_TOKEN}
+      NET__SERVER__METRICS_TOKEN: ${METRICS_TOKEN}
+      NET__DATABASE__URL: postgres://aurix:${PG_PASSWORD}@postgres:5432/aurix_net?sslmode=disable
+      NET__REDIS__URL: redis://:${REDIS_PASSWORD}@redis:6379
+    ports: ["8091:8090/tcp", "7001:7000/udp", "7444:7443/udp"]
+    depends_on: [postgres, redis]
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aurix
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_DB: aurix_net
+    volumes: ["net-pg:/var/lib/postgresql/data"]
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    volumes: ["net-redis:/data"]
+volumes:
+  net-pg: {}
+  net-redis: {}
