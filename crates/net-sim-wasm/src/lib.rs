@@ -5,7 +5,10 @@
 
 use net_fpmath::{Fx, FxVec2};
 use net_sim_nav::{Agent, Crowd, CrowdConfig, FlowField, NavMesh};
-use net_sim_physics::{Body, BodyId, BodyKind, CharacterController, Shape, World, WorldConfig};
+use net_sim_physics::{
+    Body, BodyId, BodyKind, CharacterController, Joint, JointId, JointKind, Shape, World,
+    WorldConfig,
+};
 use std::cell::RefCell;
 
 struct Slot {
@@ -391,6 +394,248 @@ pub extern "C" fn sim_golden_hash() -> u64 {
     hash
 }
 
+// ---- joints, contact events, shape casts -------------------------------------------------------
+
+/// Distance/rope joint between local anchors; `min_len < len` makes it a rope (slack allowed).
+#[no_mangle]
+pub extern "C" fn sim_joint_distance(
+    h: u32,
+    a: u32,
+    b: u32,
+    ax: i64,
+    ay: i64,
+    bx: i64,
+    by: i64,
+    len: i64,
+    min_len: i64,
+) -> u32 {
+    with(h, |s| {
+        s.world
+            .add_joint(Joint::new(
+                BodyId(a),
+                BodyId(b),
+                FxVec2::new(Fx(ax), Fx(ay)),
+                FxVec2::new(Fx(bx), Fx(by)),
+                JointKind::Distance {
+                    length: Fx(len),
+                    min_length: Fx(min_len),
+                },
+            ))
+            .0
+    })
+    .unwrap_or(0)
+}
+
+/// Revolute (pin) joint; `has_limits` != 0 enables the [lower, upper] angle range; the motor is
+/// active when `max_torque` > 0.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn sim_joint_revolute(
+    h: u32,
+    a: u32,
+    b: u32,
+    ax: i64,
+    ay: i64,
+    bx: i64,
+    by: i64,
+    has_limits: u32,
+    lower: i64,
+    upper: i64,
+    motor_speed: i64,
+    max_torque: i64,
+) -> u32 {
+    with(h, |s| {
+        s.world
+            .add_joint(Joint::new(
+                BodyId(a),
+                BodyId(b),
+                FxVec2::new(Fx(ax), Fx(ay)),
+                FxVec2::new(Fx(bx), Fx(by)),
+                JointKind::Revolute {
+                    lower: (has_limits != 0).then_some(Fx(lower)),
+                    upper: (has_limits != 0).then_some(Fx(upper)),
+                    motor_speed: Fx(motor_speed),
+                    max_motor_torque: Fx(max_torque),
+                },
+            ))
+            .0
+    })
+    .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn sim_joint_weld(
+    h: u32,
+    a: u32,
+    b: u32,
+    ax: i64,
+    ay: i64,
+    bx: i64,
+    by: i64,
+    rel_angle: i64,
+) -> u32 {
+    with(h, |s| {
+        s.world
+            .add_joint(Joint::new(
+                BodyId(a),
+                BodyId(b),
+                FxVec2::new(Fx(ax), Fx(ay)),
+                FxVec2::new(Fx(bx), Fx(by)),
+                JointKind::Weld {
+                    rel_angle: Fx(rel_angle),
+                },
+            ))
+            .0
+    })
+    .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn sim_joint_remove(h: u32, id: u32) -> u32 {
+    with(h, |s| s.world.remove_joint(JointId(id)).is_some() as u32).unwrap_or(0)
+}
+
+/// Retune a revolute motor at runtime (no-op for other joint kinds).
+#[no_mangle]
+pub extern "C" fn sim_joint_motor(h: u32, id: u32, speed: i64, max_torque: i64) {
+    with(h, |s| {
+        if let Some(j) = s.world.joint_mut(JointId(id)) {
+            if let JointKind::Revolute {
+                motor_speed,
+                max_motor_torque,
+                ..
+            } = &mut j.kind
+            {
+                *motor_speed = Fx(speed);
+                *max_motor_torque = Fx(max_torque);
+            }
+        }
+    });
+}
+
+/// Number of contact begin/end events produced by the last `sim_step`.
+#[no_mangle]
+pub extern "C" fn sim_events_len(h: u32) -> u32 {
+    with(h, |s| s.world.events().len() as u32).unwrap_or(0)
+}
+
+/// Event field: 0 = body a, 1 = body b, 2 = begin (1) / end (0).
+#[no_mangle]
+pub extern "C" fn sim_event_get(h: u32, i: u32, field: u32) -> u32 {
+    with(h, |s| {
+        s.world
+            .events()
+            .get(i as usize)
+            .map(|e| match field {
+                0 => e.a.0,
+                1 => e.b.0,
+                _ => e.begin as u32,
+            })
+            .unwrap_or(0)
+    })
+    .unwrap_or(0)
+}
+
+/// Sweep a circle; result fields as `sim_raycast` via `sim_ray_get`.
+#[no_mangle]
+pub extern "C" fn sim_circlecast(
+    h: u32,
+    x: i64,
+    y: i64,
+    dx: i64,
+    dy: i64,
+    radius: i64,
+    mask: u32,
+) -> u32 {
+    with(h, |s| {
+        match s.world.circle_cast(
+            FxVec2::new(Fx(x), Fx(y)),
+            FxVec2::new(Fx(dx), Fx(dy)),
+            Fx(radius),
+            mask,
+        ) {
+            Some(hit) => {
+                LAST_RAY.with(|r| {
+                    *r.borrow_mut() = [
+                        hit.fraction.0,
+                        hit.point.x.0,
+                        hit.point.y.0,
+                        hit.normal.x.0,
+                        hit.normal.y.0,
+                    ];
+                });
+                hit.body.0 + 1
+            }
+            None => 0,
+        }
+    })
+    .unwrap_or(0)
+}
+
+/// Joint reference scenario: pendulum on a distance joint, a slack rope, a motorised wheel on a
+/// static axle and a welded pair falling onto them; 240 ticks. Equal on native and wasm32.
+#[no_mangle]
+pub extern "C" fn sim_joint_golden_hash() -> u64 {
+    let one = Fx::ONE.0;
+    let h = sim_world_new(0, Fx::from_int(-10).0, 60);
+    let anchor = sim_add_circle(h, 0, 0, Fx::from_int(10).0, Fx::from_ratio(1, 10).0, one);
+    let bob = sim_add_circle(h, 2, Fx::from_int(3).0, Fx::from_int(10).0, Fx::HALF.0, one);
+    sim_joint_distance(
+        h,
+        anchor,
+        bob,
+        0,
+        0,
+        0,
+        0,
+        Fx::from_int(3).0,
+        Fx::from_int(3).0,
+    );
+    let rope_end = sim_add_circle(h, 2, Fx::from_int(-2).0, Fx::from_int(8).0, Fx::HALF.0, one);
+    sim_joint_distance(h, anchor, rope_end, 0, 0, 0, 0, Fx::from_int(5).0, 0);
+    let axle = sim_add_circle(
+        h,
+        0,
+        Fx::from_int(8).0,
+        Fx::from_int(2).0,
+        Fx::from_ratio(1, 10).0,
+        one,
+    );
+    let wheel = sim_add_circle(
+        h,
+        2,
+        Fx::from_int(8).0,
+        Fx::from_int(2).0,
+        Fx::from_int(1).0,
+        one,
+    );
+    sim_joint_revolute(
+        h,
+        axle,
+        wheel,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        Fx::from_int(4).0,
+        Fx::from_int(50).0,
+    );
+    let wa = sim_add_circle(h, 2, Fx::from_int(-8).0, Fx::from_int(6).0, Fx::HALF.0, one);
+    let wb = sim_add_circle(h, 2, Fx::from_int(-7).0, Fx::from_int(6).0, Fx::HALF.0, one);
+    sim_joint_weld(h, wa, wb, Fx::HALF.0, 0, -Fx::HALF.0, 0, 0);
+    let mut events = 0u64;
+    for _ in 0..240 {
+        sim_step(h);
+        events += sim_events_len(h) as u64;
+    }
+    let hash = sim_hash(h) ^ events.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    sim_world_free(h);
+    hash
+}
+
 // ---- navigation -------------------------------------------------------------------------------
 
 /// Grid navmesh: `cols × rows` cells of size `cell` from (ox, oy); blocked cells are given as
@@ -696,6 +941,21 @@ mod tests {
         let b = sim_golden_hash();
         assert_eq!(a, b);
         eprintln!("native golden hash: {a:#x}");
+    }
+
+    #[test]
+    fn joint_golden_hash_is_stable_and_circlecast_works() {
+        let a = sim_joint_golden_hash();
+        assert_eq!(a, sim_joint_golden_hash());
+        eprintln!("native joint golden hash: {a:#x}");
+        let h = sim_world_new(0, 0, 60);
+        let wall = sim_add_circle(h, 0, Fx::from_int(10).0, 0, Fx::ONE.0, Fx::ONE.0);
+        assert_eq!(
+            sim_circlecast(h, 0, 0, Fx::from_int(20).0, 0, Fx::HALF.0, u32::MAX),
+            wall + 1
+        );
+        assert!((Fx(sim_ray_get(1)) - Fx::from_ratio(85, 10)).abs() < Fx::from_ratio(1, 1000));
+        sim_world_free(h);
     }
 
     #[test]

@@ -15,6 +15,16 @@ fn main() {
     let wasm = f.call(&mut store, ()).expect("call");
     println!("physics native {native:#x}\nphysics wasm   {wasm:#x}");
     assert_eq!(native, wasm, "wasm32 and native simulations diverged");
+    let j_native = net_sim_wasm::sim_joint_golden_hash();
+    let jf = instance
+        .get_typed_func::<(), u64>(&mut store, "sim_joint_golden_hash")
+        .expect("export");
+    let j_wasm = jf.call(&mut store, ()).expect("call");
+    println!("joints native {j_native:#x}\njoints wasm   {j_wasm:#x}");
+    assert_eq!(
+        j_native, j_wasm,
+        "wasm32 and native joint simulations diverged"
+    );
     let nav_native = net_sim_wasm::sim_nav_golden_hash();
     let g = instance
         .get_typed_func::<(), u64>(&mut store, "sim_nav_golden_hash")

@@ -913,6 +913,44 @@ impl World {
         }
         best
     }
+
+    /// Sweep a circle of `radius` along `from + dir * t` (t in 0..=1): the closest `t` at which
+    /// it first touches a body whose layer matches `mask`. Equivalent to a raycast against every
+    /// shape inflated by `radius` (rounded polygons/segments), so the hit normal is the surface
+    /// normal at the touch point. Returns `None` when nothing is reached (or already overlapping).
+    pub fn circle_cast(&self, from: FxVec2, dir: FxVec2, radius: Fx, mask: u32) -> Option<RayHit> {
+        let mut best: Option<RayHit> = None;
+        for (id, b) in &self.bodies {
+            if b.layer & mask == 0 {
+                continue;
+            }
+            let (pts, r) = b.world_points();
+            let hit = match &b.shape {
+                Shape::Circle { .. } => ray_circle(from, dir, b.position, r + radius),
+                Shape::Polygon { .. } => (0..pts.len())
+                    .filter_map(|i| {
+                        ray_capsule(from, dir, pts[i], pts[(i + 1) % pts.len()], radius)
+                    })
+                    .min_by_key(|h| h.0),
+                Shape::Capsule { .. } => ray_capsule(from, dir, pts[0], pts[1], r + radius),
+                Shape::Chain { .. } => pts
+                    .windows(2)
+                    .filter_map(|s| ray_capsule(from, dir, s[0], s[1], radius))
+                    .min_by_key(|h| h.0),
+            };
+            if let Some((t, n)) = hit {
+                if best.is_none_or(|h| t < h.fraction) {
+                    best = Some(RayHit {
+                        body: *id,
+                        point: from + dir.scale(t),
+                        normal: n,
+                        fraction: t,
+                    });
+                }
+            }
+        }
+        best
+    }
 }
 
 /// Kinematic character controller: moves a kinematic body by a displacement, sliding along
@@ -1747,6 +1785,50 @@ mod tests {
             )
             .unwrap();
         assert!((boxhit.point.x.to_f64() - 8.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn circle_cast_stops_one_radius_before_the_wall() {
+        let mut w = World::new(WorldConfig::default());
+        let wall = Body::new(
+            BodyKind::Static,
+            Shape::rect(fx(1), fx(5)),
+            FxVec2::new(fx(10), fx(0)),
+        );
+        w.add(wall);
+        let hit = w
+            .circle_cast(
+                FxVec2::new(fx(0), fx(0)),
+                FxVec2::new(fx(20), fx(0)),
+                Fx::HALF,
+                u32::MAX,
+            )
+            .expect("hit");
+        // wall face at x = 9, circle radius 0.5 -> centre stops at 8.5, 20 units of travel -> t = 0.425
+        assert!(
+            (hit.point.x - Fx::from_ratio(85, 10)).abs() < Fx::from_ratio(1, 1000),
+            "{:?}",
+            hit.point
+        );
+        assert_eq!(hit.normal, FxVec2::new(-Fx::ONE, Fx::ZERO));
+        assert!(
+            w.raycast(
+                FxVec2::new(fx(0), fx(0)),
+                FxVec2::new(fx(20), fx(0)),
+                u32::MAX
+            )
+            .unwrap()
+            .fraction
+                > hit.fraction
+        );
+        assert!(w
+            .circle_cast(
+                FxVec2::new(fx(0), fx(0)),
+                FxVec2::new(fx(0), fx(20)),
+                Fx::HALF,
+                u32::MAX
+            )
+            .is_none());
     }
 
     #[test]
