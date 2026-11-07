@@ -25,11 +25,13 @@ export class Client {
   private listeners = new Map<string, Listener[]>(); private waiters: ((m: any) => boolean)[] = [];
   joined?: Joined; actor = -1;
 
-  on(ev: "control" | "data" | "event" | "ready" | "closed", fn: Listener) { (this.listeners.get(ev) ?? this.listeners.set(ev, []).get(ev)!).push(fn); return this; }
+  on(ev: "control" | "data" | "event" | "ready" | "closed" | "rehost", fn: Listener) { (this.listeners.get(ev) ?? this.listeners.set(ev, []).get(ev)!).push(fn); return this; }
   private emit(ev: string, ...a: any[]) { for (const f of this.listeners.get(ev) ?? []) f(...a); }
 
+  /** URL given to connect(), the grant and the last join message: what rejoin() needs. */
+  entryUrl = ""; grant = ""; lastJoin: object | null = null; private opts: { timeoutMs?: number } = {};
   static async connect(httpUrl: string, grant: string, opts: { timeoutMs?: number } = {}): Promise<Client> {
-    const c = new Client();
+    const c = new Client(); c.entryUrl = httpUrl; c.grant = grant; c.opts = opts;
     const url = httpUrl.replace(/^http/, "ws") + "/ws";
     await new Promise<void>((res, rej) => {
       const t = setTimeout(() => rej(new Error("timeout")), opts.timeoutMs ?? 10000);
@@ -48,6 +50,7 @@ export class Client {
     if (typeof data === "string") {
       const m = JSON.parse(data);
       this.emit("control", m);
+      if (m.t === "left" && m.reason === "rehost") this.emit("rehost");
       this.waiters = this.waiters.filter((w) => !w(m));
     } else {
       this.onDatagram(new Uint8Array(data as ArrayBuffer));
@@ -84,7 +87,21 @@ export class Client {
   async joinOrCreate(name: string, mode: RoomMode = "relay", maxPlayers = 8, props: Record<string, unknown> = {}): Promise<Joined> {
     return this.join({ t: "join_or_create", name, mode, max_players: maxPlayers, props });
   }
+  /** After `left{reason:"rehost"}` (the node shut down and handed the room to another node): a fresh
+   *  client in the same room with the same grant. Tries the entry URL, then `fallbackUrls`. */
+  async rejoin(fallbackUrls: string[] = []): Promise<{ client: Client; joined: Joined }> {
+    if (!this.lastJoin) throw new Error("rejoin: never joined");
+    const msg = { ...(this.lastJoin as Record<string, unknown>) };
+    if (msg.t === "join_or_create") msg.t = "join";
+    this.close();
+    let err: unknown = null;
+    for (const url of [this.entryUrl, ...fallbackUrls]) {
+      try { return await Client.connectAndJoin(url, this.grant, msg, this.opts); } catch (e) { err = e; }
+    }
+    throw err;
+  }
   async join(msg: object): Promise<Joined> {
+    this.lastJoin = msg;
     this.send(msg);
     const j = (await this.waitFor((m) => m.t === "joined", (m) => m.t === "error")) as Joined;
     this.joined = j; this.actor = j.actor;

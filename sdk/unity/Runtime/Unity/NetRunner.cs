@@ -68,6 +68,30 @@ namespace Aurix.Net.Unity
             Client.OnEvent += HandleEvent;
             Client.OnData += HandleData;
             Client.OnClosed += r => { IsJoined = false; OnClosed?.Invoke(r); };
+            Client.OnRehost += () => _ = RejoinAsync();
+        }
+
+        [Tooltip("Other nodes/region URLs to try when the entry node is gone during a rehost.")] public string[] FallbackUrls = new string[0];
+
+        /// <summary>Rehost (node shut down, room handed to another node): drop the views, rejoin the same room.</summary>
+        public async Task RejoinAsync()
+        {
+            IsJoined = false;
+            foreach (var v in Views.Values) Destroy(v.gameObject);
+            Views.Clear(); World = null; Lockstep = null;
+            try
+            {
+                var old = Client; Client = null;
+                var c = await old.RejoinAsync(FallbackUrls);
+                Client = c;
+                c.OnControl += j => OnControl?.Invoke(j);
+                c.OnEvent += HandleEvent; c.OnData += HandleData;
+                c.OnClosed += r => { IsJoined = false; OnClosed?.Invoke(r); };
+                c.OnRehost += () => _ = RejoinAsync();
+                Mode = Enum.TryParse<RoomMode>(c.RoomMode, true, out var m) ? m : Mode;
+                AfterJoin();
+            }
+            catch (Exception e) { Debug.LogError("Aurix Net rehost failed: " + e.Message); OnClosed?.Invoke("rehost failed: " + e.Message); }
         }
 
         public Task JoinOrCreateAsync(string room) => JoinOrCreateAsync(room, Settings.DefaultMode);

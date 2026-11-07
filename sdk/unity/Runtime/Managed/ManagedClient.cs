@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
@@ -21,6 +22,12 @@ namespace Aurix.Net.Managed
         bool _dataReady;
 
         public int Actor { get; private set; } = -1;
+        /// <summary>URL given to ConnectAsync, the grant and the last join message: what RejoinAsync needs.</summary>
+        public string EntryUrl { get; private set; }
+        public string Grant { get; private set; }
+        public string LastJoinJson { get; private set; }
+        /// <summary>The node shut down and handed the room to another node: call RejoinAsync (NetRunner does).</summary>
+        public event Action OnRehost;
         public string JoinedJson { get; private set; }
         public string RoomMode { get; private set; }
 
@@ -40,7 +47,7 @@ namespace Aurix.Net.Managed
         /// <summary>Opens the control channel and authenticates with a grant.</summary>
         public static async Task<ManagedClient> ConnectAsync(string httpUrl, string grant, int timeoutMs = 10000)
         {
-            var c = new ManagedClient { _ws = new ClientWebSocket(), _cts = new CancellationTokenSource() };
+            var c = new ManagedClient { _ws = new ClientWebSocket(), _cts = new CancellationTokenSource(), EntryUrl = httpUrl, Grant = grant };
             var url = (httpUrl.StartsWith("https") ? "wss" : "ws") + httpUrl.Substring(httpUrl.IndexOf(':')) + "/ws";
             using (var t = new CancellationTokenSource(timeoutMs)) await c._ws.ConnectAsync(new Uri(url), t.Token);
             _ = c.ReadLoop();
@@ -81,8 +88,23 @@ namespace Aurix.Net.Managed
         }
 
         /// <summary>Any join-like control message; opens the data path (ticket first) and waits for the server's ack.</summary>
+        /// <summary>After a rehost: a fresh client in the same room with the same grant (entry URL, then fallbacks).</summary>
+        public async Task<ManagedClient> RejoinAsync(params string[] fallbackUrls)
+        {
+            if (LastJoinJson == null) throw new NetException("rejoin: never joined");
+            var msg = LastJoinJson.Replace("\"t\":\"join_or_create\"", "\"t\":\"join\"");
+            Dispose();
+            Exception last = null;
+            foreach (var url in new[] { EntryUrl }.Concat(fallbackUrls))
+            {
+                try { return await ConnectAndJoinAsync(url, Grant, msg); } catch (Exception e) { last = e; }
+            }
+            throw last;
+        }
+
         public async Task<int> JoinRawAsync(string json, int timeoutMs = 10000)
         {
+            LastJoinJson = json;
             await SendControlAsync(json);
             var joined = await WaitForAsync("joined", timeoutMs);
             JoinedJson = joined;
@@ -126,7 +148,10 @@ namespace Aurix.Net.Managed
                 n++;
                 switch (m)
                 {
-                    case Text t: OnControl?.Invoke(t.Json); break;
+                    case Text t:
+                        OnControl?.Invoke(t.Json);
+                        if (Json.Str(t.Json, "t") == "left" && Json.Str(t.Json, "reason") == "rehost") OnRehost?.Invoke();
+                        break;
                     case Bin b:
                         foreach (var r in _link.Receive(b.Data))
                         {

@@ -136,6 +136,10 @@ pub struct Client {
     pub joined: Option<Joined>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     tunnel_slot: Option<Arc<Mutex<Option<Arc<DataPath>>>>>,
+    /// What `rejoin` needs after a rehost: the URL given to `connect`, the grant, the last join.
+    entry_url: String,
+    grant: String,
+    last_join: Option<ClientMsg>,
 }
 
 /// Room facts from the `joined` message.
@@ -181,6 +185,9 @@ impl Client {
             joined: None,
             tasks: vec![writer],
             tunnel_slot: None,
+            entry_url: http_url.to_string(),
+            grant: grant.to_string(),
+            last_join: None,
         };
         // Reader: text -> Control events, binary -> tunnel datagrams (routed via data path if any).
         let tunnel_in: Arc<Mutex<Option<Arc<DataPath>>>> = Arc::new(Mutex::new(None));
@@ -273,7 +280,41 @@ impl Client {
     }
 
     /// Joins (or creates) a room and opens the data path. Returns when the data path is ready.
+    /// After `left{reason:"rehost"}` (the node shut down and handed the room to another node):
+    /// a fresh client in the same room with the same grant, trying the entry URL then
+    /// `fallback_urls` (other nodes / the region URL).
+    pub async fn rejoin(self, fallback_urls: &[&str]) -> Result<(Client, Joined)> {
+        let msg = match self.last_join.clone() {
+            Some(ClientMsg::JoinOrCreate {
+                name, player_props, ..
+            }) => ClientMsg::Join {
+                name,
+                player_props,
+                rejoin_actor: None,
+                schema_hash: None,
+                spectator: false,
+            },
+            Some(m) => m,
+            None => return Err(ClientError::Disconnected),
+        };
+        let (entry, grant, opts) = (
+            self.entry_url.clone(),
+            self.grant.clone(),
+            self.opts.clone(),
+        );
+        drop(self);
+        let mut last = ClientError::Disconnected;
+        for url in std::iter::once(entry.as_str()).chain(fallback_urls.iter().copied()) {
+            match Client::connect_and_join(url, &grant, opts.clone(), msg.clone()).await {
+                Ok(r) => return Ok(r),
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
+    }
+
     pub async fn join(&mut self, msg: ClientMsg) -> Result<Joined> {
+        self.last_join = Some(msg.clone());
         self.send(msg).await?;
         let joined = loop {
             match self.next_event().await {

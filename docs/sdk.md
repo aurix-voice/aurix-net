@@ -12,3 +12,7 @@
 All SDKs share one shape: `connect(http, grant)` → `joinOrCreate/join` → per frame `poll()`,
 `sendEvent/sendData`, `flush()`; events `control` (JSON), `event` (relay frame), `data` (raw
 sync/lockstep frames), `closed`. Grants always come from the developer's backend.
+
+## Rehost
+
+When a node shuts down (deploy) it hands its rooms to another node and sends `left{reason:"rehost"}`. Clients rejoin the same room with the same grant: Rust `client.rejoin(&[fallback_urls])`, Web `client.rejoin(fallbackUrls)` (or listen to the `rehost` event), C# `ManagedClient.RejoinAsync(fallbacks)`; Unity `NetRunner` does it automatically (`FallbackUrls`). Actor ids are preserved by player id.
