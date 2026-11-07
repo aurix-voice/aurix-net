@@ -26,6 +26,7 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let cfg = NetConfig::load(cli.config.as_deref())?;
+    let startup_warnings = cfg.production_warnings();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -33,6 +34,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let _ = rustls::crypto::ring::default_provider().install_default();
+    for w in &startup_warnings {
+        warn!("production check: {w}");
+    }
     info!(version = env!("CARGO_PKG_VERSION"), region = %cfg.server.region, "starting aurix-net node");
 
     let pool = net_db::create_pool(&cfg.database).await?;
@@ -228,9 +232,7 @@ async fn main() -> anyhow::Result<()> {
 fn cors_layer(origins: &[String], environment: &str) -> tower_http::cors::CorsLayer {
     use tower_http::cors::{AllowOrigin, CorsLayer};
     if origins.is_empty() {
-        if environment != "development" {
-            warn!("server.allowed_origins is empty: any browser origin may call the HTTP API");
-        }
+        let _ = environment;
         return CorsLayer::permissive();
     }
     let list: Vec<axum::http::HeaderValue> =

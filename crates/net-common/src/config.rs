@@ -198,7 +198,48 @@ impl NetConfig {
                 "limits.max_players_per_room must be 1..=1024".into(),
             ));
         }
+        if self.server.environment != "development" {
+            let h = self.server.public_host.trim();
+            let local = h.is_empty()
+                || h == "localhost"
+                || h.parse::<std::net::IpAddr>()
+                    .map(|ip| ip.is_loopback() || ip.is_unspecified())
+                    .unwrap_or(false);
+            if local {
+                return Err(NetError::Config(
+                    "server.public_host must be the node's reachable host name/IP outside development"
+                        .into(),
+                ));
+            }
+        }
         Ok(())
+    }
+
+    /// Settings that are legal but weaken a production node; the server logs them at start.
+    pub fn production_warnings(&self) -> Vec<String> {
+        let mut w = Vec::new();
+        if self.server.environment == "development" {
+            return w;
+        }
+        if self.server.metrics_token.is_empty() {
+            w.push("server.metrics_token is empty: GET /metrics is public".into());
+        }
+        if self.server.allowed_origins.is_empty() {
+            w.push(
+                "server.allowed_origins is empty: any browser origin may call the HTTP API".into(),
+            );
+        }
+        if self.auth.admin_token.is_empty() {
+            w.push("auth.admin_token is empty: operator endpoints are disabled".into());
+        }
+        if self.database.url.contains("sslmode=disable") || !self.database.url.contains("sslmode=")
+        {
+            w.push("database.url without sslmode=require: use TLS or a private network".into());
+        }
+        if self.redis.url.starts_with("redis://") && !self.redis.url.contains('@') {
+            w.push("redis.url without password or TLS (rediss://)".into());
+        }
+        w
     }
 }
 
@@ -211,5 +252,18 @@ mod tests {
         let c = NetConfig::load(None).unwrap();
         assert_eq!(c.server.environment, "development");
         assert_eq!(c.limits.max_players_per_room, 128);
+    }
+
+    #[test]
+    fn production_rejects_loopback_public_host_and_warns() {
+        let mut c = NetConfig::load(None).unwrap();
+        c.server.environment = "production".into();
+        c.auth.grant_secret = "x".repeat(40);
+        assert!(c.validate().is_err());
+        c.server.public_host = "node-a.net.example.com".into();
+        assert!(c.validate().is_ok());
+        let w = c.production_warnings();
+        assert!(w.iter().any(|m| m.contains("metrics_token")));
+        assert!(w.iter().any(|m| m.contains("allowed_origins")));
     }
 }
