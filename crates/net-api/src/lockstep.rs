@@ -693,6 +693,14 @@ impl LockstepRoom {
             .into_replay(self.seed, schema_hash.to_string(), self.hz, actors, 10)
     }
 
+    /// Instant replay: the confirmed inputs of a live room for ticks `from..to` (what the journal
+    /// still holds; `from_tick` in the result says where it really starts).
+    pub fn replay_window(&self, from: u32, to: Option<u32>) -> net_rollback::Replay {
+        let mut r = self.replay("");
+        window_replay(&mut r, from, to);
+        r
+    }
+
     pub fn take_desyncs(&mut self) -> Vec<(u32, ActorId)> {
         std::mem::take(&mut self.desyncs)
     }
@@ -865,8 +873,46 @@ impl LockstepRoom {
     }
 }
 
+/// Cuts a replay down to ticks `from..to` (exclusive); keeps `from_tick`/`hashes` consistent.
+pub fn window_replay(r: &mut net_rollback::Replay, from: u32, to: Option<u32>) {
+    if from > r.from_tick {
+        let drop = ((from - r.from_tick) as usize).min(r.inputs.len());
+        r.inputs.drain(..drop);
+        r.from_tick += drop as u32;
+    }
+    if let Some(to) = to {
+        let keep = to.saturating_sub(r.from_tick) as usize;
+        r.inputs.truncate(keep);
+    }
+    let end = r.from_tick + r.inputs.len() as u32;
+    r.hashes.retain(|(t, _)| *t >= r.from_tick && *t < end);
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn replay_window_cuts_inputs_and_hashes_consistently() {
+        let mut r = net_rollback::Replay {
+            seed: 1,
+            schema_hash: String::new(),
+            tick_hz: 30,
+            actors: vec![],
+            from_tick: 0,
+            inputs: (0..10).map(|_| Default::default()).collect(),
+            hash_every: 5,
+            hashes: vec![(0, 1), (5, 2), (9, 3)],
+        };
+        window_replay(&mut r, 3, Some(7));
+        assert_eq!((r.from_tick, r.inputs.len()), (3, 4));
+        assert_eq!(r.hashes, vec![(5, 2)]);
+        // a window that starts before what the journal still holds keeps the journal's start
+        let mut r2 = r.clone();
+        window_replay(&mut r2, 0, None);
+        assert_eq!((r2.from_tick, r2.inputs.len()), (3, 4));
+        window_replay(&mut r, 100, Some(200));
+        assert_eq!((r.from_tick, r.inputs.len(), r.hashes.len()), (7, 0, 0));
+    }
+
     use super::*;
     use crate::sync::SyncRoom;
 

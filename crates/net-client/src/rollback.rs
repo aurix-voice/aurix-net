@@ -155,8 +155,109 @@ impl<S: Simulation> Rollback<S> {
     }
 }
 
+/// Instant replay (kill cam) buffer: the last `keep` confirmed ticks' inputs plus a snapshot of the
+/// confirmed state every `every` ticks, so any recent moment can be re-simulated locally without
+/// asking the node. Feed it from the confirmed path (`confirm` + `confirmed_snapshot`).
+pub struct ReplayRing<S> {
+    keep: u32,
+    every: u32,
+    /// Tick of `inputs[0]`.
+    first: u32,
+    inputs: std::collections::VecDeque<TickInputs>,
+    /// State *before* tick `k` for boundaries `k` that are multiples of `every` (and the first one).
+    snaps: BTreeMap<u32, S>,
+}
+
+/// What `ReplayRing::window` hands back: restore `snapshot`, then step `inputs` from `start`.
+pub struct ReplayWindow<'a, S> {
+    pub start: u32,
+    pub snapshot: &'a S,
+    pub inputs: Vec<&'a TickInputs>,
+}
+
+impl<S> ReplayRing<S> {
+    pub fn new(keep_ticks: u32, snapshot_every: u32) -> Self {
+        Self {
+            keep: keep_ticks.max(1),
+            every: snapshot_every.max(1),
+            first: 0,
+            inputs: std::collections::VecDeque::new(),
+            snaps: BTreeMap::new(),
+        }
+    }
+
+    /// Records confirmed `tick` with its inputs and the confirmed state *before* it (taken lazily
+    /// only on snapshot boundaries). Ticks must arrive in order; a gap resets the ring.
+    pub fn record(&mut self, tick: u32, inputs: TickInputs, state_before: impl FnOnce() -> S) {
+        if self.inputs.is_empty() || self.first + self.inputs.len() as u32 != tick {
+            self.inputs.clear();
+            self.snaps.clear();
+            self.first = tick;
+        }
+        if self.snaps.is_empty() || tick.is_multiple_of(self.every) {
+            self.snaps.insert(tick, state_before());
+        }
+        self.inputs.push_back(inputs);
+        while self.inputs.len() as u32 > self.keep {
+            self.inputs.pop_front();
+            self.first += 1;
+        }
+        // keep the newest snapshot at or before `first`, drop older ones
+        if let Some((&anchor, _)) = self.snaps.range(..=self.first).next_back() {
+            self.snaps.retain(|k, _| *k >= anchor);
+        }
+    }
+
+    /// Oldest tick that can still be replayed.
+    pub fn oldest(&self) -> Option<u32> {
+        self.snaps
+            .keys()
+            .next()
+            .copied()
+            .filter(|_| !self.inputs.is_empty())
+    }
+
+    /// Everything needed to re-simulate from the newest snapshot at or before `from` (clamped to
+    /// what is kept) through the last recorded tick.
+    pub fn window(&self, from: u32) -> Option<ReplayWindow<'_, S>> {
+        let (&start, snapshot) = self
+            .snaps
+            .range(..=from)
+            .next_back()
+            .or_else(|| self.snaps.iter().next())?;
+        let skip = start.saturating_sub(self.first) as usize;
+        let inputs = self.inputs.iter().skip(skip).collect();
+        Some(ReplayWindow {
+            start,
+            snapshot,
+            inputs,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn replay_ring_rewinds_from_the_nearest_snapshot() {
+        let mut ring: ReplayRing<u32> = ReplayRing::new(50, 10);
+        for t in 0..100u32 {
+            ring.record(t, inputs(&[(1, t as u8)]), || t * 100);
+        }
+        let w = ring.window(73).unwrap();
+        assert_eq!((w.start, *w.snapshot, w.inputs.len()), (70, 7000, 30));
+        assert_eq!(w.inputs[0][&1].as_ref(), &[70]);
+        // older than what is kept: clamps to the oldest snapshot that still has all its inputs
+        let w = ring.window(5).unwrap();
+        assert_eq!((w.start, w.inputs.len()), (50, 50));
+        assert_eq!(ring.oldest(), Some(50));
+        // a gap resets
+        ring.record(200, inputs(&[]), || 1);
+        assert_eq!(
+            (ring.oldest(), ring.window(0).unwrap().inputs.len()),
+            (Some(200), 1)
+        );
+    }
+
     use super::*;
 
     /// Order-sensitive toy sim: state = fold over (tick, actor, input byte).

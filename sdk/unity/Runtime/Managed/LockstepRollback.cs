@@ -99,4 +99,39 @@ namespace Aurix.Net.Managed
             return true;
         }
     }
+
+    /// <summary>What <see cref="ReplayRing{TSnapshot}.Window"/> hands back: restore Snapshot, then step Inputs from Start.</summary>
+    public struct ReplayWindow<TSnapshot> { public uint Start; public TSnapshot Snapshot; public List<Dictionary<ushort, byte[]>> Inputs; }
+
+    /// <summary>Instant replay (kill cam) buffer: the last <c>keep</c> confirmed ticks' inputs plus a snapshot of the confirmed state every <c>every</c> ticks. Feed it from the confirmed path (after Confirm, with ConfirmedSnapshot).</summary>
+    public sealed class ReplayRing<TSnapshot>
+    {
+        readonly int _keep; readonly uint _every; uint _first;
+        readonly List<Dictionary<ushort, byte[]>> _inputs = new List<Dictionary<ushort, byte[]>>();
+        readonly SortedDictionary<uint, TSnapshot> _snaps = new SortedDictionary<uint, TSnapshot>();
+        public ReplayRing(int keepTicks = 300, uint snapshotEvery = 10) { _keep = Math.Max(1, keepTicks); _every = Math.Max(1u, snapshotEvery); }
+
+        /// <summary>Records confirmed <paramref name="tick"/> with its inputs and the confirmed state <em>before</em> it (taken lazily on snapshot boundaries). A gap resets the ring.</summary>
+        public void Record(uint tick, Dictionary<ushort, byte[]> inputs, Func<TSnapshot> stateBefore)
+        {
+            if (_inputs.Count == 0 || _first + (uint)_inputs.Count != tick) { _inputs.Clear(); _snaps.Clear(); _first = tick; }
+            if (_snaps.Count == 0 || tick % _every == 0) _snaps[tick] = stateBefore();
+            _inputs.Add(inputs);
+            if (_inputs.Count > _keep) { int drop = _inputs.Count - _keep; _inputs.RemoveRange(0, drop); _first += (uint)drop; }
+            uint anchor = 0; bool found = false;
+            foreach (var k in _snaps.Keys) { if (k <= _first) { anchor = k; found = true; } else break; }
+            if (found) foreach (var k in _snaps.Keys.Where(k => k < anchor).ToList()) _snaps.Remove(k);
+        }
+        /// <summary>Oldest tick that can still be replayed, or null.</summary>
+        public uint? Oldest => _inputs.Count == 0 ? (uint?)null : _snaps.Keys.First();
+        /// <summary>Everything needed to re-simulate from the newest snapshot at or before <paramref name="from"/> (clamped to what is kept) through the last recorded tick.</summary>
+        public ReplayWindow<TSnapshot>? Window(uint from)
+        {
+            if (_inputs.Count == 0) return null;
+            uint start = _snaps.Keys.First();
+            foreach (var k in _snaps.Keys) { if (k <= from) start = k; else break; }
+            int skip = (int)Math.Max(0, (long)start - _first);
+            return new ReplayWindow<TSnapshot> { Start = start, Snapshot = _snaps[start], Inputs = _inputs.Skip(skip).ToList() };
+        }
+    }
 }

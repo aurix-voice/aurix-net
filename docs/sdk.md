@@ -77,3 +77,25 @@ players change their input unexpectedly; a high ratio means lower `maxPrediction
 the view. Hash reports must be computed on the *confirmed* state (`confirmedSnapshot()` after `confirm`),
 never on the predicted head — the head is speculative and differs between players.
 
+## Instant replay (kill cam)
+
+Two ways to rewind a lockstep match:
+
+- **Locally, no round trip** — `ReplayRing` (Rust `net_client::rollback::ReplayRing`, Web/C# `ReplayRing`)
+  keeps the last `keep` confirmed ticks' inputs and a snapshot of the confirmed state every `every`
+  ticks. Record from the confirmed path, then `window(from)` gives the nearest snapshot at or before
+  `from` and the inputs to step from it:
+
+  ```ts
+  const ring = new ReplayRing(300, 10);           // 10 s at 30 Hz, snapshot every 10 ticks
+  ls.onTick = (t, inputs) => { const before = rb.confirmedSnapshot(); rb.confirm(t, inputs); ring.record(t, inputs, () => before); };
+  // kill cam: last 3 s
+  const w = ring.window(rb.confirmedTick - 90);
+  if (w) { cam.restore(w.snapshot); let t = w.start; for (const i of w.inputs) cam.step(t++, i); }
+  ```
+
+- **From the node** — `GET /v1/rooms/:id/replay?from=&to=` returns the confirmed inputs of a *live*
+  room from whichever node hosts it (and windows the stored replay after close). Use it for
+  spectators who arrived late, bug reports and server-side highlight generation; the payload is the
+  same `Replay` JSON as the post-match replay (`from_tick`, `inputs`, `hashes`).
+

@@ -124,6 +124,7 @@ pub fn router(st: Shared) -> Router {
             delete(op_delete_module),
         )
         .route("/v1/internal/rooms/:id/players", get(internal_players))
+        .route("/v1/internal/rooms/:id/replay", get(internal_replay))
         .route("/v1/internal/drain", post(internal_drain))
         .route("/v1/webhooks/:id/deliveries", get(webhook_deliveries))
         .route("/v1/rejections", get(rejections))
@@ -1647,22 +1648,94 @@ async fn op_delete_room(
 }
 
 /// Lockstep replay (input journal) of a closed room, kept for 24 h.
+#[derive(Deserialize)]
+struct ReplayQuery {
+    /// First tick of the window (instant replay of a live room); default: everything kept.
+    #[serde(default)]
+    from: Option<u32>,
+    /// End tick (exclusive).
+    #[serde(default)]
+    to: Option<u32>,
+}
+
+/// Replay of a lockstep room: the stored journal for a closed room (24 h), or — while the room is
+/// live — the confirmed inputs the hosting node still holds, optionally windowed with
+/// `?from=&to=` (kill cams, spectator rewinds, bug reports).
 async fn get_replay(
     State(st): State<Shared>,
     h: HeaderMap,
     Path(id): Path<Uuid>,
+    Query(q): Query<ReplayQuery>,
 ) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Read).await?;
     let row = queries::get_room(&st.pool, id).await?;
     if row.project_id != key.project_id {
         return Err(NetError::NotFound("room".into()).into());
     }
+    Ok(Json(
+        replay_anywhere(&st, ProjectId::from_uuid(row.project_id), id, &q).await?,
+    ))
+}
+
+fn local_replay(st: &Shared, id: Uuid, q: &ReplayQuery) -> Option<Result<Value>> {
+    let h = st.host.get(RoomId::from_uuid(id))?;
+    let g = h.lock();
+    Some(match g.lockstep.as_ref() {
+        Some(l) => serde_json::to_value(l.replay_window(q.from.unwrap_or(0), q.to))
+            .map_err(|e| NetError::Internal(e.to_string())),
+        None => Err(NetError::Invalid(
+            "replays exist for lockstep rooms only".into(),
+        )),
+    })
+}
+
+async fn replay_anywhere(
+    st: &Shared,
+    project: ProjectId,
+    id: Uuid,
+    q: &ReplayQuery,
+) -> Result<Value> {
+    if let Some(v) = local_replay(st, id, q) {
+        return v;
+    }
+    let room = RoomId::from_uuid(id);
+    if let Some(live) = st.redis.get_room(project, room).await? {
+        if let Some(node) = Uuid::parse_str(&live.node)
+            .ok()
+            .and_then(|n| st.registry.get(net_common::NodeId::from_uuid(n)))
+        {
+            let mut path = format!(
+                "/v1/internal/rooms/{id}/replay?from={}",
+                q.from.unwrap_or(0)
+            );
+            if let Some(to) = q.to {
+                path.push_str(&format!("&to={to}"));
+            }
+            return internal_get(st, &node.http_url, &path).await;
+        }
+    }
     let body = st
         .redis
-        .get_replay(ProjectId::from_uuid(key.project_id), RoomId::from_uuid(id))
+        .get_replay(project, room)
         .await?
         .ok_or_else(|| NetError::NotFound("replay".into()))?;
-    let v: Value = serde_json::from_slice(&body).map_err(|e| NetError::Internal(e.to_string()))?;
+    let mut r: net_rollback::Replay =
+        serde_json::from_slice(&body).map_err(|e| NetError::Internal(e.to_string()))?;
+    if q.from.is_some() || q.to.is_some() {
+        crate::lockstep::window_replay(&mut r, q.from.unwrap_or(0), q.to);
+    }
+    serde_json::to_value(r).map_err(|e| NetError::Internal(e.to_string()))
+}
+
+async fn internal_replay(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(q): Query<ReplayQuery>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h).await?;
+    let v = local_replay(&st, id, &q)
+        .ok_or_else(|| NetError::NotFound("room not hosted here".into()))??;
     Ok(Json(v))
 }
 
@@ -3288,16 +3361,13 @@ async fn op_replay(
     State(st): State<Shared>,
     h: HeaderMap,
     Path(id): Path<Uuid>,
+    Query(q): Query<ReplayQuery>,
 ) -> ApiResult<Json<Value>> {
     operator(&st, &h).await?;
     let row = queries::get_room(&st.pool, id).await?;
-    let body = st
-        .redis
-        .get_replay(ProjectId::from_uuid(row.project_id), RoomId::from_uuid(id))
-        .await?
-        .ok_or_else(|| NetError::NotFound("replay".into()))?;
-    let v: Value = serde_json::from_slice(&body).map_err(|e| NetError::Internal(e.to_string()))?;
-    Ok(Json(v))
+    Ok(Json(
+        replay_anywhere(&st, ProjectId::from_uuid(row.project_id), id, &q).await?,
+    ))
 }
 
 async fn op_usage(

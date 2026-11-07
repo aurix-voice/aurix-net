@@ -130,6 +130,16 @@ static class Program
         Check(rb.HeadTick == 3 && rb.PredictedTicks == 3 && !rb.Confirm(7, Inputs()), "rollback: prediction bounded, out-of-order confirm ignored");
         rb.Reset(50); rb.Predict(52);
         Check(rb.ConfirmedTick == 50 && rb.HeadTick == 52, "rollback: reset forgets history");
+
+        var ring = new ReplayRing<uint>(50, 10);
+        for (uint t = 0; t < 100; t++) ring.Record(t, Inputs((1, (byte)t)), () => t * 100);
+        var w = ring.Window(73).Value;
+        Check(w.Start == 70 && w.Snapshot == 7000 && w.Inputs.Count == 30 && w.Inputs[0][1][0] == 70, "replay ring: window from nearest snapshot");
+        w = ring.Window(5).Value;
+        Check(w.Start == 50 && w.Inputs.Count == 50 && ring.Oldest == 50, "replay ring: clamps to the oldest kept snapshot");
+        ring.Record(200, Inputs(), () => 1);
+        Check(ring.Oldest == 200 && ring.Window(0).Value.Inputs.Count == 1, "replay ring: gap resets");
+
     }
 
     static int Main()

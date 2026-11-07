@@ -51,3 +51,12 @@ test("prediction is bounded and reset forgets history", () => {
   sim.state = 42n; rb.reset(50); assert.deepEqual([rb.confirmedTick, rb.headTick], [50, 50]);
   rb.predict(52); assert.equal(rb.headTick, 52);
 });
+
+test("replay ring rewinds from the nearest snapshot", async () => {
+  const { ReplayRing } = await import("../dist/index.js");
+  const ring = new ReplayRing(50, 10);
+  for (let t = 0; t < 100; t++) ring.record(t, inputs([[1, t]]), () => t * 100);
+  let w = ring.window(73); assert.deepEqual([w.start, w.snapshot, w.inputs.length, w.inputs[0].get(1)[0]], [70, 7000, 30, 70]);
+  w = ring.window(5); assert.deepEqual([w.start, w.inputs.length, ring.oldest], [50, 50, 50]);
+  ring.record(200, inputs([]), () => 1); assert.deepEqual([ring.oldest, ring.window(0).inputs.length], [200, 1]);
+});

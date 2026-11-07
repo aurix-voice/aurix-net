@@ -192,3 +192,34 @@ function sameInputs(a: TickInputs | undefined, b: TickInputs): boolean {
   for (const [k, v] of a) { const w = b.get(k); if (!w || w.length !== v.length) return false; for (let i = 0; i < v.length; i++) if (v[i] !== w[i]) return false; }
   return true;
 }
+
+/** What ReplayRing.window hands back: restore `snapshot`, then step `inputs` from `start`. */
+export interface ReplayWindow<S> { start: number; snapshot: S; inputs: TickInputs[] }
+
+/**
+ * Instant replay (kill cam) buffer: the last `keep` confirmed ticks' inputs plus a snapshot of the
+ * confirmed state every `every` ticks, so any recent moment can be re-simulated locally. Feed it from
+ * the confirmed path (after LockstepRollback.confirm, with confirmedSnapshot()).
+ */
+export class ReplayRing<S = unknown> {
+  private first = 0; private inputs: TickInputs[] = []; private snaps = new Map<number, S>();
+  constructor(private readonly keep = 300, private readonly every = 10) { this.keep = Math.max(1, keep); this.every = Math.max(1, every); }
+
+  /** Records confirmed `tick` with its inputs and the confirmed state *before* it (taken lazily on snapshot boundaries). A gap resets the ring. */
+  record(tick: number, inputs: TickInputs, stateBefore: () => S): void {
+    if (this.inputs.length === 0 || this.first + this.inputs.length !== tick) { this.inputs = []; this.snaps.clear(); this.first = tick; }
+    if (this.snaps.size === 0 || tick % this.every === 0) this.snaps.set(tick, stateBefore());
+    this.inputs.push(inputs);
+    while (this.inputs.length > this.keep) { this.inputs.shift(); this.first++; }
+    let anchor = -1; for (const k of this.snaps.keys()) if (k <= this.first && k > anchor) anchor = k;
+    if (anchor >= 0) for (const k of [...this.snaps.keys()]) if (k < anchor) this.snaps.delete(k);
+  }
+  /** Oldest tick that can still be replayed. */
+  get oldest(): number | undefined { if (this.inputs.length === 0) return undefined; let m: number | undefined; for (const k of this.snaps.keys()) if (m === undefined || k < m) m = k; return m; }
+  /** Everything needed to re-simulate from the newest snapshot at or before `from` (clamped to what is kept) through the last recorded tick. */
+  window(from: number): ReplayWindow<S> | undefined {
+    let start = -1; for (const k of this.snaps.keys()) if (k <= from && k > start) start = k;
+    if (start < 0) { const o = this.oldest; if (o === undefined) return undefined; start = o; }
+    return { start, snapshot: this.snaps.get(start) as S, inputs: this.inputs.slice(Math.max(0, start - this.first)) };
+  }
+}
