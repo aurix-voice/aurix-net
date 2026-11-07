@@ -117,3 +117,20 @@ test("sim wasm: 3D joints golden hash, hinge door and walking character", async 
   assert.ok(p.x > 5 && Math.abs(p.y - 0.8) < 0.05 && w.characterState(k).grounded, `hero ${JSON.stringify(p)}`);
   w.free();
 });
+
+test("sim wasm: 3D convex hulls golden hash, pyramid rests, sphere cast", async () => {
+  const sim = await Sim.load(await readFile(WASM));
+  assert.equal(sim.hull3GoldenHash(), 0x29ab0385d38dc53fn);
+  const w = sim.world3();
+  w.addBox(BodyKind.Static, { x: 0, y: -0.5, z: 0 }, { x: 20, y: 0.5, z: 20 });
+  const verts = [{ x: -0.5, y: -0.25, z: -0.5 }, { x: 0.5, y: -0.25, z: -0.5 }, { x: 0.5, y: -0.25, z: 0.5 }, { x: -0.5, y: -0.25, z: 0.5 }, { x: 0, y: 0.75, z: 0 }];
+  const faces = [[0, 1, 2, 3], [0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]];
+  const pyr = w.addConvex(BodyKind.Dynamic, { x: 0, y: 2, z: 0 }, verts, faces);
+  for (let i = 0; i < 300; i++) w.step();
+  const p = w.body(pyr).position;
+  assert.ok(Math.abs(p.y - 0.25) < 0.06, `pyramid ${JSON.stringify(p)}`);
+  const hit = w.sphereCast({ x: 0, y: 5, z: 0 }, { x: 0, y: -10, z: 0 }, 0.5);
+  assert.ok(hit && hit.body === pyr && Math.abs(hit.point.y - 1.0) < 0.05 && hit.normal.y > 0.5, JSON.stringify(hit));
+  assert.throws(() => w.addConvex(BodyKind.Static, { x: 0, y: 0, z: 0 }, verts.slice(0, 3), faces));
+  w.free();
+});

@@ -233,6 +233,18 @@ static class Program
             Check(w3.Raycast(new Vec3(0, 5, 0), new Vec3(0, -10, 0), out var h3hit) && h3hit.Body == ball3 && Math.Abs(h3hit.Point.Y - 1) < 0.05, "sim3: raycast hits the sphere");
         }
         Check(Sim3World.JointGoldenHash() == 0x5db56af63cceee85UL, "sim3: joint golden hash equals the Rust/wasm value");
+        Check(Sim3World.HullGoldenHash() == 0x29ab0385d38dc53fUL, "sim3: hull golden hash equals the Rust/wasm value");
+        using (var c3 = new Sim3World())
+        {
+            c3.AddBox(BodyKind.Static, new Vec3(0, -0.5, 0), new Vec3(20, 0.5, 20));
+            var verts = new[] { new Vec3(-0.5, -0.25, -0.5), new Vec3(0.5, -0.25, -0.5), new Vec3(0.5, -0.25, 0.5), new Vec3(-0.5, -0.25, 0.5), new Vec3(0, 0.75, 0) };
+            var faces = new[] { new uint[] { 0, 1, 2, 3 }, new uint[] { 0, 1, 4 }, new uint[] { 1, 2, 4 }, new uint[] { 2, 3, 4 }, new uint[] { 3, 0, 4 } };
+            uint pyr = c3.AddConvex(BodyKind.Dynamic, new Vec3(0, 2, 0), verts, faces);
+            for (int i = 0; i < 300; i++) c3.Step();
+            var pp = c3.Body(pyr).Position;
+            Check(Math.Abs(pp.Y - 0.25) < 0.06, "sim3: convex pyramid rests on the floor (" + pp.Y.ToString("F3") + ")");
+            Check(c3.SphereCast(new Vec3(0, 5, 0), new Vec3(0, -10, 0), 0.5, out var sh) && sh.Body == pyr && Math.Abs(sh.Point.Y - 1.0) < 0.05 && sh.Normal.Y > 0.5, "sim3: sphere cast hits the pyramid apex");
+        }
         using (var j3 = new Sim3World())
         {
             j3.AddBox(BodyKind.Static, new Vec3(0, -0.5, 0), new Vec3(20, 0.5, 20));

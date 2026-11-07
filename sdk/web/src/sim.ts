@@ -107,6 +107,13 @@ interface SimExports {
   sim3_kcc_move(h: number, k: number, dx: bigint, dy: bigint, dz: bigint): number;
   sim3_kcc_get(h: number, k: number, field: number): bigint;
   sim3_joint_golden_hash(): bigint;
+  sim3_convex_reset(h: number): void;
+  sim3_convex_vert(h: number, x: bigint, y: bigint, z: bigint): number;
+  sim3_convex_index(h: number, i: number): void;
+  sim3_convex_face_end(h: number): number;
+  sim3_add_convex(h: number, k: number, x: bigint, y: bigint, z: bigint, density: bigint): number;
+  sim3_spherecast(h: number, x: bigint, y: bigint, z: bigint, dx: bigint, dy: bigint, dz: bigint, radius: bigint, mask: number): number;
+  sim3_hull_golden_hash(): bigint;
 }
 
 export interface BodyState {
@@ -158,6 +165,10 @@ export class Sim {
   /** 3D joints/character reference scenario hash (`0x5db56af63cceee85`). */
   joint3GoldenHash(): bigint {
     return this.e.sim3_joint_golden_hash();
+  }
+  /** 3D convex hull reference scenario hash (`0x29ab0385d38dc53f`). */
+  hull3GoldenHash(): bigint {
+    return this.e.sim3_hull_golden_hash();
   }
   /** Create a 3D world (gravity in m/s², tick rate). */
   world3(gravity: { x: number; y: number; z: number } = { x: 0, y: -10, z: 0 }, tickHz = 60): Sim3World {
@@ -499,5 +510,27 @@ export class Sim3World {
     const g = (f: number) => this.e.sim3_kcc_get(this.handle, k, f);
     const gb = Number(g(7));
     return { groundNormal: { x: num(g(0)), y: num(g(1)), z: num(g(2)) }, velocity: { x: num(g(3)), y: num(g(4)), z: num(g(5)) }, grounded: g(6) === 1n, groundBody: gb ? gb - 1 : null };
+  }
+
+  // ---- convex hulls and sweeps ----
+  /** Convex polyhedron from body-space vertices (<= 32) and faces as index loops (any winding);
+   *  author vertices around the centre of mass. Returns the body id (throws on an invalid hull). */
+  addConvex(kind: BodyKind, pos: Vec3, verts: Vec3[], faces: number[][], density = 1): number {
+    this.e.sim3_convex_reset(this.handle);
+    for (const v of verts) this.e.sim3_convex_vert(this.handle, fx(v.x), fx(v.y), fx(v.z));
+    for (const f of faces) {
+      for (const i of f) this.e.sim3_convex_index(this.handle, i);
+      this.e.sim3_convex_face_end(this.handle);
+    }
+    const id = this.e.sim3_add_convex(this.handle, kind, fx(pos.x), fx(pos.y), fx(pos.z), fx(density));
+    if (id === 0) throw new Error("sim3: invalid convex hull (need >= 4 vertices and >= 4 faces)");
+    return id - 1;
+  }
+  /** Sweep a sphere along `dir`; `fraction` is where the centre stops, `point`/`normal` lie on the hit surface. */
+  sphereCast(from: Vec3, dir: Vec3, radius: number, mask = 0xffffffff): Ray3Hit | null {
+    const id = this.e.sim3_spherecast(this.handle, fx(from.x), fx(from.y), fx(from.z), fx(dir.x), fx(dir.y), fx(dir.z), fx(radius), mask);
+    if (id === 0) return null;
+    const g = (i: number) => num(this.e.sim3_ray_get(i));
+    return { body: id - 1, fraction: g(0), point: { x: g(1), y: g(2), z: g(3) }, normal: { x: g(4), y: g(5), z: g(6) } };
   }
 }

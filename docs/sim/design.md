@@ -115,7 +115,10 @@ and wasm32 (CI matrix) — the same vectors shipped to the C# and TS ports.
   hinge with limits/motor, distance/rope, `FxMat3` inverse for the point constraint) and a
   kinematic capsule `CharacterController` (push-out sliding, step-up with ledge probe, ground
   snap, slope filter) are in, exposed over `sim3_joint_*`/`sim3_kcc_*` with Web/Unity wrappers;
-  golden hash `0x5db56af63cceee85` native == wasm32. Not yet: convex hulls and shape sweeps.
+  golden hash `0x5db56af63cceee85` native == wasm32. Convex hulls (SAT faces + edge crosses, face clipping, hull pairs with every
+  primitive, Cyrus–Beck raycast) and sphere sweeps (`sphere_cast`) are in, exposed as
+  `sim3_convex_*`/`sim3_add_convex`/`sim3_spherecast` with Web/Unity wrappers; golden hash
+  `0x29ab0385d38dc53f` native == wasm32. Capsule/box sweeps are not implemented.
 - Bot kit: `net-sim-bots` — data-driven behavior trees (Sequence/Selector/Parallel, Condition/
   Action by id via the `Brain` trait, Inverter/Succeeder/Repeat/Cooldown/Timeout/Wait, blackboard
   Compare/Set), hierarchical state machines (parent transitions, on_enter/on_exit, initial

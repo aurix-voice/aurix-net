@@ -58,6 +58,13 @@ namespace Aurix.Net.Sim
         [DllImport(Lib)] public static extern uint sim3_kcc_move(uint h, uint k, long dx, long dy, long dz);
         [DllImport(Lib)] public static extern long sim3_kcc_get(uint h, uint k, uint field);
         [DllImport(Lib)] public static extern ulong sim3_joint_golden_hash();
+        [DllImport(Lib)] public static extern void sim3_convex_reset(uint h);
+        [DllImport(Lib)] public static extern uint sim3_convex_vert(uint h, long x, long y, long z);
+        [DllImport(Lib)] public static extern void sim3_convex_index(uint h, uint i);
+        [DllImport(Lib)] public static extern uint sim3_convex_face_end(uint h);
+        [DllImport(Lib)] public static extern uint sim3_add_convex(uint h, uint k, long x, long y, long z, long density);
+        [DllImport(Lib)] public static extern uint sim3_spherecast(uint h, long x, long y, long z, long dx, long dy, long dz, long radius, uint mask);
+        [DllImport(Lib)] public static extern ulong sim3_hull_golden_hash();
     }
 
     /// Deterministic fixed-point 3D world (spheres, boxes, capsules) over the native/wasm module.
@@ -73,6 +80,8 @@ namespace Aurix.Net.Sim
         public static ulong GoldenHash() => Sim3Native.sim3_golden_hash();
         /// 3D joints/character reference scenario hash; equals 0x5db56af63cceee85 on every platform.
         public static ulong JointGoldenHash() => Sim3Native.sim3_joint_golden_hash();
+        /// 3D convex hull reference scenario hash; equals 0x29ab0385d38dc53f on every platform.
+        public static ulong HullGoldenHash() => Sim3Native.sim3_hull_golden_hash();
 
         public void Step() => Sim3Native.sim3_step(Handle);
         public ulong Tick => Sim3Native.sim3_tick(Handle);
@@ -170,6 +179,29 @@ namespace Aurix.Net.Sim
                 Grounded = Sim3Native.sim3_kcc_get(Handle, k, 6) == 1,
                 GroundBody = (uint)Sim3Native.sim3_kcc_get(Handle, k, 7),
             };
+        }
+
+        // ---- convex hulls and sweeps ----
+        /// Convex polyhedron from body-space vertices (<= 32) and faces as index loops (any winding);
+        /// author vertices around the centre of mass. Throws on an invalid hull.
+        public uint AddConvex(BodyKind kind, Vec3 pos, Vec3[] verts, uint[][] faces, double density = 1)
+        {
+            Sim3Native.sim3_convex_reset(Handle);
+            foreach (var v in verts) Sim3Native.sim3_convex_vert(Handle, Fx.From(v.X), Fx.From(v.Y), Fx.From(v.Z));
+            foreach (var f in faces) { foreach (var i in f) Sim3Native.sim3_convex_index(Handle, i); Sim3Native.sim3_convex_face_end(Handle); }
+            uint id = Sim3Native.sim3_add_convex(Handle, (uint)kind, Fx.From(pos.X), Fx.From(pos.Y), Fx.From(pos.Z), Fx.From(density));
+            if (id == 0) throw new ArgumentException("sim3: invalid convex hull (need >= 4 vertices and >= 4 faces)");
+            return id - 1;
+        }
+        /// Sweep a sphere along dir; Fraction is where the centre stops, Point/Normal lie on the hit surface.
+        public bool SphereCast(Vec3 from, Vec3 dir, double radius, out Ray3Hit hit, uint mask = uint.MaxValue)
+        {
+            uint id = Sim3Native.sim3_spherecast(Handle, Fx.From(from.X), Fx.From(from.Y), Fx.From(from.Z), Fx.From(dir.X), Fx.From(dir.Y), Fx.From(dir.Z), Fx.From(radius), mask);
+            hit = default;
+            if (id == 0) return false;
+            double G(uint i) => Fx.To(Sim3Native.sim3_ray_get(i));
+            hit = new Ray3Hit { Body = id - 1, Fraction = G(0), Point = new Vec3(G(1), G(2), G(3)), Normal = new Vec3(G(4), G(5), G(6)) };
+            return true;
         }
     }
 }

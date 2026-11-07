@@ -987,7 +987,7 @@ mod tests {
                     20 => Status::Success,
                     30 => Status::Running,
                     100..=103 => {
-                        bb.set(id as u32, bb.get(id as u32) + 1);
+                        bb.set(id, bb.get(id) + 1);
                         Status::Success
                     }
                     _ => Status::Failure,

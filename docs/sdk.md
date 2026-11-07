@@ -191,3 +191,11 @@ Bot kit ports: Web `BehaviorTree/StateMachine/Blackboard` (`sdk/web/src/bots.ts`
 `Aurix.Net.Sim.Bots` load the same JSON as the Rust `net-sim-bots` crate and produce identical
 per-tick statuses and hashes — verified against `crates/net-sim-bots/fixtures/vectors.json`
 (regenerate with `BOTS_WRITE_VECTORS=1 cargo test -p net-sim-bots vectors`).
+
+3D convex hulls and sweeps: `addConvex(kind, pos, verts, faces)` / C# `AddConvex` build a convex
+polyhedron from <= 32 body-space vertices and faces given as index loops (winding is normalised,
+author vertices around the centre of mass; mass is exact volume, inertia the bounding box) — hulls
+collide with spheres, capsules, boxes and each other via SAT over face normals and edge crosses with
+reference-face clipping. `sphereCast(from, dir, radius)` / `SphereCast` sweeps a sphere and reports
+the first body, the centre's stop fraction and the surface point/normal. Reference hash
+`sim3_hull_golden_hash()` = `0x29ab0385d38dc53f` on native and wasm32.
