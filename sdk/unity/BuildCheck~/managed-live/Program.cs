@@ -66,7 +66,7 @@ class P
             x = Math.Min(5f, x + 0.1f);
             var pos = ComponentValue.Zero(tr); pos.Fields[0] = new Value { X = x, Y = 1.5f, Z = -2 }; pos.Fields[1] = new Value { X = 0, Y = 0.7071f, Z = 0, W = 0.7071f };
             var tg = ComponentValue.Zero(tag); tg.Fields[0] = new Value { S = "alice" }; tg.Fields[1] = new Value { U = 77 };
-            var body = wa.EncodeWrites(new List<(Component, ComponentValue)> { (tr, pos), (tag, tg) });
+            var body = wa.EncodeWrites(new List<(ComponentDef, ComponentValue)> { (tr, pos), (tag, tg) });
             oa.SendData(Channel.Unreliable, SyncWorld.EncodeInput(wa.ServerTick + 2, new[] { body }));
             oa.Flush(); ob.Flush(); oa.Poll(); ob.Poll(); await Task.Delay(16);
         }
