@@ -11,3 +11,10 @@ net.connect_to("https://<node>", grant_from_backend)
 net.join_or_create("lobby-1", AurixNetClient.MODE_RELAY, 8)
 net.send_event(1, "hi".to_utf8_buffer()); net.flush()
 ```
+
+## Signals added for operator messages
+
+- `notice(text: String, level: String)` — system message pushed by the operator console or the game backend (`level` is `info` or `warn`). Show it in the HUD; it is not a chat message.
+- `rehost()` — the room moved to another node during a rolling deploy. Call `rejoin()` with the same grant (the node list from `/v1/regions` works as fallback).
+
+The C++ header exposes the same as `onNotice` / `onRehost` callbacks.

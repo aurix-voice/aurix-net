@@ -33,6 +33,26 @@ struct EventFrame {
 class Client {
 public:
     std::function<void(const std::string& json)> onControl;
+    /// System notice from the operator or game backend: (text, level = "info" | "warn").
+    std::function<void(const std::string& text, const std::string& level)> onNotice;
+    /// The room moved to another node: rejoin with the same grant (see fallback URLs).
+    std::function<void()> onRehost;
+    // Minimal extraction of a top-level string field from a control message (no JSON dependency).
+    static std::string jsonStr(const std::string& j, const char* key) {
+        std::string k = std::string("\"") + key + "\":";
+        size_t p = j.find(k);
+        if (p == std::string::npos) return "";
+        p += k.size();
+        while (p < j.size() && j[p] == ' ') ++p;
+        if (p >= j.size() || j[p] != '"') return "";
+        std::string out;
+        for (++p; p < j.size() && j[p] != '"'; ++p) {
+            if (j[p] == '\\' && p + 1 < j.size()) { ++p; out += (j[p] == 'n' ? '\n' : j[p]); }
+            else out += j[p];
+        }
+        return out;
+    }
+
     std::function<void(Channel, uint16_t tick, const uint8_t*, size_t)> onData;
     std::function<void()> onDataReady;
     std::function<void(const std::string& reason)> onClosed;
@@ -91,7 +111,14 @@ public:
         while (n < maxEvents && aurix_net_poll(h_, &ev) == 1) {
             ++n;
             switch (ev.kind) {
-                case AURIX_NET_EVENT_CONTROL: if (onControl) onControl(ev.json ? ev.json : ""); break;
+                case AURIX_NET_EVENT_CONTROL: {
+                    std::string j = ev.json ? ev.json : "";
+                    if (onControl) onControl(j);
+                    std::string t = jsonStr(j, "t");
+                    if (t == "notice" && onNotice) onNotice(jsonStr(j, "text"), jsonStr(j, "level"));
+                    if (t == "left" && onRehost && jsonStr(j, "reason") == "rehost") onRehost();
+                    break;
+                }
                 case AURIX_NET_EVENT_DATA: if (onData) onData(Channel(ev.channel), ev.tick, ev.data, ev.data_len); break;
                 case AURIX_NET_EVENT_DATA_READY: if (onDataReady) onDataReady(); break;
                 case AURIX_NET_EVENT_CLOSED: if (onClosed) onClosed(ev.json ? ev.json : ""); break;

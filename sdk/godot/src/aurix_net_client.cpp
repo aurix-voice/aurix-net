@@ -25,6 +25,8 @@ void AurixNetClient::_bind_methods() {
     ADD_SIGNAL(MethodInfo("event", PropertyInfo(Variant::INT, "code"), PropertyInfo(Variant::INT, "from_actor"), PropertyInfo(Variant::PACKED_BYTE_ARRAY, "payload")));
     ADD_SIGNAL(MethodInfo("data", PropertyInfo(Variant::INT, "channel"), PropertyInfo(Variant::INT, "tick"), PropertyInfo(Variant::PACKED_BYTE_ARRAY, "payload")));
     ADD_SIGNAL(MethodInfo("closed", PropertyInfo(Variant::STRING, "reason")));
+    ADD_SIGNAL(MethodInfo("notice", PropertyInfo(Variant::STRING, "text"), PropertyInfo(Variant::STRING, "level")));
+    ADD_SIGNAL(MethodInfo("rehost"));
     BIND_ENUM_CONSTANT(MODE_RELAY); BIND_ENUM_CONSTANT(MODE_SYNC); BIND_ENUM_CONSTANT(MODE_LOCKSTEP);
     BIND_ENUM_CONSTANT(TARGET_ALL); BIND_ENUM_CONSTANT(TARGET_OTHERS); BIND_ENUM_CONSTANT(TARGET_MASTER);
 }
@@ -34,6 +36,8 @@ void AurixNetClient::hook() {
     hooked_ = true;
     client_.onControl = [this](const std::string &j) { emit_signal("control", String::utf8(j.c_str())); };
     client_.onClosed = [this](const std::string &r) { emit_signal("closed", String::utf8(r.c_str())); };
+    client_.onNotice = [this](const std::string &text, const std::string &level) { emit_signal("notice", String::utf8(text.c_str()), String::utf8(level.c_str())); };
+    client_.onRehost = [this]() { emit_signal("rehost"); };
     client_.onData = [this](aurix::net::Channel ch, uint16_t tick, const uint8_t *d, size_t n) {
         emit_signal("data", (int)ch, (int)tick, to_pba(d, n));
         aurix::net::EventFrame f;
