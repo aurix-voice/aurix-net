@@ -231,6 +231,34 @@ impl RoomHost {
         out
     }
 
+    /// Rooms hosted here where `player_id` has a slot: (room id, room name, mode, actor, display name, online).
+    pub fn find_player(
+        &self,
+        project: ProjectId,
+        player_id: &str,
+    ) -> Vec<(RoomId, String, net_common::RoomMode, u16, String, bool)> {
+        let mut out = Vec::new();
+        for r in self.rooms.iter() {
+            let g = r.value().lock();
+            if g.project != project {
+                continue;
+            }
+            for p in g.room.player_infos() {
+                if p.player_id == player_id {
+                    out.push((
+                        *r.key(),
+                        g.room.cfg.name.clone(),
+                        g.room.cfg.mode,
+                        p.actor.0,
+                        p.name.clone(),
+                        p.online,
+                    ));
+                }
+            }
+        }
+        out
+    }
+
     pub fn len(&self) -> usize {
         self.rooms.len()
     }

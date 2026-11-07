@@ -57,6 +57,7 @@ pub fn router(st: Shared) -> Router {
         .route("/v1/keys/:id", delete(revoke_key))
         .route("/v1/webhooks", get(list_webhooks).post(create_webhook))
         .route("/v1/matchmaking", get(mm_stats))
+        .route("/v1/players/:player_id", get(player_lookup))
         .route("/v1/matchmaking/tickets", post(mm_file))
         .route("/v1/matchmaking/tickets/:id", get(mm_get).delete(mm_cancel))
         .route("/v1/webhooks/:id", delete(delete_webhook))
@@ -85,6 +86,11 @@ pub fn router(st: Shared) -> Router {
         .route("/v1/operator/usage", get(op_fleet_usage))
         .route("/v1/operator/attention", get(op_attention))
         .route("/v1/operator/projects/:id/matchmaking", get(op_mm_stats))
+        .route(
+            "/v1/operator/projects/:id/players/:player_id",
+            get(op_player_lookup),
+        )
+        .route("/v1/internal/players/:player_id", get(internal_find_player))
         .route(
             "/v1/operator/projects/:id/webhooks/:wid",
             delete(op_delete_webhook),
@@ -540,6 +546,131 @@ fn local_players(st: &Shared, id: Uuid) -> Option<Vec<Value>> {
             .map(|p| json!({"actor": p.actor, "player_id": p.player_id, "name": p.name, "online": p.online}))
             .collect()
     })
+}
+
+fn local_find_player(st: &Shared, project: ProjectId, player_id: &str) -> Vec<Value> {
+    st.host
+        .find_player(project, player_id)
+        .into_iter()
+        .map(|(room, name, mode, actor, pname, online)| {
+            json!({"room_id": room, "name": name, "mode": mode, "node_id": st.node_id, "actor": actor, "player_name": pname, "online": online})
+        })
+        .collect()
+}
+
+#[derive(Deserialize)]
+struct ProjectQuery {
+    project: Uuid,
+}
+
+/// Node-to-node: rooms hosted here where a player sits. Fleet-wide lookups fan out to every live node.
+async fn internal_find_player(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(player_id): Path<String>,
+    Query(q): Query<ProjectQuery>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    Ok(Json(
+        json!({"rooms": local_find_player(&st, ProjectId::from_uuid(q.project), &player_id)}),
+    ))
+}
+
+fn pct(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+async fn internal_get(st: &Shared, http_url: &str, path: &str) -> Result<Value> {
+    if st.cfg.auth.admin_token.is_empty() {
+        return Err(NetError::Internal(
+            "admin_token unset; cannot query hosting node".into(),
+        ));
+    }
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| NetError::Internal(e.to_string()))?;
+    let resp = http
+        .get(format!("{http_url}{path}"))
+        .bearer_auth(&st.cfg.auth.admin_token)
+        .send()
+        .await
+        .map_err(|e| NetError::Internal(e.to_string()))?;
+    if !resp.status().is_success() {
+        return Err(NetError::Internal(format!(
+            "node returned {}",
+            resp.status()
+        )));
+    }
+    resp.json::<Value>()
+        .await
+        .map_err(|e| NetError::Internal(e.to_string()))
+}
+
+/// Where a player is right now (every live node), whether they are banned, and what was done to them.
+async fn player_lookup_json(st: &Shared, project: Uuid, player_id: &str) -> Result<Value> {
+    if !valid_player_id(player_id) {
+        return Err(NetError::Invalid("invalid player_id".into()));
+    }
+    let pid = ProjectId::from_uuid(project);
+    let mut rooms = local_find_player(st, pid, player_id);
+    let mut unreachable = Vec::new();
+    let path = format!("/v1/internal/players/{}?project={project}", pct(player_id));
+    let path = path.as_str();
+    let remote = st
+        .registry
+        .snapshot()
+        .into_iter()
+        .filter(|n| n.id != st.node_id);
+    let results = futures::future::join_all(remote.map(|n| async move {
+        let r = internal_get(st, &n.http_url, path).await;
+        (n, r)
+    }))
+    .await;
+    for (n, r) in results {
+        match r {
+            Ok(v) => rooms.extend(v["rooms"].as_array().cloned().unwrap_or_default()),
+            Err(e) => {
+                tracing::warn!(node = %n.http_url, error = %e, "player lookup: node unreachable");
+                unreachable.push(json!({"node_id": n.id, "http_url": n.http_url}));
+            }
+        }
+    }
+    let ban = queries::get_ban(&st.pool, project, player_id).await?;
+    let audit = queries::list_audit_for_target(&st.pool, project, player_id, 20).await?;
+    Ok(
+        json!({"player_id": player_id, "rooms": rooms, "ban": ban, "audit": audit, "unreachable_nodes": unreachable}),
+    )
+}
+
+async fn player_lookup(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(player_id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Read).await?;
+    Ok(Json(
+        player_lookup_json(&st, key.project_id, &player_id).await?,
+    ))
+}
+
+async fn op_player_lookup(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((id, player_id)): Path<(Uuid, String)>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    Ok(Json(player_lookup_json(&st, id, &player_id).await?))
 }
 
 /// Node-to-node: player list of a room hosted here, for consoles pointed at a different node.
@@ -1231,7 +1362,7 @@ async fn close_room_anywhere(st: &Shared, project: ProjectId, id: Uuid) {
         .and_then(|n| st.registry.get(net_common::NodeId::from_uuid(n)));
     if let Some(n) = node.filter(|n| n.id != st.node_id) {
         match internal_delete(st, &n.http_url, &format!("/v1/internal/rooms/{id}")).await {
-            Ok(()) => return,
+            Ok(_) => return,
             Err(e) => {
                 tracing::warn!(room = %id, node = %n.http_url, error = %e, "remote close failed; closing locally")
             }
@@ -1390,7 +1521,7 @@ async fn kick_anywhere(
     id: Uuid,
     actor: u16,
     reason: &str,
-) -> Result<()> {
+) -> Result<String> {
     let room = RoomId::from_uuid(id);
     let actor_id = net_common::ActorId(actor);
     if st.host.get(room).is_some() {
@@ -1409,7 +1540,8 @@ async fn kick_anywhere(
         "/v1/internal/rooms/{id}/players/{actor}?reason={}",
         reason.replace(' ', "%20")
     );
-    internal_delete(st, &node.http_url, &path).await
+    let v = internal_delete(st, &node.http_url, &path).await?;
+    Ok(v["player_id"].as_str().unwrap_or_default().to_string())
 }
 
 async fn internal_kick(
@@ -1417,16 +1549,16 @@ async fn internal_kick(
     h: HeaderMap,
     Path((id, actor)): Path<(Uuid, u16)>,
     Query(q): Query<KickQuery>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<Json<Value>> {
     operator(&st, &h)?;
-    crate::ws::kick_player(
+    let player_id = crate::ws::kick_player(
         &st,
         RoomId::from_uuid(id),
         net_common::ActorId(actor),
         &kick_reason(&q),
     )
     .await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(json!({"player_id": player_id})))
 }
 
 /// Project backend kicks a player (`rooms` scope); the room must belong to the key's project.
@@ -1442,7 +1574,7 @@ async fn kick_player(
         return Err(NetError::NotFound("room not found".into()).into());
     }
     let reason = kick_reason(&q);
-    kick_anywhere(
+    let player_id = kick_anywhere(
         &st,
         ProjectId::from_uuid(row.project_id),
         id,
@@ -1455,8 +1587,8 @@ async fn kick_player(
         Some(row.project_id),
         &format!("key:{}", key.id),
         "player.kick",
-        &id.to_string(),
-        json!({"actor": actor, "reason": reason}),
+        &player_id,
+        json!({"room": id, "actor": actor, "reason": reason}),
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
@@ -1471,7 +1603,7 @@ async fn op_kick_player(
     operator(&st, &h)?;
     let row = queries::get_room(&st.pool, id).await?;
     let reason = kick_reason(&q);
-    kick_anywhere(
+    let player_id = kick_anywhere(
         &st,
         ProjectId::from_uuid(row.project_id),
         id,
@@ -1484,8 +1616,8 @@ async fn op_kick_player(
         Some(row.project_id),
         "operator",
         "player.kick",
-        &id.to_string(),
-        json!({"actor": actor, "reason": reason}),
+        &player_id,
+        json!({"room": id, "actor": actor, "reason": reason}),
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
@@ -1507,7 +1639,8 @@ async fn internal_close_room(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn internal_delete(st: &Shared, http_url: &str, path: &str) -> Result<()> {
+/// DELETE on another node with the fleet token; returns the JSON body (Null for 204).
+async fn internal_delete(st: &Shared, http_url: &str, path: &str) -> Result<Value> {
     if st.cfg.auth.admin_token.is_empty() {
         return Err(NetError::Internal(
             "admin_token unset; cannot reach other nodes".into(),
@@ -1533,7 +1666,10 @@ async fn internal_delete(st: &Shared, http_url: &str, path: &str) -> Result<()> 
             res.status()
         )));
     }
-    Ok(())
+    if res.status() == reqwest::StatusCode::NO_CONTENT {
+        return Ok(Value::Null);
+    }
+    Ok(res.json::<Value>().await.unwrap_or(Value::Null))
 }
 
 /// Delete a project: every live room is closed fleet-wide, all keys revoked, webhooks and

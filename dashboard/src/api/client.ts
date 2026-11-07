@@ -247,6 +247,13 @@ export interface MatchmakingStats {
   searching: { id: string; player_id: string; mode: string; region: string | null; max_players: number; age_secs: number }[];
   matched: { last_hour: number; last_24h: number };
 }
+export interface PlayerLookup {
+  player_id: string;
+  rooms: { room_id: string; name: string; mode: string; node_id: string; actor: number; player_name: string; online: boolean }[];
+  ban: Ban | null;
+  audit: AuditRow[];
+  unreachable_nodes: { node_id: string; http_url: string }[];
+}
 export interface Attention {
   stale_nodes: { id: string; public_host: string; quic_port: number; region: string; last_heartbeat: string }[];
   draining_nodes: { id: string; public_host: string; quic_port: number; region: string; rooms: number }[];

@@ -3,7 +3,7 @@ import { useMemo } from "react";
 
 import { useAuth } from "@/auth/AuthProvider";
 
-import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Attention, type Ban, type MatchmakingStats, type Rejections, type Webhook, type WebhookDelivery } from "./client";
+import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Attention, type Ban, type MatchmakingStats, type PlayerLookup, type Rejections, type Webhook, type WebhookDelivery } from "./client";
 
 export function useApi(): NetClient {
   const { token } = useAuth();
@@ -182,6 +182,17 @@ export function useMatchmakingStats(projectId?: string) {
     queryKey: ["mm-stats", projectId ?? "me"],
     refetchInterval: 3000,
     queryFn: () => api.get<MatchmakingStats>(projectId ? `/v1/operator/projects/${projectId}/matchmaking` : "/v1/matchmaking"),
+  });
+}
+/** Fleet-wide "where is this player": live rooms on every node, ban state, audit trail. */
+export function usePlayerLookup(playerId: string, projectId?: string) {
+  const api = useApi();
+  const id = playerId.trim();
+  return useQuery({
+    queryKey: ["player", projectId ?? "me", id],
+    enabled: id.length > 0,
+    refetchInterval: 5000,
+    queryFn: () => api.get<PlayerLookup>(projectId ? `/v1/operator/projects/${projectId}/players/${encodeURIComponent(id)}` : `/v1/players/${encodeURIComponent(id)}`),
   });
 }
 export function useAttention() {

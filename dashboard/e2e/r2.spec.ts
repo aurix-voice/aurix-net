@@ -232,3 +232,17 @@ test("operator sees the live matchmaking queue of a project", async ({ page }) =
   await expect(page.getByRole("row").filter({ hasText: "waiter-1" })).toBeVisible();
   await expect(page.getByText("Searching now")).toBeVisible();
 });
+
+test("operator looks up a player and bans from the lookup", async ({ page }) => {
+  const project = await api<{ project: { id: string } }>(page, "POST", "/v1/operator/projects", { name: uniq("e2e-lookup") });
+  await page.goto(`/projects/${project.project.id}`);
+  await page.getByRole("tab", { name: /Players/ }).click();
+  await page.getByLabel("Player id").fill("ghost-7");
+  await page.getByRole("button", { name: "Find" }).click();
+  await expect(page.getByText("Not in any live room on any node.")).toBeVisible();
+  await expect(page.getByText("Not banned")).toBeVisible();
+  await page.getByRole("button", { name: "Ban player" }).click();
+  await expect(page.getByText("Banned", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: /Bans/ }).click();
+  await expect(page.getByRole("row").filter({ hasText: "ghost-7" })).toBeVisible();
+});

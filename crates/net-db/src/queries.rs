@@ -867,6 +867,24 @@ pub async fn purge_usage(pool: &DbPool, days: u32) -> Result<u64> {
 /// Newest audit rows first; `project` = None lists every project (operator view).
 /// Audit rows, newest first. `action` / `actor` are prefix filters (`key.` matches every key
 /// action; `operator` matches the operator actor).
+/// Audit rows whose target is exactly `target` (e.g. a player id), newest first.
+pub async fn list_audit_for_target(
+    pool: &DbPool,
+    project: Uuid,
+    target: &str,
+    limit: i64,
+) -> Result<Vec<AuditRow>> {
+    sqlx::query_as::<_, AuditRow>(
+        "SELECT * FROM audit WHERE project_id = $1 AND target = $2 ORDER BY id DESC LIMIT $3",
+    )
+    .bind(project)
+    .bind(target)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
 pub async fn list_audit(
     pool: &DbPool,
     project: Option<Uuid>,

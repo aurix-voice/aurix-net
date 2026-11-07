@@ -7,6 +7,7 @@ import { useCreateKey, useOpDeleteModule, useOpDeleteWebhook, useProject, useReg
 import { BansPanel } from "@/components/BansPanel";
 import { ConnectCard } from "@/components/ConnectCard";
 import { MatchmakingQueue } from "@/components/MatchmakingQueue";
+import { PlayerLookup } from "@/components/PlayerLookup";
 import { RejectionsCard } from "@/components/RejectionsCard";
 import { useAuth } from "@/auth/AuthProvider";
 import { NewKeyDialog } from "@/components/NewKeyDialog";
@@ -192,6 +193,7 @@ function ProjectBody() {
               { value: "rooms", label: t("projects.detail.rooms"), count: d.rooms.length },
               { value: "webhooks", label: t("projects.detail.webhooks"), count: d.webhooks.length },
               { value: "modules", label: t("projects.detail.modules"), count: d.modules.length },
+              { value: "players", label: t("players.title") },
               { value: "bans", label: t("bans.title") },
               { value: "matchmaking", label: t("nav.matchmaking") },
             ]}
@@ -242,6 +244,9 @@ function ProjectBody() {
                   },
                 ]}
               />
+            </TabPanel>
+            <TabPanel value="players">
+              <PlayerLookup projectId={p.id} />
             </TabPanel>
             <TabPanel value="matchmaking">
               <MatchmakingQueue projectId={p.id} />

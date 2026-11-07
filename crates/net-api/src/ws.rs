@@ -1488,13 +1488,27 @@ pub async fn publish_room(st: &Shared, h: &Arc<Mutex<HostedRoom>>) {
 /// heartbeat wait). Players get `left{reason:"rehost"}` and rejoin by room name.
 /// Server-side kick (REST): removes the actor from a room hosted on this node, tells the client
 /// `left{reason}`, updates sync/lockstep membership and republishes the room.
-pub async fn kick_player(st: &Shared, room: RoomId, actor: ActorId, reason: &str) -> Result<()> {
+/// Removes `actor` from a room hosted here; returns the kicked player's id for the audit trail.
+pub async fn kick_player(
+    st: &Shared,
+    room: RoomId,
+    actor: ActorId,
+    reason: &str,
+) -> Result<String> {
     let hr = st
         .host
         .get(room)
         .ok_or_else(|| NetError::NotFound("room not hosted here".into()))?;
+    let player_id;
     {
         let mut h = hr.lock();
+        player_id = h
+            .room
+            .player_infos()
+            .into_iter()
+            .find(|p| p.actor == actor)
+            .map(|p| p.player_id)
+            .ok_or_else(|| NetError::NotFound("actor not in room".into()))?;
         let out = h
             .room
             .admin_kick(actor, reason, Instant::now())
@@ -1514,7 +1528,7 @@ pub async fn kick_player(st: &Shared, room: RoomId, actor: ActorId, reason: &str
         }
     }
     publish_room(st, &hr).await;
-    Ok(())
+    Ok(player_id)
 }
 
 pub async fn handoff_all(st: &Shared) -> usize {
