@@ -54,3 +54,15 @@ pure-C# client in one relay room on A, sends A SIGTERM and expects both to see `
 `rejoin()` / `RejoinAsync()` onto B with the same actor id, and to receive an event from a client that
 joins on B afterwards (`WEB_REHOST_OK`, `CS_REHOST_OK`). The Rust client has the same check as
 `cargo run -p net-client --example rehost`.
+
+## Capacity reference (one 8-core dev box, bots and nodes sharing CPU, release build)
+
+| Scenario | Result |
+|---|---|
+| relay 4 rooms x 32 players @ 20 ev/s, one source IP | 128/128 joined, loss 0.34 %, latency p50 1.8 ms / p99 3.5 ms |
+| relay 1 room x 64 players @ 20 ev/s | 64/64 joined, loss 0.49 %, p99 3.4 ms |
+| sync 4 x 32 @ 60 Hz | 128/128 joined, server tick mean 0.69 ms, p99 <= 2 ms, ~100 deltas/player/s (byte budget), lost deltas 0.08 % repaired by acks |
+| lockstep 4 x 8 | 32/32 joined, tick mean 0.23 ms, desyncs 0 |
+
+All limits at defaults (`[limits]`): these runs are the regression bar for "limits never cut legitimate
+players"; a 128-player join burst from one IP must stay at failed=0.
