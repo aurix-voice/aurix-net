@@ -27,7 +27,7 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | GET | `/v1/nodes` | key | nodes visible to the project |
 | POST | `/v1/grants` | `grants` | issue a join grant |
 | GET/POST | `/v1/rooms` | `read`/`rooms` | list open rooms / create (`name, mode, max_players, visible, open, props, lobby_props, region`) |
-| GET/DELETE | `/v1/rooms/:id` | `read`/`rooms` | details / close |
+| GET/DELETE | `/v1/rooms/:id` | `read`/`rooms` | details / close; `players[]` comes from the host node (any node answers) with live per-player counters `events`, `bytes_in`, `eps` (1 s window), `idle_secs`, `since_secs` — relay events raised through the data path; reset on rehost |
 | GET | `/v1/rooms/:id/replay` | `read` | lockstep input journal (24 h after close) |
 | GET | `/v1/usage?format=csv` | read | same rows as CSV (`hour,metric,quantity`, attachment) for billing exports; also on `/v1/operator/usage` and `/v1/operator/projects/:id/usage` |
 | GET | `/v1/usage` | `read` | node-hours, events, bytes per hour |

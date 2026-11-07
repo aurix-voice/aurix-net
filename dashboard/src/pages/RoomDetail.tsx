@@ -90,6 +90,9 @@ export function RoomDetailPage() {
                     { key: "name", header: t("common.name"), cell: (p) => p.name || "—" },
                     { key: "pid", header: t("rooms.playerId"), cell: (p) => <Mono>{p.player_id}</Mono> },
                     { key: "online", header: t("rooms.state"), cell: (p) => <Badge tone={p.online ? "ok" : "neutral"} dot>{p.online ? t("rooms.online") : t("rooms.offline")}</Badge> },
+                    { key: "eps", header: t("rooms.eps"), cell: (p) => <span className="tabular">{p.eps === undefined ? "—" : p.eps.toFixed(1)}</span>, width: "90px" },
+                    { key: "events", header: t("rooms.events"), cell: (p) => <span className="tabular text-fg-muted">{p.events === undefined ? "—" : `${p.events.toLocaleString()} · ${((p.bytes_in ?? 0) / 1024).toFixed(1)} KiB`}</span> },
+                    { key: "idle", header: t("rooms.idle"), cell: (p) => <span className="text-fg-muted">{p.idle_secs === undefined ? "—" : p.idle_secs === null ? t("rooms.idle.never") : t("rooms.idle.secs", { s: Math.round(p.idle_secs) })}</span>, width: "100px" },
                     {
                       key: "actions",
                       header: "",

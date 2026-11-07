@@ -40,6 +40,7 @@ test("rooms list shows a live room and its detail", async ({ page }) => {
   await expect(page).toHaveURL(new RegExp(`/rooms/${room.id}`));
   await expect(page.getByText("relay")).toBeVisible();
   await expect(page.getByText("0 / 4")).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "Events/s" })).toBeVisible();
   await page.goto("/rooms");
   await page.getByRole("row", { name: new RegExp(roomName) }).getByRole("button", { name: "Close room" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Close room" }).click();

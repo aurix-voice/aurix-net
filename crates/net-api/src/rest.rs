@@ -776,11 +776,26 @@ async fn get_room(
 /// Players of a room hosted on this node, or `None` when it is not hosted here.
 fn local_players(st: &Shared, id: Uuid) -> Option<Vec<Value>> {
     st.host.get(RoomId::from_uuid(id)).map(|hr| {
-        hr.lock()
+        let g = hr.lock();
+        let now = std::time::Instant::now();
+        let stats: std::collections::HashMap<_, _> = g
             .room
+            .player_stats(now)
+            .into_iter()
+            .map(|s| (s.actor, s))
+            .collect();
+        g.room
             .player_infos()
             .into_iter()
-            .map(|p| json!({"actor": p.actor, "player_id": p.player_id, "name": p.name, "online": p.online}))
+            .map(|p| {
+                let s = stats.get(&p.actor);
+                json!({
+                    "actor": p.actor, "player_id": p.player_id, "name": p.name, "online": p.online,
+                    "events": s.map(|s| s.events), "bytes_in": s.map(|s| s.bytes_in),
+                    "eps": s.map(|s| s.eps), "idle_secs": s.and_then(|s| s.idle_secs),
+                    "since_secs": s.map(|s| s.since_secs),
+                })
+            })
             .collect()
     })
 }

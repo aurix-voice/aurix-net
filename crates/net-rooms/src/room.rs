@@ -43,9 +43,55 @@ pub struct Player {
     pub spectator: bool,
     tokens: f64,
     last_refill: Instant,
+    joined_at: Instant,
+    events_in: u64,
+    bytes_in: u64,
+    last_event: Option<Instant>,
+    /// One-second window for the live events/s figure shown in the console.
+    win_start: Instant,
+    win_count: u32,
+    eps: f32,
+}
+
+/// Live per-player counters for the operator console (not persisted, reset on rehost).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PlayerStats {
+    pub actor: ActorId,
+    pub events: u64,
+    pub bytes_in: u64,
+    pub eps: f32,
+    pub idle_secs: Option<f32>,
+    pub since_secs: f32,
 }
 
 impl Player {
+    fn count_event(&mut self, bytes: usize, now: Instant) {
+        self.events_in += 1;
+        self.bytes_in += bytes as u64;
+        self.last_event = Some(now);
+        let w = now.duration_since(self.win_start).as_secs_f32();
+        if w >= 1.0 {
+            self.eps = self.win_count as f32 / w;
+            self.win_start = now;
+            self.win_count = 0;
+        }
+        self.win_count += 1;
+    }
+
+    fn stats(&self, now: Instant) -> PlayerStats {
+        let w = now.duration_since(self.win_start).as_secs_f32();
+        // A window older than 2 s without a refresh means the player went quiet.
+        let eps = if w > 2.0 { 0.0 } else { self.eps };
+        PlayerStats {
+            actor: self.actor,
+            events: self.events_in,
+            bytes_in: self.bytes_in,
+            eps,
+            idle_secs: self.last_event.map(|t| now.duration_since(t).as_secs_f32()),
+            since_secs: now.duration_since(self.joined_at).as_secs_f32(),
+        }
+    }
+
     fn info(&self) -> PlayerInfo {
         PlayerInfo {
             actor: self.actor,
@@ -269,6 +315,13 @@ impl Room {
             spectator,
             tokens: 2.0 * self.cfg.max_events_per_sec_per_player as f64,
             last_refill: now,
+            joined_at: now,
+            events_in: 0,
+            bytes_in: 0,
+            last_event: None,
+            win_start: now,
+            win_count: 0,
+            eps: 0.0,
         };
         let info = p.info();
         self.players.insert(actor, p);
@@ -307,6 +360,13 @@ impl Room {
                     spectator: false,
                     tokens: 2.0 * self.cfg.max_events_per_sec_per_player as f64,
                     last_refill: now,
+                    joined_at: now,
+                    events_in: 0,
+                    bytes_in: 0,
+                    last_event: None,
+                    win_start: now,
+                    win_count: 0,
+                    eps: 0.0,
                 },
             );
             self.by_player.insert(player_id, actor);
@@ -320,6 +380,10 @@ impl Room {
 
     pub fn player_infos(&self) -> Vec<PlayerInfo> {
         self.players.values().map(|p| p.info()).collect()
+    }
+
+    pub fn player_stats(&self, now: Instant) -> Vec<PlayerStats> {
+        self.players.values().map(|p| p.stats(now)).collect()
     }
 
     pub fn cached_for_join(&self) -> Vec<(u8, ActorId, String)> {
@@ -581,6 +645,7 @@ impl Room {
                 return Err(RoomError::PlayerEventRate);
             }
             p.tokens -= 1.0;
+            p.count_event(frame.payload.len(), now);
         }
         self.tokens -= 1.0;
         frame.from = from;
