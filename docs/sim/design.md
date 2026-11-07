@@ -101,4 +101,8 @@ and wasm32 (CI matrix) — the same vectors shipped to the C# and TS ports.
   raycast, per-area cost/flags, flow fields (Dijkstra per goal), `Crowd` (arrive, separation,
   sampled velocity-obstacle avoidance, border sliding, depenetration, snapshot/hash); exposed over
   the flat ABI + Web/Unity wrappers; nav golden hash `0x746c5a608abe2f26` native == wasm32.
-- Not yet: shapecast, joints/contact events over the flat ABI, 3D (phase 3), bot kit (HFSM/BT).
+- Phase 1 leftovers closed: `World::circle_cast` (sweep against shapes inflated by the radius),
+  joints/motor retune, contact events and circle cast over the flat ABI + Web/Unity wrappers;
+  joint golden hash `0x4bcc781a484ceeed` native == wasm32. Polygon/capsule sweeps are not
+  implemented (circle cast covers characters and projectiles).
+- Not yet: 3D (phase 3), bot kit (HFSM/BT).

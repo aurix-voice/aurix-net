@@ -17,6 +17,7 @@ namespace Aurix.Net.Sim
 
     public struct BodyState { public double X, Y, Angle, Vx, Vy, AngularVelocity; }
     public struct RayHit { public uint Body; public double Fraction, X, Y, Nx, Ny; }
+    public struct ContactEvent { public uint A, B; public bool Begin; }
     public struct AgentState { public double X, Y, Vx, Vy; public bool Arrived; public uint Poly; }
 
     internal static class SimNative
@@ -66,6 +67,15 @@ namespace Aurix.Net.Sim
         [DllImport(Lib)] public static extern uint sim_crowd_snapshot(uint h);
         [DllImport(Lib)] public static extern uint sim_crowd_restore(uint h);
         [DllImport(Lib)] public static extern ulong sim_nav_golden_hash();
+        [DllImport(Lib)] public static extern uint sim_joint_distance(uint h, uint a, uint b, long ax, long ay, long bx, long by, long len, long minLen);
+        [DllImport(Lib)] public static extern uint sim_joint_revolute(uint h, uint a, uint b, long ax, long ay, long bx, long by, uint hasLimits, long lower, long upper, long motorSpeed, long maxTorque);
+        [DllImport(Lib)] public static extern uint sim_joint_weld(uint h, uint a, uint b, long ax, long ay, long bx, long by, long relAngle);
+        [DllImport(Lib)] public static extern uint sim_joint_remove(uint h, uint id);
+        [DllImport(Lib)] public static extern void sim_joint_motor(uint h, uint id, long speed, long maxTorque);
+        [DllImport(Lib)] public static extern uint sim_events_len(uint h);
+        [DllImport(Lib)] public static extern uint sim_event_get(uint h, uint i, uint field);
+        [DllImport(Lib)] public static extern uint sim_circlecast(uint h, long x, long y, long dx, long dy, long r, uint mask);
+        [DllImport(Lib)] public static extern ulong sim_joint_golden_hash();
     }
 
     public sealed class SimWorld : IDisposable
@@ -82,6 +92,8 @@ namespace Aurix.Net.Sim
         public static ulong GoldenHash() => SimNative.sim_golden_hash();
         /// Navigation reference scenario hash; equals 0x746c5a608abe2f26 on every platform.
         public static ulong NavGoldenHash() => SimNative.sim_nav_golden_hash();
+        /// Joint reference scenario hash; equals 0x4bcc781a484ceeed on every platform.
+        public static ulong JointGoldenHash() => SimNative.sim_joint_golden_hash();
 
         public void Dispose() { if (!_freed) { _freed = true; SimNative.sim_world_free(Handle); } }
         public void Step() => SimNative.sim_step(Handle);
@@ -212,5 +224,40 @@ namespace Aurix.Net.Sim
             return b;
         }
         public bool CrowdRestore(byte[] bytes) { FillBuffer(bytes); return SimNative.sim_crowd_restore(Handle) == 1; }
+
+        // ---- joints, contact events, shape casts ----
+        /// Distance joint between local anchors; minLength < length allows slack (rope).
+        public uint JointDistance(uint a, uint b, double ax, double ay, double bx, double by, double length, double? minLength = null)
+            => SimNative.sim_joint_distance(Handle, a, b, Fx.From(ax), Fx.From(ay), Fx.From(bx), Fx.From(by), Fx.From(length), Fx.From(minLength ?? length));
+        /// Pin joint; pass lower/upper for angle limits, maxTorque > 0 enables the motor.
+        public uint JointRevolute(uint a, uint b, double ax, double ay, double bx, double by, double? lower = null, double? upper = null, double motorSpeed = 0, double maxTorque = 0)
+        {
+            bool limits = lower.HasValue && upper.HasValue;
+            return SimNative.sim_joint_revolute(Handle, a, b, Fx.From(ax), Fx.From(ay), Fx.From(bx), Fx.From(by), limits ? 1u : 0u, Fx.From(lower ?? 0), Fx.From(upper ?? 0), Fx.From(motorSpeed), Fx.From(maxTorque));
+        }
+        public uint JointWeld(uint a, uint b, double ax, double ay, double bx, double by, double relAngle = 0)
+            => SimNative.sim_joint_weld(Handle, a, b, Fx.From(ax), Fx.From(ay), Fx.From(bx), Fx.From(by), Fx.From(relAngle));
+        public bool RemoveJoint(uint id) => SimNative.sim_joint_remove(Handle, id) == 1;
+        public void SetMotor(uint joint, double speed, double maxTorque) => SimNative.sim_joint_motor(Handle, joint, Fx.From(speed), Fx.From(maxTorque));
+        /// Contact begin/end events from the last Step().
+        public ContactEvent[] Events()
+        {
+            uint n = SimNative.sim_events_len(Handle);
+            var ev = new ContactEvent[n];
+            for (uint i = 0; i < n; i++)
+                ev[i] = new ContactEvent { A = SimNative.sim_event_get(Handle, i, 0), B = SimNative.sim_event_get(Handle, i, 1), Begin = SimNative.sim_event_get(Handle, i, 2) == 1 };
+            return ev;
+        }
+        /// Sweep a circle along (dx, dy); same result as Raycast.
+        public bool CircleCast(double x, double y, double dx, double dy, double radius, out RayHit hit, uint mask = uint.MaxValue)
+        {
+            uint r = SimNative.sim_circlecast(Handle, Fx.From(x), Fx.From(y), Fx.From(dx), Fx.From(dy), Fx.From(radius), mask);
+            hit = default;
+            if (r == 0) return false;
+            hit.Body = r - 1;
+            hit.Fraction = Fx.To(SimNative.sim_ray_get(0)); hit.X = Fx.To(SimNative.sim_ray_get(1)); hit.Y = Fx.To(SimNative.sim_ray_get(2));
+            hit.Nx = Fx.To(SimNative.sim_ray_get(3)); hit.Ny = Fx.To(SimNative.sim_ray_get(4));
+            return true;
+        }
     }
 }

@@ -165,6 +165,16 @@ static class Program
         Check(a.Restore(snap) && a.Hash() == h, "sim: snapshot round-trip");
         Check(a.Raycast(0, 5, 0, -10, out var hit) && hit.Body == ballA && Math.Abs(hit.Ny - 1) < 1e-6, "sim: raycast hits the ball from above");
         Check(SimWorld.NavGoldenHash() == 0x746c5a608abe2f26UL, "nav: golden hash equals the Rust/wasm value");
+        Check(SimWorld.JointGoldenHash() == 0x4bcc781a484ceeedUL, "joints: golden hash equals the Rust/wasm value");
+        using (var j = new SimWorld(0, -10))
+        {
+            uint floor = j.AddBox(BodyKind.Static, 0, -0.5, 10, 0.5);
+            uint ball = j.AddCircle(BodyKind.Dynamic, 0, 2, 0.5);
+            int begins = 0;
+            for (int i = 0; i < 120; i++) { j.Step(); foreach (var e in j.Events()) if (e.Begin && ((e.A == ball && e.B == floor) || (e.A == floor && e.B == ball))) begins++; }
+            Check(begins >= 1, "joints: ball/floor contact begin reported");
+            Check(j.CircleCast(-5, 0.5, 10, 0, 0.4, out var ch) && ch.Body == ball && Math.Abs(ch.X + 0.9) < 0.01, "joints: circle cast stops one radius short of the ball");
+        }
         using var n = new SimWorld(0, 0);
         n.NavGrid(0, 0, 1, 8, 6, new (uint, uint)[] { (4, 0), (4, 1), (4, 2), (4, 3), (4, 4) });
         var path = n.NavPath(0.5, 0.5, 7.5, 0.5);

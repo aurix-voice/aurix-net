@@ -154,3 +154,10 @@ const unit = w.addAgent(2, 2, 0.4, 3);
 w.agentFollow(unit, toBase);
 // per tick: w.crowdStep(); w.step(); lockstep.reportHash(tick, w.hash() ^ w.crowdHash());
 ```
+
+Joints, contact events and shape casts are on the same handle: `jointDistance` (rope when
+`minLength < length`), `jointRevolute` (limits + motor, `setMotor` to retune), `jointWeld`,
+`removeJoint`; `events()` returns the begin/end contact pairs of the last `step()`; `circleCast`
+sweeps a circle and reports where it first touches (C#: `JointDistance/JointRevolute/JointWeld/
+RemoveJoint/SetMotor/Events/CircleCast`). Reference hash `sim_joint_golden_hash()` =
+`0x4bcc781a484ceeed` on native and wasm32.

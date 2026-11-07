@@ -62,6 +62,15 @@ interface SimExports {
   sim_crowd_snapshot(h: number): number;
   sim_crowd_restore(h: number): number;
   sim_nav_golden_hash(): bigint;
+  sim_joint_distance(h: number, a: number, b: number, ax: bigint, ay: bigint, bx: bigint, by: bigint, len: bigint, minLen: bigint): number;
+  sim_joint_revolute(h: number, a: number, b: number, ax: bigint, ay: bigint, bx: bigint, by: bigint, hasLimits: number, lower: bigint, upper: bigint, motorSpeed: bigint, maxTorque: bigint): number;
+  sim_joint_weld(h: number, a: number, b: number, ax: bigint, ay: bigint, bx: bigint, by: bigint, relAngle: bigint): number;
+  sim_joint_remove(h: number, id: number): number;
+  sim_joint_motor(h: number, id: number, speed: bigint, maxTorque: bigint): void;
+  sim_events_len(h: number): number;
+  sim_event_get(h: number, i: number, field: number): number;
+  sim_circlecast(h: number, x: bigint, y: bigint, dx: bigint, dy: bigint, r: bigint, mask: number): number;
+  sim_joint_golden_hash(): bigint;
 }
 
 export interface BodyState {
@@ -101,6 +110,10 @@ export class Sim {
   /** Navigation reference scenario hash; must equal the native value (`0x746c5a608abe2f26`). */
   navGoldenHash(): bigint {
     return this.e.sim_nav_golden_hash();
+  }
+  /** Joint reference scenario hash; must equal the native value (`0x4bcc781a484ceeed`). */
+  jointGoldenHash(): bigint {
+    return this.e.sim_joint_golden_hash();
   }
 
   world(gravity = { x: 0, y: -10 }, tickHz = 60): SimWorld {
@@ -265,5 +278,48 @@ export class SimWorld {
   crowdRestore(bytes: Uint8Array): boolean {
     this.fillBuffer(bytes);
     return this.e.sim_crowd_restore(this.handle) === 1;
+  }
+
+  // ---- joints, contact events, shape casts ----
+  /** Distance joint between local anchors; `minLength < length` allows slack (rope). */
+  jointDistance(a: number, b: number, anchorA: { x: number; y: number }, anchorB: { x: number; y: number }, length: number, minLength = length): number {
+    return this.e.sim_joint_distance(this.handle, a, b, fx(anchorA.x), fx(anchorA.y), fx(anchorB.x), fx(anchorB.y), fx(length), fx(minLength));
+  }
+  /** Pin joint; optional angle limits and motor (`maxTorque > 0` enables it). */
+  jointRevolute(
+    a: number,
+    b: number,
+    anchorA: { x: number; y: number },
+    anchorB: { x: number; y: number },
+    opts: { lower?: number; upper?: number; motorSpeed?: number; maxTorque?: number } = {},
+  ): number {
+    const limits = opts.lower !== undefined && opts.upper !== undefined;
+    return this.e.sim_joint_revolute(
+      this.handle, a, b, fx(anchorA.x), fx(anchorA.y), fx(anchorB.x), fx(anchorB.y),
+      limits ? 1 : 0, fx(opts.lower ?? 0), fx(opts.upper ?? 0), fx(opts.motorSpeed ?? 0), fx(opts.maxTorque ?? 0),
+    );
+  }
+  jointWeld(a: number, b: number, anchorA: { x: number; y: number }, anchorB: { x: number; y: number }, relAngle = 0): number {
+    return this.e.sim_joint_weld(this.handle, a, b, fx(anchorA.x), fx(anchorA.y), fx(anchorB.x), fx(anchorB.y), fx(relAngle));
+  }
+  removeJoint(id: number): boolean {
+    return this.e.sim_joint_remove(this.handle, id) === 1;
+  }
+  setMotor(joint: number, speed: number, maxTorque: number) {
+    this.e.sim_joint_motor(this.handle, joint, fx(speed), fx(maxTorque));
+  }
+  /** Contact begin/end events from the last `step()`. */
+  events(): { a: number; b: number; begin: boolean }[] {
+    const n = this.e.sim_events_len(this.handle);
+    const out = [];
+    for (let i = 0; i < n; i++) out.push({ a: this.e.sim_event_get(this.handle, i, 0), b: this.e.sim_event_get(this.handle, i, 1), begin: this.e.sim_event_get(this.handle, i, 2) === 1 });
+    return out;
+  }
+  /** Sweep a circle along `dir`; same result shape as `raycast()`. */
+  circleCast(from: { x: number; y: number }, dir: { x: number; y: number }, radius: number, mask = 0xffffffff) {
+    const r = this.e.sim_circlecast(this.handle, fx(from.x), fx(from.y), fx(dir.x), fx(dir.y), fx(radius), mask >>> 0);
+    if (!r) return null;
+    const g = (i: number) => num(this.e.sim_ray_get(i));
+    return { body: r - 1, fraction: g(0), point: { x: g(1), y: g(2) }, normal: { x: g(3), y: g(4) } };
   }
 }

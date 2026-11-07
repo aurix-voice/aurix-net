@@ -57,3 +57,20 @@ test("sim wasm: navigation golden hash and crowd walk", async () => {
   assert.ok(Math.hypot(s.x - 7.5, s.y - 0.5) < 0.5, `agent at ${s.x},${s.y}`);
   w.free();
 });
+
+test("sim wasm: joints golden hash, contact events and circle cast", async () => {
+  const sim = await Sim.load(await readFile(WASM));
+  assert.equal(sim.jointGoldenHash(), 0x4bcc781a484ceeedn);
+  const w = sim.world({ x: 0, y: -10 }, 60);
+  const floor = w.addBox(BodyKind.Static, 0, -0.5, 10, 0.5);
+  const ball = w.addCircle(BodyKind.Dynamic, 0, 2, 0.5);
+  let begins = 0;
+  for (let i = 0; i < 120; i++) {
+    w.step();
+    begins += w.events().filter((e) => e.begin && ((e.a === ball && e.b === floor) || (e.a === floor && e.b === ball))).length;
+  }
+  assert.ok(begins >= 1, "ball/floor contact begin reported");
+  const hit = w.circleCast({ x: -5, y: 0.5 }, { x: 10, y: 0 }, 0.4);
+  assert.ok(hit && hit.body === ball && Math.abs(hit.point.x - -0.9) < 0.01, `circle cast ${JSON.stringify(hit)}`);
+  w.free();
+});
