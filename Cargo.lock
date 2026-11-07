@@ -1912,6 +1912,7 @@ dependencies = [
  "bytes",
  "net-client",
  "net-common",
+ "net-sim-wasm",
  "parking_lot",
  "serde_json",
  "tokio",
