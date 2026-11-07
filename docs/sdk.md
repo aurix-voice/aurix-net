@@ -6,7 +6,6 @@
 | C ABI | `crates/net-ffi` (`libaurix_net`, `include/aurix_net.h`) | via Rust client | verified (`ctest/echo.c`) |
 | C++ (header-only) | `sdk/cpp/aurix_net.hpp` | via C ABI | verified (`echo_test.cpp`) |
 | Unity (UPM) | `sdk/unity` | P/Invoke over C ABI | written, needs an editor/dotnet build check |
-| Unreal plugin | `sdk/unreal/AurixNet` | C++ wrapper over C ABI | written, needs UE build check |
 | Godot 4 GDExtension | `sdk/godot` | C++ wrapper over C ABI | written, needs godot-cpp build check |
 | Web (`@aurix/net`) | `sdk/web` | WS control + WS tunnel (WebTransport next) | verified (`npm test`) |
 

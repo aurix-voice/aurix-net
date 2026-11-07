@@ -1,4 +1,4 @@
-// Header-only C++17 wrapper over libaurix_net (aurix_net.h). Used by the Unreal and Godot SDKs.
+// Header-only C++17 wrapper over libaurix_net (aurix_net.h). Used by the Godot SDK.
 #pragma once
 #include "aurix_net.h"
 #include <cstdint>
