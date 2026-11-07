@@ -169,3 +169,9 @@ CLI: `aurix-net modules | module-put <name> <file> | module-delete <name>`.
 `GET /healthz` answers 503 `{"ok":false,"draining":true}` while the node shuts down; players
 in its rooms get `left{reason:"rehost"}` and rejoin the same room name on any node.
 `GET /metrics` requires `Authorization: Bearer <server.metrics_token>` when that is set.
+
+## Audit log
+
+Every admin/operator mutation writes a row to the `audit` table (`actor` is `key:<api key id>` or
+`operator`): `project.create`, `project.limits`, `key.create`, `key.revoke`, `webhook.create`,
+`webhook.delete`, `module.put`, `module.delete`. Rows are kept for `retention.audit_days` (90).
