@@ -55,6 +55,7 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | DELETE | `/v1/operator/projects/:id` | operator | soft delete: live rooms closed fleet-wide, all keys revoked, webhooks/modules removed; usage and audit rows stay |
 | GET | `/v1/operator/attention` | operator | what needs a look now: `stale_nodes` (no heartbeat > 30 s), `draining_nodes`, `suspended_projects`, `failing_webhooks` (failed deliveries in the last hour), `rejections` (projects with rejections this hour, by reason) |
 | GET | `/v1/operator/nodes` | operator | all nodes incl. draining |
+| GET | `/v1/operator/nodes/:id/stats` | operator | live process stats of one node (answered by that node): uptime, rooms by mode, players/spectators, control sessions, datagram/byte counters, sync tick avg/p99 ms, overruns, lost deltas, resyncs, desyncs, adopted rooms, RSS |
 | GET | `/v1/internal/rooms/:id/players` | operator | node-to-node: players of a room hosted on this node (used by room detail on other nodes) |
 | DELETE | `/v1/internal/rooms/:id` | operator | node-to-node: close a room hosted on this node |
 | POST | `/v1/internal/drain` | operator | node-to-node: drain/undrain this node |

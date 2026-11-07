@@ -3,7 +3,7 @@ import { useMemo } from "react";
 
 import { useAuth } from "@/auth/AuthProvider";
 
-import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Attention, type Ban, type MatchmakingStats, type PlayerLookup, type RotatedWebhook, type Rejections, type Webhook, type WebhookDelivery } from "./client";
+import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Attention, type Ban, type MatchmakingStats, type NodeStats, type PlayerLookup, type RotatedWebhook, type Rejections, type Webhook, type WebhookDelivery } from "./client";
 
 export function useApi(): NetClient {
   const { token } = useAuth();
@@ -193,6 +193,17 @@ export function usePlayerLookup(playerId: string, projectId?: string) {
     enabled: id.length > 0,
     refetchInterval: 5000,
     queryFn: () => api.get<PlayerLookup>(projectId ? `/v1/operator/projects/${projectId}/players/${encodeURIComponent(id)}` : `/v1/players/${encodeURIComponent(id)}`),
+  });
+}
+/** Live process stats of one node, answered by that node itself. */
+export function useNodeStats(nodeId: string | null) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["node-stats", nodeId],
+    enabled: !!nodeId,
+    refetchInterval: 3000,
+    retry: false,
+    queryFn: () => api.get<NodeStats>(`/v1/operator/nodes/${nodeId}/stats`),
   });
 }
 export function useAttention() {

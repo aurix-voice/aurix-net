@@ -277,3 +277,12 @@ test("operator rotates a webhook secret from the project page", async ({ page })
   expect(shown.trim()).not.toBe(oldSecret);
   expect(shown.trim().length).toBeGreaterThan(20);
 });
+
+test("operator opens live stats of a node", async ({ page }) => {
+  await page.goto("/nodes");
+  await page.getByRole("button", { name: "Live stats" }).first().click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText("Control sessions")).toBeVisible();
+  await expect(dialog.getByText("Memory (RSS)")).toBeVisible();
+  await expect(dialog.getByText(/\d+ MB/)).toBeVisible();
+});

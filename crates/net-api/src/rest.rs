@@ -91,6 +91,8 @@ pub fn router(st: Shared) -> Router {
             get(op_player_lookup),
         )
         .route("/v1/internal/players/:player_id", get(internal_find_player))
+        .route("/v1/internal/stats", get(internal_stats))
+        .route("/v1/operator/nodes/:id/stats", get(op_node_stats))
         .route(
             "/v1/operator/projects/:id/webhooks/:wid",
             delete(op_delete_webhook),
@@ -551,6 +553,103 @@ fn local_players(st: &Shared, id: Uuid) -> Option<Vec<Value>> {
             .map(|p| json!({"actor": p.actor, "player_id": p.player_id, "name": p.name, "online": p.online}))
             .collect()
     })
+}
+
+/// Live statistics of this process for the operator console: what the node is doing right now,
+/// not what Postgres remembers about it.
+fn local_stats(st: &Shared) -> Value {
+    let mut by_mode: std::collections::BTreeMap<String, u32> = Default::default();
+    let mut players = 0usize;
+    let mut spectators = 0usize;
+    for r in st.host.all() {
+        let g = r.lock();
+        *by_mode
+            .entry(format!("{:?}", g.room.cfg.mode).to_lowercase())
+            .or_default() += 1;
+        players += g.room.online_count() as usize;
+        spectators += g.room.player_infos().iter().filter(|p| p.spectator).count();
+    }
+    let m = &st.metrics;
+    let tick = m.sync_tick.get_sample_count();
+    let tick_avg_ms = if tick > 0 {
+        m.sync_tick.get_sample_sum() / tick as f64 * 1000.0
+    } else {
+        0.0
+    };
+    let tick_p99_ms = {
+        use prometheus::core::Metric as _;
+        let proto = m.sync_tick.metric();
+        let h = proto.get_histogram();
+        let total = h.get_sample_count();
+        let mut p99 = 0.0;
+        if total > 0 {
+            let target = (total as f64 * 0.99).ceil() as u64;
+            for b in h.get_bucket() {
+                if b.get_cumulative_count() >= target {
+                    p99 = b.get_upper_bound() * 1000.0;
+                    break;
+                }
+            }
+        }
+        p99
+    };
+    let rss_mb = std::fs::read_to_string("/proc/self/statm")
+        .ok()
+        .and_then(|s| {
+            s.split_whitespace()
+                .nth(1)
+                .and_then(|p| p.parse::<u64>().ok())
+        })
+        .map(|pages| pages * 4096 / 1_048_576);
+    json!({
+        "node_id": st.node_id,
+        "version": env!("CARGO_PKG_VERSION"),
+        "region": st.region,
+        "uptime_secs": st.started.elapsed().as_secs(),
+        "draining": st.is_draining(),
+        "rooms": st.host.len(),
+        "rooms_by_mode": by_mode,
+        "players": players,
+        "spectators": spectators,
+        "control_sessions": m.control_sessions.get(),
+        "datagrams_in": m.datagrams_in.get(),
+        "datagrams_out": m.datagrams_out.get(),
+        "bytes_in": m.bytes_in.get(),
+        "bytes_out": m.bytes_out.get(),
+        "sync_ticks": tick,
+        "sync_tick_avg_ms": tick_avg_ms,
+        "sync_tick_p99_ms": tick_p99_ms,
+        "tick_overruns": m.tick_overruns.get(),
+        "sync_lost_deltas": m.sync_lost_deltas.get(),
+        "sync_resyncs": m.sync_resyncs.get(),
+        "lockstep_desyncs": m.lockstep_desyncs.get(),
+        "rooms_adopted": m.rooms_adopted.get(),
+        "rss_mb": rss_mb,
+    })
+}
+
+async fn internal_stats(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    Ok(Json(local_stats(&st)))
+}
+
+/// Live stats of any node: answered locally for this node, fetched from the node otherwise.
+async fn op_node_stats(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    if id == st.node_id.0 {
+        return Ok(Json(local_stats(&st)));
+    }
+    let n = st
+        .registry
+        .get(net_common::NodeId::from_uuid(id))
+        .ok_or_else(|| NetError::NotFound("node is not live".into()))?;
+    Ok(Json(
+        internal_get(&st, &n.http_url, "/v1/internal/stats").await?,
+    ))
 }
 
 fn local_find_player(st: &Shared, project: ProjectId, player_id: &str) -> Vec<Value> {

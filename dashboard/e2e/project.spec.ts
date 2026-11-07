@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { api, cleanupProjects, pinEnglish, uniq } from "./env";
+import { api, cleanupProjects, pinEnglish, signIn, uniq } from "./env";
 
 test.beforeEach(async ({ page }) => pinEnglish(page));
 test.afterEach(async ({ page }) => cleanupProjects(page));
@@ -35,4 +35,17 @@ test.describe("project API key session", () => {
     await page.goto("/projects");
     await expect(page.getByText(/operator/i).first()).toBeVisible();
   });
+});
+
+test("a project-key session can open the audit log of its own project", async ({ page }) => {
+  const project = await api<{ project: { id: string }; key: { key: string } }>(page, "POST", "/v1/operator/projects", { name: uniq("e2e-kaudit") });
+  await api(page, "POST", `/v1/operator/projects/${project.project.id}/keys`, { name: "audited", scopes: ["read"] });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Session" }).click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
+  await page.waitForURL((u) => u.pathname.startsWith("/login"));
+  await signIn(page, project.key.key);
+  await page.goto("/audit");
+  await expect(page.getByRole("heading", { name: /Audit/ })).toBeVisible();
+  await expect(page.getByRole("row").filter({ hasText: "key.create" }).first()).toBeVisible();
 });

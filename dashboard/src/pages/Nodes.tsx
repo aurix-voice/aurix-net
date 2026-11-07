@@ -9,6 +9,7 @@ import { fmtDateTimeShort, fmtNumber, fmtPercent, fmtRelative } from "@/lib/form
 import { nodeStale } from "@/lib/rooms";
 import { PageHeader } from "@/ui/Page";
 import { Button } from "@/ui/Button";
+import { NodeStatsDialog } from "@/components/NodeStatsDialog";
 import { ConfirmDialog } from "@/ui/Dialog";
 import { Badge, Card, IdChip, Mono, Progress, Tip } from "@/ui/Primitives";
 import { useToast } from "@/ui/Toast";
@@ -22,6 +23,7 @@ export function NodesPage() {
   const toast = useToast();
   const setDraining = useSetNodeDraining();
   const [draining, setDrainingNode] = useState<NodeRow | null>(null);
+  const [inspecting, setInspecting] = useState<NodeRow | null>(null);
   const cols: Column<NodeRow>[] = [
     {
       key: "host",
@@ -92,9 +94,14 @@ export function NodesPage() {
       header: "",
       align: "right",
       cell: (n) => (
-        <Button variant="ghost" size="sm" disabled={nodeStale(n.last_heartbeat)} onClick={() => setDrainingNode(n)}>
-          {n.draining ? t("nodes.undrain") : t("nodes.drain")}
-        </Button>
+        <span className="flex justify-end gap-1">
+          <Button variant="ghost" size="sm" disabled={nodeStale(n.last_heartbeat)} onClick={() => setInspecting(n)}>
+            {t("nodes.stats")}
+          </Button>
+          <Button variant="ghost" size="sm" disabled={nodeStale(n.last_heartbeat)} onClick={() => setDrainingNode(n)}>
+            {n.draining ? t("nodes.undrain") : t("nodes.drain")}
+          </Button>
+        </span>
       ),
     },
   ];
@@ -125,6 +132,7 @@ export function NodesPage() {
       <Card>
         <DataTable rows={nodes.data} columns={cols} rowKey={(n) => n.id} loading={nodes.isLoading} error={nodes.error} />
       </Card>
+      <NodeStatsDialog node={inspecting} onClose={() => setInspecting(null)} />
       <ConfirmDialog
         open={draining !== null}
         onOpenChange={(o) => {

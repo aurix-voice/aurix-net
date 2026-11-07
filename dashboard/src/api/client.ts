@@ -261,6 +261,31 @@ export interface PlayerLookup {
   audit: AuditRow[];
   unreachable_nodes: { node_id: string; http_url: string }[];
 }
+export interface NodeStats {
+  node_id: string;
+  version: string;
+  region: string;
+  uptime_secs: number;
+  draining: boolean;
+  rooms: number;
+  rooms_by_mode: Record<string, number>;
+  players: number;
+  spectators: number;
+  control_sessions: number;
+  datagrams_in: number;
+  datagrams_out: number;
+  bytes_in: number;
+  bytes_out: number;
+  sync_ticks: number;
+  sync_tick_avg_ms: number;
+  sync_tick_p99_ms: number;
+  tick_overruns: number;
+  sync_lost_deltas: number;
+  sync_resyncs: number;
+  lockstep_desyncs: number;
+  rooms_adopted: number;
+  rss_mb: number | null;
+}
 export interface Attention {
   stale_nodes: { id: string; public_host: string; quic_port: number; region: string; last_heartbeat: string }[];
   draining_nodes: { id: string; public_host: string; quic_port: number; region: string; rooms: number }[];
