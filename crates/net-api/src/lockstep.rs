@@ -26,9 +26,12 @@
 //! a joiner had to replay from a stale one, so catch-up stays bounded without any host
 //! migration or peer-to-peer state transfer.
 
+use crate::sync::GameLogic;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use net_common::types::{ActorId, Tick};
-use net_rollback::{Journal, TickInputs};
+use net_rollback::{hash_bytes, Journal, TickInputs};
+use net_sim::{EntityId, Frame, FrameConfig};
+use net_wire::Schema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
@@ -90,6 +93,67 @@ pub struct LockstepRoom {
     spectators: BTreeSet<ActorId>,
     past: VecDeque<Bytes>,
     pub spectator_delay: u32,
+    /// Server-stepped simulation (room prop `logic`): its hash is the truth clients are
+    /// compared against, and checkpoints come from it instead of the master.
+    sim: Option<ServerSim>,
+    server_hashes: BTreeMap<u32, u64>,
+    /// Actors that have appeared in a bundle (see `tick`).
+    seen: BTreeSet<ActorId>,
+}
+
+/// Ticks between server state hashes; matches `RollbackConfig::default().hash_every`.
+pub const SERVER_HASH_EVERY: u32 = 10;
+
+/// The game logic stepped on the node over the canonical input journal. Rule shared with
+/// clients: an actor's avatar is spawned (`on_join`) at the first tick it appears in a bundle;
+/// the hash is `hash_bytes(frame.snapshot())` after the tick's inputs were applied.
+pub struct ServerSim {
+    pub frame: Frame,
+    pub logic: Box<dyn GameLogic>,
+    avatars: BTreeMap<ActorId, Option<EntityId>>,
+}
+
+impl ServerSim {
+    pub fn new(frame: Frame, logic: Box<dyn GameLogic>) -> Self {
+        Self {
+            frame,
+            logic,
+            avatars: BTreeMap::new(),
+        }
+    }
+
+    pub fn step(&mut self, inputs: &TickInputs) {
+        for a in inputs.keys() {
+            if !self.avatars.contains_key(a) {
+                // After a restore the avatar already exists in the frame: re-link, do not spawn.
+                let existing = self
+                    .frame
+                    .entities()
+                    .find(|e| e.owner == Some(*a))
+                    .map(|e| e.id);
+                let av = existing.or_else(|| self.logic.on_join(&mut self.frame, *a));
+                self.avatars.insert(*a, av);
+            }
+        }
+        let step: Vec<(ActorId, Option<EntityId>, Vec<u8>, bool)> = self
+            .avatars
+            .iter()
+            .map(|(a, av)| {
+                (
+                    *a,
+                    *av,
+                    inputs.get(a).cloned().unwrap_or_default(),
+                    inputs.contains_key(a),
+                )
+            })
+            .collect();
+        let logic = &mut self.logic;
+        self.frame.advance(|f| logic.step(f, &step));
+    }
+
+    pub fn hash(&self) -> u64 {
+        hash_bytes(&self.frame.snapshot())
+    }
 }
 
 /// Desyncs after which an actor's results should not be trusted (its hash keeps disagreeing).
@@ -115,7 +179,56 @@ impl LockstepRoom {
             spectators: BTreeSet::new(),
             past: VecDeque::new(),
             spectator_delay: hz.clamp(8, 128) as u32 * 3,
+            sim: None,
+            server_hashes: BTreeMap::new(),
+            seen: BTreeSet::new(),
         }
+    }
+
+    /// Runs `logic` on the node from the last checkpoint (or tick 0) through the journal to the
+    /// current tick; from here on hashes and checkpoints are the server's.
+    pub fn attach_sim(&mut self, schema: Schema, logic: Box<dyn GameLogic>) -> Result<(), String> {
+        let frame = Frame::new(
+            schema,
+            FrameConfig {
+                tick_hz: self.hz,
+                ..Default::default()
+            },
+            self.seed,
+        );
+        let mut sim = ServerSim::new(frame, logic);
+        let start = match &self.checkpoint {
+            Some(c) => {
+                sim.frame.restore(&c.state).map_err(|e| e.to_string())?;
+                // Every owned entity is somebody's avatar: keep stepping them like before.
+                let owned: Vec<(ActorId, EntityId)> = sim
+                    .frame
+                    .entities()
+                    .filter_map(|e| e.owner.map(|o| (o, e.id)))
+                    .collect();
+                for (o, id) in owned {
+                    sim.avatars.entry(o).or_insert(Some(id));
+                }
+                c.tick
+            }
+            None if self.journal.tick(Tick(0)).is_some() || self.tick.0 == 0 => 0,
+            None => return Err("no checkpoint and journal does not start at 0".into()),
+        };
+        let empty = TickInputs::new();
+        for t in start..self.tick.0 {
+            sim.step(self.journal.tick(Tick(t)).unwrap_or(&empty));
+        }
+        self.sim = Some(sim);
+        self.server_hashes.clear();
+        Ok(())
+    }
+
+    pub fn has_sim(&self) -> bool {
+        self.sim.is_some()
+    }
+
+    pub fn server_hash(&self, tick: u32) -> Option<u64> {
+        self.server_hashes.get(&tick).copied()
     }
 
     /// Delay of the spectator stream in seconds (default 3, against stream sniping).
@@ -234,6 +347,9 @@ impl LockstepRoom {
 
     /// Called once per tick after [`tick`]: a `CheckpointReq` frame for the master, if due.
     pub fn checkpoint_request(&mut self) -> Option<Bytes> {
+        if self.sim.is_some() {
+            return None;
+        }
         self.master?;
         let t = self.tick.0;
         let periodic = t > 0 && t.is_multiple_of(self.checkpoint_every());
@@ -435,7 +551,13 @@ impl LockstepRoom {
                 }
                 let t = payload.get_u32();
                 let h = payload.get_u64();
-                if t < self.tick.0 && self.tick.0 - t <= 600 {
+                if self.sim.is_some() {
+                    if let Some(&sh) = self.server_hashes.get(&t) {
+                        if h != sh {
+                            self.desyncs.push((t, actor));
+                        }
+                    }
+                } else if t < self.tick.0 && self.tick.0 - t <= 600 {
                     self.hashes.entry(t).or_default().insert(actor, h);
                     self.check_hashes(t);
                 }
@@ -443,7 +565,8 @@ impl LockstepRoom {
             }
             KIND_CHECKPOINT => {
                 payload.advance(1);
-                if Some(actor) != self.master
+                if self.sim.is_some()
+                    || Some(actor) != self.master
                     || payload.len() < 12
                     || payload.len() - 12 > MAX_CHECKPOINT_BYTES
                 {
@@ -507,9 +630,38 @@ impl LockstepRoom {
     /// Returns the datagram to send to every actor (current + redundant bundles).
     pub fn tick(&mut self) -> Bytes {
         let t = self.tick.0;
-        let inputs = self.pending.remove(&t).unwrap_or_default();
+        let mut inputs = self.pending.remove(&t).unwrap_or_default();
+        // A new actor appears in its first bundle even without input, so every simulation
+        // (server and clients) spawns the avatar at the same tick.
+        for a in self.actors.keys() {
+            if self.seen.insert(*a) {
+                inputs.entry(*a).or_default();
+            }
+        }
         for (a, d) in inputs.iter().take(255) {
             self.journal.record(Tick(t), *a, d.clone());
+        }
+        if let Some(sim) = self.sim.as_mut() {
+            sim.step(&inputs);
+            let now = t.wrapping_add(1);
+            let every = (self.hz as u32 * CHECKPOINT_EVERY_SECS).max(1);
+            if now.is_multiple_of(SERVER_HASH_EVERY) || now.is_multiple_of(every) {
+                let h = sim.hash();
+                self.server_hashes.insert(now, h);
+                let cutoff = now.saturating_sub(600);
+                self.server_hashes.retain(|k, _| *k >= cutoff);
+                if now.is_multiple_of(every) {
+                    let state = sim.frame.snapshot();
+                    if state.len() <= MAX_CHECKPOINT_BYTES {
+                        self.checkpoint = Some(Checkpoint {
+                            tick: now,
+                            hash: h,
+                            state: Bytes::from(state),
+                        });
+                        self.want_checkpoint = false;
+                    }
+                }
+            }
         }
         let b = Self::encode_bundle(t, &inputs);
         let bundle = b;
@@ -600,7 +752,7 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0, Tick(0));
         assert_eq!(got[0].1.get(&a), Some(&vec![1]));
-        assert!(!got[0].1.contains_key(&b));
+        assert_eq!(got[0].1.get(&b), Some(&vec![])); // first appearance, no input yet
         let d1 = r.tick();
         let got = LockstepRoom::decode_bundles(d1);
         assert_eq!(got.len(), 2); // redundancy: tick 0 again + tick 1
@@ -821,5 +973,58 @@ mod tests {
             }
         }
         assert_eq!(last, 9);
+    }
+
+    #[test]
+    fn server_sim_is_the_truth_and_survives_restore() {
+        use crate::sync::{ArenaLogic, ARENA_SCHEMA};
+        let schema = Schema::parse(ARENA_SCHEMA).unwrap();
+        let logic = || -> Box<dyn GameLogic> { Box::new(ArenaLogic { speed: 6.0 }) };
+        let mut r = LockstepRoom::new(60, 7);
+        r.attach_sim(schema.clone(), logic()).unwrap();
+        let (a, b) = (ActorId(1), ActorId(2));
+        r.on_join(a);
+        r.on_join(b);
+        // a client mirror steps the same bundles with the same rule
+        let mut mirror = ServerSim::new(
+            Frame::new(
+                schema.clone(),
+                FrameConfig {
+                    tick_hz: 60,
+                    ..Default::default()
+                },
+                7,
+            ),
+            logic(),
+        );
+        let mut mirror_hashes = BTreeMap::new();
+        for t in 0..320u32 {
+            r.handle(a, SyncRoom::encode_input(Tick(t), &[vec![127, 0, 0]]));
+            let dg = r.tick();
+            for (tk, inputs) in LockstepRoom::decode_bundles(dg) {
+                if tk.0 == t {
+                    mirror.step(&inputs);
+                    if (t + 1).is_multiple_of(SERVER_HASH_EVERY) {
+                        mirror_hashes.insert(t + 1, mirror.hash());
+                    }
+                }
+            }
+        }
+        assert_eq!(r.server_hash(320), Some(mirror_hashes[&320]));
+        assert_eq!(r.server_hash(10), Some(mirror_hashes[&10]));
+        assert!(r.checkpoint.as_ref().is_some_and(|c| c.tick == 300));
+        assert!(r.checkpoint_request().is_none());
+        // both clients agree on a wrong hash: a majority vote would pass, the server does not
+        for x in [a, b] {
+            r.handle(x, LockstepRoom::encode_hash(Tick(310), 12345));
+        }
+        assert_eq!(r.take_desyncs(), vec![(310, a), (310, b)]);
+        r.handle(a, LockstepRoom::encode_hash(Tick(310), mirror_hashes[&310]));
+        assert!(r.take_desyncs().is_empty());
+        // re-host: checkpoint at 300 + journal tail resimulated to 320 gives the same hash
+        let snap = r.snapshot();
+        let mut r2 = LockstepRoom::restore(snap);
+        r2.attach_sim(schema, logic()).unwrap();
+        assert_eq!(r2.sim.as_ref().unwrap().hash(), mirror_hashes[&320]);
     }
 }

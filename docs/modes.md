@@ -116,6 +116,16 @@ format (`net-rollback::Replay`): seed + schema hash + inputs per tick reproduces
 Use `net-fpmath` (Q32.32 fixed point, table trig, deterministic RNG) for anything that
 touches game state; never floats.
 
+### Server-verified lockstep
+
+Give a lockstep room the same `logic` module (and `schema`) a sync room would use and the node
+steps it too, over the canonical input journal. Then the node's state hash is the truth: a
+client whose hash differs is desynced even if every client agrees with it, checkpoints for
+late join and failover come from the node (no master upload), and after a node failover the
+new node resimulates the journal tail from the last checkpoint. Clients that want to be
+compared must follow the same rule: an actor's avatar spawns at the first tick it appears in a
+bundle, state is a `net-sim` frame, hash = `hash_bytes(frame.snapshot())` every 10 ticks.
+
 ### Late join and rejoin
 
 A lockstep room never stops for a joiner and never migrates a host. Every

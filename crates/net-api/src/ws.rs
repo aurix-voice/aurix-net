@@ -507,7 +507,7 @@ impl Session {
         if name.is_empty() || name.len() > 64 {
             return Err(NetError::Invalid("room name must be 1..=64 chars".into()));
         }
-        let lockstep = if mode == RoomMode::Lockstep {
+        let mut lockstep = if mode == RoomMode::Lockstep {
             let hz = props.get("tick_hz").and_then(|v| v.as_u64()).unwrap_or(60) as u16;
             let seed = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -533,6 +533,9 @@ impl Session {
         } else {
             None
         };
+        if let Some(ls) = lockstep.as_mut() {
+            attach_lockstep_sim(&self.st, g.project, &props, ls).await?;
+        }
         if let Some(r) = region.as_deref() {
             if r != self.st.region.as_str() {
                 return Err(NetError::Conflict(format!(
@@ -1072,6 +1075,24 @@ pub async fn build_sync(
 ) -> Result<crate::sync::SyncRoom> {
     let schema = props.get("schema").and_then(|v| v.as_str());
     let hz = props.get("tick_hz").and_then(|v| v.as_u64()).unwrap_or(60) as u16;
+    let logic = load_logic(st, project, props, seed).await?;
+    crate::sync::SyncRoom::with_logic(
+        schema,
+        hz,
+        seed,
+        crate::sync::SyncRoom::replication_from_props(props),
+        logic,
+    )
+    .map_err(|e| NetError::Invalid(format!("schema: {e}")))
+}
+
+/// Project WASM module named by room prop `logic` (`PUT /v1/modules/:name`), if any.
+pub async fn load_logic(
+    st: &Shared,
+    project: ProjectId,
+    props: &Map<String, Value>,
+    seed: u64,
+) -> Result<Option<Box<dyn crate::sync::GameLogic>>> {
     let logic: Option<Box<dyn crate::sync::GameLogic>> =
         match props.get("logic").and_then(|v| v.as_str()) {
             None => None,
@@ -1090,14 +1111,27 @@ pub async fn build_sync(
                 Some(Box::new(logic))
             }
         };
-    crate::sync::SyncRoom::with_logic(
-        schema,
-        hz,
-        seed,
-        crate::sync::SyncRoom::replication_from_props(props),
-        logic,
+    Ok(logic)
+}
+
+/// Lockstep rooms with a `logic` module run it on the node too (server-verified lockstep).
+pub async fn attach_lockstep_sim(
+    st: &Shared,
+    project: ProjectId,
+    props: &Map<String, Value>,
+    ls: &mut crate::lockstep::LockstepRoom,
+) -> Result<()> {
+    let Some(logic) = load_logic(st, project, props, ls.seed).await? else {
+        return Ok(());
+    };
+    let schema = net_wire::Schema::parse(
+        props
+            .get("schema")
+            .and_then(|v| v.as_str())
+            .unwrap_or(crate::sync::ARENA_SCHEMA),
     )
-    .map_err(|e| NetError::Invalid(format!("schema: {e}")))
+    .map_err(|e| NetError::Invalid(format!("schema: {e}")))?;
+    ls.attach_sim(schema, logic).map_err(NetError::Invalid)
 }
 
 /// What a node writes to Redis every few seconds per sync/lockstep room so that any other
@@ -1227,6 +1261,11 @@ pub async fn adopt_room(
                 3,
             ) as u32),
         );
+    }
+    if let Some(ls) = lockstep.as_mut() {
+        if let Err(e) = attach_lockstep_sim(st, project, &props, ls).await {
+            tracing::warn!(room = %room_id, error = %e, "server sim not attached after adoption");
+        }
     }
     let h = st.host.insert(project, room);
     if let Some(sy) = sync {
