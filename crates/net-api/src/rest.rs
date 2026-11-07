@@ -73,6 +73,7 @@ pub fn router(st: Shared) -> Router {
             get(op_list_projects).post(op_create_project),
         )
         .route("/v1/operator/projects/:id/keys", post(op_create_key))
+        .route("/v1/operator/projects/:id/grants", post(op_create_grant))
         .route("/v1/operator/projects/:id/keys/:kid", delete(op_revoke_key))
         .route("/v1/operator/projects/:id/limits", post(op_set_limits))
         .route("/v1/operator/projects/:id/suspend", post(op_set_suspended))
@@ -522,6 +523,55 @@ async fn create_grant(
         req.meta,
         req.ttl_secs,
     )?;
+    Ok(Json(
+        json!({"grant": token, "expires_at": claims.exp, "player_id": claims.sub}),
+    ))
+}
+
+/// Operator issues a short-lived test grant for a project (debugging a client without holding
+/// the project's API key). Same checks as the key path (suspended, banned); the token is never
+/// written to the audit log, only who/what/for how long.
+async fn op_create_grant(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<GrantReq>,
+) -> ApiResult<Json<Value>> {
+    let op = operator(&st, &h).await?;
+    let prow = queries::get_project(&st.pool, id).await?;
+    if prow.disabled_at.is_some() {
+        return Err(NetError::Forbidden("project is suspended".into()).into());
+    }
+    if !valid_player_id(&req.player_id) {
+        return Err(NetError::Invalid("player_id: 1..=128 chars".into()).into());
+    }
+    if let Some(b) = queries::get_ban(&st.pool, id, &req.player_id).await? {
+        return Err(NetError::Forbidden(ban_message(&b)).into());
+    }
+    let scopes: Vec<&str> = req
+        .scopes
+        .as_ref()
+        .map(|v| v.iter().map(String::as_str).collect())
+        .unwrap_or_else(|| vec!["join", "create"]);
+    let ttl = req.ttl_secs.unwrap_or(300).min(3600);
+    let (token, claims) = st.grants.issue(
+        ProjectId::from_uuid(id),
+        &req.player_id,
+        &req.name,
+        req.room.as_deref(),
+        &scopes,
+        req.meta,
+        Some(ttl),
+    )?;
+    audit_log(
+        &st,
+        Some(id),
+        &op.actor,
+        "grant.issue",
+        &req.player_id,
+        json!({"scopes": scopes, "room": req.room, "ttl_secs": ttl}),
+    )
+    .await;
     Ok(Json(
         json!({"grant": token, "expires_at": claims.exp, "player_id": claims.sub}),
     ))

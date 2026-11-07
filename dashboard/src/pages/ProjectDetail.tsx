@@ -8,6 +8,7 @@ import { BansPanel } from "@/components/BansPanel";
 import { ConnectCard } from "@/components/ConnectCard";
 import { MatchmakingQueue } from "@/components/MatchmakingQueue";
 import { NoticeDialog } from "@/components/NoticeDialog";
+import { TestGrantDialog } from "@/components/TestGrantDialog";
 import { PlayerLookup } from "@/components/PlayerLookup";
 import { RotateWebhookDialog } from "@/components/RotateWebhook";
 import { RejectionsCard } from "@/components/RejectionsCard";
@@ -98,6 +99,7 @@ function ProjectBody() {
   const [inspecting, setInspecting] = useState<Webhook | null>(null);
   const [rotating, setRotating] = useState<Webhook | null>(null);
   const [noticing, setNoticing] = useState(false);
+  const [granting, setGranting] = useState(false);
   const navigate = useNavigate();
   const [deletingProject, setDeletingProject] = useState(false);
   const [confirmName, setConfirmName] = useState("");
@@ -131,6 +133,7 @@ function ProjectBody() {
             <Button variant="ghost" size="sm" className="text-danger" onClick={() => setDeletingProject(true)}>
               {t("projects.delete")}
             </Button>
+            <Button variant="secondary" size="sm" onClick={() => setGranting(true)}>{t("grant.title")}</Button>
             <Button variant="secondary" size="sm" onClick={() => setNoticing(true)}>{t("notice.title")}</Button>
             <Button variant={p.disabled_at ? "secondary" : "ghost"} size="sm" onClick={() => setSuspending(true)}>
               {p.disabled_at ? t("projects.resume") : t("projects.suspend")}
@@ -152,6 +155,7 @@ function ProjectBody() {
       <WebhookDeliveriesDialog webhook={inspecting} projectId={p.id} onClose={() => setInspecting(null)} />
       <RotateWebhookDialog webhook={rotating} onClose={() => setRotating(null)} projectId={p.id} />
       <NoticeDialog open={noticing} onOpenChange={setNoticing} projectId={p.id} />
+      <TestGrantDialog open={granting} onOpenChange={setGranting} projectId={p.id} endpoint={regions.data?.find((r) => r.endpoints.length)?.endpoints[0]} />
       <ConfirmDialog
         open={deletingProject}
         onOpenChange={(o) => {

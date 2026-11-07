@@ -331,3 +331,15 @@ test("operator exports the audit log as CSV", async ({ page }) => {
   const text = await fs.readFile((await download.path()), "utf8");
   expect(text.split("\n")[0]).toBe("id,created_at,project_id,actor,action,target,details");
 });
+
+test("operator issues a test grant from the project page", async ({ page }) => {
+  const project = await api<{ project: { id: string } }>(page, "POST", "/v1/operator/projects", { name: uniq("e2e-grant") });
+  await page.goto(`/projects/${project.project.id}`);
+  await page.getByRole("button", { name: "Test grant" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Player ID").fill("qa-player");
+  await dialog.getByRole("button", { name: "Issue" }).click();
+  await expect(dialog.getByTestId("test-grant")).not.toBeEmpty();
+  const audit = await api<{ audit: { action: string; target: string }[] }>(page, "GET", `/v1/operator/audit?action=grant.issue&project=${project.project.id}`);
+  expect(audit.audit.some((a) => a.target === "qa-player")).toBeTruthy();
+});

@@ -224,6 +224,14 @@ export function useRevokeOperatorToken() {
   const qc = useQueryClient();
   return useMutation({ mutationFn: (id: string) => api.del(`/v1/operator/tokens/${id}`), onSuccess: () => void qc.invalidateQueries({ queryKey: ["operator-tokens"] }) });
 }
+/** Operator-issued short-lived test grant for a project (debugging a client without the API key). */
+export function useIssueTestGrant(projectId: string) {
+  const api = useApi();
+  return useMutation({
+    mutationFn: (body: { player_id: string; name?: string; room?: string; scopes: string[]; ttl_secs: number }) =>
+      api.post<{ grant: string; expires_at: number; player_id: string }>(`/v1/operator/projects/${projectId}/grants`, body),
+  });
+}
 /** Broadcast a system notice: to one room (any node) or to every live room of a project. */
 export function useNotice() {
   const api = useApi();
