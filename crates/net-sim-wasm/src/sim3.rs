@@ -2,12 +2,16 @@
 //! slot table so 2D and 3D worlds can coexist in one module.
 
 use net_fpmath::{Fx, FxQuat, FxVec3};
-use net_sim_physics3d::{Body, BodyId, BodyKind, Shape, World, WorldConfig};
+use net_sim_physics3d::{
+    Body, BodyId, BodyKind, CharacterController, Joint, JointId, JointKind, Shape, World,
+    WorldConfig,
+};
 use std::cell::RefCell;
 
 struct Slot3 {
     world: World,
     snapshot: Vec<u8>,
+    kcc: Vec<CharacterController>,
 }
 
 thread_local! {
@@ -47,6 +51,7 @@ pub extern "C" fn sim3_world_new(gx: i64, gy: i64, gz: i64, tick_hz: u32) -> u32
     let slot = Slot3 {
         world: World::new(cfg),
         snapshot: Vec::new(),
+        kcc: Vec::new(),
     };
     WORLDS3.with(|w| {
         let mut w = w.borrow_mut();
@@ -453,9 +458,357 @@ pub extern "C" fn sim3_golden_hash() -> u64 {
     hash
 }
 
+// ---- joints and character controller --------------------------------------------------------
+
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn sim3_joint_ball(
+    h: u32,
+    a: u32,
+    b: u32,
+    ax: i64,
+    ay: i64,
+    az: i64,
+    bx: i64,
+    by: i64,
+    bz: i64,
+) -> u32 {
+    with3(h, |s| {
+        s.world
+            .add_joint(Joint::new(
+                BodyId(a),
+                BodyId(b),
+                v3(ax, ay, az),
+                v3(bx, by, bz),
+                JointKind::Ball,
+            ))
+            .0
+    })
+    .unwrap_or(0)
+}
+
+/// Hinge around local axes (ua, ub); `has_limits` != 0 enables [lower, upper]; motor when `max_torque` > 0.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn sim3_joint_hinge(
+    h: u32,
+    a: u32,
+    b: u32,
+    ax: i64,
+    ay: i64,
+    az: i64,
+    bx: i64,
+    by: i64,
+    bz: i64,
+    uax: i64,
+    uay: i64,
+    uaz: i64,
+    ubx: i64,
+    uby: i64,
+    ubz: i64,
+    has_limits: u32,
+    lower: i64,
+    upper: i64,
+    motor_speed: i64,
+    max_torque: i64,
+) -> u32 {
+    with3(h, |s| {
+        s.world
+            .add_joint(Joint::new(
+                BodyId(a),
+                BodyId(b),
+                v3(ax, ay, az),
+                v3(bx, by, bz),
+                JointKind::Hinge {
+                    axis_a: v3(uax, uay, uaz),
+                    axis_b: v3(ubx, uby, ubz),
+                    lower: (has_limits != 0).then_some(Fx(lower)),
+                    upper: (has_limits != 0).then_some(Fx(upper)),
+                    motor_speed: Fx(motor_speed),
+                    max_motor_torque: Fx(max_torque),
+                },
+            ))
+            .0
+    })
+    .unwrap_or(0)
+}
+
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn sim3_joint_distance(
+    h: u32,
+    a: u32,
+    b: u32,
+    ax: i64,
+    ay: i64,
+    az: i64,
+    bx: i64,
+    by: i64,
+    bz: i64,
+    len: i64,
+    min_len: i64,
+) -> u32 {
+    with3(h, |s| {
+        s.world
+            .add_joint(Joint::new(
+                BodyId(a),
+                BodyId(b),
+                v3(ax, ay, az),
+                v3(bx, by, bz),
+                JointKind::Distance {
+                    length: Fx(len),
+                    min_length: Fx(min_len),
+                },
+            ))
+            .0
+    })
+    .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn sim3_joint_remove(h: u32, id: u32) -> u32 {
+    with3(h, |s| s.world.remove_joint(JointId(id)).is_some() as u32).unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn sim3_joint_motor(h: u32, id: u32, speed: i64, max_torque: i64) {
+    with3(h, |s| {
+        if let Some(j) = s.world.joint_mut(JointId(id)) {
+            if let JointKind::Hinge {
+                motor_speed,
+                max_motor_torque,
+                ..
+            } = &mut j.kind
+            {
+                *motor_speed = Fx(speed);
+                *max_motor_torque = Fx(max_torque);
+            }
+        }
+    });
+}
+
+/// Hinge angle in radians (raw Fx), 0 for other joints.
+#[no_mangle]
+pub extern "C" fn sim3_hinge_angle(h: u32, id: u32) -> i64 {
+    with3(h, |s| {
+        s.world.hinge_angle(JointId(id)).map(|a| a.0).unwrap_or(0)
+    })
+    .unwrap_or(0)
+}
+
+/// Capsule character controller over a kinematic capsule body; returns its index.
+#[no_mangle]
+pub extern "C" fn sim3_kcc_new(
+    h: u32,
+    body: u32,
+    step_height: i64,
+    min_ground_ny: i64,
+    snap: i64,
+) -> u32 {
+    with3(h, |s| {
+        let mut k = CharacterController::new(BodyId(body));
+        k.step_height = Fx(step_height);
+        k.min_ground_normal_y = Fx(min_ground_ny);
+        k.snap_distance = Fx(snap);
+        s.kcc.push(k);
+        (s.kcc.len() - 1) as u32
+    })
+    .unwrap_or(0)
+}
+
+/// Move the controller by (dx, dy, dz) this tick; returns grounded (1/0). Read the body for position.
+#[no_mangle]
+pub extern "C" fn sim3_kcc_move(h: u32, k: u32, dx: i64, dy: i64, dz: i64) -> u32 {
+    with3(h, |s| {
+        let Some(kcc) = s.kcc.get_mut(k as usize) else {
+            return 0;
+        };
+        kcc.step(&mut s.world, v3(dx, dy, dz));
+        kcc.grounded as u32
+    })
+    .unwrap_or(0)
+}
+
+/// Controller state: 0..=2 ground normal, 3..=5 velocity, 6 grounded, 7 ground body (+1, 0 = none).
+#[no_mangle]
+pub extern "C" fn sim3_kcc_get(h: u32, k: u32, field: u32) -> i64 {
+    with3(h, |s| {
+        s.kcc
+            .get(k as usize)
+            .map(|c| match field {
+                0 => c.ground_normal.x.0,
+                1 => c.ground_normal.y.0,
+                2 => c.ground_normal.z.0,
+                3 => c.velocity.x.0,
+                4 => c.velocity.y.0,
+                5 => c.velocity.z.0,
+                6 => c.grounded as i64,
+                _ => c.ground_body.map(|b| b.0 as i64 + 1).unwrap_or(0),
+            })
+            .unwrap_or(0)
+    })
+    .unwrap_or(0)
+}
+
+/// 3D joint/character reference scenario: ball pendulum, rope, limited hinge door, motor wheel and
+/// a capsule character walking over a step into a wall; 300 ticks. Equal on native and wasm32.
+#[no_mangle]
+pub extern "C" fn sim3_joint_golden_hash() -> u64 {
+    let one = Fx::ONE.0;
+    let half = Fx::HALF.0;
+    let f = |v: i32| Fx::from_int(v).0;
+    let h = sim3_world_new(0, f(-10), 0, 60);
+    sim3_add_box(h, 0, 0, -half, 0, f(20), half, f(20), one);
+    let anchor = sim3_add_sphere(h, 0, 0, f(10), 0, Fx::from_ratio(1, 10).0, one);
+    let bob = sim3_add_sphere(h, 2, f(3), f(10), 0, Fx::from_ratio(1, 4).0, one);
+    sim3_joint_ball(h, anchor, bob, 0, 0, 0, f(-3), 0, 0);
+    let anchor2 = sim3_add_sphere(h, 0, f(10), f(10), 0, Fx::from_ratio(1, 10).0, one);
+    let rope_end = sim3_add_sphere(h, 2, f(10), f(9), 0, Fx::from_ratio(1, 4).0, one);
+    sim3_joint_distance(h, anchor2, rope_end, 0, 0, 0, 0, 0, 0, f(3), 0);
+    let post = sim3_add_box(
+        h,
+        0,
+        f(-10),
+        f(1),
+        0,
+        Fx::from_ratio(1, 10).0,
+        f(1),
+        Fx::from_ratio(1, 10).0,
+        one,
+    );
+    let door = sim3_add_box(
+        h,
+        2,
+        (Fx::from_int(-10) + Fx::from_ratio(6, 10)).0,
+        f(1),
+        0,
+        half,
+        f(1),
+        Fx::from_ratio(1, 20).0,
+        one,
+    );
+    sim3_joint_hinge(
+        h,
+        post,
+        door,
+        Fx::from_ratio(1, 10).0,
+        0,
+        0,
+        -half,
+        0,
+        0,
+        0,
+        one,
+        0,
+        0,
+        one,
+        0,
+        1,
+        0,
+        Fx::HALF_PI.0,
+        0,
+        0,
+    );
+    sim3_apply_impulse(
+        h,
+        door,
+        0,
+        0,
+        f(8),
+        1,
+        (Fx::from_int(-10) + Fx::ONE).0,
+        f(1),
+        0,
+    );
+    let axle = sim3_add_sphere(h, 0, f(20), f(5), 0, Fx::from_ratio(1, 10).0, one);
+    let wheel = sim3_add_sphere(h, 2, f(20), f(5), 0, one, one);
+    sim3_joint_hinge(
+        h,
+        axle,
+        wheel,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        one,
+        0,
+        0,
+        one,
+        0,
+        0,
+        0,
+        f(4),
+        f(50),
+    );
+    sim3_add_box(
+        h,
+        0,
+        f(4),
+        Fx::from_ratio(15, 100).0,
+        f(10),
+        one,
+        Fx::from_ratio(15, 100).0,
+        f(2),
+        one,
+    );
+    sim3_add_box(
+        h,
+        0,
+        f(8),
+        f(1),
+        f(10),
+        Fx::from_ratio(1, 4).0,
+        one,
+        f(2),
+        one,
+    );
+    let hero = sim3_add_capsule(
+        h,
+        1,
+        0,
+        Fx::from_ratio(8, 10).0,
+        f(10),
+        half,
+        Fx::from_ratio(3, 10).0,
+        one,
+    );
+    let k = sim3_kcc_new(
+        h,
+        hero,
+        half,
+        Fx::from_ratio(7, 10).0,
+        Fx::from_ratio(1, 4).0,
+    );
+    let dt = Fx::from_ratio(1, 60);
+    for _ in 0..300 {
+        sim3_kcc_move(
+            h,
+            k,
+            (Fx::from_int(3) * dt).0,
+            (Fx::from_int(-10) * dt).0,
+            0,
+        );
+        sim3_step(h);
+    }
+    let hash = sim3_hash(h) ^ (sim3_hinge_angle(h, 3) as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    sim3_world_free(h);
+    hash
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joint3_golden_is_stable() {
+        let a = sim3_joint_golden_hash();
+        assert_eq!(a, sim3_joint_golden_hash());
+        eprintln!("native 3d joint golden hash: {a:#x}");
+    }
 
     #[test]
     fn golden3_is_stable_and_abi_round_trips() {
