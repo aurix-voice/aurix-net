@@ -5,6 +5,7 @@ import { Client } from "../dist/index.js";
 import WebSocket from "ws";
 if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
 const A = "http://127.0.0.1:8090", B = "http://127.0.0.1:8091", key = process.env.NET_API_KEY;
+if (!key) { console.log("rehost: NET_API_KEY not set, skipping live check"); process.exit(0); }
 async function grant(http, player) {
   const r = await fetch(`${http}/v1/grants`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ player_id: player, name: player }) });
   return (await r.json()).grant;
