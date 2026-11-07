@@ -7,6 +7,7 @@ members = [
     "crates/net-sim",
     "crates/net-sim-nav",
     "crates/net-sim-physics3d",
+    "crates/net-sim-bots",
     "crates/net-sim-physics",
     "crates/net-sim-wasm",
     "crates/net-replication",

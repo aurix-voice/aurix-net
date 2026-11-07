@@ -2045,6 +2045,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "net-sim-bots"
+version = "0.1.0"
+dependencies = [
+ "net-fpmath",
+ "net-sim-nav",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "net-sim-nav"
 version = "0.1.0"
 dependencies = [

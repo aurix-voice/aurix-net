@@ -112,4 +112,10 @@ and wasm32 (CI matrix) — the same vectors shipped to the C# and TS ports.
   (`FxQuat`/`FxMat3` in net-fpmath), raycasts, snapshot/restore/hash; tests run two worlds and
   compare hashes; exposed as `sim3_*` over the flat ABI with Web `Sim3World` / Unity `Sim3World`
   wrappers, golden hash `0x0a9c7e6fc4fa43bf` native == wasm32. Not yet: convex hulls, 3D
-  joints/KCC, bot kit (HFSM/BT).
+  joints/KCC.
+- Bot kit: `net-sim-bots` — data-driven behavior trees (Sequence/Selector/Parallel, Condition/
+  Action by id via the `Brain` trait, Inverter/Succeeder/Repeat/Cooldown/Timeout/Wait, blackboard
+  Compare/Set), hierarchical state machines (parent transitions, on_enter/on_exit, initial
+  children), integer `Blackboard`, tick-based timers, JSON authoring, snapshot/hash, and navmesh
+  glue (`go_to`, `follow_field`, `stop`, `sync_agent`) over `net-sim-nav` crowds. Rust-only for
+  now (runs inside the game's WASM module or on the node); TS/C# ports are not started.
