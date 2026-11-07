@@ -47,3 +47,33 @@ for (auto e = ls.poll(); e.kind != aurix::net::Lockstep::Kind::None; e = ls.poll
 }
 ```
 
+## Predict/rollback on lockstep (zero-lag local input)
+
+Plain lockstep renders a tick only once the node has confirmed everybody's input, so local actions
+show up `input_delay` ticks late. The rollback runner removes that: the game runs ahead of the
+confirmed tick with *predicted* inputs (every remote actor's last confirmed input repeated, your own
+inputs exactly as sent), keeps a snapshot per predicted tick, and when a confirmed tick differs from
+the prediction it restores the snapshot, re-steps that tick and re-predicts the ticks after it. The
+confirmed state only ever sees confirmed inputs, so determinism and hash reports are untouched.
+
+Same core in three SDKs: `net_client::rollback::Rollback<S: Simulation>` (Rust),
+`LockstepRollback<S>` + `Simulation<S>` (Web), `LockstepRollback<TSnapshot>` + `ISimulation<TSnapshot>`
+(C#). Your simulation implements `step(tick, inputs)`, `snapshot()`, `restore(snapshot)`; keep
+snapshots cheap (value copies of the game state) because one is taken per predicted tick.
+
+```ts
+const ls = new LockstepClient((ch, p) => c.sendData(ch, p));
+const rb = new LockstepRollback(game, joined.actor, 0, 8);   // up to 8 predicted ticks
+ls.onTick = (t, inputs) => { if (rb.confirm(t, inputs)) stats.rollbacks++; ls.reportHash(t, game.hash()); };
+ls.onRestore = (t, _h, state) => { game.load(state); rb.reset(t); };
+// per frame
+const tick = ls.sendInput(input); rb.localInput(tick, input);
+rb.predict(ls.serverTick + ls.inputDelay);                    // run up to where our input will land
+render(game);                                                 // predicted state, no input lag
+```
+
+Rollback counters (`rollbacks`, `resimulatedTicks`, `predictedTicks`) tell you how often remote
+players change their input unexpectedly; a high ratio means lower `maxPrediction` or smoothing in
+the view. Hash reports must be computed on the *confirmed* state (inside `onTick`, after
+`confirm`), never on the predicted head.
+

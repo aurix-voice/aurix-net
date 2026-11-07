@@ -110,3 +110,83 @@ function u32(b: Uint8Array, o: number): number { return ((b[o] << 24) | (b[o + 1
 function u64(b: Uint8Array, o: number): bigint { return (BigInt(u32(b, o)) << 32n) | BigInt(u32(b, o + 4)); }
 function w32(b: Uint8Array, o: number, v: number): void { b[o] = v >>> 24; b[o + 1] = (v >>> 16) & 255; b[o + 2] = (v >>> 8) & 255; b[o + 3] = v & 255; }
 function w64(b: Uint8Array, o: number, v: bigint): void { w32(b, o, Number(v >> 32n)); w32(b, o + 4, Number(v & 0xffffffffn)); }
+
+/** The game's deterministic simulation for LockstepRollback: step one tick, snapshot, restore. */
+export interface Simulation<S = unknown> {
+  step(tick: number, inputs: TickInputs): void;
+  snapshot(): S;
+  restore(s: S): void;
+}
+
+/**
+ * Predict/rollback on top of LockstepClient (same core as the Rust/C# SDKs): the game runs ahead of
+ * the confirmed tick with predicted remote inputs (each actor's last confirmed input, repeated) and
+ * its own inputs as sent, keeps a snapshot per predicted tick, and when a confirmed tick differs from
+ * the prediction restores the snapshot, re-steps it and re-predicts the ticks after it.
+ */
+export class LockstepRollback<S = unknown> {
+  private confirmed: number; private head: number;
+  private history = new Map<number, S>();
+  private predicted = new Map<number, TickInputs>();
+  private localInputs = new Map<number, Uint8Array>();
+  private lastLocal?: Uint8Array;
+  private lastKnown: TickInputs = new Map();
+  rollbacks = 0; resimulatedTicks = 0; predictedTicks = 0;
+
+  /** `sim` must be at tick `start` (fresh game, or restored from a catch-up checkpoint). */
+  constructor(private readonly sim: Simulation<S>, private readonly localActor: number, start = 0, public maxPrediction = 8) {
+    this.confirmed = this.head = start; this.history.set(start, sim.snapshot());
+  }
+  /** First tick not yet confirmed by the node. */
+  get confirmedTick(): number { return this.confirmed; }
+  /** Next tick the simulation will run; head - confirmedTick ticks are predicted. */
+  get headTick(): number { return this.head; }
+
+  /** After the game restored a catch-up checkpoint at `tick`: forget every prediction. */
+  reset(tick: number): void {
+    this.history.clear(); this.history.set(tick, this.sim.snapshot()); this.predicted.clear(); this.localInputs.clear();
+    this.confirmed = this.head = tick;
+  }
+  /** Remember the input sent stamped with `tick` (what LockstepClient.sendInput returned) so our own prediction uses exactly it. */
+  localInput(tick: number, input: Uint8Array): void { this.lastLocal = input; this.localInputs.set(tick, input); }
+
+  /** Runs the simulation ahead to `target` (exclusive), bounded by maxPrediction. */
+  predict(target: number): void {
+    target = Math.min(target, this.confirmed + Math.max(1, this.maxPrediction));
+    while (this.head < target) {
+      const t = this.head, inputs = this.guess(t);
+      this.sim.step(t, inputs); this.predicted.set(t, inputs); this.head = t + 1; this.history.set(this.head, this.sim.snapshot()); this.predictedTicks++;
+    }
+  }
+  /** Feeds a confirmed tick (LockstepClient.onTick). Returns true when a rollback happened. */
+  confirm(tick: number, inputs: TickInputs): boolean {
+    if (tick !== this.confirmed) return false;
+    for (const [a, i] of inputs) this.lastKnown.set(a, i);
+    this.localInputs.delete(tick);
+    let rolled = false;
+    if (tick >= this.head) { this.sim.step(tick, inputs); this.head = tick + 1; this.history.set(this.head, this.sim.snapshot()); }
+    else if (!sameInputs(this.predicted.get(tick), inputs)) {
+      rolled = true; this.rollbacks++;
+      this.sim.restore(this.history.get(tick) as S); this.sim.step(tick, inputs); this.history.set(tick + 1, this.sim.snapshot());
+      const oldHead = this.head; this.head = tick + 1;
+      for (const t of [...this.predicted.keys()]) if (t > tick) this.predicted.delete(t);
+      this.resimulatedTicks += oldHead - this.head;
+      this.predict(oldHead);
+    }
+    this.confirmed = tick + 1; this.predicted.delete(tick); this.history.delete(tick);
+    return rolled;
+  }
+
+  private guess(tick: number): TickInputs {
+    const g: TickInputs = new Map(this.lastKnown);
+    const mine = this.localInputs.get(tick) ?? this.lastLocal;
+    if (mine) g.set(this.localActor, mine); else g.delete(this.localActor);
+    return g;
+  }
+}
+
+function sameInputs(a: TickInputs | undefined, b: TickInputs): boolean {
+  if (!a || a.size !== b.size) return false;
+  for (const [k, v] of a) { const w = b.get(k); if (!w || w.length !== v.length) return false; for (let i = 0; i < v.length; i++) if (v[i] !== w[i]) return false; }
+  return true;
+}

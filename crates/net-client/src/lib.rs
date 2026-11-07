@@ -3,6 +3,7 @@
 //! Engine SDKs and the C ABI are thin layers over this crate.
 
 pub mod lockstep;
+pub mod rollback;
 
 use base64::Engine;
 use bytes::Bytes;

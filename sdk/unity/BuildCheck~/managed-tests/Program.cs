@@ -1,6 +1,7 @@
 // Offline unit checks for the managed core (no node needed): `dotnet run`.
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Aurix.Net;
 using Aurix.Net.Managed;
 
@@ -92,10 +93,50 @@ static class Program
         Check(sent[sent.Count - 1].Item2[5] == 2, "two inputs per datagram");
     }
 
+
+    sealed class Toy : ISimulation<(ulong state, int steps)>
+    {
+        public ulong State; public int Steps;
+        public void Step(uint tick, Dictionary<ushort, byte[]> inputs)
+        {
+            foreach (var kv in inputs.OrderBy(k => k.Key)) { ulong b = kv.Value.Length > 0 ? kv.Value[0] : 0UL; unchecked { State = State * 31 + tick * 1000UL + kv.Key * 10UL + b; } }
+            unchecked { State = State * 7 + tick; } Steps++;
+        }
+        public (ulong state, int steps) Snapshot() => (State, Steps);
+        public void Restore((ulong state, int steps) s) { State = s.state; Steps = s.steps; }
+    }
+    static Dictionary<ushort, byte[]> Inputs(params (ushort, byte)[] v) { var d = new Dictionary<ushort, byte[]>(); foreach (var (a, b) in v) d[a] = new[] { b }; return d; }
+    static ulong Reference(List<Dictionary<ushort, byte[]>> script) { var s = new Toy(); for (int t = 0; t < script.Count; t++) s.Step((uint)t, script[t]); return s.State; }
+
+    static void RollbackTests()
+    {
+        var sim = new Toy(); var rb = new LockstepRollback<(ulong, int)>(sim, 1, 0, 8);
+        var script = new List<Dictionary<ushort, byte[]>>(); for (int i = 0; i < 10; i++) script.Add(Inputs((1, 5), (2, 9)));
+        rb.Confirm(0, script[0]); bool rolled = false;
+        for (uint t = 1; t < 10; t++) { rb.LocalInput(t, new byte[] { 5 }); rb.Predict(t + 3); rolled |= rb.Confirm(t, script[(int)t]); }
+        Check(!rolled && rb.Rollbacks == 0 && rb.ConfirmedTick == 10 && rb.HeadTick > rb.ConfirmedTick, "rollback: correct predictions never roll back");
+
+        sim = new Toy(); rb = new LockstepRollback<(ulong, int)>(sim, 1, 0, 8);
+        script.Clear(); for (int i = 0; i < 8; i++) script.Add(Inputs((1, 1), (2, 2)));
+        script[4] = Inputs((1, 1), (2, 7)); script[5] = Inputs((2, 7));
+        for (uint t = 0; t < 8; t++) { rb.LocalInput(t, new byte[] { 1 }); rb.Predict(t + 4); rb.Confirm(t, script[(int)t]); }
+        Check(rb.Rollbacks == 4 && rb.ResimulatedTicks > 0 && rb.HeadTick == 11, "rollback: mispredictions roll back and re-predict (" + rb.Rollbacks + ")");
+        var pure = new Toy(); var rb2 = new LockstepRollback<(ulong, int)>(pure, 1, 0, 8);
+        for (uint t = 0; t < 8; t++) rb2.Confirm(t, script[(int)t]);
+        Check(pure.State == Reference(script), "rollback: confirmed-only run equals pure lockstep");
+
+        sim = new Toy(); rb = new LockstepRollback<(ulong, int)>(sim, 1, 0, 3);
+        rb.Predict(100);
+        Check(rb.HeadTick == 3 && rb.PredictedTicks == 3 && !rb.Confirm(7, Inputs()), "rollback: prediction bounded, out-of-order confirm ignored");
+        rb.Reset(50); rb.Predict(52);
+        Check(rb.ConfirmedTick == 50 && rb.HeadTick == 52, "rollback: reset forgets history");
+    }
+
     static int Main()
     {
         PredictorTests();
         LockstepTests();
+        RollbackTests();
         CodecVectors();
         Console.WriteLine(_fails == 0 ? "all managed checks passed" : _fails + " check(s) failed");
         return _fails == 0 ? 0 : 1;

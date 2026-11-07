@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Soak: relay + sync bots against node B for DURATION seconds while sampling both nodes' live
+# Soak: relay + sync + lockstep bots against node B (WEB_KEY=<project api key> adds a forced desync per batch) for DURATION seconds while sampling both nodes' live
 # stats (RSS, rooms, players, sync tick avg/p99, overruns) every 60 s into a CSV. The point is
 # flat RSS and a flat tick after the first minutes: no leak per room/player churn.
 #   DURATION=3600 ./scripts/soak-test.sh
@@ -24,6 +24,11 @@ sample
   while [ "$(date +%s)" -lt "$end" ]; do
     "$BIN" --http "$B" --operator-token "$TOK" --rooms 2 --players 8 --rate 20 --duration-secs "$BATCH" --tunnel >/dev/null 2>&1 &
     "$BIN" --http "$B" --operator-token "$TOK" --rooms 1 --players 8 --rate 20 --mode sync --duration-secs "$BATCH" >/dev/null 2>&1 &
+    # lockstep room with a late joiner (catch-up) every batch; a web client lying about its hash forces a desync + dumps
+    "$BIN" --http "$B" --operator-token "$TOK" --rooms 1 --players 4 --rate 30 --mode lockstep --tick-hz 30 --late-join-secs 30 --duration-secs "$BATCH" >/dev/null 2>&1 &
+    if [ -n "${WEB_KEY:-}" ] && [ -f "$(dirname "$0")/../sdk/web/test/lockstep-live.test.mjs" ]; then
+        (cd "$(dirname "$0")/../sdk/web" && NET_HTTP="$B" NET_API_KEY="$WEB_KEY" node --test test/lockstep-live.test.mjs >/dev/null 2>&1) &
+    fi
     wait
     sleep 5
   done
