@@ -64,7 +64,7 @@ export class Client {
       const t = setTimeout(() => rej(new Error("timeout")), timeoutMs);
       this.waiters.push((m) => {
         if (ok(m)) { clearTimeout(t); res(m); return true; }
-        if (fail?.(m)) { clearTimeout(t); rej(new Error(`${m.code}: ${m.message}`)); return true; }
+        if (fail?.(m)) { clearTimeout(t); rej(Object.assign(new Error(String(m.message ?? m.code)), { code: m.code })); return true; }
         return false;
       });
     });
