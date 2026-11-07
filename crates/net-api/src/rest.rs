@@ -113,22 +113,46 @@ fn operator(st: &Shared, h: &HeaderMap) -> Result<()> {
     }
 }
 
-async fn healthz(State(st): State<Shared>) -> Json<Value> {
-    Json(json!({
-        "ok": true,
-        "version": env!("CARGO_PKG_VERSION"),
-        "node_id": st.node_id,
-        "region": st.region,
-        "rooms": st.host.len(),
-        "players": st.host.players(),
-        "uptime_secs": st.started.elapsed().as_secs(),
-    }))
+/// Per-key write budget (`limits.writes_per_sec_per_key`).
+fn key_write(st: &Shared, key: &ApiKeyRow) -> Result<()> {
+    if st.guards.key_writes.allow(key.id) {
+        Ok(())
+    } else {
+        Err(NetError::RateLimited)
+    }
 }
 
-async fn metrics(State(st): State<Shared>) -> String {
+async fn healthz(State(st): State<Shared>) -> Response {
+    let draining = st.is_draining();
+    let status = if draining {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
+    (
+        status,
+        Json(json!({
+            "ok": !draining,
+            "draining": draining,
+            "version": env!("CARGO_PKG_VERSION"),
+            "node_id": st.node_id,
+            "region": st.region,
+            "rooms": st.host.len(),
+            "players": st.host.players(),
+            "uptime_secs": st.started.elapsed().as_secs(),
+        })),
+    )
+        .into_response()
+}
+
+async fn metrics(State(st): State<Shared>, h: HeaderMap) -> Response {
+    let want = &st.cfg.server.metrics_token;
+    if !want.is_empty() && !net_auth::admin::admin_token_ok(want, bearer(&h).unwrap_or("")) {
+        return (StatusCode::UNAUTHORIZED, "metrics token required").into_response();
+    }
     st.metrics.rooms.set(st.host.len() as i64);
     st.metrics.players.set(st.host.players() as i64);
-    st.metrics.render()
+    st.metrics.render().into_response()
 }
 
 #[derive(Serialize)]
@@ -207,6 +231,7 @@ async fn create_grant(
     Json(req): Json<GrantReq>,
 ) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Rooms).await?;
+    key_write(&st, &key)?;
     let scopes: Vec<&str> = req
         .scopes
         .as_ref()
@@ -258,6 +283,7 @@ async fn create_room(
     Json(req): Json<CreateRoomReq>,
 ) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Rooms).await?;
+    key_write(&st, &key)?;
     let project = ProjectId::from_uuid(key.project_id);
     if st.host.by_name(project, &req.name).is_some() {
         return Err(NetError::Conflict("room name already in use".into()).into());
@@ -382,6 +408,7 @@ async fn mm_file(
     Json(req): Json<crate::matchmaking::TicketReq>,
 ) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Rooms).await?;
+    key_write(&st, &key)?;
     if req.max_players == 0 || req.min_players == 0 || req.min_players > req.max_players {
         return Err(NetError::Invalid("min_players must be 1..=max_players".into()).into());
     }
@@ -497,6 +524,7 @@ async fn create_key(
     Json(req): Json<KeyReq>,
 ) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Admin).await?;
+    key_write(&st, &key)?;
     Ok(Json(
         issue_key(&st, key.project_id, &req.name, &req.scopes).await?,
     ))
@@ -537,9 +565,8 @@ async fn create_webhook(
     Json(req): Json<WebhookReq>,
 ) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Admin).await?;
-    if !req.url.starts_with("https://") && !req.url.starts_with("http://") {
-        return Err(NetError::Invalid("url must be http(s)".into()).into());
-    }
+    key_write(&st, &key)?;
+    crate::webhooks::validate_webhook_url(&req.url, st.cfg.server.environment == "development")?;
     let secret = ApiKeyMaterial::generate().plaintext;
     let row =
         queries::insert_webhook(&st.pool, key.project_id, &req.url, &secret, &req.events).await?;
@@ -664,6 +691,7 @@ async fn put_module(
     body: axum::body::Bytes,
 ) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Admin).await?;
+    key_write(&st, &key)?;
     if !valid_module_name(&name) {
         return Err(NetError::Invalid("module name: 1..=64 chars [A-Za-z0-9._-]".into()).into());
     }

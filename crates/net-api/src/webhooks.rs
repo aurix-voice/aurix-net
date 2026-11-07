@@ -3,6 +3,8 @@
 //! HMAC-SHA256 of the raw body with the webhook secret. Three attempts with backoff.
 
 use hmac::{Hmac, Mac};
+use net_common::ipnet::is_public_ip;
+use net_common::NetError;
 use net_common::ProjectId;
 use net_db::{queries, DbPool};
 use sha2::Sha256;
@@ -24,9 +26,10 @@ pub struct Dispatcher {
 
 impl Dispatcher {
     /// Starts the worker; returns the handle used to enqueue events.
-    pub fn start(pool: DbPool) -> Self {
+    /// `allow_private`: development only — lets webhooks target loopback/private addresses.
+    pub fn start(pool: DbPool, allow_private: bool) -> Self {
         let (tx, rx) = mpsc::channel(4096);
-        tokio::spawn(worker(pool, rx));
+        tokio::spawn(worker(pool, rx, allow_private));
         Self { tx }
     }
 
@@ -50,9 +53,71 @@ struct Cached {
     hooks: Vec<(String, String, Vec<String>)>,
 }
 
-async fn worker(pool: DbPool, mut rx: mpsc::Receiver<WebhookEvent>) {
+/// Rejects URLs a tenant must not make the node call: non-http(s), credentials in the URL,
+/// loopback/private/link-local hosts (literal or well-known names). Outside development
+/// plain `http://` is refused too.
+pub fn validate_webhook_url(url: &str, allow_private: bool) -> net_common::Result<()> {
+    let u = reqwest::Url::parse(url).map_err(|e| NetError::Invalid(format!("url: {e}")))?;
+    match u.scheme() {
+        "https" => {}
+        "http" if allow_private => {}
+        "http" => return Err(NetError::Invalid("url must be https".into())),
+        _ => return Err(NetError::Invalid("url must be http(s)".into())),
+    }
+    if !u.username().is_empty() || u.password().is_some() {
+        return Err(NetError::Invalid("url must not carry credentials".into()));
+    }
+    let Some(host) = u.host_str() else {
+        return Err(NetError::Invalid("url has no host".into()));
+    };
+    if allow_private {
+        return Ok(());
+    }
+    let literal = host.trim_start_matches('[').trim_end_matches(']');
+    let blocked = match literal.parse::<std::net::IpAddr>() {
+        Ok(ip) => !is_public_ip(ip),
+        Err(_) => {
+            let d = host.trim_end_matches('.').to_ascii_lowercase();
+            d == "localhost"
+                || d.ends_with(".localhost")
+                || d.ends_with(".local")
+                || d.ends_with(".internal")
+                || d.ends_with(".arpa")
+                || !d.contains('.')
+        }
+    };
+    if blocked {
+        return Err(NetError::Invalid("url must point at a public host".into()));
+    }
+    Ok(())
+}
+
+/// Resolves the host right before sending and refuses private answers (DNS rebinding).
+async fn resolves_public(url: &str) -> bool {
+    let Ok(u) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = u
+        .host_str()
+        .map(|h| h.trim_start_matches('[').trim_end_matches(']').to_string())
+    else {
+        return false;
+    };
+    let port = u.port_or_known_default().unwrap_or(443);
+    let target = format!("{host}:{port}");
+    match tokio::net::lookup_host(target).await {
+        Ok(addrs) => {
+            let v: Vec<_> = addrs.collect();
+            !v.is_empty() && v.iter().all(|a| is_public_ip(a.ip()))
+        }
+        Err(_) => false,
+    }
+}
+
+async fn worker(pool: DbPool, mut rx: mpsc::Receiver<WebhookEvent>, allow_private: bool) {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("reqwest");
     let mut cache: HashMap<ProjectId, Cached> = HashMap::new();
@@ -96,6 +161,12 @@ async fn worker(pool: DbPool, mut rx: mpsc::Receiver<WebhookEvent>) {
             let sig = sign(&secret, body.as_bytes());
             let event = ev.event;
             tokio::spawn(async move {
+                if !allow_private
+                    && (validate_webhook_url(&url, false).is_err() || !resolves_public(&url).await)
+                {
+                    tracing::warn!(%url, "webhook target is not a public host; skipped");
+                    return;
+                }
                 for attempt in 0..3u32 {
                     let r = http
                         .post(&url)
@@ -135,5 +206,30 @@ mod tests {
         assert_eq!(s.len(), 7 + 64);
         assert_eq!(s, super::sign("secret", b"{}"));
         assert_ne!(s, super::sign("other", b"{}"));
+    }
+}
+
+#[cfg(test)]
+mod ssrf_tests {
+    use super::validate_webhook_url;
+    #[test]
+    fn ssrf_guard() {
+        for bad in [
+            "http://example.com/hook",
+            "https://127.0.0.1/hook",
+            "https://10.1.2.3/x",
+            "https://169.254.169.254/latest/meta-data",
+            "https://[::1]/x",
+            "https://[fd00::1]/x",
+            "https://localhost/x",
+            "https://db.internal/x",
+            "https://router/x",
+            "https://user:pw@example.com/x",
+            "ftp://example.com/x",
+        ] {
+            assert!(validate_webhook_url(bad, false).is_err(), "{bad}");
+        }
+        assert!(validate_webhook_url("https://hooks.example.com/aurix", false).is_ok());
+        assert!(validate_webhook_url("http://127.0.0.1:9000/dev", true).is_ok());
     }
 }

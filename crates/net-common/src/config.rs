@@ -22,6 +22,13 @@ pub struct ServerConfig {
     /// Hostname clients use to reach this node's data port.
     pub public_host: String,
     pub heartbeat_secs: u64,
+    /// Reverse proxies whose `X-Forwarded-For` is trusted (IPs or CIDRs). Empty = use the
+    /// TCP peer address for every per-IP limit.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
+    /// Bearer token for `GET /metrics`; empty leaves it open (bind it to a private interface).
+    #[serde(default)]
+    pub metrics_token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +76,37 @@ pub struct LimitsConfig {
     pub max_props_bytes: usize,
     pub max_player_props_bytes: usize,
     pub max_cached_events_per_room: usize,
+    /// Concurrent control sessions and data connections per client IP.
+    #[serde(default = "d_sessions_per_ip")]
+    pub max_sessions_per_ip: u32,
+    /// HTTP requests per second per IP (burst 2x).
+    #[serde(default = "d_http_rps")]
+    pub http_rps_per_ip: u32,
+    /// New WebSocket connections per minute per IP.
+    #[serde(default = "d_ws_connects")]
+    pub ws_connects_per_min_per_ip: u32,
+    /// Failed `auth` messages per minute per IP before the IP is refused.
+    #[serde(default = "d_auth_failures")]
+    pub auth_failures_per_min_per_ip: u32,
+    /// Write calls (grants, rooms, tickets, keys, webhooks, modules) per second per API key.
+    #[serde(default = "d_key_writes")]
+    pub writes_per_sec_per_key: u32,
+}
+
+fn d_sessions_per_ip() -> u32 {
+    64
+}
+fn d_http_rps() -> u32 {
+    50
+}
+fn d_ws_connects() -> u32 {
+    60
+}
+fn d_auth_failures() -> u32 {
+    20
+}
+fn d_key_writes() -> u32 {
+    20
 }
 
 pub const DEFAULTS: &str = r#"
@@ -78,6 +116,8 @@ region = "local"
 http_addr = "127.0.0.1:8090"
 public_host = "127.0.0.1"
 heartbeat_secs = 30
+trusted_proxies = []
+metrics_token = ""
 
 [transport]
 quic_addr = "0.0.0.0:7000"
@@ -108,6 +148,11 @@ max_event_bytes = 65536
 max_props_bytes = 16384
 max_player_props_bytes = 4096
 max_cached_events_per_room = 1000
+max_sessions_per_ip = 64
+http_rps_per_ip = 50
+ws_connects_per_min_per_ip = 60
+auth_failures_per_min_per_ip = 20
+writes_per_sec_per_key = 20
 "#;
 
 impl NetConfig {
@@ -135,6 +180,13 @@ impl NetConfig {
             return Err(NetError::Config(
                 "auth.grant_secret must be a random string of 32+ bytes outside development".into(),
             ));
+        }
+        for p in &self.server.trusted_proxies {
+            if crate::ipnet::IpNet::parse(p).is_none() {
+                return Err(NetError::Config(format!(
+                    "server.trusted_proxies: bad entry {p}"
+                )));
+            }
         }
         if self.limits.max_players_per_room == 0 || self.limits.max_players_per_room > 1024 {
             return Err(NetError::Config(

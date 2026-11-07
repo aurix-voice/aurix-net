@@ -105,10 +105,15 @@ async fn main() -> anyhow::Result<()> {
         quic_port,
         webtransport_port,
         metrics: Arc::new(net_api::metrics::Metrics::new()),
-        webhooks: net_api::webhooks::Dispatcher::start(pool.clone()),
+        webhooks: net_api::webhooks::Dispatcher::start(
+            pool.clone(),
+            cfg.server.environment == "development",
+        ),
         matchmaker: Default::default(),
         games: Arc::new(net_game::GameEngine::new()),
         started: std::time::Instant::now(),
+        guards: net_api::ratelimit::Guards::new(&cfg.limits, &cfg.server.trusted_proxies),
+        draining: std::sync::atomic::AtomicBool::new(false),
         pool: pool.clone(),
         redis: redis.clone(),
         registry: registry.clone(),
@@ -165,10 +170,25 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    tokio::spawn({
+        let st = st.clone();
+        async move {
+            let mut iv = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                iv.tick().await;
+                st.guards.sweep();
+            }
+        }
+    });
     let app = axum::Router::new()
         .route("/ws", axum::routing::get(net_api::ws::ws_handler))
         .with_state(st.clone())
         .merge(rest::router(st.clone()))
+        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
+        .layer(axum::middleware::from_fn_with_state(
+            st.clone(),
+            net_api::ratelimit::http_guard,
+        ))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(tower_http::cors::CorsLayer::permissive());
     let listener = tokio::net::TcpListener::bind(cfg.server.http_addr).await?;
@@ -177,27 +197,44 @@ async fn main() -> anyhow::Result<()> {
         let st = st.clone();
         let http_url = http_url.clone();
         async move {
-            let _ = tokio::signal::ctrl_c().await;
+            wait_for_signal().await;
             info!("shutdown: draining");
+            st.draining
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             if let Err(e) = heartbeat(&st, &http_url, true).await {
                 warn!(error = %e, "drain heartbeat failed");
             }
-            for h in st.host.all() {
-                let (project, id) = {
-                    let g = h.lock();
-                    (g.project, g.room.id())
-                };
-                net_api::ws::close_room(&st, project, id).await;
-            }
+            let n = net_api::ws::handoff_all(&st).await;
+            info!(rooms = n, "shutdown: rooms handed off");
             if let Err(e) = queries::delete_node(&st.pool, st.node_id.0).await {
                 error!(error = %e, "delete node row");
             }
         }
     };
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await?;
     Ok(())
+}
+
+/// Ctrl-C or SIGTERM (what Docker, systemd and Kubernetes send).
+async fn wait_for_signal() {
+    #[cfg(unix)]
+    {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 async fn heartbeat(st: &Arc<AppState>, http_url: &str, draining: bool) -> anyhow::Result<()> {

@@ -30,12 +30,12 @@ pub fn server_identity(
 ) -> Result<ServerIdentity> {
     match (cert_pem, key_pem) {
         (Some(c), Some(k)) if !c.is_empty() && !k.is_empty() => {
-            let chain: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut c.as_bytes())
+            use rustls_pki_types::pem::PemObject;
+            let chain: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(c.as_bytes())
                 .collect::<std::result::Result<_, _>>()
                 .map_err(|e| NetError::Config(format!("cert_pem: {e}")))?;
-            let key = rustls_pemfile::private_key(&mut k.as_bytes())
-                .map_err(|e| NetError::Config(format!("key_pem: {e}")))?
-                .ok_or_else(|| NetError::Config("key_pem has no private key".into()))?;
+            let key = PrivateKeyDer::from_pem_slice(k.as_bytes())
+                .map_err(|e| NetError::Config(format!("key_pem: {e}")))?;
             let fp = chain
                 .first()
                 .map(|c| fingerprint(c))

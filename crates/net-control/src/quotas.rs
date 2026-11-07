@@ -78,6 +78,11 @@ mod tests {
             max_props_bytes: 16384,
             max_player_props_bytes: 16384,
             max_cached_events_per_room: 1000,
+            max_sessions_per_ip: 64,
+            http_rps_per_ip: 50,
+            ws_connects_per_min_per_ip: 60,
+            auth_failures_per_min_per_ip: 20,
+            writes_per_sec_per_key: 20,
         };
         let p = ProjectLimits::from_json(
             &serde_json::json!({"max_players_per_room": 1000, "max_rooms": 5}),

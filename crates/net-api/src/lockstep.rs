@@ -103,6 +103,10 @@ pub struct LockstepRoom {
 
 /// Ticks between server state hashes; matches `RollbackConfig::default().hash_every`.
 pub const SERVER_HASH_EVERY: u32 = 10;
+/// Journal ticks kept in memory (4 h at 60 Hz). Beyond that the oldest ticks before the last
+/// checkpoint are dropped: late join and failover still work (checkpoint + tail), the replay
+/// of such a match starts at `from_tick`.
+pub const MAX_JOURNAL_TICKS: usize = 4 * 3600 * 60;
 
 /// The game logic stepped on the node over the canonical input journal. Rule shared with
 /// clients: an actor's avatar is spawned (`on_join`) at the first tick it appears in a bundle;
@@ -641,6 +645,14 @@ impl LockstepRoom {
         for (a, d) in inputs.iter().take(255) {
             self.journal.record(Tick(t), *a, d.clone());
         }
+        if self.journal.live_len() > MAX_JOURNAL_TICKS {
+            if let Some(c) = &self.checkpoint {
+                let keep_from = c
+                    .tick
+                    .saturating_sub(self.hz as u32 * CHECKPOINT_EVERY_SECS);
+                self.journal.trim_before(keep_from);
+            }
+        }
         if let Some(sim) = self.sim.as_mut() {
             sim.step(&inputs);
             let now = t.wrapping_add(1);
@@ -857,7 +869,10 @@ mod tests {
             .map(|f| LockstepRoom::decode_bundles(f.clone()).len())
             .sum();
         assert_eq!(n, 101);
-        assert_eq!(r3.replay("").inputs.len(), r.replay("").inputs.len());
+        // The restored node only knows the journal from the checkpoint on; its replay says so.
+        let (full, partial) = (r.replay(""), r3.replay(""));
+        assert_eq!((full.from_tick, full.inputs.len()), (0, 400));
+        assert_eq!((partial.from_tick, partial.inputs.len()), (300, 100));
     }
 
     #[test]

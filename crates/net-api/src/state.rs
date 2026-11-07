@@ -26,6 +26,15 @@ pub struct AppState {
     /// Compiled WASM game modules (sync-room logic), cached by content hash.
     pub games: Arc<net_game::GameEngine>,
     pub started: std::time::Instant,
+    pub guards: crate::ratelimit::Guards,
+    /// Set on SIGTERM/Ctrl-C: joins are refused, `/healthz` answers 503, rooms are handed off.
+    pub draining: std::sync::atomic::AtomicBool,
+}
+
+impl AppState {
+    pub fn is_draining(&self) -> bool {
+        self.draining.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 pub type Shared = Arc<AppState>;

@@ -48,12 +48,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 config = "0.14"
 clap = { version = "4.5", features = ["derive", "env"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-ring-native-roots", "postgres", "uuid", "chrono", "json", "migrate"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "derive", "macros", "tls-rustls-ring-native-roots", "postgres", "uuid", "chrono", "json", "migrate"] }
 redis = { version = "0.32", features = ["tokio-comp", "connection-manager"] }
 jsonwebtoken = "9.2"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
-rustls-pemfile = "2"
+rustls-pki-types = "1"
 rcgen = "0.13"
 tokio-tungstenite = "0.24"
 futures = "0.3"

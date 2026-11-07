@@ -153,3 +153,19 @@ inputs, `raise` events, `hitbox` for lag compensation, `log`) is documented in
 Limits per room: 50M fuel per call, 64 MiB memory; a trap disables the module for that room
 and the room keeps running. Guest memory is not checkpointed — keep state in components.
 CLI: `aurix-net modules | module-put <name> <file> | module-delete <name>`.
+
+## Limits and errors
+
+| Limit | Default | Error |
+|---|---|---|
+| HTTP requests per IP | 50/s (burst 100) | 429 |
+| WebSocket connects per IP | 60/min | 429 |
+| Concurrent sessions/data connections per IP | 64 | 429 / connection refused |
+| Failed `auth` per IP | 20/min | `rate_limited`, connection closed |
+| Write calls per API key (grants, rooms, tickets, keys, webhooks, modules) | 20/s | 429 `rate_limited` |
+| Pre-auth control message | 8 KiB, 10 s to authenticate | connection closed |
+| Request body | 64 KiB (module upload 8 MiB) | 413 |
+
+`GET /healthz` answers 503 `{"ok":false,"draining":true}` while the node shuts down; players
+in its rooms get `left{reason:"rehost"}` and rejoin the same room name on any node.
+`GET /metrics` requires `Authorization: Bearer <server.metrics_token>` when that is set.

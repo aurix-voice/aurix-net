@@ -6,6 +6,7 @@ pub mod lockstep;
 pub mod matchmaking;
 pub mod metering;
 pub mod metrics;
+pub mod ratelimit;
 pub mod rest;
 pub mod state;
 pub mod sync;

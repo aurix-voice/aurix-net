@@ -21,7 +21,10 @@ pub struct Replay {
     pub schema_hash: String,
     pub tick_hz: u16,
     pub actors: Vec<ActorId>,
-    /// Confirmed inputs per tick from tick 0; a missing actor keeps its previous input.
+    /// Tick of `inputs[0]` (0 unless the journal was trimmed on a very long match).
+    #[serde(default)]
+    pub from_tick: u32,
+    /// Confirmed inputs per tick from `from_tick`; a missing actor keeps its previous input.
     pub inputs: Vec<TickInputs>,
     /// Hash after every `hash_every` ticks, for verification.
     pub hash_every: u32,
@@ -308,24 +311,48 @@ where
 /// Canonical input journal collector (server side): confirmed inputs per tick.
 #[derive(Debug, Default, Clone)]
 pub struct Journal {
-    ticks: Vec<TickInputs>,
+    /// Tick of `ticks[0]`; everything before it was trimmed (or never known after a restore).
+    base: u32,
+    ticks: std::collections::VecDeque<TickInputs>,
 }
 
 impl Journal {
     pub fn record(&mut self, tick: Tick, actor: ActorId, data: Vec<u8>) {
-        let i = tick.0 as usize;
-        if self.ticks.len() <= i {
-            self.ticks.resize(i + 1, TickInputs::new());
+        if tick.0 < self.base {
+            return;
+        }
+        let i = (tick.0 - self.base) as usize;
+        while self.ticks.len() <= i {
+            self.ticks.push_back(TickInputs::new());
         }
         self.ticks[i].entry(actor).or_insert(data);
     }
 
+    /// Logical length: one past the last recorded tick (counts trimmed/unknown ticks too).
     pub fn len(&self) -> usize {
+        self.base as usize + self.ticks.len()
+    }
+
+    /// Ticks actually held in memory.
+    pub fn live_len(&self) -> usize {
         self.ticks.len()
+    }
+
+    pub fn base(&self) -> u32 {
+        self.base
     }
 
     pub fn is_empty(&self) -> bool {
         self.ticks.is_empty()
+    }
+
+    /// Forgets ticks before `tick` (keeps memory bounded on long matches; the replay then
+    /// starts at `from_tick`).
+    pub fn trim_before(&mut self, tick: u32) {
+        while self.base < tick && !self.ticks.is_empty() {
+            self.ticks.pop_front();
+            self.base += 1;
+        }
     }
 
     /// Every actor that ever submitted an input.
@@ -337,22 +364,33 @@ impl Journal {
     }
 
     pub fn tick(&self, t: Tick) -> Option<&TickInputs> {
-        self.ticks.get(t.0 as usize)
+        if t.0 < self.base {
+            return None;
+        }
+        self.ticks.get((t.0 - self.base) as usize)
     }
 
-    /// Inputs from tick `from` to the end (for re-hosting from a checkpoint).
+    /// Inputs from tick `from` to the end (for re-hosting from a checkpoint). Ticks before the
+    /// journal's base are unknown and come back empty.
     pub fn tail(&self, from: u32) -> Vec<TickInputs> {
+        if from < self.base {
+            let mut v = vec![TickInputs::new(); (self.base - from) as usize];
+            v.extend(self.ticks.iter().cloned());
+            return v;
+        }
         self.ticks
-            .get(from as usize..)
-            .map(|t| t.to_vec())
-            .unwrap_or_default()
+            .iter()
+            .skip((from - self.base) as usize)
+            .cloned()
+            .collect()
     }
 
-    /// Rebuilds a journal whose first `from` ticks are unknown (empty) and the rest is `tail`.
+    /// Rebuilds a journal whose first `from` ticks are unknown and the rest is `tail`.
     pub fn from_parts(from: u32, tail: Vec<TickInputs>) -> Self {
-        let mut ticks = vec![TickInputs::new(); from as usize];
-        ticks.extend(tail);
-        Self { ticks }
+        Self {
+            base: from,
+            ticks: tail.into(),
+        }
     }
 
     pub fn into_replay(
@@ -368,7 +406,8 @@ impl Journal {
             schema_hash,
             tick_hz,
             actors,
-            inputs: self.ticks,
+            from_tick: self.base,
+            inputs: self.ticks.into(),
             hash_every,
             hashes: Vec::new(),
         }

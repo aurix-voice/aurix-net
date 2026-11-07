@@ -46,6 +46,10 @@ impl Grant {
     }
 }
 
+/// Largest `meta` payload a grant may carry (the grant travels in the first WS message).
+pub const MAX_META_BYTES: usize = 1024;
+pub const KNOWN_SCOPES: &[&str] = &["join", "create", "master", "spectate"];
+
 #[derive(Clone)]
 pub struct GrantSigner {
     enc: EncodingKey,
@@ -76,6 +80,22 @@ impl GrantSigner {
         if player_id.is_empty() || player_id.len() > 128 {
             return Err(NetError::Invalid("player_id must be 1..=128 chars".into()));
         }
+        if player_id.chars().any(char::is_control) {
+            return Err(NetError::Invalid("player_id has control characters".into()));
+        }
+        if let Some(m) = &meta {
+            let n = serde_json::to_vec(m).map(|v| v.len()).unwrap_or(usize::MAX);
+            if n > MAX_META_BYTES {
+                return Err(NetError::Invalid(format!(
+                    "meta must serialize to <= {MAX_META_BYTES} bytes"
+                )));
+            }
+        }
+        for s in scopes {
+            if !KNOWN_SCOPES.contains(s) {
+                return Err(NetError::Invalid(format!("unknown scope {s}")));
+            }
+        }
         let now = Utc::now().timestamp();
         let ttl = ttl_override
             .map(|t| (t as i64).min(self.ttl_secs))
@@ -83,7 +103,7 @@ impl GrantSigner {
         let claims = GrantClaims {
             sub: player_id.to_string(),
             pid: project.to_string(),
-            name: name.chars().take(64).collect(),
+            name: name.chars().filter(|c| !c.is_control()).take(64).collect(),
             room: room.map(|r| r.to_string()),
             scopes: scopes.iter().map(|s| s.to_string()).collect(),
             meta,

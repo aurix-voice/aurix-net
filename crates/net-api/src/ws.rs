@@ -5,7 +5,7 @@ use crate::host::{dispatch, handle_data_frame, Attached, DataSession, DataSink, 
 use crate::state::Shared;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
@@ -24,11 +24,36 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// A connection that has not authenticated within this window is dropped.
+const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Largest text frame accepted before `auth` succeeded (a grant is ~1 KB).
+const PRE_AUTH_MAX_TEXT: usize = 8 * 1024;
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
-pub async fn ws_handler(ws: WebSocketUpgrade, State(st): State<Shared>) -> Response {
+pub async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(st): State<Shared>,
+    ip: Option<axum::Extension<crate::ratelimit::ClientIp>>,
+) -> Response {
+    let ip = ip
+        .map(|e| e.0 .0)
+        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+    if st.is_draining() {
+        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, "node draining").into_response();
+    }
+    if !st.guards.ws_connects.allow(ip) || !st.guards.acquire_session(ip) {
+        st.metrics.errors.with_label_values(&["rate_limited"]).inc();
+        return (
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "too many connections",
+        )
+            .into_response();
+    }
     ws.max_message_size(net_common::limits::MAX_MESSAGE + 4096)
-        .on_upgrade(move |socket| run(socket, st))
+        .on_upgrade(move |socket| async move {
+            run(socket, st.clone(), ip).await;
+            st.guards.release_session(ip);
+        })
 }
 
 struct InRoom {
@@ -46,9 +71,10 @@ struct Session {
     room: Option<InRoom>,
     data: Option<Arc<DataSession>>,
     lobby: Option<ProjectId>,
+    ip: std::net::IpAddr,
 }
 
-async fn run(socket: WebSocket, st: Shared) {
+async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
     st.metrics.control_sessions.inc();
     let (mut sink, mut stream) = socket.split();
     let (ctl_tx, mut ctl_rx) = mpsc::channel::<ServerMsg>(512);
@@ -81,6 +107,7 @@ async fn run(socket: WebSocket, st: Shared) {
         room: None,
         data: None,
         lobby: None,
+        ip,
     };
     let _ = sess.ctl.try_send(ServerMsg::Hello {
         session: sess.id.to_string(),
@@ -89,7 +116,12 @@ async fn run(socket: WebSocket, st: Shared) {
     });
 
     loop {
-        let next = tokio::time::timeout(IDLE_TIMEOUT, stream.next()).await;
+        let limit = if sess.grant.is_some() {
+            IDLE_TIMEOUT
+        } else {
+            AUTH_TIMEOUT
+        };
+        let next = tokio::time::timeout(limit, stream.next()).await;
         let msg = match next {
             Err(_) => break,
             Ok(None) => break,
@@ -97,10 +129,18 @@ async fn run(socket: WebSocket, st: Shared) {
             Ok(Some(Ok(m))) => m,
         };
         match msg {
+            Message::Text(t) if sess.grant.is_none() && t.len() > PRE_AUTH_MAX_TEXT => {
+                sess.error(NetError::Invalid("message too large before auth".into()));
+                break;
+            }
             Message::Text(t) => match serde_json::from_str::<ClientMsg>(&t) {
                 Ok(m) => {
                     if let Err(e) = sess.handle(m).await {
+                        let fatal = matches!(e, NetError::RateLimited);
                         sess.error(e);
+                        if fatal {
+                            break;
+                        }
                     }
                 }
                 Err(e) => sess.error(NetError::Invalid(format!("bad message: {e}"))),
@@ -160,7 +200,16 @@ impl Session {
         }
         match msg {
             ClientMsg::Auth { grant } => {
-                let g = self.st.grants.verify(&grant)?;
+                let g = match self.st.grants.verify(&grant) {
+                    Ok(g) => g,
+                    Err(e) => {
+                        return Err(if self.st.guards.auth_fail.allow(self.ip) {
+                            e
+                        } else {
+                            NetError::RateLimited
+                        });
+                    }
+                };
                 let _ = self.ctl.try_send(ServerMsg::Authed {
                     player_id: g.player_id.clone(),
                     name: g.name.clone(),
@@ -458,6 +507,9 @@ impl Session {
     }
 
     async fn find_room(&self, project: ProjectId, name: &str) -> Result<Arc<Mutex<HostedRoom>>> {
+        if self.st.is_draining() {
+            return Err(NetError::Conflict("node_draining".into()));
+        }
         if let Some(h) = self.st.host.by_name(project, name) {
             return Ok(h);
         }
@@ -501,8 +553,11 @@ impl Session {
         lobby_props: Vec<String>,
         region: Option<String>,
     ) -> Result<Arc<Mutex<HostedRoom>>> {
-        if !g.can("create") && !g.can("join") {
+        if !g.can("create") {
             return Err(NetError::Forbidden("grant may not create rooms".into()));
+        }
+        if self.st.is_draining() {
+            return Err(NetError::Conflict("node_draining".into()));
         }
         if name.is_empty() || name.len() > 64 {
             return Err(NetError::Invalid("room name must be 1..=64 chars".into()));
@@ -1334,6 +1389,52 @@ pub async fn publish_room(st: &Shared, h: &Arc<Mutex<HostedRoom>>) {
             },
         );
     }
+}
+
+/// Shutdown: every hosted room gets a fresh checkpoint in Redis and becomes `orphaned` in the
+/// DB, so the next node a player reaches adopts it (same path as a crashed node, minus the
+/// heartbeat wait). Players get `left{reason:"rehost"}` and rejoin by room name.
+pub async fn handoff_all(st: &Shared) -> usize {
+    let rooms = st.host.all();
+    for h in &rooms {
+        let (project, id, body) = {
+            let mut g = h.lock();
+            let sync = g.sync.as_mut().map(|s| s.checkpoint());
+            let ls = g.lockstep.as_ref().map(|l| l.snapshot());
+            (
+                g.project,
+                g.room.id(),
+                RoomCheckpoint::of(&g, sync, ls).encode(),
+            )
+        };
+        if let Err(e) = st.redis.put_checkpoint(project, id, &body, 600).await {
+            tracing::warn!(room = %id, error = %e, "handoff checkpoint failed");
+        }
+    }
+    match queries::orphan_rooms_of_node(&st.pool, st.node_id.0).await {
+        Ok(n) => tracing::info!(rooms = n, "rooms handed off for adoption"),
+        Err(e) => tracing::error!(error = %e, "handoff: orphan rooms"),
+    }
+    let n = rooms.len();
+    for h in rooms {
+        let (id, sessions) = {
+            let g = h.lock();
+            (
+                g.room.id(),
+                g.sessions
+                    .values()
+                    .map(|s| s.control.clone())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        st.host.remove(id);
+        for s in sessions {
+            let _ = s.try_send(ServerMsg::Left {
+                reason: "rehost".into(),
+            });
+        }
+    }
+    n
 }
 
 pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {

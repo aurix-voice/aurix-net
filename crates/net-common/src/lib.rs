@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod error;
+pub mod ipnet;
 pub mod limits;
 pub mod types;
 
