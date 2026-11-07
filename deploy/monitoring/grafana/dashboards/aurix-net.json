@@ -1,0 +1,649 @@
+{
+ "uid": "aurix-net",
+ "title": "Aurix Net \u2014 fleet",
+ "tags": [
+  "aurix-net"
+ ],
+ "timezone": "browser",
+ "schemaVersion": 39,
+ "version": 1,
+ "refresh": "15s",
+ "time": {
+  "from": "now-3h",
+  "to": "now"
+ },
+ "templating": {
+  "list": []
+ },
+ "annotations": {
+  "list": []
+ },
+ "panels": [
+  {
+   "type": "stat",
+   "title": "Open rooms",
+   "id": 1,
+   "gridPos": {
+    "h": 4,
+    "w": 4,
+    "x": 0,
+    "y": 0
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "none"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(net_rooms)"
+    }
+   ]
+  },
+  {
+   "type": "stat",
+   "title": "Online players",
+   "id": 2,
+   "gridPos": {
+    "h": 4,
+    "w": 4,
+    "x": 4,
+    "y": 0
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "none"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(net_players)"
+    }
+   ]
+  },
+  {
+   "type": "stat",
+   "title": "Control sessions",
+   "id": 3,
+   "gridPos": {
+    "h": 4,
+    "w": 4,
+    "x": 8,
+    "y": 0
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "none"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(net_control_sessions)"
+    }
+   ]
+  },
+  {
+   "type": "stat",
+   "title": "Datagrams / s",
+   "id": 4,
+   "gridPos": {
+    "h": 4,
+    "w": 4,
+    "x": 12,
+    "y": 0
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "none"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(rate(net_datagrams_in_total[1m])) + sum(rate(net_datagrams_out_total[1m]))"
+    }
+   ]
+  },
+  {
+   "type": "stat",
+   "title": "Data-path traffic",
+   "id": 5,
+   "gridPos": {
+    "h": 4,
+    "w": 4,
+    "x": 16,
+    "y": 0
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "Bps"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "none"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(rate(net_bytes_in_total[1m])) + sum(rate(net_bytes_out_total[1m]))"
+    }
+   ]
+  },
+  {
+   "type": "stat",
+   "title": "Nodes up",
+   "id": 6,
+   "gridPos": {
+    "h": 4,
+    "w": 4,
+    "x": 20,
+    "y": 0
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "value",
+    "graphMode": "none"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "count(up{job=\"aurix-net\"} == 1)"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Rooms by node",
+   "id": 7,
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 4
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "net_rooms",
+     "legendFormat": "{{node}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Players by node",
+   "id": 8,
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 4
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "net_players",
+     "legendFormat": "{{node}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Sync tick (p50 / p99)",
+   "id": 9,
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 12
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "histogram_quantile(0.5, sum by (le, node) (rate(net_sync_tick_seconds_bucket[5m])))",
+     "legendFormat": "p50 {{node}}"
+    },
+    {
+     "refId": "B",
+     "expr": "histogram_quantile(0.99, sum by (le, node) (rate(net_sync_tick_seconds_bucket[5m])))",
+     "legendFormat": "p99 {{node}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Tick overruns / s",
+   "id": 10,
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 12
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (node) (rate(net_tick_overruns_total[5m]))",
+     "legendFormat": "{{node}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Datagrams / s by node",
+   "id": 11,
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 20
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (node) (rate(net_datagrams_in_total[1m]))",
+     "legendFormat": "in {{node}}"
+    },
+    {
+     "refId": "B",
+     "expr": "sum by (node) (rate(net_datagrams_out_total[1m]))",
+     "legendFormat": "out {{node}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Bytes / s by node",
+   "id": 12,
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 20
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "Bps"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (node) (rate(net_bytes_in_total[1m]))",
+     "legendFormat": "in {{node}}"
+    },
+    {
+     "refId": "B",
+     "expr": "sum by (node) (rate(net_bytes_out_total[1m]))",
+     "legendFormat": "out {{node}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Events / s by channel",
+   "id": 13,
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 28
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (channel) (rate(net_events_total[1m]))",
+     "legendFormat": "{{channel}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Client-visible errors / s by code",
+   "id": 14,
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 28
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (code) (rate(net_errors_total[5m]))",
+     "legendFormat": "{{code}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Sync health / s",
+   "id": 15,
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 36
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (node) (rate(net_sync_lost_deltas_total[5m]))",
+     "legendFormat": "lost deltas {{node}}"
+    },
+    {
+     "refId": "B",
+     "expr": "sum by (node) (rate(net_sync_resyncs_total[5m]))",
+     "legendFormat": "resyncs {{node}}"
+    },
+    {
+     "refId": "C",
+     "expr": "sum by (node) (rate(net_sync_inputs_rate_limited_total[5m]))",
+     "legendFormat": "inputs rate-limited {{node}}"
+    },
+    {
+     "refId": "D",
+     "expr": "sum by (node) (rate(net_sync_invalid_inputs_total[5m]))",
+     "legendFormat": "invalid inputs {{node}}"
+    },
+    {
+     "refId": "E",
+     "expr": "sum by (node) (rate(net_sync_aoi_starved_total[5m]))",
+     "legendFormat": "AOI starved {{node}}"
+    }
+   ]
+  },
+  {
+   "type": "timeseries",
+   "title": "Lockstep desyncs & adopted rooms (15 m)",
+   "id": 16,
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 36
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (node) (increase(net_lockstep_desyncs_total[15m]))",
+     "legendFormat": "desyncs {{node}}"
+    },
+    {
+     "refId": "B",
+     "expr": "sum by (node) (increase(net_rooms_adopted_total[15m]))",
+     "legendFormat": "adopted {{node}}"
+    }
+   ]
+  }
+ ]
+}

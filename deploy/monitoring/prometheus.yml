@@ -1,0 +1,17 @@
+# Scrapes every node's /metrics with the shared `server.metrics_token` (bearer). Add one target
+# per node; the `node` label is what the dashboard and alerts group by.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 30s
+rule_files:
+  - /etc/prometheus/alerts.yml
+scrape_configs:
+  - job_name: aurix-net
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/metrics_token
+    static_configs:
+      - targets: ["node-a:8090"]
+        labels: { node: node-a, region: eu }
+      - targets: ["node-b:8090"]
+        labels: { node: node-b, region: eu }

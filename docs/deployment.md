@@ -74,6 +74,25 @@ to plaintext).
 Redis over TLS: `redis.url = "rediss://:password@host:6390/"`; for a private CA set `redis.ca_cert` to the
 PEM path (`NET__REDIS__CA_CERT=/etc/aurix-net/redis-ca.pem`), otherwise WebPKI roots are used.
 
+## Monitoring
+
+`/metrics` is Prometheus text (`server.metrics_token` as bearer; keep the port off the public
+interface). `deploy/monitoring/` ships a ready stack:
+
+- `prometheus.yml` — scrape config with the token from a file and a `node` label per target;
+- `alerts.yml` — rules: node down, sync tick p99 > 10 ms, tick overruns, lockstep desync, > 2 % lost
+  sync deltas, credential guessing being rate limited, Redis checkpoint write errors, rooms near
+  `max_rooms_per_node`;
+- `grafana/` — provisioned datasource and the **Aurix Net — fleet** dashboard (rooms/players per
+  node, datagrams and bytes, tick p50/p99, overruns, events by channel, errors by code, sync health,
+  desyncs/adopted rooms).
+
+`docker compose -f deploy/docker-compose.prod.yml --profile monitoring up -d` starts Prometheus and
+Grafana (`:3000`, password `GRAFANA_PASSWORD`) next to the nodes. For operator-facing alerts (node
+stale, project at a usage cap, failing webhooks) the node itself can POST to a webhook — see
+[webhooks.md](webhooks.md#operator-alerts-fleet-level); the Prometheus rules cover what only the
+process knows (tick time, lost deltas, Redis writes).
+
 ## Console
 
 `dashboard/` builds to a Caddy image (`aurix-net-console`, non-root, ~120 MB) that serves the

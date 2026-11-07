@@ -58,6 +58,38 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
     volumes: ["net-redis:/data"]
+  # Optional monitoring stack: `docker compose --profile monitoring up -d`. Prometheus scrapes
+  # both nodes with METRICS_TOKEN (written to a file at start); Grafana ships the Aurix Net
+  # dashboard and alert rules from deploy/monitoring. Change the Grafana admin password.
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'printf "%s" "$$METRICS_TOKEN" > /etc/prometheus/metrics_token && exec /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d'
+    environment:
+      METRICS_TOKEN: ${METRICS_TOKEN}
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - net-prom:/prometheus
+    depends_on: [node-a, node-b]
+  grafana:
+    image: grafana/grafana:11.1.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-change-me}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - net-grafana:/var/lib/grafana
+    ports: ["3000:3000/tcp"]
+    depends_on: [prometheus]
 volumes:
+  net-prom:
+  net-grafana:
   net-pg: {}
   net-redis: {}

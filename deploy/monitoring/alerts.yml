@@ -1,0 +1,56 @@
+# Prometheus alert rules for aurix-net nodes. Thresholds follow docs/testing.md capacity figures;
+# tune `for:` to your deploy cadence (a draining node is expected to vanish for ~30 s).
+groups:
+  - name: aurix-net
+    rules:
+      - alert: AurixNodeDown
+        expr: up{job="aurix-net"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "node {{ $labels.node }} is not answering /metrics"
+          description: "Rooms on it are checkpointed and adopted by peers only after the heartbeat reaper (3 intervals); players reconnect via rehost."
+      - alert: AurixSyncTickSlow
+        expr: histogram_quantile(0.99, sum by (le, node) (rate(net_sync_tick_seconds_bucket[5m]))) > 0.010
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "sync tick p99 above 10 ms on {{ $labels.node }}"
+          description: "Reference: 4×32 players @60 Hz runs at p99 ≤ 2 ms. Check CPU, room count and WASM logic budgets."
+      - alert: AurixTickOverruns
+        expr: sum by (node) (rate(net_tick_overruns_total[5m])) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "simulation ticks overrunning on {{ $labels.node }}"
+      - alert: AurixLockstepDesyncs
+        expr: sum by (node) (increase(net_lockstep_desyncs_total[15m])) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "lockstep desync detected on {{ $labels.node }}"
+          description: "A client's state hash disagreed with the server; see the room replay and the game's determinism."
+      - alert: AurixSyncLostDeltas
+        expr: sum by (node) (rate(net_sync_lost_deltas_total[5m])) / clamp_min(sum by (node) (rate(net_events_total{channel="sync_delta"}[5m])), 1) > 0.02
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "more than 2 % of sync deltas lost on {{ $labels.node }}"
+      - alert: AurixAuthBruteForce
+        expr: sum by (node) (rate(net_errors_total{code="auth_rate_limited"}[5m])) > 0.5
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "credential guessing being rate limited on {{ $labels.node }}"
+      - alert: AurixRedisWriteErrors
+        expr: sum by (node) (rate(net_errors_total{code="redis_write"}[5m])) > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "room checkpoints/journals failing to reach Redis on {{ $labels.node }}"
+          description: "Matches continue, but a node loss now would lose state. Check Redis health and network."
+      - alert: AurixRoomsNearNodeCap
+        expr: net_rooms > 0.9 * 1000
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.node }} above 90 % of max_rooms_per_node (edit the constant to match your config)"
