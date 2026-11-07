@@ -3,7 +3,7 @@ import { useMemo } from "react";
 
 import { useAuth } from "@/auth/AuthProvider";
 
-import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Ban, type Rejections, type Webhook, type WebhookDelivery } from "./client";
+import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Attention, type Ban, type Rejections, type Webhook, type WebhookDelivery } from "./client";
 
 export function useApi(): NetClient {
   const { token } = useAuth();
@@ -175,6 +175,11 @@ export function useRejections(hours = 24) {
   });
 }
 /** Player deny-list. `projectId` switches to the operator routes. */
+export function useAttention() {
+  const api = useApi();
+  const { operator } = useAuth();
+  return useQuery({ queryKey: ["attention"], enabled: operator, refetchInterval: 15_000, queryFn: () => api.get<Attention>("/v1/operator/attention") });
+}
 export function useBans(projectId?: string) {
   const api = useApi();
   return useQuery({

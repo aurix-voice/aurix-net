@@ -732,6 +732,22 @@ pub async fn get_webhook(pool: &DbPool, project_id: Uuid, id: Uuid) -> Result<Op
         .map_err(db_err)
 }
 
+/// Webhooks with at least one failed delivery in the last hour (for the operator attention panel).
+pub async fn failing_webhooks_last_hour(pool: &DbPool) -> Result<Vec<FailingWebhookRow>> {
+    sqlx::query_as::<_, FailingWebhookRow>(
+        "SELECT d.project_id, d.webhook_id, w.url, \
+                COUNT(*) FILTER (WHERE NOT d.ok) AS failed, COUNT(*) AS total \
+         FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id \
+         WHERE d.created_at > now() - interval '1 hour' \
+         GROUP BY d.project_id, d.webhook_id, w.url \
+         HAVING COUNT(*) FILTER (WHERE NOT d.ok) > 0 \
+         ORDER BY failed DESC LIMIT 50",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
 pub async fn purge_webhook_deliveries(pool: &DbPool, days: u32) -> Result<u64> {
     if days == 0 {
         return Ok(0);

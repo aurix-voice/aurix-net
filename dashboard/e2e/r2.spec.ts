@@ -210,3 +210,12 @@ test("operator issues a key with an expiry and the table shows it", async ({ pag
   await expect(row.getByText("Never")).toHaveCount(0);
   await expect(page.getByRole("row").filter({ hasText: "default" }).getByText("Never")).toBeVisible();
 });
+
+test("overview attention panel lists a suspended project", async ({ page }) => {
+  const name = uniq("e2e-att");
+  const project = await api<{ project: { id: string } }>(page, "POST", "/v1/operator/projects", { name });
+  await api(page, "POST", `/v1/operator/projects/${project.project.id}/suspend`, { suspended: true });
+  await page.goto("/");
+  await expect(page.getByText("Needs a look")).toBeVisible();
+  await expect(page.getByRole("link", { name })).toBeVisible({ timeout: 20_000 });
+});

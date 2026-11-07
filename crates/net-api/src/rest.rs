@@ -82,6 +82,7 @@ pub fn router(st: Shared) -> Router {
         )
         .route("/v1/operator/audit", get(op_audit))
         .route("/v1/operator/usage", get(op_fleet_usage))
+        .route("/v1/operator/attention", get(op_attention))
         .route(
             "/v1/operator/projects/:id/webhooks/:wid",
             delete(op_delete_webhook),
@@ -1614,6 +1615,67 @@ async fn internal_post(st: &Shared, http_url: &str, path: &str, body: Value) -> 
     res.json()
         .await
         .map_err(|e| NetError::Internal(e.to_string()))
+}
+
+/// Everything an operator should look at right now: nodes without a heartbeat or draining,
+/// suspended projects, webhooks failing in the last hour, projects with rejections this hour.
+async fn op_attention(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    let now = chrono::Utc::now();
+    let nodes = queries::list_all_nodes(&st.pool).await?;
+    let stale: Vec<Value> = nodes
+        .iter()
+        .filter(|n| (now - n.last_heartbeat).num_seconds() > 30)
+        .map(|n| json!({"id": n.id, "public_host": n.public_host, "quic_port": n.quic_port, "region": n.region, "last_heartbeat": n.last_heartbeat}))
+        .collect();
+    let draining: Vec<Value> = nodes
+        .iter()
+        .filter(|n| n.draining && (now - n.last_heartbeat).num_seconds() <= 30)
+        .map(|n| json!({"id": n.id, "public_host": n.public_host, "quic_port": n.quic_port, "region": n.region, "rooms": n.rooms}))
+        .collect();
+    let projects = queries::list_projects(&st.pool).await?;
+    let suspended: Vec<Value> = projects
+        .iter()
+        .filter(|p| p.disabled_at.is_some())
+        .map(|p| json!({"id": p.id, "name": p.name, "since": p.disabled_at}))
+        .collect();
+    let failing = queries::failing_webhooks_last_hour(&st.pool).await?;
+    let names: std::collections::HashMap<Uuid, &str> =
+        projects.iter().map(|p| (p.id, p.name.as_str())).collect();
+    let failing_webhooks: Vec<Value> = failing
+        .iter()
+        .map(|f| json!({"project_id": f.project_id, "project_name": names.get(&f.project_id).copied().unwrap_or(""), "webhook_id": f.webhook_id, "url": f.url, "failed": f.failed, "total": f.total}))
+        .collect();
+    let mut rejections: Vec<Value> = Vec::new();
+    for p in projects.iter().take(200) {
+        let buckets = st
+            .redis
+            .get_rejections(ProjectId::from_uuid(p.id), 1)
+            .await
+            .unwrap_or_default();
+        let mut total = 0i64;
+        let mut by: std::collections::BTreeMap<String, i64> = Default::default();
+        for (_, counts) in buckets {
+            for (k, v) in counts {
+                total += v;
+                *by.entry(k).or_default() += v;
+            }
+        }
+        if total > 0 {
+            rejections.push(
+                json!({"project_id": p.id, "project_name": p.name, "total": total, "by": by}),
+            );
+        }
+    }
+    rejections.sort_by_key(|r| -r["total"].as_i64().unwrap_or(0));
+    rejections.truncate(20);
+    Ok(Json(json!({
+        "stale_nodes": stale,
+        "draining_nodes": draining,
+        "suspended_projects": suspended,
+        "failing_webhooks": failing_webhooks,
+        "rejections": rejections,
+    })))
 }
 
 async fn op_nodes(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {

@@ -3,7 +3,8 @@ import { useMemo } from "react";
 import { ArrowRight } from "lucide-react";
 
 import type { NodeRow } from "@/api/client";
-import { useHealth, useNodes, useRooms, useUsage } from "@/api/hooks";
+import { useAttention, useHealth, useNodes, useRooms, useUsage } from "@/api/hooks";
+import { AttentionPanel } from "@/components/AttentionPanel";
 import { ChartCard, TimeSeriesChart, type SeriesDef } from "@/components/charts";
 import { presetRange } from "@/components/RangePicker";
 import { toPoints } from "@/pages/Usage";
@@ -23,6 +24,7 @@ export function OverviewPage() {
   const nodes = useNodes();
   const rooms = useRooms();
   const h = health.data;
+  const attention = useAttention();
   const live = (nodes.data ?? []).filter((n) => !nodeStale(n.last_heartbeat) || !operator);
   const players = (rooms.data ?? []).reduce((a, r) => a + r.players, 0);
   const day = useMemo(() => presetRange("24h"), []);
@@ -48,6 +50,7 @@ export function OverviewPage() {
   return (
     <>
       <PageHeader title={t("overview.title")} description={t("overview.desc")} />
+      {operator ? <div className="mb-5"><AttentionPanel data={attention.data} loading={attention.isLoading} /></div> : null}
       {health.isError ? <QueryError error={health.error} onRetry={() => void health.refetch()} /> : null}
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 mb-6">
         <Stat label={t("overview.node")} value={h ? <span className="flex items-center gap-2">{h.draining ? <Badge tone="warn" dot>{t("overview.draining")}</Badge> : <Badge tone="ok" dot>{t("overview.ready")}</Badge>}</span> : <Skeleton className="h-6 w-20" />} hint={h ? <IdChip id={h.node_id} /> : null} />

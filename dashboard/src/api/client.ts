@@ -243,6 +243,13 @@ export interface Webhook {
   /** Only in the create response. */
   secret?: string;
 }
+export interface Attention {
+  stale_nodes: { id: string; public_host: string; quic_port: number; region: string; last_heartbeat: string }[];
+  draining_nodes: { id: string; public_host: string; quic_port: number; region: string; rooms: number }[];
+  suspended_projects: { id: string; name: string; since: string }[];
+  failing_webhooks: { project_id: string; project_name: string; webhook_id: string; url: string; failed: number; total: number }[];
+  rejections: { project_id: string; project_name: string; total: number; by: Record<string, number> }[];
+}
 export interface Ban {
   project_id: string;
   player_id: string;
