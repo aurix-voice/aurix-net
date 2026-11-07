@@ -671,6 +671,8 @@ impl Session {
                     .as_ref()
                     .map(|s| s.hz)
                     .or(hr.lockstep.as_ref().map(|l| l.hz)),
+                tick: hr.lockstep.as_ref().map(|l| l.tick.0),
+                seed: hr.lockstep.as_ref().map(|l| l.seed),
             }
         };
         let (id, actor) = match &joined {
@@ -745,8 +747,6 @@ impl Session {
                 let ds = DataSession::new(DataSink::Ws(self.bin.clone()), self.st.metrics.clone());
                 let ds = attach_data(&r.hosted, r.actor, ds);
                 spawn_ticker(&self.st, ds.clone());
-                // Same as the QUIC path: an empty frame tells the client the path is open.
-                ds.send(net_common::Channel::ReliableOrdered, Bytes::new());
                 self.data = Some(ds);
                 Ok(())
             }
@@ -777,6 +777,14 @@ pub fn attach_data(
     let mut g = h.lock();
     if let Some(a) = g.sessions.get_mut(&actor) {
         a.data = Some(ds.clone());
+    }
+    // An empty reliable frame tells the client the path is open; a lockstep room past
+    // tick 0 then streams the catch-up (checkpoint + journal tail) on the same channel.
+    ds.send(net_common::Channel::ReliableOrdered, Bytes::new());
+    if let Some(ls) = g.lockstep.as_mut() {
+        for f in ls.on_late_join() {
+            ds.send(net_common::Channel::ReliableOrdered, f);
+        }
     }
     ds
 }
@@ -872,15 +880,23 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
         let t0 = Instant::now();
         {
             let mut g = h.lock();
-            let (bundle, desyncs, actors) = {
+            let master = g.room.master();
+            let (bundle, desyncs, actors, ckpt_req) = {
                 let Some(ls) = g.lockstep.as_mut() else {
                     return;
                 };
+                ls.master = master;
                 let bundle = ls.tick();
+                let ckpt_req = ls.checkpoint_request();
                 let desyncs = ls.take_desyncs();
                 let actors: Vec<ActorId> = ls.actors.keys().copied().collect();
-                (bundle, desyncs, actors)
+                (bundle, desyncs, actors, ckpt_req)
             };
+            if let Some((req, m)) = ckpt_req.zip(master) {
+                if let Some(ds) = g.sessions.get(&m).and_then(|s| s.data.as_ref()) {
+                    ds.send(net_common::Channel::ReliableOrdered, req);
+                }
+            }
             for a in &actors {
                 if let Some(ds) = g.sessions.get(a).and_then(|s| s.data.as_ref()) {
                     ds.send(net_common::Channel::UnreliableSequenced, bundle.clone());

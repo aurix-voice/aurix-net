@@ -51,6 +51,10 @@ struct Cli {
     /// Sync mode: simulation rate requested for the room.
     #[arg(long, default_value_t = 60)]
     tick_hz: u16,
+    /// Lockstep: one extra player per room joins this many seconds in and must catch up
+    /// (checkpoint + journal tail, then a gapless live stream). 0 = off.
+    #[arg(long, default_value_t = 0)]
+    late_join_secs: u64,
 }
 
 #[derive(Default)]
@@ -62,6 +66,13 @@ struct Stats {
     bytes_out: AtomicU64,
     bytes_in: AtomicU64,
     latencies_us: Mutex<Vec<u32>>,
+    /// Lockstep: catch-up frames received / joiners that reached the live stream gaplessly /
+    /// bundles replayed from the journal / checkpoints uploaded by masters.
+    catchups: AtomicU64,
+    caught_up: AtomicU64,
+    catchup_bundles: AtomicU64,
+    checkpoints: AtomicU64,
+    catchup_from_tick: AtomicU64,
 }
 
 #[tokio::main]
@@ -126,6 +137,35 @@ async fn main() -> anyhow::Result<()> {
                 }
             }));
             tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        if cli.late_join_secs > 0 && cli.mode == "lockstep" {
+            let cli = cli.clone();
+            let http = http.clone();
+            let api_key = api_key.clone();
+            let ws_url = ws_url.clone();
+            let stats = stats.clone();
+            let sem = sem.clone();
+            tasks.push(tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(cli.late_join_secs)).await;
+                let permit = sem.acquire().await.unwrap();
+                let p = cli.players;
+                let run = player(
+                    &cli,
+                    &http,
+                    &api_key,
+                    &ws_url,
+                    r,
+                    p,
+                    stats.clone(),
+                    deadline,
+                    permit,
+                )
+                .await;
+                if let Err(e) = run {
+                    stats.failed.fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(room = r, player = p, error = %e, "late player failed");
+                }
+            }));
         }
     }
     let reporter = {
@@ -199,6 +239,17 @@ async fn main() -> anyhow::Result<()> {
         stats.bytes_out.load(Ordering::Relaxed),
         stats.bytes_in.load(Ordering::Relaxed)
     );
+    if cli.mode == "lockstep" && cli.late_join_secs > 0 {
+        println!(
+            "late join: catch-ups={} caught-up={}/{} journal bundles replayed={} (from tick {} avg) checkpoints uploaded={}",
+            stats.catchups.load(Ordering::Relaxed),
+            stats.caught_up.load(Ordering::Relaxed),
+            cli.rooms,
+            stats.catchup_bundles.load(Ordering::Relaxed),
+            stats.catchup_from_tick.load(Ordering::Relaxed) / stats.catchups.load(Ordering::Relaxed).max(1),
+            stats.checkpoints.load(Ordering::Relaxed),
+        );
+    }
     if cli.mode == "sync" || cli.mode == "lockstep" {
         if let Ok(txt) = reqwest::get(format!("{}/metrics", cli.http)).await {
             if let Ok(body) = txt.text().await {
@@ -253,7 +304,7 @@ async fn player(
             "lockstep" => net_common::types::RoomMode::Lockstep,
             _ => net_common::types::RoomMode::Relay,
         },
-        max_players: Some(cli.players as u16),
+        max_players: Some(cli.players as u16 + u16::from(cli.late_join_secs > 0)),
         props: if cli.mode == "sync" || cli.mode == "lockstep" {
             let mut m = serde_json::Map::new();
             m.insert("tick_hz".into(), serde_json::json!(cli.tick_hz));
@@ -340,12 +391,15 @@ async fn player(
 
     let sync = cli.mode == "sync" || cli.mode == "lockstep";
     let server_tick = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
+    // Lockstep catch-up tracking (see `Catchup`).
+    let catchup = Arc::new(Mutex::new(Catchup::default()));
     // Incoming datagrams -> link -> latency samples.
     let on_datagram = {
         let server_tick = server_tick.clone();
         let link = link.clone();
         let stats = stats.clone();
         let flush = flush.clone();
+        let catchup = catchup.clone();
         move |d: Bytes| {
             stats.bytes_in.fetch_add(d.len() as u64, Ordering::Relaxed);
             let recv = link.lock().receive(d, Instant::now());
@@ -355,12 +409,65 @@ async fn player(
                     continue;
                 }
                 if sync {
-                    if m.payload[0] == net_api::sync::KIND_DELTA && m.payload.len() >= 5 {
-                        stats.received.fetch_add(1, Ordering::Relaxed);
-                        let t = u32::from_be_bytes(m.payload[1..5].try_into().unwrap());
-                        server_tick.store(t, Ordering::Relaxed);
+                    if m.payload[0] == net_api::lockstep::KIND_CATCHUP {
+                        if let Some(ck) = net_api::lockstep::LockstepRoom::decode_catchup(m.payload)
+                        {
+                            stats.catchups.fetch_add(1, Ordering::Relaxed);
+                            stats
+                                .catchup_from_tick
+                                .fetch_add(ck.tick as u64, Ordering::Relaxed);
+                            catchup.lock().next = Some(ck.tick);
+                        }
+                        continue;
+                    }
+                    if m.payload[0] == net_api::lockstep::KIND_CHECKPOINT_REQ {
+                        // We are the master: upload a (fake, fixed-size) confirmed state.
+                        if let Some(t) =
+                            net_api::lockstep::LockstepRoom::decode_checkpoint_request(m.payload)
+                        {
+                            let st = server_tick.load(Ordering::Relaxed);
+                            let t = if st == u32::MAX { t } else { st.min(t) };
+                            let frame = net_api::lockstep::LockstepRoom::encode_checkpoint(
+                                net_common::types::Tick(t),
+                                0xA0_u64 | t as u64,
+                                &[7u8; 256],
+                            );
+                            let _ =
+                                link.lock()
+                                    .send(Channel::ReliableOrdered, frame, Instant::now());
+                            flush();
+                            stats.checkpoints.fetch_add(1, Ordering::Relaxed);
+                        }
+                        continue;
+                    }
+                    if m.payload[0] == net_api::lockstep::KIND_BUNDLE
+                        && m.channel == Channel::ReliableOrdered
+                    {
+                        // Journal tail: must be contiguous from the checkpoint tick.
+                        let mut cu = catchup.lock();
+                        for (t, _) in net_api::lockstep::LockstepRoom::decode_bundles(m.payload) {
+                            if cu.next == Some(t.0) {
+                                cu.next = Some(t.0 + 1);
+                                stats.catchup_bundles.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        cu.check(&stats);
+                        continue;
                     }
                     if m.payload[0] == net_api::lockstep::KIND_BUNDLE {
+                        let mut cu = catchup.lock();
+                        if cu.next.is_some() {
+                            // Live bundles may overtake the reliable tail: remember the oldest
+                            // tick the live stream has covered so far.
+                            if let Some((t, _)) =
+                                net_api::lockstep::LockstepRoom::decode_bundles(m.payload.clone())
+                                    .first()
+                            {
+                                cu.live_oldest = Some(cu.live_oldest.map_or(t.0, |o| o.min(t.0)));
+                            }
+                            cu.check(&stats);
+                        }
+                        drop(cu);
                         // newest bundle = server clock; count bundles (not redundant copies)
                         if let Some((t, _)) =
                             net_api::lockstep::LockstepRoom::decode_bundles(m.payload).last()
@@ -503,6 +610,27 @@ async fn player(
         c.close(0u32.into(), b"done");
     }
     Ok(())
+}
+
+/// Late-join bookkeeping: `next` is the journal tick we expect next over the reliable
+/// channel (None = not catching up); `live_oldest` the oldest tick the live stream covered.
+/// Caught up = the reliable tail reached a tick the live stream also covers (no gap).
+#[derive(Default)]
+struct Catchup {
+    next: Option<u32>,
+    live_oldest: Option<u32>,
+}
+
+impl Catchup {
+    fn check(&mut self, stats: &Stats) {
+        if let (Some(n), Some(o)) = (self.next, self.live_oldest) {
+            if n >= o {
+                stats.caught_up.fetch_add(1, Ordering::Relaxed);
+                self.next = None;
+                self.live_oldest = None;
+            }
+        }
+    }
 }
 
 fn epoch_us() -> u64 {

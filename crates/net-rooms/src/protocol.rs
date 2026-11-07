@@ -188,6 +188,11 @@ pub enum ServerMsg {
         schema_hash: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tick_hz: Option<u16>,
+        /// Lockstep rooms only: the server tick the joiner enters at, and the room seed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tick: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seed: Option<u64>,
     },
     Left {
         reason: String,

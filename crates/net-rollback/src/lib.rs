@@ -92,6 +92,27 @@ impl<S: Clone + Hashable> Rollback<S> {
         }
     }
 
+    /// Starts from a checkpoint: `state` is the state entering `tick` (every earlier input
+    /// applied), as uploaded by the master and relayed by the server to late joiners.
+    pub fn from_checkpoint(
+        cfg: RollbackConfig,
+        actors: Vec<ActorId>,
+        tick: Tick,
+        state: S,
+    ) -> Self {
+        let mut r = Self::new(cfg, actors, state);
+        r.base_tick = tick.0;
+        r
+    }
+
+    /// Newest state whose every input is confirmed, with the tick it is entering. This is
+    /// what a master uploads as a checkpoint.
+    pub fn confirmed_state(&self) -> Option<(Tick, &S)> {
+        let c = self.confirmed_tick()?;
+        let i = (c.0 - self.base_tick) as usize + 1;
+        self.states.get(i).map(|s| (Tick(c.0 + 1), s))
+    }
+
     pub fn actors(&self) -> &[ActorId] {
         &self.actors
     }

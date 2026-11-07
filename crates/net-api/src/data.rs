@@ -40,8 +40,6 @@ async fn handle(st: Shared, incoming: quinn::Incoming) -> anyhow::Result<()> {
     let ds = DataSession::new(DataSink::Quic(conn.clone()), st.metrics.clone());
     let ds = attach_data(&h, t.actor, ds);
     spawn_ticker(&st, ds.clone());
-    // Echo an empty ack so the client learns the path is open.
-    ds.send(net_common::Channel::ReliableOrdered, bytes::Bytes::new());
     loop {
         let d = match conn.read_datagram().await {
             Ok(d) => d,

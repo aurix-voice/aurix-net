@@ -79,6 +79,22 @@ format (`net-rollback::Replay`): seed + schema hash + inputs per tick reproduces
 Use `net-fpmath` (Q32.32 fixed point, table trig, deterministic RNG) for anything that
 touches game state; never floats.
 
+### Late join and rejoin
+
+A lockstep room never stops for a joiner and never migrates a host. Every
+`CHECKPOINT_EVERY_SECS` (5 s) the server asks the master for its newest *confirmed* state
+(`CheckpointReq` on the reliable channel; the master answers with `Checkpoint`: tick, hash,
+<= 60 KiB of state — use `Rollback::confirmed_state()`). When a data link attaches to a room
+that is past tick 0 (late join, or a reconnect into an offline slot) the server sends, on the
+reliable-ordered channel, `Catchup` (the newest checkpoint, or tick 0 with an empty state
+meaning "start from the seed") followed by every journal bundle from that tick up to the
+current one, in ~32 KiB frames. Live bundles keep flowing unreliably in parallel, so the
+client buffers them until the reliable tail reaches a tick the live stream already covers
+(the tail always overlaps thanks to bundle redundancy). `joined.tick` and `joined.seed` tell
+the client where it enters. Start the client with `Rollback::from_checkpoint(cfg, actors,
+tick, state)` and feed the tail bundles as confirmed inputs. If a joiner had to replay from a
+stale checkpoint the server asks the master for a fresh one at once, so catch-up stays bounded.
+
 ## Data frames (first byte)
 
 | kind | direction | mode |
@@ -89,3 +105,6 @@ touches game state; never floats.
 | `0x12` Resync | client -> server | sync |
 | `0x20` InputBundle | server -> client | lockstep |
 | `0x21` Hash | client -> server | lockstep |
+| `0x22` Checkpoint | master -> server (reliable) | lockstep |
+| `0x23` CheckpointReq | server -> master (reliable) | lockstep |
+| `0x24` Catchup | server -> joiner (reliable), then `0x20` bundles | lockstep |

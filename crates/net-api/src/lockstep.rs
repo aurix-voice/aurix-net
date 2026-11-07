@@ -11,6 +11,20 @@
 //! ```
 //! Bundles for the last `BUNDLE_REDUNDANCY` ticks are re-sent each tick, so a lost datagram
 //! costs nothing unless several in a row disappear.
+//!
+//! Late join / rejoin (reliable-ordered channel):
+//! ```text
+//! 0x23 CheckpointReq server->master  u32 tick            "upload your confirmed state"
+//! 0x22 Checkpoint    master->server  u32 tick, u64 hash, bytes state (<= 60 KiB)
+//! 0x24 Catchup       server->joiner  u32 tick, u64 hash, u32 len, bytes state
+//! 0x20 InputBundle   server->joiner  (same layout as live bundles) ticks tick..now-1
+//! ```
+//! When a data link attaches to a room that is past tick 0 the server sends `Catchup`
+//! (the newest master checkpoint, or tick 0 with an empty state = "start from the seed")
+//! followed by every journal bundle up to the current tick, then the live stream continues.
+//! The master is asked for a checkpoint every `CHECKPOINT_EVERY_SECS`, and immediately when
+//! a joiner had to replay from a stale one, so catch-up stays bounded without any host
+//! migration or peer-to-peer state transfer.
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use net_common::types::{ActorId, Tick};
@@ -20,7 +34,23 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 pub const KIND_INPUT: u8 = crate::sync::KIND_INPUT;
 pub const KIND_BUNDLE: u8 = 0x20;
 pub const KIND_HASH: u8 = 0x21;
+pub const KIND_CHECKPOINT: u8 = 0x22;
+pub const KIND_CHECKPOINT_REQ: u8 = 0x23;
+pub const KIND_CATCHUP: u8 = 0x24;
 pub const BUNDLE_REDUNDANCY: usize = 3;
+pub const CHECKPOINT_EVERY_SECS: u32 = 5;
+pub const MAX_CHECKPOINT_BYTES: usize = 60 * 1024;
+/// Reliable catch-up frames are split at about this size.
+const CATCHUP_CHUNK_BYTES: usize = 32 * 1024;
+
+/// Deterministic state the master uploaded; `tick` is the tick the state is *entering*
+/// (all inputs of earlier ticks applied), i.e. `Rollback::current_tick()` when captured.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checkpoint {
+    pub tick: u32,
+    pub hash: u64,
+    pub state: Bytes,
+}
 /// Inputs may arrive this many ticks ahead of the server clock.
 pub const MAX_AHEAD: u32 = 16;
 
@@ -36,6 +66,11 @@ pub struct LockstepRoom {
     hashes: BTreeMap<u32, HashMap<ActorId, u64>>,
     pub desyncs: Vec<(u32, ActorId)>,
     pub seed: u64,
+    /// Current master (set by the host loop); only its checkpoints are accepted.
+    pub master: Option<ActorId>,
+    pub checkpoint: Option<Checkpoint>,
+    last_checkpoint_req: Option<u32>,
+    want_checkpoint: bool,
 }
 
 impl LockstepRoom {
@@ -50,7 +85,134 @@ impl LockstepRoom {
             hashes: BTreeMap::new(),
             desyncs: Vec::new(),
             seed,
+            master: None,
+            checkpoint: None,
+            last_checkpoint_req: None,
+            want_checkpoint: false,
         }
+    }
+
+    fn checkpoint_every(&self) -> u32 {
+        (self.hz as u32 * CHECKPOINT_EVERY_SECS).max(1)
+    }
+
+    /// Called once per tick after [`tick`]: a `CheckpointReq` frame for the master, if due.
+    pub fn checkpoint_request(&mut self) -> Option<Bytes> {
+        self.master?;
+        let t = self.tick.0;
+        let periodic = t > 0 && t.is_multiple_of(self.checkpoint_every());
+        let urgent = self.want_checkpoint
+            && self
+                .last_checkpoint_req
+                .is_none_or(|r| t.wrapping_sub(r) >= self.hz as u32);
+        if !(periodic || urgent) {
+            return None;
+        }
+        self.last_checkpoint_req = Some(t);
+        let mut b = BytesMut::with_capacity(5);
+        b.put_u8(KIND_CHECKPOINT_REQ);
+        b.put_u32(t);
+        Some(b.freeze())
+    }
+
+    /// A data link attached (join or rejoin) while the room is running: everything the
+    /// client needs to reach the current tick, as reliable-ordered frames. Empty at tick 0.
+    pub fn on_late_join(&mut self) -> Vec<Bytes> {
+        if self.tick.0 == 0 {
+            return Vec::new();
+        }
+        let (from, hash, state) = match &self.checkpoint {
+            Some(c) => (c.tick, c.hash, c.state.clone()),
+            None => (0, 0, Bytes::new()),
+        };
+        if self.tick.0.saturating_sub(from) > 2 * self.checkpoint_every() {
+            self.want_checkpoint = true;
+        }
+        let mut frames = Vec::new();
+        let mut b = BytesMut::with_capacity(17 + state.len());
+        b.put_u8(KIND_CATCHUP);
+        b.put_u32(from);
+        b.put_u64(hash);
+        b.put_u32(state.len() as u32);
+        b.extend_from_slice(&state);
+        frames.push(b.freeze());
+        let empty = TickInputs::new();
+        let mut chunk: Vec<Bytes> = Vec::new();
+        let mut chunk_bytes = 0usize;
+        let flush = |chunk: &mut Vec<Bytes>, frames: &mut Vec<Bytes>| {
+            if chunk.is_empty() {
+                return;
+            }
+            let mut out = BytesMut::new();
+            out.put_u8(KIND_BUNDLE);
+            out.put_u8(chunk.len() as u8);
+            for r in chunk.drain(..) {
+                out.put_u16(r.len() as u16);
+                out.extend_from_slice(&r);
+            }
+            frames.push(out.freeze());
+        };
+        for t in from..self.tick.0 {
+            let inputs = self.journal.tick(Tick(t)).unwrap_or(&empty);
+            let bundle = Self::encode_bundle(t, inputs);
+            if chunk.len() == 255 || chunk_bytes + bundle.len() + 2 > CATCHUP_CHUNK_BYTES {
+                flush(&mut chunk, &mut frames);
+                chunk_bytes = 0;
+            }
+            chunk_bytes += bundle.len() + 2;
+            chunk.push(bundle);
+        }
+        flush(&mut chunk, &mut frames);
+        frames
+    }
+
+    fn encode_bundle(t: u32, inputs: &TickInputs) -> Bytes {
+        let mut b = BytesMut::new();
+        b.put_u8(KIND_BUNDLE);
+        b.put_u32(t);
+        b.put_u8(inputs.len().min(255) as u8);
+        for (a, d) in inputs.iter().take(255) {
+            b.put_u16(a.0);
+            b.put_u8(d.len().min(255) as u8);
+            b.extend_from_slice(&d[..d.len().min(255)]);
+        }
+        b.freeze()
+    }
+
+    /// Client side: parses a `Catchup` frame.
+    pub fn decode_catchup(mut d: Bytes) -> Option<Checkpoint> {
+        if d.len() < 17 || d.get_u8() != KIND_CATCHUP {
+            return None;
+        }
+        let tick = d.get_u32();
+        let hash = d.get_u64();
+        let len = d.get_u32() as usize;
+        if d.len() < len {
+            return None;
+        }
+        Some(Checkpoint {
+            tick,
+            hash,
+            state: d.split_to(len),
+        })
+    }
+
+    /// Client side: parses a `CheckpointReq` frame (the server's current tick).
+    pub fn decode_checkpoint_request(mut d: Bytes) -> Option<u32> {
+        if d.len() < 5 || d.get_u8() != KIND_CHECKPOINT_REQ {
+            return None;
+        }
+        Some(d.get_u32())
+    }
+
+    /// Client (master) side: a `Checkpoint` upload frame.
+    pub fn encode_checkpoint(tick: Tick, hash: u64, state: &[u8]) -> Bytes {
+        let mut b = BytesMut::with_capacity(13 + state.len());
+        b.put_u8(KIND_CHECKPOINT);
+        b.put_u32(tick.0);
+        b.put_u64(hash);
+        b.extend_from_slice(state);
+        b.freeze()
     }
 
     pub fn tick_period(&self) -> std::time::Duration {
@@ -114,6 +276,27 @@ impl LockstepRoom {
                 }
                 true
             }
+            KIND_CHECKPOINT => {
+                payload.advance(1);
+                if Some(actor) != self.master
+                    || payload.len() < 12
+                    || payload.len() - 12 > MAX_CHECKPOINT_BYTES
+                {
+                    return true;
+                }
+                let t = payload.get_u32();
+                let h = payload.get_u64();
+                if t > self.tick.0 || self.checkpoint.as_ref().is_some_and(|c| c.tick >= t) {
+                    return true;
+                }
+                self.checkpoint = Some(Checkpoint {
+                    tick: t,
+                    hash: h,
+                    state: payload,
+                });
+                self.want_checkpoint = false;
+                true
+            }
             _ => false,
         }
     }
@@ -160,17 +343,11 @@ impl LockstepRoom {
     pub fn tick(&mut self) -> Bytes {
         let t = self.tick.0;
         let inputs = self.pending.remove(&t).unwrap_or_default();
-        let mut b = BytesMut::new();
-        b.put_u8(KIND_BUNDLE);
-        b.put_u32(t);
-        b.put_u8(inputs.len().min(255) as u8);
         for (a, d) in inputs.iter().take(255) {
-            b.put_u16(a.0);
-            b.put_u8(d.len().min(255) as u8);
-            b.extend_from_slice(&d[..d.len().min(255)]);
             self.journal.record(Tick(t), *a, d.clone());
         }
-        let bundle = b.freeze();
+        let b = Self::encode_bundle(t, &inputs);
+        let bundle = b;
         self.recent.push_back(bundle);
         while self.recent.len() > BUNDLE_REDUNDANCY {
             self.recent.pop_front();
@@ -271,5 +448,73 @@ mod tests {
         assert!(r.take_desyncs().is_empty());
         r.handle(c, LockstepRoom::encode_hash(Tick(1), 43));
         assert_eq!(r.take_desyncs(), vec![(1, c)]);
+    }
+
+    #[test]
+    fn late_join_gets_checkpoint_and_journal_tail() {
+        let mut r = LockstepRoom::new(60, 7);
+        let (a, b) = (ActorId(1), ActorId(2));
+        r.on_join(a);
+        r.on_join(b);
+        r.master = Some(a);
+        for t in 0..400u32 {
+            r.handle(a, SyncRoom::encode_input(Tick(t), &[vec![t as u8]]));
+            r.handle(b, SyncRoom::encode_input(Tick(t), &[vec![1, t as u8]]));
+            let _ = r.tick();
+            let req = r.checkpoint_request();
+            // Periodic request every 5s (300 ticks).
+            assert_eq!(req.is_some(), t + 1 == 300, "tick {t}");
+            if let Some(req) = req {
+                assert_eq!(LockstepRoom::decode_checkpoint_request(req), Some(300));
+                // Non-master uploads are ignored.
+                assert!(r.handle(b, LockstepRoom::encode_checkpoint(Tick(300), 1, b"x")));
+                assert!(r.checkpoint.is_none());
+                assert!(r.handle(
+                    a,
+                    LockstepRoom::encode_checkpoint(Tick(300), 0xC0FFEE, b"state")
+                ));
+            }
+        }
+        assert_eq!(r.checkpoint.as_ref().map(|c| c.tick), Some(300));
+        let frames = r.on_late_join();
+        let ck = LockstepRoom::decode_catchup(frames[0].clone()).unwrap();
+        assert_eq!(
+            (ck.tick, ck.hash, &ck.state[..]),
+            (300, 0xC0FFEE, &b"state"[..])
+        );
+        let bundles: Vec<_> = frames[1..]
+            .iter()
+            .flat_map(|f| LockstepRoom::decode_bundles(f.clone()))
+            .collect();
+        assert_eq!(bundles.len(), 100);
+        for (i, (t, inputs)) in bundles.iter().enumerate() {
+            assert_eq!(t.0, 300 + i as u32);
+            assert_eq!(inputs.get(&a), Some(&vec![(300 + i) as u8]));
+            assert_eq!(inputs.get(&b).map(|v| v.len()), Some(2));
+        }
+        // Fresh checkpoint: no urgent request.
+        assert!(r.checkpoint_request().is_none());
+
+        // Without any checkpoint the joiner replays from tick 0 and a request becomes urgent.
+        let mut r2 = LockstepRoom::new(60, 1);
+        r2.on_join(a);
+        r2.master = Some(a);
+        for _ in 0..700 {
+            let _ = r2.tick();
+            let _ = r2.checkpoint_request();
+        }
+        let frames = r2.on_late_join();
+        let ck = LockstepRoom::decode_catchup(frames[0].clone()).unwrap();
+        assert_eq!((ck.tick, ck.state.len()), (0, 0));
+        let n: usize = frames[1..]
+            .iter()
+            .map(|f| LockstepRoom::decode_bundles(f.clone()).len())
+            .sum();
+        assert_eq!(n, 700);
+        assert!(frames.iter().all(|f| f.len() <= 64 * 1024));
+        for _ in 0..60 {
+            let _ = r2.tick();
+        }
+        assert!(r2.checkpoint_request().is_some());
     }
 }

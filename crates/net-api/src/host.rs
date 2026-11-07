@@ -285,16 +285,16 @@ pub fn handle_data_frame(
     payload: Bytes,
     metrics: &Metrics,
 ) -> Result<()> {
-    if channel == Channel::UnreliableSequenced {
-        if let Some(sy) = h.sync.as_mut() {
-            if sy.handle(actor, payload.clone()) {
-                return Ok(());
-            }
+    // Simulation frames travel on any channel (inputs unreliable, checkpoint uploads
+    // reliable); unknown kinds fall through to relay events.
+    if let Some(sy) = h.sync.as_mut() {
+        if sy.handle(actor, payload.clone()) {
+            return Ok(());
         }
-        if let Some(ls) = h.lockstep.as_mut() {
-            if ls.handle(actor, payload.clone()) {
-                return Ok(());
-            }
+    }
+    if let Some(ls) = h.lockstep.as_mut() {
+        if ls.handle(actor, payload.clone()) {
+            return Ok(());
         }
     }
     let frame = EventFrame::decode(payload).map_err(|e| NetError::Invalid(e.to_string()))?;
