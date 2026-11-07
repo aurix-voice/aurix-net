@@ -25,6 +25,10 @@ pub async fn run(st: Shared) {
             ),
             ("audit", queries::purge_audit(&st.pool, r.audit_days).await),
             ("usage", queries::purge_usage(&st.pool, r.usage_days).await),
+            (
+                "webhook_deliveries",
+                queries::purge_webhook_deliveries(&st.pool, r.webhook_deliveries_days).await,
+            ),
         ] {
             match res {
                 Ok(0) => {}

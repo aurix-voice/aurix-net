@@ -10,6 +10,7 @@ import { Button } from "@/ui/Button";
 import { ConfirmDialog, Dialog, FormDialog } from "@/ui/Dialog";
 import { Input } from "@/ui/Input";
 import { PageHeader } from "@/ui/Page";
+import { WebhookDeliveriesDialog } from "@/components/WebhookDeliveries";
 import { Badge, Callout, Card, CodeBlock, Field, IdChip, Mono } from "@/ui/Primitives";
 import { DataTable, type Column } from "@/ui/Table";
 
@@ -20,6 +21,7 @@ function WebhooksBody() {
   const list = useWebhooks();
   const create = useCreateWebhook();
   const del = useDeleteWebhook();
+  const [inspecting, setInspecting] = useState<Webhook | null>(null);
   const [open, setOpen] = useState(false);
   const [url, setUrl] = useState("");
   const [events, setEvents] = useState("");
@@ -35,9 +37,14 @@ function WebhooksBody() {
       header: "",
       align: "right",
       cell: (w) => (
-        <Button variant="ghost" size="sm" onClick={() => setDeleting(w)}>
-          {t("common.delete")}
-        </Button>
+        <span className="flex justify-end gap-1">
+          <Button variant="ghost" size="sm" onClick={() => setInspecting(w)}>
+            {t("webhooks.deliveries")}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setDeleting(w)}>
+            {t("common.delete")}
+          </Button>
+        </span>
       ),
     },
   ];
@@ -80,6 +87,7 @@ function WebhooksBody() {
         <Callout tone="warn">{t("webhooks.secret")}</Callout>
         {created?.secret ? <CodeBlock value={created.secret} className="mt-3" /> : null}
       </Dialog>
+      <WebhookDeliveriesDialog webhook={inspecting} onClose={() => setInspecting(null)} />
       <ConfirmDialog
         open={!!deleting}
         onOpenChange={(o) => !o && setDeleting(null)}

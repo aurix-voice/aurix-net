@@ -92,6 +92,16 @@ pub fn router(st: Shared) -> Router {
         )
         .route("/v1/internal/rooms/:id/players", get(internal_players))
         .route("/v1/internal/drain", post(internal_drain))
+        .route("/v1/webhooks/:id/deliveries", get(webhook_deliveries))
+        .route("/v1/webhooks/:id/test", post(webhook_test))
+        .route(
+            "/v1/operator/projects/:id/webhooks/:wid/deliveries",
+            get(op_webhook_deliveries),
+        )
+        .route(
+            "/v1/operator/projects/:id/webhooks/:wid/test",
+            post(op_webhook_test),
+        )
         .route("/v1/internal/rooms/:id", delete(internal_close_room))
         .route("/v1/operator/nodes/:id/drain", post(op_drain_node))
         .route("/v1/operator/rooms/:id/replay", get(op_replay))
@@ -405,6 +415,11 @@ async fn create_room(
         net_rooms::Room::new(cfg, std::time::Instant::now()),
     );
     crate::ws::publish_room(&st, &hr).await;
+    st.webhooks.emit(
+        project,
+        "room.created",
+        json!({"room": id.to_string(), "name": hr.lock().room.cfg.name, "mode": "relay", "region": st.region.to_string()}),
+    );
     Ok(Json(
         json!({"id": id, "node": st.node_id, "region": st.region}),
     ))
@@ -942,6 +957,87 @@ async fn op_set_limits(
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct DeliveriesQuery {
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+async fn deliveries_json(
+    st: &Shared,
+    project: Uuid,
+    wid: Uuid,
+    limit: Option<i64>,
+) -> Result<Value> {
+    queries::get_webhook(&st.pool, project, wid)
+        .await?
+        .ok_or_else(|| NetError::NotFound("webhook not found".into()))?;
+    let rows =
+        queries::list_webhook_deliveries(&st.pool, project, wid, limit.unwrap_or(50)).await?;
+    Ok(json!({"deliveries": rows}))
+}
+
+async fn test_webhook(st: &Shared, project: Uuid, wid: Uuid) -> Result<Value> {
+    queries::get_webhook(&st.pool, project, wid)
+        .await?
+        .ok_or_else(|| NetError::NotFound("webhook not found".into()))?;
+    st.webhooks.test(ProjectId::from_uuid(project), wid);
+    Ok(json!({"queued": true}))
+}
+
+/// Delivery log of one webhook (project key, read scope).
+async fn webhook_deliveries(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(q): Query<DeliveriesQuery>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Read).await?;
+    Ok(Json(
+        deliveries_json(&st, key.project_id, id, q.limit).await?,
+    ))
+}
+
+/// Queue a `test` event to one webhook; the result shows up in its delivery log.
+async fn webhook_test(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Admin).await?;
+    key_write(&st, &key)?;
+    Ok(Json(test_webhook(&st, key.project_id, id).await?))
+}
+
+async fn op_webhook_deliveries(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((id, wid)): Path<(Uuid, Uuid)>,
+    Query(q): Query<DeliveriesQuery>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    Ok(Json(deliveries_json(&st, id, wid, q.limit).await?))
+}
+
+async fn op_webhook_test(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((id, wid)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    let out = test_webhook(&st, id, wid).await?;
+    audit_log(
+        &st,
+        Some(id),
+        "operator",
+        "webhook.test",
+        &wid.to_string(),
+        json!({}),
+    )
+    .await;
+    Ok(Json(out))
 }
 
 #[derive(Deserialize)]

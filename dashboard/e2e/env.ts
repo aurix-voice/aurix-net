@@ -34,7 +34,10 @@ export async function signIn(page: Page, token: string): Promise<void> {
   await page.waitForURL((u) => !u.pathname.startsWith("/login"));
 }
 
-/** Same-origin API call with the operator token, for fixtures the UI does not create itself. */
+const createdProjects: string[] = [];
+
+/** Same-origin API call with the operator token, for fixtures the UI does not create itself.
+ * Projects created through it are deleted again by `cleanupProjects` so the fleet stays tidy. */
 export async function api<T>(page: Page, method: string, path: string, body?: unknown): Promise<T> {
   const res = await page.request.fetch(path, {
     method,
@@ -42,5 +45,18 @@ export async function api<T>(page: Page, method: string, path: string, body?: un
     data: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!res.ok()) throw new Error(`${method} ${path} → ${res.status()} ${await res.text()}`);
-  return res.status() === 204 ? (undefined as T) : ((await res.json()) as T);
+  const out = res.status() === 204 ? (undefined as T) : ((await res.json()) as T);
+  if (method === "POST" && path === "/v1/operator/projects") {
+    const id = (out as { project?: { id?: string } }).project?.id;
+    if (id) createdProjects.push(id);
+  }
+  return out;
+}
+
+/** Soft-deletes every project a test created (closes rooms, revokes keys). Safe to call twice. */
+export async function cleanupProjects(page: Page): Promise<void> {
+  const ids = createdProjects.splice(0);
+  for (const id of ids) {
+    await page.request.fetch(`/v1/operator/projects/${id}`, { method: "DELETE", headers: { authorization: `Bearer ${operatorToken()}` } }).catch(() => undefined);
+  }
 }

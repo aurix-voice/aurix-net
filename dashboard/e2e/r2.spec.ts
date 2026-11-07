@@ -1,8 +1,9 @@
 import { expect, test } from "@playwright/test";
 
-import { api, pinEnglish, uniq } from "./env";
+import { api, cleanupProjects, pinEnglish, uniq } from "./env";
 
 test.beforeEach(async ({ page }) => pinEnglish(page));
+test.afterEach(async ({ page }) => cleanupProjects(page));
 
 test("usage shows the whole fleet for an operator without a selected project", async ({ page }) => {
   await page.goto("/usage");
@@ -134,4 +135,21 @@ test("operator deletes a project after typing its name; keys stop working and hi
   await page.goto("/audit");
   await page.getByPlaceholder(/^Action/).fill("project.delete");
   await expect(page.getByRole("row").filter({ hasText: project.project.id.slice(0, 8) }).first()).toBeVisible();
+});
+
+test("webhook deliveries dialog shows the outcome of a test send", async ({ page }) => {
+  const project = await api<{ project: { id: string }; key: { key: string } }>(page, "POST", "/v1/operator/projects", { name: uniq("e2e-deliv") });
+  const res = await page.request.post("/v1/webhooks", {
+    headers: { authorization: `Bearer ${project.key.key}`, "content-type": "application/json" },
+    data: { url: "http://127.0.0.1:9/dead", events: [] },
+  });
+  expect(res.ok()).toBeTruthy();
+  await page.goto(`/projects/${project.project.id}`);
+  await page.getByRole("tab", { name: /Webhooks/ }).click();
+  await page.getByRole("button", { name: "Deliveries" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText("No deliveries yet")).toBeVisible();
+  await dialog.getByRole("button", { name: "Send test" }).click();
+  await expect(dialog.getByRole("row").filter({ hasText: "test" }).first()).toBeVisible({ timeout: 20_000 });
+  await expect(dialog.getByText("failed").first()).toBeVisible();
 });

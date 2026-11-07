@@ -1,8 +1,9 @@
 import { expect, test } from "@playwright/test";
 
-import { api, pinEnglish, uniq } from "./env";
+import { api, cleanupProjects, pinEnglish, uniq } from "./env";
 
 test.beforeEach(async ({ page }) => pinEnglish(page));
+test.afterEach(async ({ page }) => cleanupProjects(page));
 
 test("overview and nodes show the live fleet", async ({ page }) => {
   await page.goto("/");

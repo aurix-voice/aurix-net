@@ -3,7 +3,7 @@ import { useMemo } from "react";
 
 import { useAuth } from "@/auth/AuthProvider";
 
-import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Webhook } from "./client";
+import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Webhook, type WebhookDelivery } from "./client";
 
 export function useApi(): NetClient {
   const { token } = useAuth();
@@ -151,6 +151,29 @@ export function useCreateWebhook() {
   const api = useApi();
   const qc = useQueryClient();
   return useMutation({ mutationFn: (body: { url: string; events: string[] }) => api.post<Webhook>("/v1/webhooks", body), onSuccess: () => void qc.invalidateQueries({ queryKey: qk.webhooks }) });
+}
+/** Delivery log of one webhook. `projectId` switches to the operator route. */
+export function useWebhookDeliveries(webhookId: string | null, projectId?: string) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["webhook-deliveries", projectId ?? "me", webhookId],
+    enabled: !!webhookId,
+    refetchInterval: 3000,
+    queryFn: async () =>
+      (
+        await api.get<{ deliveries: WebhookDelivery[] }>(
+          projectId ? `/v1/operator/projects/${projectId}/webhooks/${webhookId}/deliveries` : `/v1/webhooks/${webhookId}/deliveries`,
+          { limit: 50 },
+        )
+      ).deliveries,
+  });
+}
+export function useTestWebhook(projectId?: string) {
+  const api = useApi();
+  return useMutation({
+    mutationFn: (webhookId: string) =>
+      api.post<{ queued: boolean }>(projectId ? `/v1/operator/projects/${projectId}/webhooks/${webhookId}/test` : `/v1/webhooks/${webhookId}/test`),
+  });
 }
 export function useDeleteWebhook() {
   const api = useApi();

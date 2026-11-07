@@ -38,6 +38,9 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | POST | `/v1/operator/projects/:id/keys` | operator | |
 | POST | `/v1/operator/projects/:id/limits` | operator | quotas: `max_open_rooms, max_players_per_room, max_events_per_sec_per_room, max_events_per_sec_per_player, max_player_props_bytes, max_event_bytes, regions` |
 | POST | `/v1/operator/projects/:id/suspend` | operator | `{suspended}`: while suspended the project's keys can only read; grants, joins, room creation and writes get 403 `project suspended`. Live rooms drain as players leave. |
+| GET | `/v1/webhooks/:id/deliveries` | read | last deliveries of a webhook (`?limit=`, ≤500): event, ok, HTTP status, attempts, latency, error; kept `retention.webhook_deliveries_days` (7) |
+| POST | `/v1/webhooks/:id/test` | admin | queue a `test` event to that webhook only; result shows in its deliveries |
+| GET/POST | `/v1/operator/projects/:id/webhooks/:wid/deliveries` · `/test` | operator | same for operators (test is audited as `webhook.test`) |
 | DELETE | `/v1/operator/projects/:id` | operator | soft delete: live rooms closed fleet-wide, all keys revoked, webhooks/modules removed; usage and audit rows stay |
 | GET | `/v1/operator/nodes` | operator | all nodes incl. draining |
 | GET | `/v1/internal/rooms/:id/players` | operator | node-to-node: players of a room hosted on this node (used by room detail on other nodes) |
@@ -179,5 +182,5 @@ in its rooms get `left{reason:"rehost"}` and rejoin the same room name on any no
 ## Audit log
 
 Every admin/operator mutation writes a row to the `audit` table (`actor` is `key:<api key id>` or
-`operator`): `project.create`, `project.limits`, `project.suspend`, `project.resume`, `project.delete`, `node.drain`, `node.undrain`, `room.close`, `key.create`, `key.revoke`, `webhook.create`,
+`operator`): `project.create`, `project.limits`, `project.suspend`, `project.resume`, `project.delete`, `node.drain`, `node.undrain`, `room.close`, `webhook.test`, `key.create`, `key.revoke`, `webhook.create`,
 `webhook.delete`, `module.put`, `module.delete`. Rows are kept for `retention.audit_days` (90).

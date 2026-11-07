@@ -672,6 +672,78 @@ pub async fn audit(
 }
 
 /// Rows closed longer than `days` ago; 0 disables. Returns the number deleted.
+pub struct NewDelivery<'a> {
+    pub webhook_id: Uuid,
+    pub project_id: Uuid,
+    pub event: &'a str,
+    pub ok: bool,
+    pub status: Option<i16>,
+    pub attempts: i16,
+    pub latency_ms: i32,
+    pub error: Option<&'a str>,
+}
+
+pub async fn insert_webhook_delivery(pool: &DbPool, d: &NewDelivery<'_>) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO webhook_deliveries (id, webhook_id, project_id, event, ok, status, attempts, latency_ms, error) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(d.webhook_id)
+    .bind(d.project_id)
+    .bind(d.event)
+    .bind(d.ok)
+    .bind(d.status)
+    .bind(d.attempts)
+    .bind(d.latency_ms)
+    .bind(d.error)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(())
+}
+
+pub async fn list_webhook_deliveries(
+    pool: &DbPool,
+    project_id: Uuid,
+    webhook_id: Uuid,
+    limit: i64,
+) -> Result<Vec<WebhookDeliveryRow>> {
+    sqlx::query_as::<_, WebhookDeliveryRow>(
+        "SELECT * FROM webhook_deliveries WHERE project_id = $1 AND webhook_id = $2 \
+         ORDER BY created_at DESC LIMIT $3",
+    )
+    .bind(project_id)
+    .bind(webhook_id)
+    .bind(limit.clamp(1, 500))
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn get_webhook(pool: &DbPool, project_id: Uuid, id: Uuid) -> Result<Option<WebhookRow>> {
+    sqlx::query_as::<_, WebhookRow>("SELECT * FROM webhooks WHERE project_id = $1 AND id = $2")
+        .bind(project_id)
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(db_err)
+}
+
+pub async fn purge_webhook_deliveries(pool: &DbPool, days: u32) -> Result<u64> {
+    if days == 0 {
+        return Ok(0);
+    }
+    let r = sqlx::query(
+        "DELETE FROM webhook_deliveries WHERE created_at < now() - make_interval(days => $1)",
+    )
+    .bind(days as i32)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(r.rows_affected())
+}
+
 pub async fn purge_closed_rooms(pool: &DbPool, days: u32) -> Result<u64> {
     if days == 0 {
         return Ok(0);

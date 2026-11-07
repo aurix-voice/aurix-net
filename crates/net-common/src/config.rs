@@ -25,6 +25,13 @@ pub struct RetentionConfig {
     /// Billing rows (`usage_hours`); keep well past your invoicing window.
     #[serde(default = "d_usage_days")]
     pub usage_days: u32,
+    /// Webhook delivery log rows.
+    #[serde(default = "d_webhook_deliveries_days")]
+    pub webhook_deliveries_days: u32,
+}
+
+fn d_webhook_deliveries_days() -> u32 {
+    7
 }
 
 impl Default for RetentionConfig {
@@ -33,6 +40,7 @@ impl Default for RetentionConfig {
             closed_rooms_days: d_closed_rooms_days(),
             audit_days: d_audit_days(),
             usage_days: d_usage_days(),
+            webhook_deliveries_days: d_webhook_deliveries_days(),
         }
     }
 }
@@ -216,6 +224,7 @@ grants_per_sec_per_key = 500
 closed_rooms_days = 7
 audit_days = 90
 usage_days = 400
+webhook_deliveries_days = 7
 "#;
 
 impl NetConfig {

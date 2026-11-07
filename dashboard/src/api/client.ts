@@ -242,6 +242,17 @@ export interface Webhook {
   /** Only in the create response. */
   secret?: string;
 }
+export interface WebhookDelivery {
+  id: string;
+  webhook_id: string;
+  event: string;
+  ok: boolean;
+  status: number | null;
+  attempts: number;
+  latency_ms: number;
+  error: string | null;
+  created_at: string;
+}
 export interface Module {
   name: string;
   hash: string;

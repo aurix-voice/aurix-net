@@ -11,12 +11,15 @@ use sha2::Sha256;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct WebhookEvent {
     pub project: ProjectId,
     pub event: &'static str,
     pub payload: serde_json::Value,
+    /// Set for test sends: deliver to this webhook only, ignoring its event filter.
+    pub only: Option<Uuid>,
 }
 
 #[derive(Clone)]
@@ -44,13 +47,33 @@ impl Dispatcher {
             project,
             event,
             payload,
+            only: None,
+        });
+    }
+
+    /// Sends a `test` event to one webhook only (ignores its event filter); the outcome lands in
+    /// the delivery log like any other emission.
+    pub fn test(&self, project: ProjectId, webhook: Uuid) {
+        let _ = self.tx.try_send(WebhookEvent {
+            project,
+            event: "test",
+            payload: serde_json::json!({"webhook": webhook}),
+            only: Some(webhook),
         });
     }
 }
 
+#[derive(Clone)]
+struct Hook {
+    id: Uuid,
+    url: String,
+    secret: String,
+    events: Vec<String>,
+}
+
 struct Cached {
     at: Instant,
-    hooks: Vec<(String, String, Vec<String>)>,
+    hooks: Vec<Hook>,
 }
 
 /// Rejects URLs a tenant must not make the node call: non-http(s), credentials in the URL,
@@ -123,14 +146,21 @@ async fn worker(pool: DbPool, mut rx: mpsc::Receiver<WebhookEvent>, allow_privat
     let mut cache: HashMap<ProjectId, Cached> = HashMap::new();
     while let Some(ev) = rx.recv().await {
         let hooks = match cache.get(&ev.project) {
-            Some(c) if c.at.elapsed() < Duration::from_secs(30) => c.hooks.clone(),
+            Some(c) if c.at.elapsed() < Duration::from_secs(30) && ev.only.is_none() => {
+                c.hooks.clone()
+            }
             _ => {
                 let rows = queries::list_webhooks(&pool, ev.project.0)
                     .await
                     .unwrap_or_default();
-                let hooks: Vec<(String, String, Vec<String>)> = rows
+                let hooks: Vec<Hook> = rows
                     .into_iter()
-                    .map(|r| (r.url, r.secret, r.events))
+                    .map(|r| Hook {
+                        id: r.id,
+                        url: r.url,
+                        secret: r.secret,
+                        events: r.events,
+                    })
                     .collect();
                 cache.insert(
                     ev.project,
@@ -152,43 +182,151 @@ async fn worker(pool: DbPool, mut rx: mpsc::Receiver<WebhookEvent>, allow_privat
             "data": ev.payload,
         })
         .to_string();
-        for (url, secret, events) in hooks {
-            if !events.is_empty() && !events.iter().any(|e| e == ev.event || e == "*") {
-                continue;
+        for Hook {
+            id,
+            url,
+            secret,
+            events,
+        } in hooks
+        {
+            match ev.only {
+                Some(only) if only != id => continue,
+                Some(_) => {}
+                None if !events.is_empty() && !events.iter().any(|e| e == ev.event || e == "*") => {
+                    continue
+                }
+                None => {}
             }
             let http = http.clone();
+            let pool = pool.clone();
             let body = body.clone();
             let sig = sign(&secret, body.as_bytes());
             let event = ev.event;
+            let project = ev.project.0;
             tokio::spawn(async move {
-                if !allow_private
-                    && (validate_webhook_url(&url, false).is_err() || !resolves_public(&url).await)
-                {
-                    tracing::warn!(%url, "webhook target is not a public host; skipped");
-                    return;
+                let started = Instant::now();
+                let outcome = deliver(&http, &url, event, &sig, &body, allow_private).await;
+                let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
+                let d = queries::NewDelivery {
+                    webhook_id: id,
+                    project_id: project,
+                    event,
+                    ok: outcome.ok,
+                    status: outcome.status,
+                    attempts: outcome.attempts,
+                    latency_ms,
+                    error: outcome.error.as_deref(),
+                };
+                if let Err(e) = queries::insert_webhook_delivery(&pool, &d).await {
+                    tracing::warn!(error = %e, "webhook delivery log");
                 }
-                for attempt in 0..3u32 {
-                    let r = http
-                        .post(&url)
-                        .header("content-type", "application/json")
-                        .header("x-aurix-event", event)
-                        .header("x-aurix-signature", &sig)
-                        .body(body.clone())
-                        .send()
-                        .await;
-                    match r {
-                        Ok(resp) if resp.status().is_success() => return,
-                        Ok(resp) if resp.status().is_client_error() => {
-                            tracing::debug!(%url, status = %resp.status(), "webhook rejected");
-                            return;
-                        }
-                        _ => tokio::time::sleep(Duration::from_millis(500 * (1 << attempt))).await,
-                    }
-                }
-                tracing::debug!(%url, event, "webhook gave up");
             });
         }
     }
+}
+
+struct Outcome {
+    ok: bool,
+    status: Option<i16>,
+    attempts: i16,
+    error: Option<String>,
+}
+
+/// Up to three attempts with backoff; 4xx stops early (the receiver rejected it on purpose).
+async fn deliver(
+    http: &reqwest::Client,
+    url: &str,
+    event: &str,
+    sig: &str,
+    body: &str,
+    allow_private: bool,
+) -> Outcome {
+    if !allow_private && (validate_webhook_url(url, false).is_err() || !resolves_public(url).await)
+    {
+        tracing::warn!(%url, "webhook target is not a public host; skipped");
+        return Outcome {
+            ok: false,
+            status: None,
+            attempts: 0,
+            error: Some("target is not a public host".into()),
+        };
+    }
+    let mut last_err = None;
+    let mut status = None;
+    for attempt in 0..3u32 {
+        let r = http
+            .post(url)
+            .header("content-type", "application/json")
+            .header("x-aurix-event", event)
+            .header("x-aurix-signature", sig)
+            .body(body.to_string())
+            .send()
+            .await;
+        match r {
+            Ok(resp) if resp.status().is_success() => {
+                return Outcome {
+                    ok: true,
+                    status: Some(resp.status().as_u16() as i16),
+                    attempts: attempt as i16 + 1,
+                    error: None,
+                };
+            }
+            Ok(resp) if resp.status().is_client_error() => {
+                tracing::debug!(%url, status = %resp.status(), "webhook rejected");
+                return Outcome {
+                    ok: false,
+                    status: Some(resp.status().as_u16() as i16),
+                    attempts: attempt as i16 + 1,
+                    error: Some(format!("receiver answered {}", resp.status())),
+                };
+            }
+            Ok(resp) => {
+                status = Some(resp.status().as_u16() as i16);
+                last_err = Some(format!("receiver answered {}", resp.status()));
+            }
+            Err(e) => {
+                status = None;
+                last_err = Some(describe_err(&e));
+            }
+        }
+        if attempt < 2 {
+            tokio::time::sleep(Duration::from_millis(500 * (1 << attempt))).await;
+        }
+    }
+    tracing::debug!(%url, event, "webhook gave up");
+    Outcome {
+        ok: false,
+        status,
+        attempts: 3,
+        error: last_err,
+    }
+}
+
+/// reqwest's top-level message is just "error sending request"; the useful part (connection
+/// refused, timeout, TLS) is in the source chain. URLs are dropped so query strings never land
+/// in the log.
+fn describe_err(e: &reqwest::Error) -> String {
+    let mut parts = Vec::new();
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(err) = cur {
+        let msg = err.to_string();
+        let msg = msg
+            .split(" for url ")
+            .next()
+            .unwrap_or(&msg)
+            .trim()
+            .to_string();
+        if !msg.is_empty() && !parts.contains(&msg) {
+            parts.push(msg);
+        }
+        cur = err.source();
+    }
+    let joined = if e.is_timeout() {
+        "timeout".to_string()
+    } else {
+        parts.join(": ")
+    };
+    joined.chars().take(200).collect()
 }
 
 pub fn sign(secret: &str, body: &[u8]) -> String {

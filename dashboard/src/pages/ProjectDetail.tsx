@@ -13,6 +13,7 @@ import { modeTone } from "@/lib/rooms";
 import { keyColumns } from "@/pages/Keys";
 import { RequireOperator } from "@/shell/Guards";
 import { Button } from "@/ui/Button";
+import { WebhookDeliveriesDialog } from "@/components/WebhookDeliveries";
 import { ConfirmDialog } from "@/ui/Dialog";
 import { Input } from "@/ui/Input";
 import { Tabs, TabPanel } from "@/ui/Menu";
@@ -87,6 +88,7 @@ function ProjectBody() {
   const regions = useRegions();
   const setSuspended = useSetSuspended(projectId);
   const deleteProject = useDeleteProject();
+  const [inspecting, setInspecting] = useState<Webhook | null>(null);
   const navigate = useNavigate();
   const [deletingProject, setDeletingProject] = useState(false);
   const [confirmName, setConfirmName] = useState("");
@@ -137,6 +139,7 @@ function ProjectBody() {
           {d.rooms.length ? ` ${t("projects.suspended.live", { n: d.rooms.length })}` : ""}
         </Callout>
       ) : null}
+      <WebhookDeliveriesDialog webhook={inspecting} projectId={p.id} onClose={() => setInspecting(null)} />
       <ConfirmDialog
         open={deletingProject}
         onOpenChange={(o) => {
@@ -221,9 +224,14 @@ function ProjectBody() {
                     header: "",
                     align: "right",
                     cell: (w) => (
-                      <Button variant="ghost" size="sm" onClick={() => setDeleting({ kind: "webhook", id: w.id, label: w.url })}>
-                        {t("common.delete")}
-                      </Button>
+                      <span className="flex justify-end gap-1">
+                        <Button variant="ghost" size="sm" onClick={() => setInspecting(w)}>
+                          {t("webhooks.deliveries")}
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setDeleting({ kind: "webhook", id: w.id, label: w.url })}>
+                          {t("common.delete")}
+                        </Button>
+                      </span>
                     ),
                   },
                 ]}
