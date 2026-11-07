@@ -3,7 +3,7 @@ import { useMemo } from "react";
 
 import { useAuth } from "@/auth/AuthProvider";
 
-import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Attention, type Ban, type Rejections, type Webhook, type WebhookDelivery } from "./client";
+import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Attention, type Ban, type MatchmakingStats, type Rejections, type Webhook, type WebhookDelivery } from "./client";
 
 export function useApi(): NetClient {
   const { token } = useAuth();
@@ -175,6 +175,15 @@ export function useRejections(hours = 24) {
   });
 }
 /** Player deny-list. `projectId` switches to the operator routes. */
+/** Open matchmaking tickets + matches made. `projectId` switches to the operator route. */
+export function useMatchmakingStats(projectId?: string) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["mm-stats", projectId ?? "me"],
+    refetchInterval: 3000,
+    queryFn: () => api.get<MatchmakingStats>(projectId ? `/v1/operator/projects/${projectId}/matchmaking` : "/v1/matchmaking"),
+  });
+}
 export function useAttention() {
   const api = useApi();
   const { operator } = useAuth();

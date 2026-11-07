@@ -56,6 +56,7 @@ pub fn router(st: Shared) -> Router {
         .route("/v1/keys", get(list_keys).post(create_key))
         .route("/v1/keys/:id", delete(revoke_key))
         .route("/v1/webhooks", get(list_webhooks).post(create_webhook))
+        .route("/v1/matchmaking", get(mm_stats))
         .route("/v1/matchmaking/tickets", post(mm_file))
         .route("/v1/matchmaking/tickets/:id", get(mm_get).delete(mm_cancel))
         .route("/v1/webhooks/:id", delete(delete_webhook))
@@ -83,6 +84,7 @@ pub fn router(st: Shared) -> Router {
         .route("/v1/operator/audit", get(op_audit))
         .route("/v1/operator/usage", get(op_fleet_usage))
         .route("/v1/operator/attention", get(op_attention))
+        .route("/v1/operator/projects/:id/matchmaking", get(op_mm_stats))
         .route(
             "/v1/operator/projects/:id/webhooks/:wid",
             delete(op_delete_webhook),
@@ -670,6 +672,36 @@ async fn get_replay(
         .ok_or_else(|| NetError::NotFound("replay".into()))?;
     let v: Value = serde_json::from_slice(&body).map_err(|e| NetError::Internal(e.to_string()))?;
     Ok(Json(v))
+}
+
+async fn mm_stats_json(st: &Shared, project: ProjectId) -> Result<Value> {
+    let now = crate::matchmaking::now_ms();
+    let searching: Vec<Value> = st
+        .matchmaker
+        .list_searching(&st.redis, project)
+        .await?
+        .iter()
+        .map(|t| json!({"id": t.id, "player_id": t.req.player_id, "mode": t.req.mode, "region": t.req.region, "max_players": t.req.max_players, "age_secs": t.age_secs(now)}))
+        .collect();
+    let (last_hour, last_24h) = st.matchmaker.matched_stats(&st.redis, project).await?;
+    Ok(json!({"searching": searching, "matched": {"last_hour": last_hour, "last_24h": last_24h}}))
+}
+
+/// Live matchmaking queue of the caller's project.
+async fn mm_stats(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Read).await?;
+    Ok(Json(
+        mm_stats_json(&st, ProjectId::from_uuid(key.project_id)).await?,
+    ))
+}
+
+async fn op_mm_stats(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    Ok(Json(mm_stats_json(&st, ProjectId::from_uuid(id)).await?))
 }
 
 /// Files a matchmaking ticket. Poll `GET /v1/matchmaking/tickets/:id` until `matched`, then

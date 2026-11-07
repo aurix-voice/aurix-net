@@ -219,3 +219,16 @@ test("overview attention panel lists a suspended project", async ({ page }) => {
   await expect(page.getByText("Needs a look")).toBeVisible();
   await expect(page.getByRole("link", { name })).toBeVisible({ timeout: 20_000 });
 });
+
+test("operator sees the live matchmaking queue of a project", async ({ page }) => {
+  const project = await api<{ project: { id: string }; key: { key: string } }>(page, "POST", "/v1/operator/projects", { name: uniq("e2e-mm") });
+  const filed = await page.request.post("/v1/matchmaking/tickets", {
+    headers: { authorization: `Bearer ${project.key.key}`, "content-type": "application/json" },
+    data: { player_id: "waiter-1", max_players: 8, min_players: 4, max_wait_secs: 120 },
+  });
+  expect(filed.ok()).toBeTruthy();
+  await page.goto(`/projects/${project.project.id}`);
+  await page.getByRole("tab", { name: /Matchmaking/ }).click();
+  await expect(page.getByRole("row").filter({ hasText: "waiter-1" })).toBeVisible();
+  await expect(page.getByText("Searching now")).toBeVisible();
+});

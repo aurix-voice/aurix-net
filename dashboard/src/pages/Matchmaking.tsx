@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { useCancelTicket, useFileTicket, useTicket } from "@/api/hooks";
+import { MatchmakingQueue } from "@/components/MatchmakingQueue";
 import { useI18n } from "@/i18n";
 import { RequireScope } from "@/shell/Guards";
 import { Button } from "@/ui/Button";
@@ -81,9 +82,14 @@ function MatchmakingBody() {
 }
 
 export function MatchmakingPage() {
+  const { t } = useI18n();
   return (
     <RequireScope scope="rooms" projectKey>
       <MatchmakingBody />
+      <Card className="mt-5">
+        <CardHeader title={t("mm.queue.title")} />
+        <MatchmakingQueue />
+      </Card>
     </RequireScope>
   );
 }

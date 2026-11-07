@@ -163,6 +163,10 @@ fn ticket_key(id: Uuid) -> String {
 const SEARCHING_SET: &str = "net:mm:searching";
 const LEADER_KEY: &str = "net:mm:leader";
 
+fn stats_key(project: ProjectId, hour: u64) -> String {
+    format!("net:mm:stats:{}:{hour}", project.0)
+}
+
 fn rerr(e: redis::RedisError) -> NetError {
     NetError::Redis(e.to_string())
 }
@@ -294,10 +298,59 @@ impl Matchmaker {
         let now = now_ms();
         tickets.retain(|t| t.searching() && t.age_secs(now) < SEARCH_TTL_SECS);
         let (changed, rooms) = match_tickets(&mut tickets, now);
+        let mut formed: std::collections::HashMap<ProjectId, std::collections::HashSet<&str>> =
+            Default::default();
         for t in tickets.iter().filter(|t| changed.contains(&t.id)) {
             self.put(redis, t).await?;
+            if let TicketState::Matched { room, .. } = &t.state {
+                formed.entry(t.project).or_default().insert(room.as_str());
+            }
+        }
+        let hour = now / 3_600_000;
+        for (project, rooms) in formed {
+            let key = stats_key(project, hour);
+            let mut p = redis::pipe();
+            p.atomic()
+                .incr(&key, rooms.len() as i64)
+                .ignore()
+                .expire(&key, 26 * 3600)
+                .ignore();
+            p.query_async::<()>(&mut c).await.map_err(rerr)?;
         }
         Ok(rooms)
+    }
+
+    /// Tickets of one project still waiting, oldest first.
+    pub async fn list_searching(
+        &self,
+        redis: &RedisStore,
+        project: ProjectId,
+    ) -> Result<Vec<Ticket>> {
+        let ids = self.searching_ids(redis).await?;
+        let now = now_ms();
+        let mut out: Vec<Ticket> = self
+            .load_many(redis, &ids)
+            .await?
+            .into_iter()
+            .filter(|t| t.project == project && t.searching() && t.age_secs(now) < SEARCH_TTL_SECS)
+            .collect();
+        out.sort_by_key(|t| t.created_ms);
+        Ok(out)
+    }
+
+    /// Matches formed for a project: (last hour, last 24 h).
+    pub async fn matched_stats(
+        &self,
+        redis: &RedisStore,
+        project: ProjectId,
+    ) -> Result<(i64, i64)> {
+        let hour = now_ms() / 3_600_000;
+        let keys: Vec<String> = (0..24).map(|i| stats_key(project, hour - i)).collect();
+        let mut c = redis.raw();
+        let vals: Vec<Option<i64>> = c.mget(&keys).await.map_err(rerr)?;
+        let last_hour = vals.first().copied().flatten().unwrap_or(0);
+        let day: i64 = vals.iter().map(|v| v.unwrap_or(0)).sum();
+        Ok((last_hour, day))
     }
 
     pub async fn searching(&self, redis: &RedisStore) -> Result<usize> {
