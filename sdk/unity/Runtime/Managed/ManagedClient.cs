@@ -263,3 +263,13 @@ namespace Aurix.Net.Managed
         }
     }
 }
+
+namespace Aurix.Net.Managed
+{
+    /// <summary>Small JSON helpers exposed for samples/tests (field access on control messages).</summary>
+    public static class ManagedClientTestHooks
+    {
+        public static string Str(string json, string key) => Json.Str(json, key);
+        public static double Num(string json, string key) => Json.Num(json, key);
+    }
+}
