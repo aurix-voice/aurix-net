@@ -28,6 +28,7 @@ pub struct EffectiveLimits {
     pub max_events_per_sec_per_player: u32,
     pub max_event_bytes: usize,
     pub max_props_bytes: usize,
+    pub max_player_props_bytes: usize,
     pub max_cached_events_per_room: usize,
     pub allowed_regions: Option<Vec<String>>,
 }
@@ -55,6 +56,7 @@ impl ProjectLimits {
                 .unwrap_or(node.max_event_bytes)
                 .min(node.max_event_bytes),
             max_props_bytes: node.max_props_bytes,
+            max_player_props_bytes: node.max_player_props_bytes,
             max_cached_events_per_room: node.max_cached_events_per_room,
             allowed_regions: self.allowed_regions.clone(),
         }
@@ -74,6 +76,7 @@ mod tests {
             max_events_per_sec_per_player: 60,
             max_event_bytes: 65536,
             max_props_bytes: 16384,
+            max_player_props_bytes: 16384,
             max_cached_events_per_room: 1000,
         };
         let p = ProjectLimits::from_json(

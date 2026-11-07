@@ -118,6 +118,8 @@ impl DataSession {
 
 pub struct Attached {
     pub control: mpsc::Sender<ServerMsg>,
+    /// Control session owning this slot; a newer session of the same player replaces it.
+    pub session: net_common::SessionId,
     pub data: Option<Arc<DataSession>>,
 }
 

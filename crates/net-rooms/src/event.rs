@@ -4,7 +4,7 @@
 //! u8   code          application event code (0..=255)
 //! u8   flags         bit0..1 target kind, bit2 cache-add, bit3 cache-remove, bit4 has-group
 //! u16  from          actor id (server fills in; clients send 0)
-//! [u8  group]        when has-group
+//! [u16 group]        when has-group
 //! [u16 n, n x u16]   explicit actor list when target kind == 3
 //! bytes payload
 //! ```
@@ -42,7 +42,7 @@ pub struct EventFrame {
     pub code: u8,
     pub target: EventTarget,
     pub cache: CacheOp,
-    pub group: Option<u8>,
+    pub group: Option<u16>,
     pub from: ActorId,
     pub payload: Bytes,
 }
@@ -77,7 +77,7 @@ impl EventFrame {
         b.put_u8(flags);
         b.put_u16(self.from.0);
         if let Some(g) = self.group {
-            b.put_u8(g);
+            b.put_u16(g);
         }
         if let EventTarget::Actors(a) = &self.target {
             b.put_u16(a.len().min(u16::MAX as usize) as u16);
@@ -97,10 +97,10 @@ impl EventFrame {
         let flags = data.get_u8();
         let from = ActorId(data.get_u16());
         let group = if flags & 0x10 != 0 {
-            if data.is_empty() {
+            if data.len() < 2 {
                 return Err(FrameError::TooShort);
             }
-            Some(data.get_u8())
+            Some(data.get_u16())
         } else {
             None
         };

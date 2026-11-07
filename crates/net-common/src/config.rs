@@ -67,6 +67,7 @@ pub struct LimitsConfig {
     pub max_events_per_sec_per_player: u32,
     pub max_event_bytes: usize,
     pub max_props_bytes: usize,
+    pub max_player_props_bytes: usize,
     pub max_cached_events_per_room: usize,
 }
 
@@ -105,6 +106,7 @@ max_events_per_sec_per_room = 500
 max_events_per_sec_per_player = 60
 max_event_bytes = 65536
 max_props_bytes = 16384
+max_player_props_bytes = 4096
 max_cached_events_per_room = 1000
 "#;
 

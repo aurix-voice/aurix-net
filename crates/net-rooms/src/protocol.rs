@@ -93,13 +93,13 @@ pub enum ClientMsg {
         #[serde(default)]
         cache: CacheOp,
         #[serde(default)]
-        group: Option<u8>,
+        group: Option<u16>,
     },
     SetGroups {
         #[serde(default)]
-        join: Vec<u8>,
+        join: Vec<u16>,
         #[serde(default)]
-        leave: Vec<u8>,
+        leave: Vec<u16>,
     },
     SetMaster {
         actor: ActorId,
@@ -242,10 +242,14 @@ pub enum ServerMsg {
         code: String,
         message: String,
     },
-    /// Lockstep: this actor's state hash for `tick` disagreed with the majority.
+    /// Lockstep: this actor's state hash for `tick` disagreed with the majority. The actor is
+    /// sent a fresh checkpoint + journal tail to reload from; after `UNTRUSTED_AFTER` strikes
+    /// its results should not be trusted.
     Desync {
         tick: u32,
         actor: ActorId,
+        strikes: u8,
+        untrusted: bool,
     },
 }
 

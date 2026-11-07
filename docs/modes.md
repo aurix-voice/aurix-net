@@ -22,6 +22,12 @@ Create with `mode: "relay"` (default). Events are opaque bytes with a code, a ta
 (`all`, `others`, `master`, explicit actors), an optional interest group and a cache flag so
 late joiners receive them. Rate and size limits come from the project quota.
 
+Room props `player_ttl_secs` (default 30) and `empty_ttl_secs` (default 5) set how long a
+disconnected player keeps their slot and how long an empty room stays open (both capped at
+300). Interest groups are `u16` (65 535 groups). A player who connects again while still online
+takes over their own slot; the old session gets `left` with reason `session_replaced` and is
+ignored from then on.
+
 Rate limits: a room takes `max_events_per_sec_per_room` events (default 500) and each player
 `max_events_per_sec_per_player` (default 60, burst of 2 s worth); over the limit the event is
 dropped with `rate_limited`. Both are project quotas (`/v1/operator/projects/:id/limits`).
@@ -130,8 +136,10 @@ them. The first node a player of that room reaches (plain `join` / `join_or_crea
 on any node of the region) atomically adopts the row, rebuilds the room from the DB config,
 restores the simulation from the checkpoint, recreates every player as an offline slot (so
 reconnects get the same actor ids, `rejoin_actor` works) and restarts the tick loop. Lockstep
-joiners then get the normal catch-up; sync clients get fresh baselines. Expect to lose at
-most the last 5 s of inputs. A `room.rehosted` webhook fires; orphans nobody adopts within
+joiners then get the normal catch-up; sync clients get fresh baselines. Lockstep rooms also
+append every tick's input bundle to a Redis list (`net:<project>:journal:<room>`, flushed every
+6 ticks), and the adopting node replays the entries after the checkpoint, so at most ~100 ms of
+inputs are lost; sync rooms checkpoint every 2 s. A `room.rehosted` webhook fires; orphans nobody adopts within
 10 min are closed. Relay rooms are re-created with name/props/slots but no event cache.
 
 ## Data frames (first byte)

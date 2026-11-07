@@ -17,10 +17,10 @@ namespace Aurix.Net
     {
         public byte Code;
         public ushort From;
-        public byte? Group;
+        public ushort? Group;
         public ArraySegment<byte> Payload;
 
-        /// <summary>Wire: u8 code, u8 flags, u16 from (BE), [u8 group if flags&0x10], [u16 n + n*u16 if target==3], payload.</summary>
+        /// <summary>Wire: u8 code, u8 flags, u16 from (BE), [u16 group if flags&0x10], [u16 n + n*u16 if target==3], payload.</summary>
         public static bool TryDecode(byte[] buf, out EventFrame f)
         {
             f = default;
@@ -29,7 +29,7 @@ namespace Aurix.Net
             byte flags = buf[1];
             f.From = (ushort)((buf[2] << 8) | buf[3]);
             int off = 4;
-            if ((flags & 0x10) != 0) { if (buf.Length < off + 1) return false; f.Group = buf[off++]; }
+            if ((flags & 0x10) != 0) { if (buf.Length < off + 2) return false; f.Group = (ushort)((buf[off] << 8) | buf[off + 1]); off += 2; }
             if ((flags & 0x03) == 3)
             {
                 if (buf.Length < off + 2) return false;

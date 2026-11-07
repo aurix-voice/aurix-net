@@ -140,7 +140,24 @@ impl Session {
             .ok_or_else(|| NetError::Invalid("not in a room".into()))
     }
 
+    /// False once another session of the same player took over this room slot.
+    fn owns_slot(&self, h: &HostedRoom, actor: ActorId) -> bool {
+        h.sessions.get(&actor).is_some_and(|a| a.session == self.id)
+    }
+
+    fn replaced(&mut self) -> NetError {
+        self.room = None;
+        self.data = None;
+        NetError::Conflict("session_replaced".into())
+    }
+
     async fn handle(&mut self, msg: ClientMsg) -> Result<()> {
+        if let Some(r) = &self.room {
+            let mine = self.owns_slot(&r.hosted.lock(), r.actor);
+            if !mine {
+                return Err(self.replaced());
+            }
+        }
         match msg {
             ClientMsg::Auth { grant } => {
                 let g = self.st.grants.verify(&grant)?;
@@ -556,9 +573,10 @@ impl Session {
             max_events_per_sec_per_player: limits.max_events_per_sec_per_player,
             max_event_bytes: limits.max_event_bytes,
             max_props_bytes: limits.max_props_bytes,
+            max_player_props_bytes: limits.max_player_props_bytes,
             max_cached_events: limits.max_cached_events_per_room,
-            offline_ttl: Duration::from_secs(30),
-            empty_ttl: Duration::from_secs(5),
+            offline_ttl: Duration::from_secs(prop_secs(&props, "player_ttl_secs", 30)),
+            empty_ttl: Duration::from_secs(prop_secs(&props, "empty_ttl_secs", 5)),
         };
         queries::insert_room(
             &self.st.pool,
@@ -617,6 +635,15 @@ impl Session {
             if hr.project != g.project {
                 return Err(NetError::NotFound("room".into()));
             }
+            // Same player from a second connection: the new session takes the slot, the old
+            // one is told and ignored from here on (see `owns_slot`).
+            if let Some(old) = hr.room.online_actor(&g.player_id) {
+                if let Some(a) = hr.sessions.get(&old) {
+                    let _ = a.control.try_send(ServerMsg::Left {
+                        reason: "session_replaced".into(),
+                    });
+                }
+            }
             let (actor, out) = hr
                 .room
                 .join(&g.player_id, &g.name, player_props, rejoin, Instant::now())
@@ -625,6 +652,7 @@ impl Session {
                 actor,
                 Attached {
                     control: self.ctl.clone(),
+                    session: self.id,
                     data: None,
                 },
             );
@@ -703,6 +731,9 @@ impl Session {
             }
         }
         let Some(r) = self.room.take() else { return };
+        if !self.owns_slot(&r.hosted.lock(), r.actor) {
+            return;
+        }
         let (should_close, project, id) = {
             let mut h = r.hosted.lock();
             let out = h.room.leave(r.actor, offline, Instant::now());
@@ -751,9 +782,14 @@ impl Session {
             }
             Some(ds) => {
                 let r = self.in_room()?;
+                let (hosted, actor) = (r.hosted.clone(), r.actor);
                 for m in ds.receive(b) {
-                    let mut h = r.hosted.lock();
-                    handle_data_frame(&mut h, r.actor, m.channel, m.payload, &self.st.metrics)?;
+                    let mut h = hosted.lock();
+                    if !self.owns_slot(&h, actor) {
+                        drop(h);
+                        return Err(self.replaced());
+                    }
+                    handle_data_frame(&mut h, actor, m.channel, m.payload, &self.st.metrics)?;
                 }
                 Ok(())
             }
@@ -799,7 +835,7 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
     use net_rooms::room::Outgoing;
     let mut iv = tokio::time::interval(period);
     iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let checkpoint_every = (5_000_000 / period.as_micros().max(1)) as u64;
+    let checkpoint_every = (2_000_000 / period.as_micros().max(1)) as u64;
     let mut n: u64 = 0;
     loop {
         iv.tick().await;
@@ -876,19 +912,28 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
     }
 }
 
+/// Lockstep input-journal entries buffered before one Redis write (ticks).
+const JOURNAL_FLUSH: usize = 6;
+
 /// Lockstep clock: every tick bundle the inputs for that tick and fan them out.
 pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration) {
     let mut iv = tokio::time::interval(period);
     iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let checkpoint_every = (5_000_000 / period.as_micros().max(1)) as u64;
+    // Input journal between checkpoints: every tick's bundle goes to Redis in batches of
+    // JOURNAL_FLUSH ticks, so an adopting node loses at most that many ticks of inputs.
+    let journal_keep = (10_000_000 / period.as_micros().max(1)) as isize;
+    let mut journal_buf: Vec<Vec<u8>> = Vec::new();
     let mut n: u64 = 0;
     loop {
         iv.tick().await;
         let Some(h) = st.host.get(room) else { return };
         let t0 = Instant::now();
         let mut checkpoint: Option<(ProjectId, Vec<u8>)> = None;
+        let project;
         {
             let mut g = h.lock();
+            project = g.project;
             n += 1;
             if n.is_multiple_of(checkpoint_every) {
                 let snap = g.lockstep.as_ref().map(|l| l.snapshot());
@@ -901,8 +946,18 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                 };
                 ls.master = master;
                 let bundle = ls.tick();
+                if let Some(e) = ls.last_bundle() {
+                    journal_buf.push(e.to_vec());
+                }
                 let ckpt_req = ls.checkpoint_request();
-                let desyncs = ls.take_desyncs();
+                let desyncs: Vec<(u32, ActorId, u8, Vec<Bytes>)> = ls
+                    .take_desyncs()
+                    .into_iter()
+                    .map(|(tick, actor)| {
+                        let strikes = ls.strike(actor);
+                        (tick, actor, strikes, ls.on_late_join())
+                    })
+                    .collect();
                 let actors: Vec<ActorId> = ls.actors.keys().copied().collect();
                 (bundle, desyncs, actors, ckpt_req)
             };
@@ -920,19 +975,43 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                         .inc();
                 }
             }
-            for (tick, actor) in desyncs {
+            for (tick, actor, strikes, resync) in desyncs {
+                let untrusted = strikes >= crate::lockstep::UNTRUSTED_AFTER;
                 st.metrics.errors.with_label_values(&["desync"]).inc();
+                // The desynced client reloads from the master's confirmed state + journal tail.
+                if let Some(ds) = g.sessions.get(&actor).and_then(|s| s.data.as_ref()) {
+                    for f in resync {
+                        ds.send(net_common::Channel::ReliableOrdered, f);
+                    }
+                }
                 st.webhooks.emit(
                     g.project,
                     "desync",
-                    serde_json::json!({"room": room.to_string(), "tick": tick, "actor": actor.0}),
+                    serde_json::json!({"room": room.to_string(), "tick": tick, "actor": actor.0, "strikes": strikes, "untrusted": untrusted}),
                 );
                 for a in &actors {
                     if let Some(s) = g.sessions.get(a) {
-                        let _ = s.control.try_send(ServerMsg::Desync { tick, actor });
+                        let _ = s.control.try_send(ServerMsg::Desync {
+                            tick,
+                            actor,
+                            strikes,
+                            untrusted,
+                        });
                     }
                 }
             }
+        }
+        if journal_buf.len() >= JOURNAL_FLUSH {
+            let entries = std::mem::take(&mut journal_buf);
+            let redis = st.redis.clone();
+            tokio::spawn(async move {
+                if let Err(e) = redis
+                    .append_journal(project, room, &entries, journal_keep, 600)
+                    .await
+                {
+                    tracing::warn!(%room, error = %e, "journal write failed");
+                }
+            });
         }
         st.metrics.sync_tick.observe(t0.elapsed().as_secs_f64());
         if let Some((project, body)) = checkpoint {
@@ -1065,9 +1144,10 @@ pub async fn adopt_room(
         max_events_per_sec_per_player: limits.max_events_per_sec_per_player,
         max_event_bytes: limits.max_event_bytes,
         max_props_bytes: limits.max_props_bytes,
+        max_player_props_bytes: limits.max_player_props_bytes,
         max_cached_events: limits.max_cached_events_per_room,
-        offline_ttl: Duration::from_secs(30),
-        empty_ttl: Duration::from_secs(5),
+        offline_ttl: Duration::from_secs(prop_secs(&props, "player_ttl_secs", 30)),
+        empty_ttl: Duration::from_secs(prop_secs(&props, "empty_ttl_secs", 5)),
     };
     let hz = props.get("tick_hz").and_then(|v| v.as_u64()).unwrap_or(60) as u16;
     let mut room = Room::new(cfg, Instant::now());
@@ -1085,7 +1165,15 @@ pub async fn adopt_room(
             sync = Some(sy);
         }
         if let (RoomMode::Lockstep, Some(snap)) = (mode, c.lockstep) {
-            lockstep = Some(crate::lockstep::LockstepRoom::restore(snap));
+            let mut ls = crate::lockstep::LockstepRoom::restore(snap);
+            match st.redis.get_journal(project, room_id).await {
+                Ok(entries) => {
+                    let applied = ls.apply_journal(&entries);
+                    tracing::info!(room = %room_id, applied, tick = ls.tick.0, "journal tail applied");
+                }
+                Err(e) => tracing::warn!(room = %room_id, error = %e, "journal read failed"),
+            }
+            lockstep = Some(ls);
             restored = "lockstep";
         }
     }
@@ -1246,7 +1334,6 @@ fn room_err(e: RoomError) -> NetError {
     match e {
         RoomError::Full => NetError::RoomFull { max: 0 },
         RoomError::Closed => NetError::RoomClosed,
-        RoomError::Duplicate => NetError::Conflict("player already in room".into()),
         RoomError::NotMember | RoomError::NoActor => NetError::NotFound(e.to_string()),
         RoomError::NotMaster => NetError::Forbidden(e.to_string()),
         RoomError::EventRate | RoomError::PlayerEventRate => NetError::RateLimited,
@@ -1254,6 +1341,15 @@ fn room_err(e: RoomError) -> NetError {
             NetError::Invalid(e.to_string())
         }
     }
+}
+
+/// Room TTL props (`player_ttl_secs`, `empty_ttl_secs`), capped at 300 s.
+pub fn prop_secs(props: &Map<String, Value>, key: &str, default: u64) -> u64 {
+    props
+        .get(key)
+        .and_then(|v| v.as_u64())
+        .unwrap_or(default)
+        .min(300)
 }
 
 fn short_id() -> String {

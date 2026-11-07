@@ -84,7 +84,12 @@ pub struct LockstepRoom {
     pub checkpoint: Option<Checkpoint>,
     last_checkpoint_req: Option<u32>,
     want_checkpoint: bool,
+    /// Desyncs per actor this match; at `UNTRUSTED_AFTER` the actor is reported untrusted.
+    strikes: HashMap<ActorId, u8>,
 }
+
+/// Desyncs after which an actor's results should not be trusted (its hash keeps disagreeing).
+pub const UNTRUSTED_AFTER: u8 = 3;
 
 impl LockstepRoom {
     pub fn new(hz: u16, seed: u64) -> Self {
@@ -102,7 +107,71 @@ impl LockstepRoom {
             checkpoint: None,
             last_checkpoint_req: None,
             want_checkpoint: false,
+            strikes: HashMap::new(),
         }
+    }
+
+    /// Records a desync for `actor`; returns its strike count so far.
+    pub fn strike(&mut self, actor: ActorId) -> u8 {
+        let n = self.strikes.entry(actor).or_default();
+        *n = n.saturating_add(1);
+        *n
+    }
+
+    pub fn is_untrusted(&self, actor: ActorId) -> bool {
+        self.strikes
+            .get(&actor)
+            .is_some_and(|n| *n >= UNTRUSTED_AFTER)
+    }
+
+    /// The bundle produced by the last [`tick`]: one input-journal entry for Redis, so a node
+    /// that adopts this room after a crash loses no inputs between checkpoints.
+    pub fn last_bundle(&self) -> Option<Bytes> {
+        self.recent.back().cloned()
+    }
+
+    /// Applies journal entries (from `last_bundle`) stored after the snapshot this room was
+    /// restored from: inputs go into the journal and the clock moves past them. Entries at or
+    /// before the current tick are already covered and skipped. Returns ticks applied.
+    pub fn apply_journal(&mut self, entries: &[Vec<u8>]) -> u32 {
+        let mut n = 0;
+        for e in entries {
+            let Some((t, inputs)) = Self::decode_bundle(e) else {
+                continue;
+            };
+            if t.0.wrapping_sub(self.tick.0) >= 1 << 31 {
+                continue;
+            }
+            for (a, d) in inputs {
+                self.journal.record(t, a, d);
+            }
+            self.tick = Tick(t.0.wrapping_add(1));
+            n += 1;
+        }
+        n
+    }
+
+    /// Parses one bundle as produced by `encode_bundle`.
+    pub fn decode_bundle(mut b: &[u8]) -> Option<(Tick, TickInputs)> {
+        if b.len() < 6 || b.get_u8() != KIND_BUNDLE {
+            return None;
+        }
+        let t = b.get_u32();
+        let k = b.get_u8() as usize;
+        let mut inputs = TickInputs::new();
+        for _ in 0..k {
+            if b.len() < 3 {
+                return None;
+            }
+            let a = ActorId(b.get_u16());
+            let l = b.get_u8() as usize;
+            if b.len() < l {
+                return None;
+            }
+            inputs.insert(a, b[..l].to_vec());
+            b.advance(l);
+        }
+        Some((Tick(t), inputs))
     }
 
     pub fn snapshot(&self) -> LockstepSnapshot {
@@ -267,6 +336,7 @@ impl LockstepRoom {
     }
 
     pub fn on_leave(&mut self, actor: ActorId) {
+        self.strikes.remove(&actor);
         self.actors.remove(&actor);
     }
 
@@ -623,5 +693,46 @@ mod tests {
             }
         }
         assert_eq!(expect, 600);
+    }
+
+    #[test]
+    fn journal_entries_fill_the_gap_after_a_snapshot() {
+        let mut r = LockstepRoom::new(60, 1);
+        let a = ActorId(1);
+        r.on_join(a);
+        r.master = Some(a);
+        let mut snap = None;
+        let mut entries = Vec::new();
+        for t in 0..100u32 {
+            r.handle(a, SyncRoom::encode_input(Tick(t), &[vec![t as u8]]));
+            let _ = r.tick();
+            if t == 49 {
+                snap = Some(r.snapshot());
+            } else if t > 49 {
+                entries.push(r.last_bundle().unwrap().to_vec());
+            }
+        }
+        let mut r2 = LockstepRoom::restore(snap.unwrap());
+        assert_eq!(r2.tick.0, 50);
+        // stale and duplicate entries are ignored, the tail is applied once
+        let mut with_noise = vec![entries[0].clone()];
+        with_noise.extend(entries.iter().cloned());
+        assert_eq!(r2.apply_journal(&with_noise), 50);
+        assert_eq!(r2.tick.0, 100);
+        assert_eq!(r2.journal.tail(0), r.journal.tail(0));
+        assert_eq!(r2.apply_journal(&entries), 0);
+    }
+
+    #[test]
+    fn strikes_make_an_actor_untrusted() {
+        let mut r = LockstepRoom::new(60, 1);
+        let a = ActorId(1);
+        assert_eq!(r.strike(a), 1);
+        assert_eq!(r.strike(a), 2);
+        assert!(!r.is_untrusted(a));
+        assert_eq!(r.strike(a), 3);
+        assert!(r.is_untrusted(a));
+        r.on_leave(a);
+        assert!(!r.is_untrusted(a));
     }
 }

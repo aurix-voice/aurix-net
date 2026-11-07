@@ -50,6 +50,15 @@ async fn handle(st: Shared, incoming: quinn::Incoming) -> anyhow::Result<()> {
                 continue;
             }
             let mut g = h.lock();
+            // A newer connection (reconnect or another session of the player) owns the slot.
+            if !g
+                .sessions
+                .get(&t.actor)
+                .and_then(|a| a.data.as_ref())
+                .is_some_and(|d| Arc::ptr_eq(d, &ds))
+            {
+                return Ok(());
+            }
             if let Err(e) = handle_data_frame(&mut g, t.actor, m.channel, m.payload, &st.metrics) {
                 st.metrics.errors.with_label_values(&[e.code()]).inc();
             }
@@ -114,6 +123,15 @@ async fn handle_wt(
                 continue;
             }
             let mut g = h.lock();
+            // A newer connection (reconnect or another session of the player) owns the slot.
+            if !g
+                .sessions
+                .get(&t.actor)
+                .and_then(|a| a.data.as_ref())
+                .is_some_and(|d| Arc::ptr_eq(d, &ds))
+            {
+                return Ok(());
+            }
             if let Err(e) = handle_data_frame(&mut g, t.actor, m.channel, m.payload, &st.metrics) {
                 tracing::debug!(error = %e, "bad data frame (webtransport)");
             }

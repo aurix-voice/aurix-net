@@ -282,10 +282,19 @@ async fn create_room(
         max_events_per_sec_per_player: limits.max_events_per_sec_per_player,
         max_event_bytes: limits.max_event_bytes,
         max_props_bytes: limits.max_props_bytes,
+        max_player_props_bytes: limits.max_player_props_bytes,
         max_cached_events: limits.max_cached_events_per_room,
-        offline_ttl: std::time::Duration::from_secs(30),
+        offline_ttl: std::time::Duration::from_secs(crate::ws::prop_secs(
+            &req.props,
+            "player_ttl_secs",
+            30,
+        )),
         // Server-created rooms wait longer for their first player.
-        empty_ttl: std::time::Duration::from_secs(300),
+        empty_ttl: std::time::Duration::from_secs(crate::ws::prop_secs(
+            &req.props,
+            "empty_ttl_secs",
+            300,
+        )),
     };
     queries::insert_room(
         &st.pool,

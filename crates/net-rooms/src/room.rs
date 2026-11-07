@@ -23,6 +23,7 @@ pub struct RoomConfig {
     pub max_events_per_sec_per_player: u32,
     pub max_event_bytes: usize,
     pub max_props_bytes: usize,
+    pub max_player_props_bytes: usize,
     pub max_cached_events: usize,
     /// How long an offline player keeps their slot before it is freed.
     pub offline_ttl: Duration,
@@ -38,7 +39,7 @@ pub struct Player {
     pub props: Map<String, Value>,
     pub online: bool,
     pub offline_since: Option<Instant>,
-    pub groups: HashSet<u8>,
+    pub groups: HashSet<u16>,
     tokens: f64,
     last_refill: Instant,
 }
@@ -70,8 +71,6 @@ pub enum RoomError {
     Full,
     #[error("room is closed")]
     Closed,
-    #[error("player already in room")]
-    Duplicate,
     #[error("not in room")]
     NotMember,
     #[error("only the master client may do this")]
@@ -142,6 +141,14 @@ impl Room {
     pub fn player(&self, a: ActorId) -> Option<&Player> {
         self.players.get(&a)
     }
+    /// Actor of `player_id` if that player is currently online in this room.
+    pub fn online_actor(&self, player_id: &str) -> Option<ActorId> {
+        self.by_player
+            .get(player_id)
+            .copied()
+            .filter(|a| self.players.get(a).is_some_and(|p| p.online))
+    }
+
     pub fn online_count(&self) -> u16 {
         self.players.values().filter(|p| p.online).count() as u16
     }
@@ -182,18 +189,17 @@ impl Room {
         rejoin: Option<ActorId>,
         now: Instant,
     ) -> Result<(ActorId, Vec<Outgoing>), RoomError> {
-        if props_len(&props) > self.cfg.max_props_bytes {
+        if props_len(&props) > self.cfg.max_player_props_bytes {
             return Err(RoomError::PropsTooLarge);
         }
-        // Reconnect into the existing slot.
+        // Reconnect into the existing slot. If the player is still online from another
+        // session, the new session takes the slot over (the caller tells the old one).
         if let Some(&a) = self.by_player.get(player_id) {
             if let Some(p) = self.players.get_mut(&a) {
-                if p.online {
-                    return Err(RoomError::Duplicate);
-                }
                 if rejoin.is_some_and(|r| r != a) {
                     return Err(RoomError::NoActor);
                 }
+                let was_online = p.online;
                 p.online = true;
                 p.offline_since = None;
                 p.name = name.to_string();
@@ -205,7 +211,11 @@ impl Room {
                 if self.master.is_none() {
                     self.master = Some(a);
                 }
-                let out = self.broadcast_except(a, ServerMsg::PlayerJoined { player: info });
+                let out = if was_online {
+                    Vec::new()
+                } else {
+                    self.broadcast_except(a, ServerMsg::PlayerJoined { player: info })
+                };
                 return Ok((a, out));
             }
         }
@@ -422,7 +432,7 @@ impl Room {
         }
         let mut merged = p.props.clone();
         merge_props(&mut merged, props);
-        if props_len(&merged) > self.cfg.max_props_bytes {
+        if props_len(&merged) > self.cfg.max_player_props_bytes {
             return Err(RoomError::PropsTooLarge);
         }
         p.props = merged;
@@ -433,8 +443,8 @@ impl Room {
     pub fn set_groups(
         &mut self,
         actor: ActorId,
-        join: &[u8],
-        leave: &[u8],
+        join: &[u16],
+        leave: &[u16],
     ) -> Result<(), RoomError> {
         let p = self.players.get_mut(&actor).ok_or(RoomError::NotMember)?;
         for g in leave {
@@ -625,6 +635,7 @@ mod tests {
             max_events_per_sec_per_player: 3,
             max_event_bytes: 100,
             max_props_bytes: 200,
+            max_player_props_bytes: 200,
             max_cached_events: 2,
             offline_ttl: Duration::from_secs(10),
             empty_ttl: Duration::from_secs(5),
@@ -655,10 +666,9 @@ mod tests {
             r.join("p3", "C", Map::new(), None, t).unwrap_err(),
             RoomError::Full
         );
-        assert_eq!(
-            r.join("p2", "B", Map::new(), None, t).unwrap_err(),
-            RoomError::Duplicate
-        );
+        // same player again: takes over the slot silently
+        let (b2, out) = r.join("p2", "B", Map::new(), None, t).unwrap();
+        assert_eq!((b2, out.len()), (b, 0));
         let out = r.leave(a, false, t);
         assert!(out.contains(&Outgoing::Control(b, ServerMsg::MasterChanged { actor: b })));
         assert_eq!(r.master(), Some(b));

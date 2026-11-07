@@ -88,6 +88,41 @@ impl RedisStore {
             .map_err(|e| NetError::Redis(e.to_string()))
     }
 
+    fn journal_key(project: ProjectId, room: RoomId) -> String {
+        format!("net:{project}:journal:{room}")
+    }
+
+    /// Appends lockstep input-journal entries (one per tick) and keeps the newest `keep`.
+    pub async fn append_journal(
+        &self,
+        project: ProjectId,
+        room: RoomId,
+        entries: &[Vec<u8>],
+        keep: isize,
+        ttl_secs: i64,
+    ) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut c = self.conn.clone();
+        let key = Self::journal_key(project, room);
+        let _: () = redis::pipe()
+            .rpush(&key, entries)
+            .ltrim(&key, -keep, -1)
+            .expire(&key, ttl_secs)
+            .query_async(&mut c)
+            .await
+            .map_err(|e| NetError::Redis(e.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn get_journal(&self, project: ProjectId, room: RoomId) -> Result<Vec<Vec<u8>>> {
+        let mut c = self.conn.clone();
+        c.lrange::<_, Vec<Vec<u8>>>(Self::journal_key(project, room), 0, -1)
+            .await
+            .map_err(|e| NetError::Redis(e.to_string()))
+    }
+
     fn replay_key(project: ProjectId, room: RoomId) -> String {
         format!("net:{project}:replay:{room}")
     }
@@ -118,6 +153,7 @@ impl RedisStore {
         let gone = serde_json::json!({"room": room, "removed": true}).to_string();
         let _: () = redis::pipe()
             .del(Self::room_key(project, room))
+            .del(Self::journal_key(project, room))
             .srem(Self::index_key(project), room.to_string())
             .publish(Self::lobby_channel(project), gone)
             .query_async(&mut c)

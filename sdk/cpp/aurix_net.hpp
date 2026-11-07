@@ -17,14 +17,14 @@ struct Error : std::runtime_error { using std::runtime_error::runtime_error; };
 
 inline std::string lastError() { const char* e = aurix_net_last_error(); return e ? e : "unknown error"; }
 
-// Relay event frame: u8 code, u8 flags, u16 from (BE), [u8 group], [u16 n, n*u16], payload.
+// Relay event frame: u8 code, u8 flags, u16 from (BE), [u16 group], [u16 n, n*u16], payload.
 struct EventFrame {
-    uint8_t code = 0; uint16_t from = 0; bool hasGroup = false; uint8_t group = 0;
+    uint8_t code = 0; uint16_t from = 0; bool hasGroup = false; uint16_t group = 0;
     const uint8_t* payload = nullptr; size_t len = 0;
     static bool decode(const uint8_t* b, size_t n, EventFrame& f) {
         if (!b || n < 4) return false;
         f.code = b[0]; uint8_t flags = b[1]; f.from = uint16_t((b[2] << 8) | b[3]); size_t o = 4;
-        if (flags & 0x10) { if (n < o + 1) return false; f.hasGroup = true; f.group = b[o++]; }
+        if (flags & 0x10) { if (n < o + 2) return false; f.hasGroup = true; f.group = (uint16_t)((b[o] << 8) | b[o + 1]); o += 2; }
         if ((flags & 3) == 3) { if (n < o + 2) return false; size_t c = (b[o] << 8) | b[o + 1]; o += 2 + c * 2; if (n < o) return false; }
         f.payload = b + o; f.len = n - o; return true;
     }
