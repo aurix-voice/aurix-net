@@ -1,3 +1,4 @@
+import type { RoomDesyncs } from "./client";
 import type { Billing, OperatorWebhook } from "@/api/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
@@ -98,6 +99,12 @@ export function useRoom(id: string) {
   const { operator } = useAuth();
   const path = operator ? `/v1/operator/rooms/${id}` : `/v1/rooms/${id}`;
   return useQuery({ queryKey: qk.room(id), queryFn: () => api.get<RoomDetail>(path), refetchInterval: LIVE });
+}
+export function useRoomDesyncs(id: string, enabled: boolean) {
+  const api = useApi();
+  const { operator } = useAuth();
+  const path = operator ? `/v1/operator/rooms/${id}/desyncs` : `/v1/rooms/${id}/desyncs`;
+  return useQuery({ queryKey: ["room", id, "desyncs"], queryFn: () => api.get<RoomDesyncs>(path), refetchInterval: LIVE, enabled });
 }
 export function useKickPlayer(roomId: string) {
   const api = useApi();

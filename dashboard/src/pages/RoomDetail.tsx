@@ -1,3 +1,4 @@
+import { useRoomDesyncs } from "../api/hooks";
 import { Link, useParams } from "@tanstack/react-router";
 import { ArrowLeft, Download, Megaphone } from "lucide-react";
 import { useState } from "react";
@@ -29,11 +30,22 @@ export function RoomDetailPage() {
   const [alsoBan, setAlsoBan] = useState(false);
   const [noticing, setNoticing] = useState(false);
   const addBan = useAddBan(operator ? (q.data?.room.project_id ?? undefined) : undefined);
+  const dz = useRoomDesyncs(roomId, q.data?.room.mode === "lockstep");
   if (q.isLoading) return <Loading />;
   if (q.isError) return <QueryError error={q.error} onRetry={() => void q.refetch()} />;
   const d = q.data!;
   const room = d.room;
   const live = d.live;
+
+  async function downloadDump(tick: number, actor: number) {
+    const res = await fetch(operator ? `/v1/operator/rooms/${roomId}/desyncs/${tick}/${actor}` : `/v1/rooms/${roomId}/desyncs/${tick}/${actor}`, { headers: { authorization: `Bearer ${token}` } });
+    if (!res.ok) return;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(await res.blob());
+    a.download = `${room.name || room.id}.desync-${tick}-${actor}.bin`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
 
   async function downloadReplay() {
     const res = await fetch(operator ? `/v1/operator/rooms/${roomId}/replay` : `/v1/rooms/${roomId}/replay`, { headers: { authorization: `Bearer ${token}` } });
@@ -108,6 +120,29 @@ export function RoomDetailPage() {
                 />
               </Card>
             </Section>
+            {room.mode === "lockstep" ? (
+              <Section title={t("rooms.detail.desyncs")}>
+                <Card>
+                  <p className="px-3 pt-2 text-xs text-fg-muted">{t("rooms.detail.desyncs.hint")}</p>
+                  <DataTable
+                    rows={dz.data?.desyncs}
+                    rowKey={(x) => `${x.tick}:${x.actor}`}
+                    dense
+                    loading={dz.isLoading}
+                    error={dz.error}
+                    empty={<span className="block px-3 py-6 text-center text-sm text-fg-muted" data-testid="desyncs-empty">{t("rooms.detail.desyncs.empty")}</span>}
+                    columns={[
+                      { key: "tick", header: t("rooms.desync.tick"), cell: (x) => <Mono>{x.tick}</Mono>, width: "100px" },
+                      { key: "actor", header: t("rooms.actor"), cell: (x) => <Mono>{x.actor}</Mono>, width: "80px" },
+                      { key: "hash", header: t("rooms.desync.hash"), cell: (x) => <Mono>{x.hash}</Mono> },
+                      { key: "bytes", header: t("rooms.desync.bytes"), align: "right", cell: (x) => <span className="tabular">{x.bytes}</span>, width: "90px" },
+                      { key: "at", header: t("rooms.desync.at"), cell: (x) => <span className="text-fg-muted">{new Date(x.at).toLocaleTimeString()}</span> },
+                      { key: "dl", header: "", align: "right", cell: (x) => <Button variant="ghost" size="sm" onClick={() => void downloadDump(x.tick, x.actor)}><Download className="size-3.5" /></Button> },
+                    ]}
+                  />
+                </Card>
+              </Section>
+            ) : null}
             <ConfirmDialog
               open={kicking !== null}
               onOpenChange={(o) => {

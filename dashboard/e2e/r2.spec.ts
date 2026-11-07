@@ -406,3 +406,47 @@ test("operator token restricted to networks shows its allowlist", async ({ page 
   await page.getByRole("dialog").getByRole("button", { name: "Revoke" }).click();
   await expect(row).toContainText("Revoked");
 });
+
+test("r20: lockstep room detail shows the desync dumps card; matchmaking queue shows filters", async ({ page }) => {
+  const project = await api<{ project: { id: string }; key: { key: string } }>(page, "POST", "/v1/operator/projects", { name: uniq("e2e-r20") });
+  const kh = { authorization: `Bearer ${project.key.key}`, "content-type": "application/json" };
+  const gr = await page.request.post("/v1/grants", { headers: kh, data: { player_id: "ls-host", name: "ls-host", scopes: ["join", "create"] } });
+  expect(gr.ok()).toBeTruthy();
+  const { grant } = (await gr.json()) as { grant: string };
+  const t = await page.request.post("/v1/matchmaking/tickets", {
+    headers: kh,
+    data: { player_id: "filtered", max_players: 8, min_players: 8, max_wait_secs: 300, attrs: { rank: 10 }, filter: "rank >= 5", fill_existing: true, match_type: "serial" },
+  });
+  expect(t.ok()).toBeTruthy();
+  await page.goto("/rooms");
+  // sync/lockstep rooms are created through the control plane, so open a WebSocket straight to the node
+  const wsUrl = (process.env.NET_API_URL ?? "http://127.0.0.1:8098").replace(/^http/, "ws") + "/ws";
+  const roomId = await page.evaluate(
+    ({ url, grant, name }) =>
+      new Promise<string>((res, rej) => {
+        const ws = new WebSocket(url);
+        const timer = setTimeout(() => rej(new Error("ws timeout")), 10000);
+        ws.onopen = () => ws.send(JSON.stringify({ t: "auth", grant }));
+        ws.onmessage = (ev) => {
+          if (typeof ev.data !== "string") return;
+          const m = JSON.parse(ev.data) as { t: string; room?: string; message?: string };
+          if (m.t === "authed") ws.send(JSON.stringify({ t: "join_or_create", name, mode: "lockstep", max_players: 4, props: {} }));
+          if (m.t === "joined") {
+            clearTimeout(timer);
+            res(m.room ?? "");
+          }
+          if (m.t === "error") rej(new Error(m.message));
+        };
+        ws.onerror = () => rej(new Error("ws error"));
+      }),
+    { url: wsUrl, grant, name: uniq("ls") },
+  );
+  expect(roomId).not.toBe("");
+  await page.goto(`/rooms/${roomId}`);
+  await expect(page.getByText("Desync dumps")).toBeVisible();
+  await expect(page.getByTestId("desyncs-empty")).toBeVisible();
+  await page.goto(`/projects/${project.project.id}`);
+  await page.getByRole("tab", { name: /Matchmaking/ }).click();
+  await expect(page.getByText("rank >= 5")).toBeVisible();
+  await expect(page.getByText(/fill existing · serial/)).toBeVisible();
+});

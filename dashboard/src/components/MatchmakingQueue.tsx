@@ -29,6 +29,16 @@ export function MatchmakingQueue({ projectId }: { projectId?: string }) {
           { key: "mode", header: t("rooms.mode"), cell: (x) => <Badge tone={modeTone(x.mode)}>{x.mode}</Badge> },
           { key: "region", header: t("nodes.region"), cell: (x) => x.region ?? <span className="text-fg-muted">*</span> },
           { key: "size", header: t("mm.size"), align: "right", cell: (x) => x.max_players },
+          {
+            key: "filter",
+            header: t("mm.filter"),
+            cell: (x) => (
+              <span className="flex flex-wrap items-center gap-1">
+                {x.filter ? <Mono>{x.filter}</Mono> : <span className="text-fg-muted">—</span>}
+                {x.fill_existing ? <Badge tone="neutral">{t("mm.fill")}{x.match_type ? ` · ${x.match_type}` : ""}</Badge> : null}
+              </span>
+            ),
+          },
           { key: "age", header: t("mm.queue.waiting"), align: "right", cell: (x) => <span className={x.age_secs > 60 ? "text-warn tabular" : "tabular"}>{x.age_secs}s</span> },
         ]}
       />

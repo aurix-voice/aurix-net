@@ -949,6 +949,9 @@ async fn list_rooms(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Va
 #[derive(Deserialize)]
 struct CreateRoomReq {
     name: String,
+    /// REST creates relay rooms only; sync/lockstep need the control-plane `create`.
+    #[serde(default)]
+    mode: Option<String>,
     #[serde(default)]
     max_players: Option<u16>,
     #[serde(default = "t")]
@@ -975,6 +978,13 @@ async fn create_room(
 ) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Rooms).await?;
     key_write(&st, &key)?;
+    if req.mode.as_deref().is_some_and(|m| m != "relay") {
+        return Err(NetError::Invalid(
+            "REST creates relay rooms only; create sync/lockstep rooms through the control plane"
+                .into(),
+        )
+        .into());
+    }
     let project = ProjectId::from_uuid(key.project_id);
     if st.host.by_name(project, &req.name).is_some() {
         return Err(NetError::Conflict("room name already in use".into()).into());
@@ -1744,7 +1754,8 @@ async fn mm_stats_json(st: &Shared, project: ProjectId) -> Result<Value> {
         .list_searching(&st.redis, project)
         .await?
         .iter()
-        .map(|t| json!({"id": t.id, "player_id": t.req.player_id, "mode": t.req.mode, "region": t.req.region, "max_players": t.req.max_players, "age_secs": t.age_secs(now)}))
+        .map(|t| json!({"id": t.id, "player_id": t.req.player_id, "mode": t.req.mode, "region": t.req.region, "max_players": t.req.max_players, "age_secs": t.age_secs(now),
+            "attrs": t.req.attrs, "filter": t.req.filter, "fill_existing": t.req.fill_existing, "match_type": t.req.match_type}))
         .collect();
     let (last_hour, last_24h) = st.matchmaker.matched_stats(&st.redis, project).await?;
     Ok(json!({"searching": searching, "matched": {"last_hour": last_hour, "last_24h": last_24h}}))

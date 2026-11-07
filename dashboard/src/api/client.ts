@@ -252,7 +252,7 @@ export interface RotatedWebhook {
   previous_secret_expires_at: string;
 }
 export interface MatchmakingStats {
-  searching: { id: string; player_id: string; mode: string; region: string | null; max_players: number; age_secs: number }[];
+  searching: { id: string; player_id: string; mode: string; region: string | null; max_players: number; age_secs: number; attrs?: Record<string, unknown>; filter?: string | null; fill_existing?: boolean; match_type?: string | null }[];
   matched: { last_hour: number; last_24h: number };
 }
 export interface PlayerLookup {
@@ -405,3 +405,6 @@ export interface Ticket {
   age_secs?: number;
   room?: string;
 }
+
+export interface DesyncDump { tick: number; actor: number; hash: string; bytes: number; at: string }
+export interface RoomDesyncs { room: string; desyncs: DesyncDump[] }
