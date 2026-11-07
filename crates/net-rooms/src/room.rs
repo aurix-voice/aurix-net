@@ -382,6 +382,14 @@ impl Room {
         self.players.values().map(|p| p.info()).collect()
     }
 
+    /// Counts a simulation input (sync/lockstep) that bypasses `raise_event`, so the live
+    /// per-player figures cover every mode.
+    pub fn count_input(&mut self, actor: ActorId, bytes: usize, now: Instant) {
+        if let Some(p) = self.players.get_mut(&actor) {
+            p.count_event(bytes, now);
+        }
+    }
+
     pub fn player_stats(&self, now: Instant) -> Vec<PlayerStats> {
         self.players.values().map(|p| p.stats(now)).collect()
     }

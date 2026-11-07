@@ -362,11 +362,13 @@ pub fn handle_data_frame(
     // reliable); unknown kinds fall through to relay events.
     if let Some(sy) = h.sync.as_mut() {
         if sy.handle(actor, payload.clone()) {
+            h.room.count_input(actor, payload.len(), Instant::now());
             return Ok(());
         }
     }
     if let Some(ls) = h.lockstep.as_mut() {
         if ls.handle(actor, payload.clone()) {
+            h.room.count_input(actor, payload.len(), Instant::now());
             return Ok(());
         }
     }
