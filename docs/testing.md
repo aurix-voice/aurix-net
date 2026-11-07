@@ -22,6 +22,7 @@ Redis). Build once: `cargo build --release`. Create a project and key with the o
 | browser WebTransport | serve `sdk/web` (`python3 -m http.server 8765`), open `test/browser.html?http=...&ga=<grant>&gb=<grant>&room=x` in Chrome | `path=webtransport/webtransport hello=1 ticks=10/10` |
 | Web SDK (Node, tunnel) | `cd sdk/web && NET_API_KEY=... npm test` | pass |
 | C / C++ ABI | `crates/net-ffi/ctest/echo.c`, `sdk/cpp/echo_test.cpp` against a live node | `hello=1 ticks=10/10` |
+| C ABI, aurix-sim | `crates/net-ffi/ctest/sim.c` against `libaurix_net.so` (offline) | six golden hashes equal to Rust/wasm32, 2D/3D rest + sphere cast |
 
 Known limits of the local setup: bots and server share CPU, so the 2000 events/s/room figure
 needs bots on a second machine; the dev certificate changes on every node start (browser pins
@@ -119,7 +120,7 @@ overruns; desync dumps for every batch were listed and downloadable through `/v1
 
 | job | what runs |
 |---|---|
-| `rust` | fmt, clippy `-D warnings`, workspace tests, migrations on a fresh Postgres, `net-sim-wasm` wasm32 + native builds and `golden_check` (all six golden hashes native == wasm32); uploads the `.wasm`, `libnet_sim_wasm.so` and the debug `aurix-net-server` for the jobs below |
+| `rust` | fmt, clippy `-D warnings`, workspace tests, migrations on a fresh Postgres, `net-sim-wasm` wasm32 + native builds and `golden_check` (all six golden hashes native == wasm32), `libaurix_net` + `ctest/sim.c` (C ABI golden check) and the header generator diff; uploads the `.wasm`, `libnet_sim_wasm.so` and the debug `aurix-net-server` for the jobs below |
 | `supply-chain` | `cargo audit`, `cargo deny check` |
 | `sdk-web` | `tsc` build + node tests of the Web SDK (sim tests load the wasm artifact; live tests skip without `NET_API_KEY`) |
 | `sdk-csharp` | dotnet builds of the live/rehost checks and the managed test runner (P/Invokes the native artifact) |

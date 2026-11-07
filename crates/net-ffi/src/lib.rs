@@ -3,6 +3,11 @@
 //! Strings are UTF-8, NUL-terminated. Header: `include/aurix_net.h`.
 #![allow(clippy::missing_safety_doc)]
 
+/// aurix-sim (deterministic physics 2D/3D, navmesh, crowd) is linked into this library too: its
+/// `sim_*`/`sim3_*` C ABI is declared in `include/aurix_sim.h`. The re-export keeps the crate
+/// linked so the `#[no_mangle]` symbols end up in the cdylib/staticlib.
+pub use net_sim_wasm;
+
 use bytes::Bytes;
 use net_client::protocol::{ClientMsg, ServerMsg};
 use net_client::{Client, Event, EventTarget, Options};

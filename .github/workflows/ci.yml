@@ -38,6 +38,12 @@ jobs:
           cargo build --release --target wasm32-unknown-unknown -p net-sim-wasm
           cargo build --release -p net-sim-wasm
           cargo run -p net-sim-wasm --example golden_check
+      - name: aurix-sim C ABI (libaurix_net + ctest/sim.c, header up to date)
+        run: |
+          cargo build --release -p net-ffi
+          python3 tools/gen_sim_header.py && git diff --exit-code -- crates/net-ffi/include sdk/cpp/aurix_sim.h sdk/godot/src/aurix_sim.h
+          gcc -std=c11 -Wall -Wextra -Werror crates/net-ffi/ctest/sim.c -Ltarget/release -laurix_net -lm -Wl,-rpath,$PWD/target/release -o /tmp/sim_ctest
+          /tmp/sim_ctest
       - name: artifacts for the SDK and console jobs
         uses: actions/upload-artifact@v4
         with:

@@ -706,12 +706,13 @@ pub extern "C" fn sim3_convex_face_end(h: u32) -> u32 {
     .unwrap_or(0)
 }
 
-/// Add a convex body from the staged hull (which stays staged for reuse); 0 if the hull is invalid.
+/// Add a convex body from the staged hull (which stays staged for reuse); returns the body id like
+/// `sim3_add_box`, or `u32::MAX` if the hull is invalid (< 4 vertices or faces).
 #[no_mangle]
 pub extern "C" fn sim3_add_convex(h: u32, k: u32, x: i64, y: i64, z: i64, density: i64) -> u32 {
     with3(h, |s| {
         if s.hull_verts.len() < 4 || s.hull_faces.len() < 4 {
-            return 0;
+            return u32::MAX;
         }
         s.world
             .add(Body::with_density(
@@ -724,9 +725,8 @@ pub extern "C" fn sim3_add_convex(h: u32, k: u32, x: i64, y: i64, z: i64, densit
                 Fx(density),
             ))
             .0
-            + 1
     })
-    .unwrap_or(0)
+    .unwrap_or(u32::MAX)
 }
 
 /// Sphere sweep; result fields as `sim3_ray_get`. Returns body id + 1 or 0.

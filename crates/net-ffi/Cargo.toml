@@ -13,6 +13,7 @@ crate-type = ["cdylib", "staticlib"]
 [dependencies]
 net-common = { path = "../net-common" }
 net-client = { path = "../net-client" }
+net-sim-wasm = { path = "../net-sim-wasm" }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 bytes = { workspace = true }

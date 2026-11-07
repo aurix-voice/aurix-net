@@ -523,8 +523,8 @@ export class Sim3World {
       this.e.sim3_convex_face_end(this.handle);
     }
     const id = this.e.sim3_add_convex(this.handle, kind, fx(pos.x), fx(pos.y), fx(pos.z), fx(density));
-    if (id === 0) throw new Error("sim3: invalid convex hull (need >= 4 vertices and >= 4 faces)");
-    return id - 1;
+    if ((id >>> 0) === 0xffffffff) throw new Error("sim3: invalid convex hull (need >= 4 vertices and >= 4 faces)");
+    return id;
   }
   /** Sweep a sphere along `dir`; `fraction` is where the centre stops, `point`/`normal` lie on the hit surface. */
   sphereCast(from: Vec3, dir: Vec3, radius: number, mask = 0xffffffff): Ray3Hit | null {

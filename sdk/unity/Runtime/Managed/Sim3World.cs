@@ -190,8 +190,8 @@ namespace Aurix.Net.Sim
             foreach (var v in verts) Sim3Native.sim3_convex_vert(Handle, Fx.From(v.X), Fx.From(v.Y), Fx.From(v.Z));
             foreach (var f in faces) { foreach (var i in f) Sim3Native.sim3_convex_index(Handle, i); Sim3Native.sim3_convex_face_end(Handle); }
             uint id = Sim3Native.sim3_add_convex(Handle, (uint)kind, Fx.From(pos.X), Fx.From(pos.Y), Fx.From(pos.Z), Fx.From(density));
-            if (id == 0) throw new ArgumentException("sim3: invalid convex hull (need >= 4 vertices and >= 4 faces)");
-            return id - 1;
+            if (id == uint.MaxValue) throw new ArgumentException("sim3: invalid convex hull (need >= 4 vertices and >= 4 faces)");
+            return id;
         }
         /// Sweep a sphere along dir; Fraction is where the centre stops, Point/Normal lie on the hit surface.
         public bool SphereCast(Vec3 from, Vec3 dir, double radius, out Ray3Hit hit, uint mask = uint.MaxValue)
