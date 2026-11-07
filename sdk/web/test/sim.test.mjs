@@ -94,3 +94,26 @@ test("sim wasm: 3D golden hash, resting sphere, snapshot and raycast", async () 
   assert.ok(hit && hit.body === ball && Math.abs(hit.point.y - 1) < 0.05, `ray ${JSON.stringify(hit)}`);
   w.free();
 });
+
+test("sim wasm: 3D joints golden hash, hinge door and walking character", async () => {
+  const sim = await Sim.load(await readFile(WASM));
+  assert.equal(sim.joint3GoldenHash(), 0x5db56af63cceee85n);
+  const w = sim.world3();
+  w.addBox(BodyKind.Static, { x: 0, y: -0.5, z: 0 }, { x: 20, y: 0.5, z: 20 });
+  const post = w.addBox(BodyKind.Static, { x: -10, y: 1, z: 0 }, { x: 0.1, y: 1, z: 0.1 });
+  const door = w.addBox(BodyKind.Dynamic, { x: -9.4, y: 1, z: 0 }, { x: 0.5, y: 1, z: 0.05 });
+  const hinge = w.jointHinge(post, door, { x: 0.1, y: 0, z: 0 }, { x: -0.5, y: 0, z: 0 }, { x: 0, y: 1, z: 0 }, { x: 0, y: 1, z: 0 }, { lower: 0, upper: Math.PI / 2 });
+  w.applyImpulse(door, { x: 0, y: 0, z: 8 }, { x: -9, y: 1, z: 0 });
+  w.addBox(BodyKind.Static, { x: 4, y: 0.15, z: 10 }, { x: 1, y: 0.15, z: 2 });
+  const hero = w.addCapsule(BodyKind.Kinematic, { x: 0, y: 0.8, z: 10 }, 0.5, 0.3);
+  const k = w.character(hero);
+  for (let i = 0; i < 300; i++) {
+    w.moveCharacter(k, { x: 3 / 60, y: -10 / 60, z: 0 });
+    w.step();
+  }
+  const angle = w.hingeAngle(hinge);
+  assert.ok(angle > 0.3 && angle < Math.PI / 2 + 0.1, `door angle ${angle}`);
+  const p = w.body(hero).position;
+  assert.ok(p.x > 5 && Math.abs(p.y - 0.8) < 0.05 && w.characterState(k).grounded, `hero ${JSON.stringify(p)}`);
+  w.free();
+});

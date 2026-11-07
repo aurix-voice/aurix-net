@@ -111,8 +111,11 @@ and wasm32 (CI matrix) — the same vectors shipped to the C# and TS ports.
   starting, two-axis friction, restitution, positional correction, quaternion integration
   (`FxQuat`/`FxMat3` in net-fpmath), raycasts, snapshot/restore/hash; tests run two worlds and
   compare hashes; exposed as `sim3_*` over the flat ABI with Web `Sim3World` / Unity `Sim3World`
-  wrappers, golden hash `0x0a9c7e6fc4fa43bf` native == wasm32. Not yet: convex hulls, 3D
-  joints/KCC.
+  wrappers, golden hash `0x0a9c7e6fc4fa43bf` native == wasm32. 3D joints (ball,
+  hinge with limits/motor, distance/rope, `FxMat3` inverse for the point constraint) and a
+  kinematic capsule `CharacterController` (push-out sliding, step-up with ledge probe, ground
+  snap, slope filter) are in, exposed over `sim3_joint_*`/`sim3_kcc_*` with Web/Unity wrappers;
+  golden hash `0x5db56af63cceee85` native == wasm32. Not yet: convex hulls and shape sweeps.
 - Bot kit: `net-sim-bots` — data-driven behavior trees (Sequence/Selector/Parallel, Condition/
   Action by id via the `Brain` trait, Inverter/Succeeder/Repeat/Cooldown/Timeout/Wait, blackboard
   Compare/Set), hierarchical state machines (parent transitions, on_enter/on_exit, initial

@@ -178,6 +178,23 @@ static class Program
             Check(w3.Hash() != h3 && w3.Restore(snap3) && w3.Hash() == h3, "sim3: snapshot round-trip");
             Check(w3.Raycast(new Vec3(0, 5, 0), new Vec3(0, -10, 0), out var h3hit) && h3hit.Body == ball3 && Math.Abs(h3hit.Point.Y - 1) < 0.05, "sim3: raycast hits the sphere");
         }
+        Check(Sim3World.JointGoldenHash() == 0x5db56af63cceee85UL, "sim3: joint golden hash equals the Rust/wasm value");
+        using (var j3 = new Sim3World())
+        {
+            j3.AddBox(BodyKind.Static, new Vec3(0, -0.5, 0), new Vec3(20, 0.5, 20));
+            uint post = j3.AddBox(BodyKind.Static, new Vec3(-10, 1, 0), new Vec3(0.1, 1, 0.1));
+            uint door = j3.AddBox(BodyKind.Dynamic, new Vec3(-9.4, 1, 0), new Vec3(0.5, 1, 0.05));
+            uint hinge = j3.JointHinge(post, door, new Vec3(0.1, 0, 0), new Vec3(-0.5, 0, 0), new Vec3(0, 1, 0), new Vec3(0, 1, 0), 0, Math.PI / 2);
+            j3.ApplyImpulse(door, new Vec3(0, 0, 8), new Vec3(-9, 1, 0));
+            j3.AddBox(BodyKind.Static, new Vec3(4, 0.15, 10), new Vec3(1, 0.15, 2));
+            uint hero = j3.AddCapsule(BodyKind.Kinematic, new Vec3(0, 0.8, 10), 0.5, 0.3);
+            uint k = j3.Character(hero);
+            for (int i = 0; i < 300; i++) { j3.MoveCharacter(k, new Vec3(3.0 / 60, -10.0 / 60, 0)); j3.Step(); }
+            double angle = j3.HingeAngle(hinge);
+            Check(angle > 0.3 && angle < Math.PI / 2 + 0.1, "sim3: hinged door opened within its limits (" + angle.ToString("F2") + ")");
+            var hp = j3.Body(hero).Position;
+            Check(hp.X > 5 && Math.Abs(hp.Y - 0.8) < 0.05 && j3.CharacterState(k).Grounded, "sim3: character stepped over the ledge and stands (" + hp.X.ToString("F2") + "," + hp.Y.ToString("F2") + ")");
+        }
         using (var j = new SimWorld(0, -10))
         {
             uint floor = j.AddBox(BodyKind.Static, 0, -0.5, 10, 0.5);

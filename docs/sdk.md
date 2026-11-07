@@ -178,3 +178,11 @@ const crate = w3.addBox(BodyKind.Dynamic, { x: 0, y: 3, z: 0 }, { x: 0.5, y: 0.5
 w3.setRotation(crate, Sim3World.axisAngle({ x: 0, y: 0, z: 1 }, 0.3));
 // per tick: w3.step(); lockstep.reportHash(tick, w3.hash());
 ```
+
+3D joints and characters: `jointBall`, `jointHinge` (local axes, optional limits + motor,
+`hingeAngle`, `setMotor`), `jointDistance` (rope when `minLength < length`), `removeJoint`;
+`character(body)` wraps a kinematic capsule in a controller — `moveCharacter(k, delta)` before
+`step()` slides along geometry, steps over ledges up to `stepHeight`, snaps to the ground and
+reports `characterState(k).grounded`. C#: `JointBall/JointHinge/JointDistance/HingeAngle/
+Character/MoveCharacter/CharacterState`. Reference hash `sim3_joint_golden_hash()` =
+`0x5db56af63cceee85` on native and wasm32.

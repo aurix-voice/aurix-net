@@ -97,6 +97,16 @@ interface SimExports {
   sim3_events_len(h: number): number;
   sim3_event_get(h: number, i: number, field: number): number;
   sim3_golden_hash(): bigint;
+  sim3_joint_ball(h: number, a: number, b: number, ax: bigint, ay: bigint, az: bigint, bx: bigint, by: bigint, bz: bigint): number;
+  sim3_joint_hinge(h: number, a: number, b: number, ax: bigint, ay: bigint, az: bigint, bx: bigint, by: bigint, bz: bigint, uax: bigint, uay: bigint, uaz: bigint, ubx: bigint, uby: bigint, ubz: bigint, hasLimits: number, lower: bigint, upper: bigint, motorSpeed: bigint, maxTorque: bigint): number;
+  sim3_joint_distance(h: number, a: number, b: number, ax: bigint, ay: bigint, az: bigint, bx: bigint, by: bigint, bz: bigint, len: bigint, minLen: bigint): number;
+  sim3_joint_remove(h: number, id: number): number;
+  sim3_joint_motor(h: number, id: number, speed: bigint, maxTorque: bigint): void;
+  sim3_hinge_angle(h: number, id: number): bigint;
+  sim3_kcc_new(h: number, body: number, stepHeight: bigint, minGroundNy: bigint, snap: bigint): number;
+  sim3_kcc_move(h: number, k: number, dx: bigint, dy: bigint, dz: bigint): number;
+  sim3_kcc_get(h: number, k: number, field: number): bigint;
+  sim3_joint_golden_hash(): bigint;
 }
 
 export interface BodyState {
@@ -144,6 +154,10 @@ export class Sim {
   /** 3D reference scenario hash; must equal the native value (`0x0a9c7e6fc4fa43bf`). */
   golden3Hash(): bigint {
     return this.e.sim3_golden_hash();
+  }
+  /** 3D joints/character reference scenario hash (`0x5db56af63cceee85`). */
+  joint3GoldenHash(): bigint {
+    return this.e.sim3_joint_golden_hash();
   }
   /** Create a 3D world (gravity in m/s², tick rate). */
   world3(gravity: { x: number; y: number; z: number } = { x: 0, y: -10, z: 0 }, tickHz = 60): Sim3World {
@@ -445,5 +459,45 @@ export class Sim3World {
     const out = [];
     for (let i = 0; i < n; i++) out.push({ a: this.e.sim3_event_get(this.handle, i, 0), b: this.e.sim3_event_get(this.handle, i, 1), begin: this.e.sim3_event_get(this.handle, i, 2) === 1 });
     return out;
+  }
+
+  // ---- joints and character controller ----
+  jointBall(a: number, b: number, anchorA: Vec3, anchorB: Vec3): number {
+    return this.e.sim3_joint_ball(this.handle, a, b, fx(anchorA.x), fx(anchorA.y), fx(anchorA.z), fx(anchorB.x), fx(anchorB.y), fx(anchorB.z));
+  }
+  /** Hinge around local axes; optional angle limits (radians) and motor (`maxTorque > 0`). */
+  jointHinge(a: number, b: number, anchorA: Vec3, anchorB: Vec3, axisA: Vec3, axisB: Vec3, opts: { lower?: number; upper?: number; motorSpeed?: number; maxTorque?: number } = {}): number {
+    const limits = opts.lower !== undefined && opts.upper !== undefined;
+    return this.e.sim3_joint_hinge(
+      this.handle, a, b, fx(anchorA.x), fx(anchorA.y), fx(anchorA.z), fx(anchorB.x), fx(anchorB.y), fx(anchorB.z),
+      fx(axisA.x), fx(axisA.y), fx(axisA.z), fx(axisB.x), fx(axisB.y), fx(axisB.z),
+      limits ? 1 : 0, fx(opts.lower ?? 0), fx(opts.upper ?? 0), fx(opts.motorSpeed ?? 0), fx(opts.maxTorque ?? 0),
+    );
+  }
+  /** Distance joint; `minLength < length` allows slack (rope). */
+  jointDistance(a: number, b: number, anchorA: Vec3, anchorB: Vec3, length: number, minLength = length): number {
+    return this.e.sim3_joint_distance(this.handle, a, b, fx(anchorA.x), fx(anchorA.y), fx(anchorA.z), fx(anchorB.x), fx(anchorB.y), fx(anchorB.z), fx(length), fx(minLength));
+  }
+  removeJoint(id: number): boolean {
+    return this.e.sim3_joint_remove(this.handle, id) === 1;
+  }
+  setMotor(joint: number, speed: number, maxTorque: number) {
+    this.e.sim3_joint_motor(this.handle, joint, fx(speed), fx(maxTorque));
+  }
+  hingeAngle(joint: number): number {
+    return num(this.e.sim3_hinge_angle(this.handle, joint));
+  }
+  /** Capsule character controller over a kinematic capsule body; returns a controller index. */
+  character(body: number, stepHeight = 0.5, minGroundNormalY = 0.7, snapDistance = 0.25): number {
+    return this.e.sim3_kcc_new(this.handle, body, fx(stepHeight), fx(minGroundNormalY), fx(snapDistance));
+  }
+  /** Move the controller this tick (call before `step()`); returns whether it stands on ground. */
+  moveCharacter(k: number, delta: Vec3): boolean {
+    return this.e.sim3_kcc_move(this.handle, k, fx(delta.x), fx(delta.y), fx(delta.z)) === 1;
+  }
+  characterState(k: number): { groundNormal: Vec3; velocity: Vec3; grounded: boolean; groundBody: number | null } {
+    const g = (f: number) => this.e.sim3_kcc_get(this.handle, k, f);
+    const gb = Number(g(7));
+    return { groundNormal: { x: num(g(0)), y: num(g(1)), z: num(g(2)) }, velocity: { x: num(g(3)), y: num(g(4)), z: num(g(5)) }, grounded: g(6) === 1n, groundBody: gb ? gb - 1 : null };
   }
 }

@@ -16,6 +16,7 @@ namespace Aurix.Net.Sim
         }
     }
     public struct Body3State { public Vec3 Position, Velocity, AngularVelocity; public Quat Rotation; }
+    public struct Character3State { public Vec3 GroundNormal, Velocity; public bool Grounded; public uint GroundBody; }
     public struct Ray3Hit { public uint Body; public double Fraction; public Vec3 Point, Normal; }
 
     internal static class Sim3Native
@@ -47,6 +48,16 @@ namespace Aurix.Net.Sim
         [DllImport(Lib)] public static extern uint sim3_events_len(uint h);
         [DllImport(Lib)] public static extern uint sim3_event_get(uint h, uint i, uint field);
         [DllImport(Lib)] public static extern ulong sim3_golden_hash();
+        [DllImport(Lib)] public static extern uint sim3_joint_ball(uint h, uint a, uint b, long ax, long ay, long az, long bx, long by, long bz);
+        [DllImport(Lib)] public static extern uint sim3_joint_hinge(uint h, uint a, uint b, long ax, long ay, long az, long bx, long by, long bz, long uax, long uay, long uaz, long ubx, long uby, long ubz, uint hasLimits, long lower, long upper, long motorSpeed, long maxTorque);
+        [DllImport(Lib)] public static extern uint sim3_joint_distance(uint h, uint a, uint b, long ax, long ay, long az, long bx, long by, long bz, long len, long minLen);
+        [DllImport(Lib)] public static extern uint sim3_joint_remove(uint h, uint id);
+        [DllImport(Lib)] public static extern void sim3_joint_motor(uint h, uint id, long speed, long maxTorque);
+        [DllImport(Lib)] public static extern long sim3_hinge_angle(uint h, uint id);
+        [DllImport(Lib)] public static extern uint sim3_kcc_new(uint h, uint body, long stepHeight, long minGroundNy, long snap);
+        [DllImport(Lib)] public static extern uint sim3_kcc_move(uint h, uint k, long dx, long dy, long dz);
+        [DllImport(Lib)] public static extern long sim3_kcc_get(uint h, uint k, uint field);
+        [DllImport(Lib)] public static extern ulong sim3_joint_golden_hash();
     }
 
     /// Deterministic fixed-point 3D world (spheres, boxes, capsules) over the native/wasm module.
@@ -60,6 +71,8 @@ namespace Aurix.Net.Sim
         public void Dispose() { if (Handle != uint.MaxValue) { Sim3Native.sim3_world_free(Handle); Handle = uint.MaxValue; } }
         /// 3D reference scenario hash; equals 0x0a9c7e6fc4fa43bf on every platform.
         public static ulong GoldenHash() => Sim3Native.sim3_golden_hash();
+        /// 3D joints/character reference scenario hash; equals 0x5db56af63cceee85 on every platform.
+        public static ulong JointGoldenHash() => Sim3Native.sim3_joint_golden_hash();
 
         public void Step() => Sim3Native.sim3_step(Handle);
         public ulong Tick => Sim3Native.sim3_tick(Handle);
@@ -123,6 +136,40 @@ namespace Aurix.Net.Sim
             for (uint i = 0; i < n; i++)
                 ev[i] = new ContactEvent { A = Sim3Native.sim3_event_get(Handle, i, 0), B = Sim3Native.sim3_event_get(Handle, i, 1), Begin = Sim3Native.sim3_event_get(Handle, i, 2) == 1 };
             return ev;
+        }
+
+        // ---- joints and character controller ----
+        public uint JointBall(uint a, uint b, Vec3 anchorA, Vec3 anchorB)
+            => Sim3Native.sim3_joint_ball(Handle, a, b, Fx.From(anchorA.X), Fx.From(anchorA.Y), Fx.From(anchorA.Z), Fx.From(anchorB.X), Fx.From(anchorB.Y), Fx.From(anchorB.Z));
+        /// Hinge around local axes; pass lower/upper for angle limits (radians), maxTorque > 0 enables the motor.
+        public uint JointHinge(uint a, uint b, Vec3 anchorA, Vec3 anchorB, Vec3 axisA, Vec3 axisB, double? lower = null, double? upper = null, double motorSpeed = 0, double maxTorque = 0)
+        {
+            bool limits = lower.HasValue && upper.HasValue;
+            return Sim3Native.sim3_joint_hinge(Handle, a, b, Fx.From(anchorA.X), Fx.From(anchorA.Y), Fx.From(anchorA.Z), Fx.From(anchorB.X), Fx.From(anchorB.Y), Fx.From(anchorB.Z),
+                Fx.From(axisA.X), Fx.From(axisA.Y), Fx.From(axisA.Z), Fx.From(axisB.X), Fx.From(axisB.Y), Fx.From(axisB.Z),
+                limits ? 1u : 0u, Fx.From(lower ?? 0), Fx.From(upper ?? 0), Fx.From(motorSpeed), Fx.From(maxTorque));
+        }
+        /// Distance joint; minLength < length allows slack (rope).
+        public uint JointDistance(uint a, uint b, Vec3 anchorA, Vec3 anchorB, double length, double? minLength = null)
+            => Sim3Native.sim3_joint_distance(Handle, a, b, Fx.From(anchorA.X), Fx.From(anchorA.Y), Fx.From(anchorA.Z), Fx.From(anchorB.X), Fx.From(anchorB.Y), Fx.From(anchorB.Z), Fx.From(length), Fx.From(minLength ?? length));
+        public bool RemoveJoint(uint id) => Sim3Native.sim3_joint_remove(Handle, id) == 1;
+        public void SetMotor(uint joint, double speed, double maxTorque) => Sim3Native.sim3_joint_motor(Handle, joint, Fx.From(speed), Fx.From(maxTorque));
+        public double HingeAngle(uint joint) => Fx.To(Sim3Native.sim3_hinge_angle(Handle, joint));
+        /// Capsule character controller over a kinematic capsule body; returns a controller index.
+        public uint Character(uint body, double stepHeight = 0.5, double minGroundNormalY = 0.7, double snapDistance = 0.25)
+            => Sim3Native.sim3_kcc_new(Handle, body, Fx.From(stepHeight), Fx.From(minGroundNormalY), Fx.From(snapDistance));
+        /// Move the controller this tick (call before Step()); returns whether it stands on ground.
+        public bool MoveCharacter(uint k, Vec3 delta) => Sim3Native.sim3_kcc_move(Handle, k, Fx.From(delta.X), Fx.From(delta.Y), Fx.From(delta.Z)) == 1;
+        public Character3State CharacterState(uint k)
+        {
+            double G(uint f) => Fx.To(Sim3Native.sim3_kcc_get(Handle, k, f));
+            return new Character3State
+            {
+                GroundNormal = new Vec3(G(0), G(1), G(2)),
+                Velocity = new Vec3(G(3), G(4), G(5)),
+                Grounded = Sim3Native.sim3_kcc_get(Handle, k, 6) == 1,
+                GroundBody = (uint)Sim3Native.sim3_kcc_get(Handle, k, 7),
+            };
         }
     }
 }
