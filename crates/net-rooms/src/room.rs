@@ -52,6 +52,7 @@ impl Player {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Outgoing {
     /// Control-channel message to one actor.
     Control(ActorId, ServerMsg),

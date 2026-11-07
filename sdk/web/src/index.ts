@@ -7,13 +7,21 @@ export { encodeEvent, decodeEvent } from "./event.js";
 export type { Target, EventFrame } from "./event.js";
 
 export type RoomMode = "relay" | "sync" | "lockstep";
-export interface Joined { room: string; name: string; mode: RoomMode; actor: number; master: number; tick_hz?: number; schema_hash?: string; data: { host: string; port: number; cert_sha256: string; ticket: string; ws_tunnel: boolean } }
+export interface Joined { room: string; name: string; mode: RoomMode; actor: number; master: number; tick_hz?: number; schema_hash?: string; data: { host: string; port: number; cert_sha256: string; ticket: string; ws_tunnel: boolean; webtransport_url?: string } }
+
+/** Data path: WebTransport datagrams when the browser and the node support it, else the WS tunnel. */
+interface DataPath { send(d: Uint8Array): void; close(): void; kind: "webtransport" | "ws-tunnel" }
+
 
 type Listener = (...a: any[]) => void;
 
-/** Browser/Node client. Control over WebSocket; data over the WebSocket tunnel (WebTransport later). */
+/** Browser/Node client. Control over WebSocket; data over WebTransport datagrams (browsers)
+ *  or the WebSocket tunnel (fallback / Node). Set `forceTunnel` to skip WebTransport. */
 export class Client {
   private ws!: WebSocket; private link = new Link(); private timer?: ReturnType<typeof setInterval>;
+  private path?: DataPath; forceTunnel = false;
+  /** Which data path is in use after join(). */
+  get dataPath() { return this.path?.kind; }
   private listeners = new Map<string, Listener[]>(); private waiters: ((m: any) => boolean)[] = [];
   joined?: Joined; actor = -1;
 
@@ -42,16 +50,7 @@ export class Client {
       this.emit("control", m);
       this.waiters = this.waiters.filter((w) => !w(m));
     } else {
-      const bytes = new Uint8Array(data as ArrayBuffer);
-      const recv: Received[] = this.link.receive(bytes);
-      this.flushLink();
-      for (const r of recv) {
-        if (r.payload.length === 0) { this.emit("ready"); continue; }
-        this.emit("data", r.channel, r.tick, r.payload);
-        if (this.joined?.mode === "relay" || (r.payload[0] & 0xf0) !== 0x10 && (r.payload[0] & 0xf0) !== 0x20) {
-          const f = decodeEvent(r.payload); if (f) this.emit("event", f);
-        }
-      }
+      this.onDatagram(new Uint8Array(data as ArrayBuffer));
     }
   }
   private waitFor(ok: (m: any) => boolean, fail?: (m: any) => boolean, timeoutMs = 10000): Promise<any> {
@@ -75,15 +74,48 @@ export class Client {
     this.send(msg);
     const j = (await this.waitFor((m) => m.t === "joined", (m) => m.t === "error")) as Joined;
     this.joined = j; this.actor = j.actor;
-    // open the tunnel: ticket as first binary frame, wait for the server's empty ack frame
+    // open the data path: ticket as the first datagram/frame, wait for the server's empty ack
     const ticket = Uint8Array.from(atob(j.data.ticket), (c) => c.charCodeAt(0));
     const ready = new Promise<void>((res, rej) => { const t = setTimeout(() => rej(new Error("data path timeout")), 10000); this.on("ready", () => { clearTimeout(t); res(); }); });
-    this.ws.send(ticket);
+    this.path = await this.openPath(j.data);
+    this.path.send(ticket);
     this.timer = setInterval(() => { if (!this.link.poll()) { this.stop(); this.emit("closed", "link dead"); } this.flushLink(); }, 5);
     await ready;
     return j;
   }
-  private flushLink() { for (const d of this.link.drain()) this.ws.send(d); }
+
+  private onDatagram(bytes: Uint8Array) {
+    const recv: Received[] = this.link.receive(bytes);
+    this.flushLink();
+    for (const r of recv) {
+      if (r.payload.length === 0) { this.emit("ready"); continue; }
+      this.emit("data", r.channel, r.tick, r.payload);
+      if (this.joined?.mode === "relay" || (r.payload[0] & 0xf0) !== 0x10 && (r.payload[0] & 0xf0) !== 0x20) {
+        const f = decodeEvent(r.payload); if (f) this.emit("event", f);
+      }
+    }
+  }
+
+  private async openPath(d: Joined["data"]): Promise<DataPath> {
+    const WT: any = (globalThis as any).WebTransport;
+    if (WT && d.webtransport_url && !this.forceTunnel) {
+      try {
+        const hash = Uint8Array.from(d.cert_sha256.match(/../g)!.map((h) => parseInt(h, 16)));
+        const wt = new WT(d.webtransport_url, { serverCertificateHashes: [{ algorithm: "sha-256", value: hash }] });
+        await wt.ready;
+        const writer = wt.datagrams.writable.getWriter();
+        const reader = wt.datagrams.readable.getReader();
+        (async () => { try { for (;;) { const { value, done } = await reader.read(); if (done) break; this.onDatagram(value); } } catch { /* closed */ } })();
+        wt.closed.then(() => { this.stop(); this.emit("closed", "webtransport closed"); }, () => { this.stop(); this.emit("closed", "webtransport error"); });
+        return { kind: "webtransport", send: (b) => { writer.write(b).catch(() => {}); }, close: () => wt.close() };
+      } catch (e) {
+        // fall through to the tunnel
+      }
+    }
+    if (!d.ws_tunnel) throw new Error("no usable data path (webtransport failed, tunnel disabled)");
+    return { kind: "ws-tunnel", send: (b) => this.ws.send(b), close: () => {} };
+  }
+  private flushLink() { for (const d of this.link.drain()) this.path?.send(d); }
 
   /** Queue a data message; unreliable ones leave on flush()/timer. */
   sendData(channel: Channel, payload: Uint8Array) { this.link.send(channel, payload); if (channel === Channel.Reliable) this.flushLink(); }
@@ -93,6 +125,6 @@ export class Client {
   get stats() { return this.link.stats; }
 
   leave() { this.send({ t: "leave" }); }
-  close() { this.stop(); this.ws.close(); }
+  close() { this.stop(); this.path?.close(); this.ws.close(); }
   private stop() { if (this.timer) { clearInterval(this.timer); this.timer = undefined; } }
 }

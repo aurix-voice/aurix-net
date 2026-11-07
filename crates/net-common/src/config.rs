@@ -33,6 +33,9 @@ pub struct TransportConfig {
     pub idle_timeout_ms: u64,
     pub keep_alive_ms: u64,
     pub ws_tunnel: bool,
+    /// WebTransport (HTTP/3) endpoint for browsers; None disables it.
+    #[serde(default)]
+    pub webtransport_addr: Option<SocketAddr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +79,7 @@ heartbeat_secs = 30
 
 [transport]
 quic_addr = "0.0.0.0:7000"
+webtransport_addr = "0.0.0.0:7443"
 idle_timeout_ms = 15000
 keep_alive_ms = 5000
 ws_tunnel = true

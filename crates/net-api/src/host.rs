@@ -17,6 +17,8 @@ use tokio::sync::mpsc;
 #[derive(Clone)]
 pub enum DataSink {
     Quic(quinn::Connection),
+    /// WebTransport session (browsers): HTTP/3 datagrams over QUIC.
+    WebTransport(wtransport::Connection),
     /// Binary WebSocket frames (tunnel mode).
     Ws(mpsc::Sender<Bytes>),
 }
@@ -58,6 +60,7 @@ impl DataSession {
             self.metrics.bytes_out.inc_by(d.len() as u64);
             let ok = match &self.sink {
                 DataSink::Quic(c) => c.send_datagram(d).is_ok(),
+                DataSink::WebTransport(c) => c.send_datagram(d).is_ok(),
                 DataSink::Ws(tx) => tx.try_send(d).is_ok(),
             };
             if !ok {
@@ -144,8 +147,10 @@ impl RoomHost {
         for s in sessions {
             if !s.tick() {
                 dead += 1;
-                if let DataSink::Quic(c) = &s.sink {
-                    c.close(4u32.into(), b"link dead");
+                match &s.sink {
+                    DataSink::Quic(c) => c.close(4u32.into(), b"link dead"),
+                    DataSink::WebTransport(c) => c.close(4u32.into(), b"link dead"),
+                    DataSink::Ws(_) => {}
                 }
             }
         }

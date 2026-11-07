@@ -74,6 +74,19 @@ async fn main() -> anyhow::Result<()> {
     );
     let endpoint = quic::server_endpoint(cfg.transport.quic_addr, &identity, transport)?;
     let quic_port = endpoint.local_addr()?.port();
+    let wt_endpoint = match cfg.transport.webtransport_addr {
+        Some(addr) => Some(net_transport::webtransport::server_endpoint(
+            addr,
+            &identity,
+            std::time::Duration::from_millis(cfg.transport.idle_timeout_ms),
+            std::time::Duration::from_millis(cfg.transport.keep_alive_ms),
+        )?),
+        None => None,
+    };
+    let webtransport_port = wt_endpoint
+        .as_ref()
+        .and_then(|e| e.local_addr().ok())
+        .map(|a| a.port());
     info!(addr = %cfg.transport.quic_addr, fingerprint = %identity.fingerprint_sha256, "quic data plane listening");
 
     let registry = NodeRegistry::new(pool.clone(), cfg.server.heartbeat_secs);
@@ -90,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
         region: region.clone(),
         cert_sha256: identity.fingerprint_sha256.clone(),
         quic_port,
+        webtransport_port,
         metrics: Arc::new(net_api::metrics::Metrics::new()),
         webhooks: net_api::webhooks::Dispatcher::start(pool.clone()),
         matchmaker: Default::default(),
@@ -107,6 +121,10 @@ async fn main() -> anyhow::Result<()> {
     registry.spawn_refresh(Duration::from_secs(cfg.server.heartbeat_secs));
 
     tokio::spawn(net_api::data::run_quic(st.clone(), endpoint));
+    if let Some(wt) = wt_endpoint {
+        info!(addr = ?cfg.transport.webtransport_addr, "webtransport data plane listening");
+        tokio::spawn(net_api::data::run_webtransport(st.clone(), wt));
+    }
     tokio::spawn(net_api::ws::reaper(st.clone()));
     tokio::spawn(net_api::ws::flusher(st.clone()));
     tokio::spawn({

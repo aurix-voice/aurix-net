@@ -61,7 +61,7 @@ Server → client: `hello{session, version, region}`, `authed{player_id, name}`,
 `lobby_rooms{rooms}`, `lobby_update{room, removed}`, `pong{ts, server_ms}`,
 `error{code, message}`, `desync{tick, actor}`.
 
-`joined.data` = `{host, port, cert_sha256, ticket(base64), ws_tunnel}`: connect QUIC
+`joined.data` = `{host, port, cert_sha256, ticket(base64), ws_tunnel, webtransport_url?}`: connect QUIC
 (ALPN `aurix-net/1`, pin `cert_sha256`), send the ticket as the first datagram, wait for the
 empty reliable frame. Where UDP is blocked send the ticket as the first binary WebSocket
 frame and use binary frames as datagrams.

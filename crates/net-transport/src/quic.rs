@@ -52,11 +52,25 @@ pub fn server_identity(
             } else {
                 hosts.to_vec()
             };
-            let cert = rcgen::generate_simple_self_signed(names)
+            // Browsers only accept `serverCertificateHashes` (WebTransport) for ECDSA certs
+            // valid <= 14 days, so the dev certificate is short-lived and regenerated per start.
+            let mut params = rcgen::CertificateParams::new(names)
                 .map_err(|e| NetError::Config(format!("self-signed: {e}")))?;
-            let der = CertificateDer::from(cert.cert);
+            let now = chrono::Utc::now();
+            let ymd = |d: chrono::DateTime<chrono::Utc>| {
+                use chrono::Datelike;
+                rcgen::date_time_ymd(d.year(), d.month() as u8, d.day() as u8)
+            };
+            params.not_before = ymd(now - chrono::Duration::days(1));
+            params.not_after = ymd(now + chrono::Duration::days(12));
+            let key_pair = rcgen::KeyPair::generate()
+                .map_err(|e| NetError::Config(format!("self-signed key: {e}")))?;
+            let cert = params
+                .self_signed(&key_pair)
+                .map_err(|e| NetError::Config(format!("self-signed: {e}")))?;
+            let der = CertificateDer::from(cert);
             let fp = fingerprint(&der);
-            let key = PrivateKeyDer::try_from(cert.key_pair.serialize_der())
+            let key = PrivateKeyDer::try_from(key_pair.serialize_der())
                 .map_err(|e| NetError::Config(format!("self-signed key: {e}")))?;
             Ok(ServerIdentity {
                 cert_chain: vec![der],

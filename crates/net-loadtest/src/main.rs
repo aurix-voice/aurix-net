@@ -40,6 +40,9 @@ struct Cli {
     /// Use the WebSocket tunnel instead of QUIC for the data path.
     #[arg(long)]
     tunnel: bool,
+    /// Use the WebTransport endpoint (what browsers use) instead of raw QUIC.
+    #[arg(long)]
+    webtransport: bool,
     #[arg(long, default_value_t = 50)]
     join_concurrency: usize,
     /// Room mode: relay (events) or sync (inputs in, state deltas out).
@@ -211,7 +214,13 @@ async fn main() -> anyhow::Result<()> {
         cli.players,
         cli.rate,
         cli.payload,
-        if cli.tunnel { "ws-tunnel" } else { "quic" }
+        if cli.tunnel {
+            "ws-tunnel"
+        } else if cli.webtransport {
+            "webtransport"
+        } else {
+            "quic"
+        }
     );
     println!(
         "joined={} failed={}",
@@ -343,12 +352,22 @@ async fn player(
 
     enum Sink {
         Quic(quinn::Connection),
+        Wt(wtransport::Connection),
         Ws(tokio::sync::mpsc::Sender<Message>),
     }
     let (ws_tx, mut ws_rx) = tokio::sync::mpsc::channel::<Message>(1024);
     let sink: Arc<Sink> = if cli.tunnel {
         tx.send(Message::Binary(ticket)).await?;
         Arc::new(Sink::Ws(ws_tx.clone()))
+    } else if cli.webtransport {
+        let url = data
+            .webtransport_url
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("server has no webtransport endpoint"))?;
+        let ep = net_transport::webtransport::client_endpoint(&data.cert_sha256)?;
+        let conn = ep.connect(url).await?;
+        conn.send_datagram(ticket)?;
+        Arc::new(Sink::Wt(conn))
     } else {
         let transport = quic::transport_config(Duration::from_secs(15), Duration::from_secs(5));
         let ep = quic::client_endpoint("0.0.0.0:0".parse()?, &data.cert_sha256, transport)?;
@@ -374,6 +393,9 @@ async fn player(
                 stats.bytes_out.fetch_add(d.len() as u64, Ordering::Relaxed);
                 match &*sink {
                     Sink::Quic(c) => {
+                        let _ = c.send_datagram(d);
+                    }
+                    Sink::Wt(c) => {
                         let _ = c.send_datagram(d);
                     }
                     Sink::Ws(t) => {
@@ -514,6 +536,15 @@ async fn player(
                 }
             })
         }
+        Sink::Wt(conn) => {
+            let conn = conn.clone();
+            let on = on_datagram.clone();
+            tokio::spawn(async move {
+                while let Ok(d) = conn.receive_datagram().await {
+                    on(d.payload());
+                }
+            })
+        }
         Sink::Ws(_) => {
             let on = on_datagram.clone();
             tokio::spawn(async move {
@@ -622,8 +653,10 @@ async fn player(
     ticker.abort();
     let _ = ws_tx.send(Message::Close(None)).await;
     writer.abort();
-    if let Sink::Quic(c) = &*sink {
-        c.close(0u32.into(), b"done");
+    match &*sink {
+        Sink::Quic(c) => c.close(0u32.into(), b"done"),
+        Sink::Wt(c) => c.close(0u32.into(), b"done"),
+        Sink::Ws(_) => {}
     }
     Ok(())
 }

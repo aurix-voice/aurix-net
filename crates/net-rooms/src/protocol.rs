@@ -146,6 +146,9 @@ pub struct DataEndpoint {
     /// base64 data ticket
     pub ticket: String,
     pub ws_tunnel: bool,
+    /// `https://host:port/` of the node's WebTransport endpoint (browsers), if enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webtransport_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -161,6 +164,7 @@ pub struct RoomSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "t", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum ServerMsg {
     Hello {
         session: String,

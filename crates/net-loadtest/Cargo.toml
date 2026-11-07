@@ -11,6 +11,7 @@ name = "aurix-net-loadtest"
 path = "src/main.rs"
 
 [dependencies]
+wtransport = { workspace = true }
 net-common = { path = "../net-common" }
 net-transport = { path = "../net-transport" }
 net-rooms = { path = "../net-rooms" }

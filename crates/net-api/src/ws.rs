@@ -655,6 +655,10 @@ impl Session {
                     cert_sha256: self.st.cert_sha256.clone(),
                     ticket: B64.encode(ticket),
                     ws_tunnel: self.st.cfg.transport.ws_tunnel,
+                    webtransport_url: self
+                        .st
+                        .webtransport_port
+                        .map(|p| format!("https://{}:{p}/", self.st.cfg.server.public_host)),
                 },
                 cached: hr.room.cached_for_join(),
                 schema_hash: hr.sync.as_ref().map(|s| s.schema_hash.clone()),
@@ -691,8 +695,10 @@ impl Session {
 
     async fn leave(&mut self, offline: bool) {
         if let Some(d) = self.data.take() {
-            if let DataSink::Quic(c) = &d.sink {
-                c.close(0u32.into(), b"left");
+            match &d.sink {
+                DataSink::Quic(c) => c.close(0u32.into(), b"left"),
+                DataSink::WebTransport(c) => c.close(0u32.into(), b"left"),
+                DataSink::Ws(_) => {}
             }
         }
         let Some(r) = self.room.take() else { return };

@@ -19,6 +19,7 @@ pub struct AppState {
     pub region: RegionId,
     pub cert_sha256: String,
     pub quic_port: u16,
+    pub webtransport_port: Option<u16>,
     pub metrics: Arc<Metrics>,
     pub webhooks: crate::webhooks::Dispatcher,
     pub matchmaker: crate::matchmaking::Matchmaker,

@@ -7,6 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+wtransport = { workspace = true }
 net-common = { path = "../net-common" }
 net-transport = { path = "../net-transport" }
 net-auth = { path = "../net-auth" }

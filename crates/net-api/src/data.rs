@@ -64,3 +64,60 @@ async fn handle(st: Shared, incoming: quinn::Incoming) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// WebTransport data plane: identical protocol to [`run_quic`] (ticket first, then datagrams
+/// through the session's link), reached by browsers via `joined.data.webtransport_url`.
+pub async fn run_webtransport(
+    st: Shared,
+    endpoint: wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>,
+) {
+    loop {
+        let incoming = endpoint.accept().await;
+        let st = st.clone();
+        tokio::spawn(async move {
+            if let Err(e) = handle_wt(st, incoming).await {
+                tracing::debug!(error = %e, "webtransport session ended");
+            }
+        });
+    }
+}
+
+async fn handle_wt(
+    st: Shared,
+    incoming: wtransport::endpoint::IncomingSession,
+) -> anyhow::Result<()> {
+    let request = incoming.await?;
+    let conn = request.accept().await?;
+    let first = tokio::time::timeout(Duration::from_secs(5), conn.receive_datagram()).await??;
+    let Some(t) = st.tickets.verify(&first.payload()) else {
+        conn.close(1u32.into(), b"bad ticket");
+        anyhow::bail!("bad ticket");
+    };
+    let Some(h) = st.host.get(t.room) else {
+        conn.close(2u32.into(), b"no room");
+        anyhow::bail!("no such room");
+    };
+    if !h.lock().sessions.contains_key(&t.actor) {
+        conn.close(3u32.into(), b"not joined");
+        anyhow::bail!("actor not joined");
+    }
+    let ds = DataSession::new(DataSink::WebTransport(conn.clone()), st.metrics.clone());
+    let ds = attach_data(&h, t.actor, ds);
+    spawn_ticker(&st, ds.clone());
+    loop {
+        let d = match conn.receive_datagram().await {
+            Ok(d) => d.payload(),
+            Err(_) => break,
+        };
+        for m in ds.receive(d) {
+            if m.payload.is_empty() {
+                continue;
+            }
+            let mut g = h.lock();
+            if let Err(e) = handle_data_frame(&mut g, t.actor, m.channel, m.payload, &st.metrics) {
+                tracing::debug!(error = %e, "bad data frame (webtransport)");
+            }
+        }
+    }
+    Ok(())
+}

@@ -10,6 +10,7 @@ pub mod link;
 pub mod packet;
 pub mod quic;
 pub mod ticket;
+pub mod webtransport;
 
 pub use link::{Link, LinkStats, Received};
 pub use packet::{Header, PROTOCOL_VERSION};
