@@ -11,6 +11,9 @@ use net_fpmath::{Fx, FxVec2};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod crowd;
+pub use crowd::{Agent, Crowd, CrowdConfig, FlowField};
+
 pub type PolyId = u32;
 const NONE: PolyId = u32::MAX;
 
@@ -127,6 +130,11 @@ impl NavMesh {
             acc = acc + self.verts[v as usize];
         }
         acc.scale(Fx::ONE / Fx::from_int(poly.verts.len() as i32))
+    }
+
+    /// Endpoints of edge `e` of polygon `p` (CCW order).
+    pub fn edge_pub(&self, p: PolyId, e: u32) -> (FxVec2, FxVec2) {
+        self.edge(p, e)
     }
 
     fn edge(&self, p: PolyId, e: u32) -> (FxVec2, FxVec2) {
