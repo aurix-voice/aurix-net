@@ -33,6 +33,13 @@ pub enum Shape {
     Box {
         half: FxVec3,
     },
+    /// Convex polyhedron in body space: vertices and faces (outward CCW vertex loops, <= 32
+    /// vertices, <= 32 faces), authored around the centre of mass. Mass uses the exact volume,
+    /// inertia the bounding box; face winding is normalised outward.
+    Convex {
+        verts: Vec<FxVec3>,
+        faces: Vec<Vec<u32>>,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -91,7 +98,7 @@ impl Body {
     fn radius(&self) -> Fx {
         match &self.shape {
             Shape::Sphere { radius } | Shape::Capsule { radius, .. } => *radius,
-            Shape::Box { .. } => Fx::ZERO,
+            Shape::Box { .. } | Shape::Convex { .. } => Fx::ZERO,
         }
     }
     /// Capsule segment endpoints (world).
@@ -128,6 +135,16 @@ impl Body {
                 );
                 (self.position - e, self.position + e)
             }
+            Shape::Convex { verts, .. } => {
+                let mut lo = splat(Fx::MAX);
+                let mut hi = splat(Fx::MIN);
+                for v in verts {
+                    let w = self.position + self.rotation.rotate(*v);
+                    lo = vmin(lo, w);
+                    hi = vmax(hi, w);
+                }
+                (lo, hi)
+            }
         }
     }
 }
@@ -163,6 +180,40 @@ fn mass_props(shape: &Shape, density: Fx) -> (Fx, FxVec3) {
             let ix = m_cyl * (Fx::from_int(3) * r2 + h * h) / Fx::from_int(12)
                 + m_sph * (Fx::from_ratio(2, 5) * r2 + *half_len * *half_len);
             (m, FxVec3::new(ix, iy, ix))
+        }
+        Shape::Convex { verts, faces } => {
+            let n = Fx::from_int(verts.len().max(1) as i32);
+            let c = verts
+                .iter()
+                .fold(FxVec3::ZERO, |a, v| a + *v)
+                .scale(Fx::ONE / n);
+            let mut vol6 = Fx::ZERO;
+            for f in faces {
+                for i in 1..f.len().saturating_sub(1) {
+                    let (a, b, d) = (
+                        verts[f[0] as usize] - c,
+                        verts[f[i] as usize] - c,
+                        verts[f[i + 1] as usize] - c,
+                    );
+                    vol6 += a.dot(b.cross(d)).abs();
+                }
+            }
+            let m = vol6 / Fx::from_int(6) * density;
+            let (lo, hi) = verts
+                .iter()
+                .fold((splat(Fx::MAX), splat(Fx::MIN)), |(lo, hi), v| {
+                    (vmin(lo, *v), vmax(hi, *v))
+                });
+            let half = (hi - lo).scale(Fx::HALF);
+            let k = m / Fx::from_int(3);
+            (
+                m,
+                FxVec3::new(
+                    k * (half.y * half.y + half.z * half.z),
+                    k * (half.x * half.x + half.z * half.z),
+                    k * (half.x * half.x + half.y * half.y),
+                ),
+            )
         }
         Shape::Box { half } => {
             let m = Fx::from_int(8) * half.x * half.y * half.z * density;
@@ -891,6 +942,26 @@ impl World {
                 .map(|(p, n, d)| (p, neg(n), d))
                 .collect(),
             (Shape::Box { half: ha }, Shape::Box { half: hb }) => box_box(a, *ha, b, *hb),
+            (Shape::Sphere { .. }, Shape::Convex { .. }) => {
+                sphere_hull(a.position, a.radius(), &hull_view(b))
+                    .into_iter()
+                    .collect()
+            }
+            (Shape::Convex { .. }, Shape::Sphere { .. }) => {
+                sphere_hull(b.position, b.radius(), &hull_view(a))
+                    .into_iter()
+                    .map(|(p, n, d)| (p, neg(n), d))
+                    .collect()
+            }
+            (Shape::Capsule { .. }, Shape::Convex { .. }) => capsule_hull(a, &hull_view(b)),
+            (Shape::Convex { .. }, Shape::Capsule { .. }) => capsule_hull(b, &hull_view(a))
+                .into_iter()
+                .map(|(p, n, d)| (p, neg(n), d))
+                .collect(),
+            (
+                Shape::Box { .. } | Shape::Convex { .. },
+                Shape::Box { .. } | Shape::Convex { .. },
+            ) => hull_hull(&hull_view(a), &hull_view(b)),
         };
         if points.is_empty() {
             return None;
@@ -913,6 +984,53 @@ impl World {
         })
     }
 
+    /// Sweep a sphere of `radius` along `from + dir * t`, t in 0..=1; first touching body with the
+    /// contact point on its surface and the surface normal. Deterministic sampled advance +
+    /// bisection, so it is exact to ~1e-5 of the sweep length.
+    pub fn sphere_cast(&self, from: FxVec3, dir: FxVec3, radius: Fx, mask: u32) -> Option<RayHit> {
+        let len = dir.length();
+        if len.0 == 0 {
+            return None;
+        }
+        // advance by about half a radius per sample, at most 256 samples
+        let steps = (((len / radius.max(Fx::from_ratio(1, 100))).0 >> 31) + 1).clamp(1, 256) as i32;
+        let mut best: Option<RayHit> = None;
+        for (id, b) in &self.bodies {
+            if b.layer & mask == 0 || sphere_vs(from, radius, b).is_some() {
+                continue;
+            }
+            let mut lo = Fx::ZERO;
+            let mut hi: Option<Fx> = None;
+            for i in 1..=steps {
+                let t = Fx::from_int(i) / Fx::from_int(steps);
+                if sphere_vs(from + dir.scale(t), radius, b).is_some() {
+                    hi = Some(t);
+                    break;
+                }
+                lo = t;
+            }
+            let Some(mut hi) = hi else { continue };
+            for _ in 0..16 {
+                let mid = (lo + hi) * Fx::HALF;
+                if sphere_vs(from + dir.scale(mid), radius, b).is_some() {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            if best.is_none_or(|h| lo < h.fraction) {
+                let (point, n, _) = sphere_vs(from + dir.scale(hi), radius, b).unwrap();
+                best = Some(RayHit {
+                    body: *id,
+                    point,
+                    normal: neg(n),
+                    fraction: lo,
+                });
+            }
+        }
+        best
+    }
+
     /// Closest hit along `from + dir * t`, t in 0..=1.
     pub fn raycast(&self, from: FxVec3, dir: FxVec3, mask: u32) -> Option<RayHit> {
         let mut best: Option<RayHit> = None;
@@ -927,6 +1045,7 @@ impl World {
                     ray_capsule(from, dir, p, q, *radius)
                 }
                 Shape::Box { half } => ray_box(from, dir, b, *half),
+                Shape::Convex { .. } => ray_hull(from, dir, &hull_view(b)),
             };
             if let Some((t, n)) = hit {
                 if best.is_none_or(|h| t < h.fraction) {
@@ -1478,6 +1597,331 @@ fn box_box(a: &Body, ha: FxVec3, b: &Body, hb: FxVec3) -> Vec<(FxVec3, FxVec3, F
     out
 }
 
+/// Contact of a probe sphere against any body: (point on body, normal sphere→body, depth).
+fn sphere_vs(c: FxVec3, r: Fx, b: &Body) -> Option<(FxVec3, FxVec3, Fx)> {
+    match &b.shape {
+        Shape::Sphere { .. } => sphere_sphere(c, r, b.position, b.radius()),
+        Shape::Capsule { .. } => {
+            let (p, q) = b.segment();
+            sphere_sphere(c, r, closest_on_segment(c, p, q), b.radius())
+        }
+        Shape::Box { half } => sphere_box(c, r, b, *half),
+        Shape::Convex { .. } => sphere_hull(c, r, &hull_view(b)),
+    }
+}
+
+/// World-space polyhedron: vertices, faces as (unit normal, vertex loop) and unique edge directions.
+struct Hull {
+    centre: FxVec3,
+    verts: Vec<FxVec3>,
+    faces: Vec<(FxVec3, Vec<u32>)>,
+    edges: Vec<FxVec3>,
+}
+
+fn hull_view(b: &Body) -> Hull {
+    let (lv, lf): (Vec<FxVec3>, Vec<Vec<u32>>) = match &b.shape {
+        Shape::Box { half } => {
+            let (x, y, z) = (half.x, half.y, half.z);
+            let v = |sx: Fx, sy: Fx, sz: Fx| FxVec3::new(sx * x, sy * y, sz * z);
+            let (p, m) = (Fx::ONE, -Fx::ONE);
+            (
+                vec![
+                    v(m, m, m),
+                    v(p, m, m),
+                    v(p, p, m),
+                    v(m, p, m),
+                    v(m, m, p),
+                    v(p, m, p),
+                    v(p, p, p),
+                    v(m, p, p),
+                ],
+                vec![
+                    vec![0, 3, 2, 1],
+                    vec![4, 5, 6, 7],
+                    vec![0, 1, 5, 4],
+                    vec![2, 3, 7, 6],
+                    vec![1, 2, 6, 5],
+                    vec![0, 4, 7, 3],
+                ],
+            )
+        }
+        Shape::Convex { verts, faces } => (verts.clone(), faces.clone()),
+        _ => (Vec::new(), Vec::new()),
+    };
+    let verts: Vec<FxVec3> = lv
+        .iter()
+        .map(|v| b.position + b.rotation.rotate(*v))
+        .collect();
+    let centre = if verts.is_empty() {
+        b.position
+    } else {
+        verts
+            .iter()
+            .fold(FxVec3::ZERO, |a, v| a + *v)
+            .scale(Fx::ONE / Fx::from_int(verts.len() as i32))
+    };
+    let mut faces = Vec::with_capacity(lf.len());
+    let mut edges: Vec<FxVec3> = Vec::new();
+    for f in &lf {
+        if f.len() < 3 {
+            continue;
+        }
+        let (a, c, d) = (
+            verts[f[0] as usize],
+            verts[f[1] as usize],
+            verts[f[2] as usize],
+        );
+        let mut n = (c - a).cross(d - a).normalized();
+        let mut face = f.clone();
+        if n.dot(a - centre) < Fx::ZERO {
+            n = neg(n);
+            face.reverse();
+        }
+        faces.push((n, face));
+        for i in 0..f.len() {
+            let e = (verts[f[(i + 1) % f.len()] as usize] - verts[f[i] as usize]).normalized();
+            if !edges
+                .iter()
+                .any(|x| x.cross(e).length_sq() < Fx::from_ratio(1, 100_000))
+            {
+                edges.push(e);
+            }
+        }
+    }
+    Hull {
+        centre,
+        verts,
+        faces,
+        edges,
+    }
+}
+
+fn hull_project(h: &Hull, axis: FxVec3) -> (Fx, Fx) {
+    h.verts.iter().fold((Fx::MAX, Fx::MIN), |(lo, hi), v| {
+        let d = v.dot(axis);
+        (lo.min(d), hi.max(d))
+    })
+}
+
+fn hull_support(h: &Hull, dir: FxVec3) -> FxVec3 {
+    *h.verts
+        .iter()
+        .max_by_key(|v| v.dot(dir))
+        .unwrap_or(&h.centre)
+}
+
+/// Convex vs convex via SAT over face normals and edge-direction crosses, reference-face clipping.
+fn hull_hull(a: &Hull, b: &Hull) -> Vec<(FxVec3, FxVec3, Fx)> {
+    if a.verts.is_empty() || b.verts.is_empty() {
+        return Vec::new();
+    }
+    let d = b.centre - a.centre;
+    let mut best: Option<(Fx, FxVec3, u8)> = None;
+    let mut test = |axis: FxVec3, kind: u8, bias: Fx| -> bool {
+        if axis.length_sq() < Fx::from_ratio(1, 1_000_000) {
+            return true;
+        }
+        let axis = axis.normalized();
+        let (alo, ahi) = hull_project(a, axis);
+        let (blo, bhi) = hull_project(b, axis);
+        let overlap = (ahi - blo).min(bhi - alo);
+        if overlap < Fx::ZERO {
+            return false;
+        }
+        let scored = overlap * bias;
+        if best.is_none_or(|(o, _, _)| scored < o) {
+            best = Some((
+                scored,
+                if d.dot(axis) < Fx::ZERO {
+                    neg(axis)
+                } else {
+                    axis
+                },
+                kind,
+            ));
+        }
+        true
+    };
+    for (n, _) in &a.faces {
+        if !test(*n, 0, Fx::ONE) {
+            return Vec::new();
+        }
+    }
+    for (n, _) in &b.faces {
+        if !test(*n, 1, Fx::ONE) {
+            return Vec::new();
+        }
+    }
+    for ea in &a.edges {
+        for eb in &b.edges {
+            if !test(ea.cross(*eb), 2, Fx::from_ratio(105, 100)) {
+                return Vec::new();
+            }
+        }
+    }
+    let (_, n, kind) = best.unwrap();
+    if kind == 2 {
+        let sa = hull_support(a, n);
+        let sb = hull_support(b, neg(n));
+        return vec![((sa + sb).scale(Fx::HALF), n, (sa - sb).dot(n).max(Fx::ZERO))];
+    }
+    let (rh, ih, ref_n) = if kind == 0 { (a, b, n) } else { (b, a, neg(n)) };
+    let (rn, rf) = rh
+        .faces
+        .iter()
+        .max_by_key(|(fnm, _)| fnm.dot(ref_n))
+        .unwrap();
+    let (_, inc) = ih.faces.iter().min_by_key(|(fnm, _)| fnm.dot(*rn)).unwrap();
+    let mut poly: Vec<FxVec3> = inc.iter().map(|i| ih.verts[*i as usize]).collect();
+    let ref_point = rh.verts[rf[0] as usize];
+    for i in 0..rf.len() {
+        let (p, q) = (
+            rh.verts[rf[i] as usize],
+            rh.verts[rf[(i + 1) % rf.len()] as usize],
+        );
+        let side = (q - p).cross(*rn).normalized();
+        poly = clip(&poly, side, side.dot(p));
+        if poly.is_empty() {
+            return Vec::new();
+        }
+    }
+    let mut out: Vec<(FxVec3, FxVec3, Fx)> = Vec::new();
+    for p in poly {
+        let depth = (ref_point - p).dot(*rn);
+        if depth > Fx::ZERO {
+            out.push((p + rn.scale(depth * Fx::HALF), n, depth));
+        }
+    }
+    out.sort_by_key(|x| std::cmp::Reverse(x.2));
+    out.truncate(4);
+    out
+}
+
+/// Closest point on the hull surface to `p`, outward normal, and whether `p` is inside.
+fn hull_closest(h: &Hull, p: FxVec3) -> (FxVec3, FxVec3, bool) {
+    let mut inside = true;
+    let mut best: Option<(Fx, FxVec3, FxVec3)> = None;
+    let mut min_face: Option<(Fx, FxVec3, FxVec3)> = None;
+    for (n, f) in &h.faces {
+        let a0 = h.verts[f[0] as usize];
+        let dist = (p - a0).dot(*n);
+        if dist > Fx::ZERO {
+            inside = false;
+        } else if min_face.is_none_or(|(d, _, _)| -dist < d) {
+            min_face = Some((-dist, *n, p - n.scale(dist)));
+        }
+        let proj = p - n.scale(dist);
+        let mut in_poly = true;
+        let mut edge_best: Option<(Fx, FxVec3)> = None;
+        for i in 0..f.len() {
+            let (a, b) = (
+                h.verts[f[i] as usize],
+                h.verts[f[(i + 1) % f.len()] as usize],
+            );
+            if (b - a).cross(proj - a).dot(*n) < Fx::ZERO {
+                in_poly = false;
+            }
+            let q = closest_on_segment(p, a, b);
+            let dq = (p - q).length_sq();
+            if edge_best.is_none_or(|(d, _)| dq < d) {
+                edge_best = Some((dq, q));
+            }
+        }
+        let (dq, q) = if in_poly {
+            ((p - proj).length_sq(), proj)
+        } else {
+            edge_best.unwrap()
+        };
+        if best.is_none_or(|(d, _, _)| dq < d) {
+            best = Some((dq, q, *n));
+        }
+    }
+    if inside {
+        let (_, n, q) = min_face.unwrap_or((Fx::ZERO, FxVec3::new(Fx::ZERO, Fx::ONE, Fx::ZERO), p));
+        return (q, n, true);
+    }
+    let (_, q, n) = best.unwrap();
+    let away = p - q;
+    let n = if away.length_sq().0 == 0 {
+        n
+    } else {
+        away.normalized()
+    };
+    (q, n, false)
+}
+
+/// Sphere vs hull: (point, normal sphere→hull, depth).
+fn sphere_hull(c: FxVec3, r: Fx, h: &Hull) -> Option<(FxVec3, FxVec3, Fx)> {
+    if h.verts.is_empty() {
+        return None;
+    }
+    let (q, n_out, inside) = hull_closest(h, c);
+    let dist = (c - q).length();
+    if !inside && dist > r {
+        return None;
+    }
+    let depth = if inside { r + dist } else { r - dist };
+    Some((q, neg(n_out), depth))
+}
+
+fn capsule_hull(cap: &Body, h: &Hull) -> Vec<(FxVec3, FxVec3, Fx)> {
+    let (p, q) = cap.segment();
+    let mid = closest_on_segment(h.centre, p, q);
+    let r = cap.radius();
+    let mut out: Vec<(FxVec3, FxVec3, Fx)> = Vec::new();
+    for c in [mid, p, q] {
+        if let Some(hit) = sphere_hull(c, r, h) {
+            if !out
+                .iter()
+                .any(|o| (o.0 - hit.0).length_sq() < Fx::from_ratio(1, 10_000))
+            {
+                out.push(hit);
+            }
+        }
+    }
+    if out.len() > 1 {
+        let n = out[0].1;
+        for o in &mut out {
+            o.1 = n;
+        }
+    }
+    out
+}
+
+/// Ray vs convex hull (Cyrus–Beck over face planes).
+fn ray_hull(from: FxVec3, dir: FxVec3, h: &Hull) -> Option<(Fx, FxVec3)> {
+    let mut tmin = Fx::ZERO;
+    let mut tmax = Fx::ONE;
+    let mut normal = FxVec3::ZERO;
+    for (n, f) in &h.faces {
+        let a0 = h.verts[f[0] as usize];
+        let denom = dir.dot(*n);
+        let dist = (from - a0).dot(*n);
+        if denom.abs() < Fx::from_ratio(1, 1_000_000) {
+            if dist > Fx::ZERO {
+                return None;
+            }
+            continue;
+        }
+        let t = -dist / denom;
+        if denom < Fx::ZERO {
+            if t > tmin {
+                tmin = t;
+                normal = *n;
+            }
+        } else {
+            tmax = tmax.min(t);
+        }
+        if tmin > tmax {
+            return None;
+        }
+    }
+    if normal == FxVec3::ZERO {
+        return None;
+    }
+    Some((tmin, normal))
+}
+
 fn support(b: &Body, axes: &[FxVec3; 3], half: FxVec3, dir: FxVec3) -> FxVec3 {
     let mut p = b.position;
     for (i, axis) in axes.iter().enumerate() {
@@ -2020,6 +2464,152 @@ mod tests {
             (p3.y - Fx::from_ratio(11, 10)).abs() < Fx::from_ratio(5, 100),
             "not standing on the step: {p3:?}"
         );
+    }
+
+    fn pyramid() -> Shape {
+        let q = Fx::from_ratio(1, 4);
+        Shape::Convex {
+            verts: vec![
+                FxVec3::new(-Fx::HALF, -q, -Fx::HALF),
+                FxVec3::new(Fx::HALF, -q, -Fx::HALF),
+                FxVec3::new(Fx::HALF, -q, Fx::HALF),
+                FxVec3::new(-Fx::HALF, -q, Fx::HALF),
+                FxVec3::new(Fx::ZERO, Fx::ONE - q, Fx::ZERO),
+            ],
+            faces: vec![
+                vec![0, 3, 2, 1],
+                vec![0, 1, 4],
+                vec![1, 2, 4],
+                vec![2, 3, 4],
+                vec![3, 0, 4],
+            ],
+        }
+    }
+
+    #[test]
+    fn convex_hulls_rest_collide_and_raycast() {
+        let w = run_twice(
+            || {
+                let mut w = World::new(WorldConfig::default());
+                w.add(floor());
+                w.add(Body::new(BodyKind::Dynamic, pyramid(), v(0, 2, 0)));
+                w.add(Body::new(
+                    BodyKind::Dynamic,
+                    Shape::Sphere {
+                        radius: Fx::from_ratio(1, 4),
+                    },
+                    FxVec3::new(Fx::from_ratio(3, 10), fx(4), Fx::ZERO),
+                ));
+                w.add(Body::new(BodyKind::Static, pyramid(), v(6, 0, 0)));
+                w.add(Body::new(
+                    BodyKind::Dynamic,
+                    Shape::Box {
+                        half: splat(Fx::from_ratio(1, 4)),
+                    },
+                    FxVec3::new(Fx::from_ratio(62, 10), fx(2), Fx::ZERO),
+                ));
+                w
+            },
+            360,
+        );
+        let pyr = w.body(BodyId(2)).unwrap();
+        assert!(
+            (pyr.position.y - Fx::from_ratio(1, 4)).abs() < Fx::from_ratio(6, 100),
+            "pyramid base should sit on the floor: {:?}",
+            pyr.position
+        );
+        assert!(
+            pyr.velocity.length() < Fx::from_ratio(5, 100),
+            "pyramid still moving {:?}",
+            pyr.velocity
+        );
+        let ball = w.body(BodyId(3)).unwrap();
+        assert!(
+            ball.position.x > Fx::from_ratio(6, 10) || ball.position.y < Fx::from_ratio(6, 10),
+            "sphere should have rolled off the pyramid: {:?}",
+            ball.position
+        );
+        assert!(
+            ball.position.y > Fx::from_ratio(2, 10),
+            "sphere fell through: {:?}",
+            ball.position
+        );
+        let bx = w.body(BodyId(5)).unwrap();
+        assert!(
+            bx.position.x > Fx::from_ratio(65, 10),
+            "box should slide off the wedge: {:?}",
+            bx.position
+        );
+        assert!(
+            bx.position.y > Fx::from_ratio(2, 10) && bx.position.y < Fx::from_ratio(4, 10),
+            "box rests on the floor: {:?}",
+            bx.position
+        );
+        let mut w2 = World::new(WorldConfig::default());
+        let p = w2.add(Body::new(BodyKind::Static, pyramid(), v(0, 0, 0)));
+        let hit = w2.raycast(v(0, 5, 0), v(0, -10, 0), u32::MAX).unwrap();
+        assert_eq!(hit.body, p);
+        assert!(
+            (hit.point.y - Fx::from_ratio(3, 4)).abs() < Fx::from_ratio(1, 100),
+            "{hit:?}"
+        );
+        let hit = w2
+            .raycast(
+                FxVec3::new(fx(5), -Fx::from_ratio(1, 5), Fx::ZERO),
+                v(-10, 0, 0),
+                u32::MAX,
+            )
+            .unwrap();
+        assert!(
+            hit.point.x > Fx::from_ratio(4, 10)
+                && hit.point.x < Fx::HALF
+                && hit.normal.x > Fx::HALF,
+            "{hit:?}"
+        );
+        assert!(w2.raycast(v(5, 2, 0), v(-10, 0, 0), u32::MAX).is_none());
+    }
+
+    #[test]
+    fn sphere_cast_finds_the_first_body() {
+        let mut w = World::new(WorldConfig::default());
+        w.add(floor());
+        let bx = w.add(Body::new(
+            BodyKind::Static,
+            Shape::Box {
+                half: splat(Fx::ONE),
+            },
+            v(5, 1, 0),
+        ));
+        w.add(Body::new(BodyKind::Static, pyramid(), v(9, 0, 0)));
+        let r = Fx::from_ratio(1, 2);
+        let hit = w.sphere_cast(v(0, 1, 0), v(10, 0, 0), r, u32::MAX).unwrap();
+        assert_eq!(hit.body, bx);
+        // centre stops at x = 4 - r = 3.5 → fraction 0.35; surface point on the box face x = 4
+        assert!(
+            (hit.fraction - Fx::from_ratio(35, 100)).abs() < Fx::from_ratio(1, 1000),
+            "{hit:?}"
+        );
+        assert!(
+            (hit.point.x - fx(4)).abs() < Fx::from_ratio(2, 100) && hit.normal.x < -Fx::HALF,
+            "{hit:?}"
+        );
+        // over the box, the pyramid is next
+        let hit = w.sphere_cast(v(0, 3, 0), v(10, 0, 0), r, u32::MAX);
+        assert!(hit.is_none(), "{hit:?}");
+        let hit = w
+            .sphere_cast(
+                FxVec3::new(fx(9), fx(5), Fx::ZERO),
+                v(0, -10, 0),
+                r,
+                u32::MAX,
+            )
+            .unwrap();
+        assert!(
+            (hit.point.y - Fx::from_ratio(3, 4)).abs() < Fx::from_ratio(3, 100)
+                && hit.normal.y > Fx::HALF,
+            "{hit:?}"
+        );
+        assert!(w.sphere_cast(v(0, 1, 0), v(10, 0, 0), r, 0).is_none());
     }
 
     #[test]
