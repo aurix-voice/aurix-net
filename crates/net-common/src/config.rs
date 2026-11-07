@@ -103,22 +103,28 @@ pub struct LimitsConfig {
     /// Write calls (grants, rooms, tickets, keys, webhooks, modules) per second per API key.
     #[serde(default = "d_key_writes")]
     pub writes_per_sec_per_key: u32,
+    /// Grant minting is every player login of the tenant's backend: its own, much higher budget.
+    #[serde(default = "d_key_grants")]
+    pub grants_per_sec_per_key: u32,
 }
 
 fn d_sessions_per_ip() -> u32 {
-    64
+    512
 }
 fn d_http_rps() -> u32 {
-    50
+    200
 }
 fn d_ws_connects() -> u32 {
-    60
+    600
 }
 fn d_auth_failures() -> u32 {
     20
 }
 fn d_key_writes() -> u32 {
     20
+}
+fn d_key_grants() -> u32 {
+    500
 }
 fn d_log_format() -> String {
     "text".into()
@@ -165,11 +171,12 @@ max_event_bytes = 65536
 max_props_bytes = 16384
 max_player_props_bytes = 4096
 max_cached_events_per_room = 1000
-max_sessions_per_ip = 64
-http_rps_per_ip = 50
-ws_connects_per_min_per_ip = 60
+max_sessions_per_ip = 512
+http_rps_per_ip = 200
+ws_connects_per_min_per_ip = 600
 auth_failures_per_min_per_ip = 20
 writes_per_sec_per_key = 20
+grants_per_sec_per_key = 500
 "#;
 
 impl NetConfig {

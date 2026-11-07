@@ -122,6 +122,15 @@ fn key_write(st: &Shared, key: &ApiKeyRow) -> Result<()> {
     }
 }
 
+/// Per-key grant budget (`limits.grants_per_sec_per_key`): one grant per player login.
+fn key_grant(st: &Shared, key: &ApiKeyRow) -> Result<()> {
+    if st.guards.key_grants.allow(key.id) {
+        Ok(())
+    } else {
+        Err(NetError::RateLimited)
+    }
+}
+
 async fn healthz(State(st): State<Shared>) -> Response {
     let draining = st.is_draining();
     let status = if draining {
@@ -231,7 +240,7 @@ async fn create_grant(
     Json(req): Json<GrantReq>,
 ) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Rooms).await?;
-    key_write(&st, &key)?;
+    key_grant(&st, &key)?;
     let scopes: Vec<&str> = req
         .scopes
         .as_ref()

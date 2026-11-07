@@ -60,6 +60,7 @@ pub struct Guards {
     pub ws_connects: Buckets<IpAddr>,
     pub auth_fail: Buckets<IpAddr>,
     pub key_writes: Buckets<uuid::Uuid>,
+    pub key_grants: Buckets<uuid::Uuid>,
     sessions: DashMap<IpAddr, u32>,
     max_sessions_per_ip: u32,
     pub trusted_proxies: Vec<IpNet>,
@@ -80,6 +81,10 @@ impl Guards {
             key_writes: Buckets::new(
                 l.writes_per_sec_per_key as f64,
                 2.0 * l.writes_per_sec_per_key as f64,
+            ),
+            key_grants: Buckets::new(
+                l.grants_per_sec_per_key as f64,
+                2.0 * l.grants_per_sec_per_key as f64,
             ),
             sessions: DashMap::new(),
             max_sessions_per_ip: l.max_sessions_per_ip.max(1),
@@ -175,6 +180,7 @@ mod tests {
             ws_connects_per_min_per_ip: 1,
             auth_failures_per_min_per_ip: 1,
             writes_per_sec_per_key: 1,
+            grants_per_sec_per_key: 1,
         };
         let g = Guards::new(&l, &["10.0.0.0/8".into()]);
         let mut h = HeaderMap::new();

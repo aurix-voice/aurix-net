@@ -43,3 +43,13 @@ QUIC data, WebTransport data). We assume:
   limits above handle application-level floods.
 - Grants are bearer tokens: anyone holding a grant is that player until it expires. Issue
   them with short TTLs from your backend only.
+
+### Per-IP limits and shared addresses
+
+Per-IP budgets are DoS backstops, not fairness controls: whole campuses, mobile carriers (CGNAT) and
+LAN parties sit behind one address, so the defaults are deliberately loose (512 sessions, 200 HTTP
+requests/s, 600 WebSocket connects/min, 20 failed auths/min per IP) and verified with a 128-player
+join burst from a single host. Project quotas (`max_rooms`, `max_players_per_room`, per-room/per-player event rates, event bytes)
+and per-player input budgets carry the per-tenant fairness; grant minting has its own per-key budget
+(`grants_per_sec_per_key`, 500/s) because it is every player login of the tenant's backend; tune `[limits]` down only behind a proxy that passes
+`X-Forwarded-For` from `server.trusted_proxies`.
