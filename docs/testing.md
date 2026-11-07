@@ -112,3 +112,5 @@ node collects two desync dumps per batch (stored in Redis for 24 h).
 
 Host RSS climbs with the first batches (room churn, dump storage) and stays flat afterwards; no
 overruns; desync dumps for every batch were listed and downloadable through `/v1/rooms/:id/desyncs`.
+
+- `NET_HTTP=… NET_API_KEY=… node --test sdk/web/test/referee-live.test.mjs` — lockstep referee: a lying client is flagged by the node's own hash, the node state is stored as desync dump actor 0, room detail reports `referee: true` (upload `crates/net-game/examples/arena.wat` as module `arena` with an admin key first).
