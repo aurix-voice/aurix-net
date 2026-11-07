@@ -20,7 +20,7 @@ pub struct ProjectLimits {
     pub allowed_regions: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct EffectiveLimits {
     pub max_rooms: u32,
     pub max_players_per_room: u16,

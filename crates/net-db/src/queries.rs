@@ -615,3 +615,15 @@ pub async fn purge_usage(pool: &DbPool, days: u32) -> Result<u64> {
         .map_err(db_err)?;
     Ok(r.rows_affected())
 }
+
+/// Newest audit rows first; `project` = None lists every project (operator view).
+pub async fn list_audit(pool: &DbPool, project: Option<Uuid>, limit: i64) -> Result<Vec<AuditRow>> {
+    sqlx::query_as::<_, AuditRow>(
+        "SELECT id, project_id, actor, action, target, details, created_at FROM audit WHERE ($1::uuid IS NULL OR project_id = $1) ORDER BY id DESC LIMIT $2",
+    )
+    .bind(project)
+    .bind(limit.clamp(1, 1000))
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}

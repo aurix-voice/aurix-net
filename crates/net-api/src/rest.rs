@@ -44,6 +44,8 @@ pub fn router(st: Shared) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
+        .route("/v1/me", get(me))
+        .route("/v1/audit", get(list_audit))
         .route("/v1/regions", get(regions))
         .route("/v1/nodes", get(nodes))
         .route("/v1/grants", post(create_grant))
@@ -71,6 +73,11 @@ pub fn router(st: Shared) -> Router {
         .route("/v1/operator/projects/:id/keys", post(op_create_key))
         .route("/v1/operator/projects/:id/limits", post(op_set_limits))
         .route("/v1/operator/nodes", get(op_nodes))
+        .route("/v1/operator/rooms", get(op_rooms))
+        .route("/v1/operator/audit", get(op_audit))
+        .route("/v1/operator/projects/:id", get(op_project))
+        .route("/v1/operator/projects/:id/usage", get(op_usage))
+        .route("/v1/operator/projects/:id/rooms", get(op_project_rooms))
         .with_state(st)
 }
 
@@ -564,10 +571,9 @@ async fn create_key(
 async fn list_keys(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Admin).await?;
     let rows = queries::list_api_keys(&st.pool, key.project_id).await?;
-    Ok(Json(json!({"keys": rows.into_iter().map(|r| json!({
-        "id": r.id, "prefix": r.prefix, "name": r.name, "scopes": r.scopes,
-        "created_at": r.created_at, "last_used_at": r.last_used_at, "revoked_at": r.revoked_at
-    })).collect::<Vec<_>>()})))
+    Ok(Json(
+        json!({"keys": rows.iter().map(key_json).collect::<Vec<_>>()}),
+    ))
 }
 
 async fn revoke_key(
@@ -822,4 +828,151 @@ async fn delete_module(
     } else {
         Err(NetError::NotFound(format!("module {name}")).into())
     }
+}
+
+fn key_json(r: &ApiKeyRow) -> Value {
+    json!({
+        "id": r.id, "prefix": r.prefix, "name": r.name, "scopes": r.scopes,
+        "created_at": r.created_at, "last_used_at": r.last_used_at, "revoked_at": r.revoked_at
+    })
+}
+
+/// Who the bearer is: the operator, or an API key with its project. The console signs in with it.
+async fn me(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
+    if operator(&st, &h).is_ok() {
+        return Ok(Json(
+            json!({"kind": "operator", "region": st.region, "node_id": st.node_id}),
+        ));
+    }
+    let k = bearer(&h).ok_or_else(|| NetError::Unauthorized("missing bearer token".into()))?;
+    if !looks_like_key(k) {
+        return Err(NetError::Unauthorized("malformed api key".into()).into());
+    }
+    let row = queries::find_api_key(&st.pool, &hash_key(k))
+        .await?
+        .ok_or_else(|| NetError::Unauthorized("unknown api key".into()))?;
+    let p = queries::get_project(&st.pool, row.project_id).await?;
+    Ok(Json(json!({
+        "kind": "project",
+        "project": {"id": p.id, "name": p.name, "plan": p.plan, "limits": p.limits, "created_at": p.created_at},
+        "key": key_json(&row),
+        "region": st.region,
+    })))
+}
+
+#[derive(Deserialize)]
+struct AuditQuery {
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    project: Option<Uuid>,
+}
+
+async fn list_audit(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Query(q): Query<AuditQuery>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Read).await?;
+    let rows = queries::list_audit(&st.pool, Some(key.project_id), q.limit.unwrap_or(100)).await?;
+    Ok(Json(json!({"audit": rows})))
+}
+
+async fn op_audit(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Query(q): Query<AuditQuery>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    let rows = queries::list_audit(&st.pool, q.project, q.limit.unwrap_or(100)).await?;
+    Ok(Json(json!({"audit": rows})))
+}
+
+/// Project detail for the operator: row, keys (hashes never leave the DB), webhooks, modules.
+async fn op_project(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    let p = queries::get_project(&st.pool, id).await?;
+    let keys: Vec<Value> = queries::list_api_keys(&st.pool, id)
+        .await?
+        .iter()
+        .map(key_json)
+        .collect();
+    let webhooks: Vec<Value> = queries::list_webhooks(&st.pool, id)
+        .await?
+        .into_iter()
+        .map(|r| json!({"id": r.id, "url": r.url, "events": r.events, "enabled": r.enabled, "created_at": r.created_at}))
+        .collect();
+    let modules: Vec<Value> = queries::list_game_modules(&st.pool, id)
+        .await?
+        .into_iter()
+        .map(
+            |r| json!({"name": r.name, "hash": r.hash, "size": r.size, "updated_at": r.updated_at}),
+        )
+        .collect();
+    let rooms = st
+        .redis
+        .list_rooms(ProjectId::from_uuid(id))
+        .await
+        .unwrap_or_default();
+    Ok(Json(json!({
+        "project": p,
+        "effective_limits": net_control::ProjectLimits::from_json(&p.limits).effective(&st.cfg.limits),
+        "keys": keys,
+        "webhooks": webhooks,
+        "modules": modules,
+        "rooms": rooms,
+    })))
+}
+
+async fn op_usage(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(q): Query<UsageQuery>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    let to = q.to.unwrap_or_else(Utc::now);
+    let from = q.from.unwrap_or(to - chrono::Duration::days(30));
+    let rows = queries::usage_between(&st.pool, id, from, to).await?;
+    Ok(Json(json!({"from": from, "to": to, "usage": rows})))
+}
+
+async fn op_project_rooms(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    let rooms = st
+        .redis
+        .list_rooms(ProjectId::from_uuid(id))
+        .await
+        .unwrap_or_default();
+    Ok(Json(json!({"rooms": rooms})))
+}
+
+/// Every live room in the region, across projects (operator view).
+async fn op_rooms(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    let mut out = Vec::new();
+    for p in queries::list_projects(&st.pool).await? {
+        for r in st
+            .redis
+            .list_rooms(ProjectId::from_uuid(p.id))
+            .await
+            .unwrap_or_default()
+        {
+            let mut v = serde_json::to_value(&r).unwrap_or_default();
+            if let Some(o) = v.as_object_mut() {
+                o.insert("project_id".into(), json!(p.id));
+                o.insert("project_name".into(), json!(p.name));
+            }
+            out.push(v);
+        }
+    }
+    Ok(Json(json!({"rooms": out})))
 }

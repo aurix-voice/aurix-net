@@ -92,3 +92,14 @@ pub struct GameModuleRow {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct AuditRow {
+    pub id: i64,
+    pub project_id: Option<Uuid>,
+    pub actor: String,
+    pub action: String,
+    pub target: String,
+    pub details: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
