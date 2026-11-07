@@ -10,6 +10,7 @@ members = [
     "crates/net-fpmath",
     "crates/net-rollback",
     "crates/net-client",
+    "crates/net-ffi",
     "crates/net-auth",
     "crates/net-db",
     "crates/net-control",

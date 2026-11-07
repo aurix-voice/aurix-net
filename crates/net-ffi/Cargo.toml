@@ -1,0 +1,19 @@
+[package]
+name = "net-ffi"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "aurix_net"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+net-common = { path = "../net-common" }
+net-client = { path = "../net-client" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+parking_lot = { workspace = true }

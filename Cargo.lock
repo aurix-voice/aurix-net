@@ -1512,6 +1512,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "net-ffi"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "net-client",
+ "net-common",
+ "parking_lot",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "net-fpmath"
 version = "0.1.0"
 dependencies = [
