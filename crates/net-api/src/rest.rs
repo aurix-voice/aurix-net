@@ -113,6 +113,20 @@ fn operator(st: &Shared, h: &HeaderMap) -> Result<()> {
     }
 }
 
+/// Audit row for an admin/operator mutation; a failed insert is logged, never fails the request.
+async fn audit_log(
+    st: &Shared,
+    project: Option<Uuid>,
+    actor: &str,
+    action: &str,
+    target: &str,
+    details: Value,
+) {
+    if let Err(e) = queries::audit(&st.pool, project, actor, action, target, details).await {
+        tracing::warn!(error = %e, action, "audit insert failed");
+    }
+}
+
 /// Per-key write budget (`limits.writes_per_sec_per_key`).
 fn key_write(st: &Shared, key: &ApiKeyRow) -> Result<()> {
     if st.guards.key_writes.allow(key.id) {
@@ -534,9 +548,17 @@ async fn create_key(
 ) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Admin).await?;
     key_write(&st, &key)?;
-    Ok(Json(
-        issue_key(&st, key.project_id, &req.name, &req.scopes).await?,
-    ))
+    let out = issue_key(&st, key.project_id, &req.name, &req.scopes).await?;
+    audit_log(
+        &st,
+        Some(key.project_id),
+        &format!("key:{}", key.id),
+        "key.create",
+        out["id"].as_str().unwrap_or_default(),
+        json!({"name": req.name, "scopes": req.scopes}),
+    )
+    .await;
+    Ok(Json(out))
 }
 
 async fn list_keys(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
@@ -555,6 +577,15 @@ async fn revoke_key(
 ) -> ApiResult<StatusCode> {
     let key = api_key(&st, &h, Scope::Admin).await?;
     if queries::revoke_api_key(&st.pool, key.project_id, id).await? {
+        audit_log(
+            &st,
+            Some(key.project_id),
+            &format!("key:{}", key.id),
+            "key.revoke",
+            &id.to_string(),
+            json!({}),
+        )
+        .await;
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(NetError::NotFound("key".into()).into())
@@ -579,6 +610,15 @@ async fn create_webhook(
     let secret = ApiKeyMaterial::generate().plaintext;
     let row =
         queries::insert_webhook(&st.pool, key.project_id, &req.url, &secret, &req.events).await?;
+    audit_log(
+        &st,
+        Some(key.project_id),
+        &format!("key:{}", key.id),
+        "webhook.create",
+        &row.id.to_string(),
+        json!({"url": row.url, "events": row.events}),
+    )
+    .await;
     Ok(Json(
         json!({"id": row.id, "url": row.url, "events": row.events, "secret": row.secret}),
     ))
@@ -599,6 +639,15 @@ async fn delete_webhook(
 ) -> ApiResult<StatusCode> {
     let key = api_key(&st, &h, Scope::Admin).await?;
     if queries::delete_webhook(&st.pool, key.project_id, id).await? {
+        audit_log(
+            &st,
+            Some(key.project_id),
+            &format!("key:{}", key.id),
+            "webhook.delete",
+            &id.to_string(),
+            json!({}),
+        )
+        .await;
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(NetError::NotFound("webhook".into()).into())
@@ -656,7 +705,17 @@ async fn op_create_key(
 ) -> ApiResult<Json<Value>> {
     operator(&st, &h)?;
     queries::get_project(&st.pool, id).await?;
-    Ok(Json(issue_key(&st, id, &req.name, &req.scopes).await?))
+    let out = issue_key(&st, id, &req.name, &req.scopes).await?;
+    audit_log(
+        &st,
+        Some(id),
+        "operator",
+        "key.create",
+        out["id"].as_str().unwrap_or_default(),
+        json!({"name": req.name, "scopes": req.scopes}),
+    )
+    .await;
+    Ok(Json(out))
 }
 
 async fn op_set_limits(
@@ -668,6 +727,15 @@ async fn op_set_limits(
     operator(&st, &h)?;
     let _ = net_control::ProjectLimits::from_json(&limits);
     queries::set_project_limits(&st.pool, id, &limits).await?;
+    audit_log(
+        &st,
+        Some(id),
+        "operator",
+        "project.limits",
+        &id.to_string(),
+        limits,
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -714,6 +782,15 @@ async fn put_module(
         .map_err(|e| NetError::Internal(e.to_string()))?
         .map_err(|e| NetError::Invalid(format!("module rejected: {e}")))?;
     let row = queries::upsert_game_module(&st.pool, key.project_id, &name, &hash, &body).await?;
+    audit_log(
+        &st,
+        Some(key.project_id),
+        &format!("key:{}", key.id),
+        "module.put",
+        &name,
+        json!({"hash": row.hash, "size": row.size}),
+    )
+    .await;
     Ok(Json(
         json!({"name": row.name, "hash": row.hash, "size": row.size, "updated_at": row.updated_at}),
     ))
@@ -732,6 +809,15 @@ async fn delete_module(
 ) -> ApiResult<StatusCode> {
     let key = api_key(&st, &h, Scope::Admin).await?;
     if queries::delete_game_module(&st.pool, key.project_id, &name).await? {
+        audit_log(
+            &st,
+            Some(key.project_id),
+            &format!("key:{}", key.id),
+            "module.delete",
+            &name,
+            json!({}),
+        )
+        .await;
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(NetError::NotFound(format!("module {name}")).into())
