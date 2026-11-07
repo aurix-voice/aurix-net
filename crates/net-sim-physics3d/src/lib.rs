@@ -986,6 +986,165 @@ impl World {
     }
 }
 
+/// Kinematic capsule character controller: moves a kinematic capsule body by a displacement,
+/// pushing out of static/kinematic geometry along contact normals, stepping over low ledges,
+/// snapping to the ground and reporting ground contact. Deterministic (fixed-point, body order).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct CharacterController {
+    pub body: BodyId,
+    pub step_height: Fx,
+    /// cos(max slope): a contact normal with `n.y >= min_ground_normal_y` counts as ground.
+    pub min_ground_normal_y: Fx,
+    pub snap_distance: Fx,
+    pub grounded: bool,
+    pub ground_normal: FxVec3,
+    pub ground_body: Option<BodyId>,
+    pub velocity: FxVec3,
+}
+
+impl CharacterController {
+    pub fn new(body: BodyId) -> CharacterController {
+        CharacterController {
+            body,
+            step_height: Fx::from_ratio(1, 2),
+            min_ground_normal_y: Fx::from_ratio(7, 10),
+            snap_distance: Fx::from_ratio(1, 4),
+            grounded: false,
+            ground_normal: FxVec3::new(Fx::ZERO, Fx::ONE, Fx::ZERO),
+            ground_body: None,
+            velocity: FxVec3::ZERO,
+        }
+    }
+
+    /// Move by `delta` this tick (horizontal part slides and steps up, vertical part lands);
+    /// returns the displacement actually made. Call once per tick before `World::step`.
+    pub fn step(&mut self, world: &mut World, delta: FxVec3) -> FxVec3 {
+        let Some(start) = world.body(self.body).map(|b| b.position) else {
+            return FxVec3::ZERO;
+        };
+        let horizontal = FxVec3::new(delta.x, Fx::ZERO, delta.z);
+        let was_grounded = self.grounded;
+        // 1. horizontal move + push out
+        let (pos_flat, hit_wall) = self.slide(world, start, horizontal);
+        let mut pos = pos_flat;
+        // 2. step-up attempt when a wall stopped us while grounded
+        if hit_wall && was_grounded && self.step_height.0 > 0 {
+            let up = FxVec3::new(Fx::ZERO, self.step_height, Fx::ZERO);
+            // probe one capsule radius further so the drop lands on the ledge, not beside it
+            let radius = world
+                .body(self.body)
+                .map(|b| b.radius())
+                .unwrap_or(Fx::ZERO);
+            let probe = if horizontal.length_sq().0 == 0 {
+                horizontal
+            } else {
+                horizontal
+                    + horizontal
+                        .normalized()
+                        .scale(radius + Fx::from_ratio(1, 100))
+            };
+            let (lifted, _) = self.slide(world, start + up, probe);
+            let (down, _) = self.slide(world, lifted, neg(up));
+            let gained = (down - start).dot(horizontal);
+            let flat_gain = (pos_flat - start).dot(horizontal);
+            if gained > flat_gain + Fx::from_ratio(1, 1000) && down.y <= start.y + self.step_height
+            {
+                pos = down;
+            }
+        }
+        // 3. vertical move
+        self.grounded = false;
+        self.ground_body = None;
+        let (after_v, _) = self.slide(world, pos, FxVec3::new(Fx::ZERO, delta.y, Fx::ZERO));
+        pos = after_v;
+        // 4. ground snap when walking off a slope/stair
+        if !self.grounded && was_grounded && delta.y <= Fx::ZERO && self.snap_distance.0 > 0 {
+            let probe_from = pos;
+            let (snapped, _) = self.slide(
+                world,
+                pos,
+                FxVec3::new(Fx::ZERO, -self.snap_distance, Fx::ZERO),
+            );
+            if self.grounded {
+                pos = snapped;
+            } else {
+                pos = probe_from;
+            }
+        }
+        if let Some(b) = world.body_mut(self.body) {
+            b.position = pos;
+        }
+        let moved = pos - start;
+        self.velocity = if world.cfg.dt.0 == 0 {
+            FxVec3::ZERO
+        } else {
+            moved.scale(Fx::ONE / world.cfg.dt)
+        };
+        moved
+    }
+
+    /// Translate from `from` by `delta`, then push out of non-dynamic bodies (up to 4 passes).
+    /// Returns the resolved position and whether a steep (wall) contact was hit.
+    fn slide(&mut self, world: &mut World, from: FxVec3, delta: FxVec3) -> (FxVec3, bool) {
+        let mut pos = from + delta;
+        let mut hit_wall = false;
+        let others: Vec<BodyId> = world
+            .bodies
+            .iter()
+            .filter(|(id, b)| **id != self.body && b.kind != BodyKind::Dynamic && !b.sensor)
+            .map(|(id, _)| *id)
+            .collect();
+        for _ in 0..4 {
+            if let Some(b) = world.bodies.get_mut(&self.body) {
+                b.position = pos;
+            }
+            let (lo, hi) = world.bodies[&self.body].aabb();
+            let mut pushed = false;
+            for other in &others {
+                let (olo, ohi) = world.bodies[other].aabb();
+                if lo.x > ohi.x
+                    || olo.x > hi.x
+                    || lo.y > ohi.y
+                    || olo.y > hi.y
+                    || lo.z > ohi.z
+                    || olo.z > hi.z
+                {
+                    continue;
+                }
+                let Some(m) = world.collide(self.body, *other) else {
+                    continue;
+                };
+                let depth = m
+                    .points
+                    .iter()
+                    .map(|p| p.depth)
+                    .fold(Fx::ZERO, |a, b| a.max(b));
+                if depth.0 <= 0 {
+                    continue;
+                }
+                // manifold normal points from the controller to the other body
+                let into = neg(m.normal);
+                pos = pos + into.scale(depth);
+                pushed = true;
+                if into.y >= self.min_ground_normal_y {
+                    self.grounded = true;
+                    self.ground_normal = into;
+                    self.ground_body = Some(*other);
+                } else if into.y.abs() < self.min_ground_normal_y {
+                    hit_wall = true;
+                }
+                if let Some(b) = world.bodies.get_mut(&self.body) {
+                    b.position = pos;
+                }
+            }
+            if !pushed {
+                break;
+            }
+        }
+        (pos, hit_wall)
+    }
+}
+
 fn rel_vel(a: &Body, b: &Body, p: FxVec3) -> FxVec3 {
     let va = a.velocity + a.angular_velocity.cross(p - a.position);
     let vb = b.velocity + b.angular_velocity.cross(p - b.position);
@@ -1788,6 +1947,78 @@ mod tests {
         assert!(
             (wheel.position - v(20, 5, 0)).length() < Fx::from_ratio(5, 100),
             "wheel stayed on the axle"
+        );
+    }
+
+    #[test]
+    fn character_walks_steps_and_stops_at_walls() {
+        let build = || {
+            let mut w = World::new(WorldConfig::default());
+            w.add(floor());
+            // low step at x in [3, 5], 0.3 high; wall at x = 8, 2 high
+            w.add(Body::new(
+                BodyKind::Static,
+                Shape::Box {
+                    half: FxVec3::new(fx(1), Fx::from_ratio(15, 100), fx(5)),
+                },
+                FxVec3::new(fx(4), Fx::from_ratio(15, 100), Fx::ZERO),
+            ));
+            w.add(Body::new(
+                BodyKind::Static,
+                Shape::Box {
+                    half: FxVec3::new(Fx::from_ratio(1, 4), fx(1), fx(5)),
+                },
+                FxVec3::new(fx(8), fx(1), Fx::ZERO),
+            ));
+            let hero = w.add(Body::new(
+                BodyKind::Kinematic,
+                Shape::Capsule {
+                    half_len: Fx::HALF,
+                    radius: Fx::from_ratio(3, 10),
+                },
+                FxVec3::new(fx(0), Fx::from_ratio(8, 10), Fx::ZERO),
+            ));
+            (w, CharacterController::new(hero))
+        };
+        let (mut w, mut k) = build();
+        let (mut w2, mut k2) = build();
+        let dt = w.cfg.dt;
+        let mut max_x = Fx::ZERO;
+        for _ in 0..300 {
+            let delta = FxVec3::new(fx(3) * dt, fx(-10) * dt, Fx::ZERO);
+            k.step(&mut w, delta);
+            k2.step(&mut w2, delta);
+            w.step();
+            w2.step();
+            let p = w.body(k.body).unwrap().position;
+            max_x = max_x.max(p.x);
+            assert!(p.y > Fx::from_ratio(7, 10), "character sank: {p:?}");
+        }
+        assert_eq!(w.hash(), w2.hash());
+        let p = w.body(k.body).unwrap().position;
+        assert!(k.grounded, "should stand on the ground");
+        // climbed the 0.3 step (centre at 0.8 + 0.3 = 1.1 while on it) and stopped at the wall (x ≈ 8 - 0.25 - 0.3)
+        assert!(max_x > fx(7), "never reached the wall: max x {max_x}");
+        assert!(
+            p.x < Fx::from_ratio(76, 10) && p.x > fx(7),
+            "wall not respected: {p:?}"
+        );
+        assert!(
+            (p.y - Fx::from_ratio(8, 10)).abs() < Fx::from_ratio(5, 100),
+            "back on the floor past the step: {p:?}"
+        );
+        // on the step itself the character stands 0.3 higher
+        let (mut w3, mut k3) = build();
+        let dt3 = w3.cfg.dt;
+        for _ in 0..90 {
+            k3.step(&mut w3, FxVec3::new(fx(3) * dt3, fx(-10) * dt3, Fx::ZERO));
+            w3.step();
+        }
+        let p3 = w3.body(k3.body).unwrap().position;
+        assert!(p3.x > fx(3) && p3.x < fx(5), "mid-step position {p3:?}");
+        assert!(
+            (p3.y - Fx::from_ratio(11, 10)).abs() < Fx::from_ratio(5, 100),
+            "not standing on the step: {p3:?}"
         );
     }
 
