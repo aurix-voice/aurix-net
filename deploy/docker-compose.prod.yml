@@ -34,6 +34,17 @@ services:
       NET__REDIS__URL: redis://:${REDIS_PASSWORD}@redis:6379
     ports: ["8091:8090/tcp", "7001:7000/udp", "7444:7443/udp"]
     depends_on: [postgres, redis]
+  # Operator console: static files + same-origin reverse proxy of /v1/* and /healthz to a node.
+  # Put it behind the same TLS terminator as the nodes; it holds no secrets (tokens live in the
+  # operator's browser only).
+  console:
+    image: aurix-net-console:latest
+    build: ../dashboard
+    restart: unless-stopped
+    environment:
+      NET_API_URL: http://node-a:8090
+    ports: ["8080:8080/tcp"]
+    depends_on: [node-a]
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped

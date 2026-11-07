@@ -73,3 +73,21 @@ to plaintext).
 
 Redis over TLS: `redis.url = "rediss://:password@host:6390/"`; for a private CA set `redis.ca_cert` to the
 PEM path (`NET__REDIS__CA_CERT=/etc/aurix-net/redis-ca.pem`), otherwise WebPKI roots are used.
+
+## Console
+
+`dashboard/` builds to a Caddy image (`aurix-net-console`, non-root, ~120 MB) that serves the
+static console and reverse-proxies `/v1/*` and `/healthz` to one node (`NET_API_URL`, default
+`http://net:8090`). It stores nothing: operator tokens and project API keys live in the
+operator's browser (local storage) and are revalidated against `/v1/me` on every load.
+
+- Put the console behind the same TLS terminator as the nodes; never expose it on plain HTTP
+  outside a private network — the bearer token travels in every request.
+- `server.allowed_origins` on the nodes does not need the console origin: the proxy keeps
+  everything same-origin.
+- The console only needs the node's HTTP port; QUIC/WebTransport ports are for game clients.
+- Reference service: `console` in `deploy/docker-compose.prod.yml`. Local dev:
+  `cd dashboard && npm ci && NET_API_URL=http://127.0.0.1:8090 npm run dev`.
+- Cross-node room detail: a node that does not host the room asks the hosting node over
+  `GET /v1/internal/rooms/:id/players` with the fleet-wide `auth.admin_token`, so all nodes must
+  share the same admin token and reach each other's `http_url`.
