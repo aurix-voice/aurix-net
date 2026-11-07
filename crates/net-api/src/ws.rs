@@ -380,6 +380,11 @@ impl Session {
                         .map_err(room_err)?;
                     dispatch(&h, out, &self.st.metrics);
                     h.sessions.remove(&actor);
+                    self.st.webhooks.emit(
+                        h.project,
+                        "player.left",
+                        serde_json::json!({"room": h.room.id().to_string(), "actor": actor.0}),
+                    );
                     if let Some(sy) = h.sync.as_mut() {
                         sy.on_leave(actor);
                     }
@@ -588,6 +593,11 @@ impl Session {
             .st
             .host
             .insert(g.project, Room::new(cfg, Instant::now()));
+        self.st.webhooks.emit(
+            g.project,
+            "room.created",
+            serde_json::json!({"room": room_id.to_string(), "name": h.lock().room.cfg.name, "mode": format!("{mode:?}").to_lowercase(), "region": self.st.region.to_string()}),
+        );
         if let Some(sy) = sync {
             let period = sy.tick_period();
             h.lock().sync = Some(sy);
@@ -624,6 +634,11 @@ impl Session {
                     control: self.ctl.clone(),
                     data: None,
                 },
+            );
+            self.st.webhooks.emit(
+                hr.project,
+                "player.joined",
+                serde_json::json!({"room": hr.room.id().to_string(), "actor": actor.0}),
             );
             if let Some(sy) = hr.sync.as_mut() {
                 sy.on_join(actor);
@@ -692,6 +707,11 @@ impl Session {
             let out = h.room.leave(r.actor, offline, Instant::now());
             dispatch(&h, out, &self.st.metrics);
             h.sessions.remove(&r.actor);
+            self.st.webhooks.emit(
+                h.project,
+                "player.left",
+                serde_json::json!({"room": h.room.id().to_string(), "actor": r.actor.0}),
+            );
             if let Some(sy) = h.sync.as_mut() {
                 sy.on_leave(r.actor);
             }
@@ -872,6 +892,11 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
             }
             for (tick, actor) in desyncs {
                 st.metrics.errors.with_label_values(&["desync"]).inc();
+                st.webhooks.emit(
+                    g.project,
+                    "desync",
+                    serde_json::json!({"room": room.to_string(), "tick": tick, "actor": actor.0}),
+                );
                 for a in &actors {
                     if let Some(s) = g.sessions.get(a) {
                         let _ = s.control.try_send(ServerMsg::Desync { tick, actor });
@@ -930,6 +955,11 @@ pub async fn publish_room(st: &Shared, h: &Arc<Mutex<HostedRoom>>) {
 }
 
 pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {
+    st.webhooks.emit(
+        project,
+        "room.closed",
+        serde_json::json!({"room": id.to_string()}),
+    );
     if let Some(h) = st.host.remove(id) {
         let (sessions, replay) = {
             let g = h.lock();
@@ -1042,6 +1072,11 @@ pub async fn reaper(st: Shared) {
                     ) = o
                     {
                         g.sessions.remove(a);
+                        st.webhooks.emit(
+                            g.project,
+                            "player.left",
+                            serde_json::json!({"room": g.room.id().to_string(), "actor": a.0}),
+                        );
                         if let Some(sy) = g.sync.as_mut() {
                             sy.on_leave(*a);
                         }

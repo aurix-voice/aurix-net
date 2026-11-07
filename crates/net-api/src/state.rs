@@ -20,6 +20,7 @@ pub struct AppState {
     pub cert_sha256: String,
     pub quic_port: u16,
     pub metrics: Arc<Metrics>,
+    pub webhooks: crate::webhooks::Dispatcher,
     pub started: std::time::Instant,
 }
 

@@ -7,6 +7,7 @@ pub mod metrics;
 pub mod rest;
 pub mod state;
 pub mod sync;
+pub mod webhooks;
 pub mod ws;
 
 pub use state::AppState;

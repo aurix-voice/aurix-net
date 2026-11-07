@@ -91,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
         cert_sha256: identity.fingerprint_sha256.clone(),
         quic_port,
         metrics: Arc::new(net_api::metrics::Metrics::new()),
+        webhooks: net_api::webhooks::Dispatcher::start(pool.clone()),
         started: std::time::Instant::now(),
         pool: pool.clone(),
         redis: redis.clone(),
