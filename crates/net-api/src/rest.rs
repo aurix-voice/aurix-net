@@ -173,6 +173,7 @@ pub fn router(st: Shared) -> Router {
             get(op_project).delete(op_delete_project),
         )
         .route("/v1/operator/projects/:id/usage", get(op_usage))
+        .route("/v1/operator/billing", get(op_billing))
         .route("/v1/operator/projects/:id/rooms", get(op_project_rooms))
         .with_state(st)
 }
@@ -365,6 +366,155 @@ async fn op_alert_webhook_test(
     )
     .await;
     Ok(Json(json!({"queued": true})))
+}
+
+#[derive(Deserialize, Default)]
+struct BillingQuery {
+    /// `YYYY-MM` (UTC); defaults to the current month.
+    #[serde(default)]
+    month: Option<String>,
+    #[serde(default)]
+    format: Option<String>,
+}
+
+fn month_bounds(spec: Option<&str>) -> Result<(chrono::DateTime<Utc>, chrono::DateTime<Utc>)> {
+    use chrono::{Datelike, TimeZone};
+    let (y, m) = match spec {
+        None => {
+            let n = Utc::now();
+            (n.year(), n.month())
+        }
+        Some(s) => {
+            let (y, m) = s
+                .split_once('-')
+                .ok_or_else(|| NetError::Invalid("month: YYYY-MM".into()))?;
+            let y: i32 = y
+                .parse()
+                .map_err(|_| NetError::Invalid("month: YYYY-MM".into()))?;
+            let m: u32 = m
+                .parse()
+                .map_err(|_| NetError::Invalid("month: YYYY-MM".into()))?;
+            if !(1..=12).contains(&m) || !(2020..=2100).contains(&y) {
+                return Err(NetError::Invalid("month: YYYY-MM".into()));
+            }
+            (y, m)
+        }
+    };
+    let from = Utc
+        .with_ymd_and_hms(y, m, 1, 0, 0, 0)
+        .single()
+        .ok_or_else(|| NetError::Invalid("month: YYYY-MM".into()))?;
+    let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+    let to = Utc
+        .with_ymd_and_hms(ny, nm, 1, 0, 0, 0)
+        .single()
+        .ok_or_else(|| NetError::Invalid("month: YYYY-MM".into()))?;
+    Ok((from, to))
+}
+
+/// Month report per project for invoicing: the metered units, rooms created and the caps that
+/// applied. Soft-deleted projects are included (they used the service that month).
+async fn op_billing(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Query(q): Query<BillingQuery>,
+) -> ApiResult<axum::response::Response> {
+    use axum::response::IntoResponse;
+    operator(&st, &h).await?;
+    let (from, to) = month_bounds(q.month.as_deref())?;
+    let projects = queries::list_projects_all(&st.pool).await?;
+    let usage = queries::usage_by_project_between(&st.pool, from, to).await?;
+    let created: std::collections::HashMap<Uuid, i64> =
+        queries::rooms_created_between(&st.pool, from, to)
+            .await?
+            .into_iter()
+            .collect();
+    let mut by: std::collections::HashMap<Uuid, std::collections::BTreeMap<String, f64>> =
+        Default::default();
+    for r in usage {
+        *by.entry(r.project_id)
+            .or_default()
+            .entry(r.metric)
+            .or_default() += r.quantity;
+    }
+    let get =
+        |m: &std::collections::BTreeMap<String, f64>, k: &str| m.get(k).copied().unwrap_or(0.0);
+    let mut rows: Vec<Value> = Vec::new();
+    let mut total = std::collections::BTreeMap::<&str, f64>::new();
+    for p in &projects {
+        let m = by.remove(&p.id).unwrap_or_default();
+        let rooms = created.get(&p.id).copied().unwrap_or(0);
+        if m.is_empty() && rooms == 0 && p.deleted_at.is_some() {
+            continue;
+        }
+        let l = net_control::ProjectLimits::from_json(&p.limits);
+        for k in ["player_minutes", "room_minutes", "bytes_in", "bytes_out"] {
+            *total.entry(k).or_default() += get(&m, k);
+        }
+        *total.entry("rooms_created").or_default() += rooms as f64;
+        rows.push(json!({
+            "project_id": p.id, "name": p.name, "plan": p.plan,
+            "player_minutes": get(&m, "player_minutes"), "room_minutes": get(&m, "room_minutes"),
+            "bytes_in": get(&m, "bytes_in"), "bytes_out": get(&m, "bytes_out"),
+            "rooms_created": rooms,
+            "cap_player_minutes": l.monthly_player_minutes, "cap_bytes": l.monthly_bytes,
+            "deleted_at": p.deleted_at, "disabled_at": p.disabled_at,
+        }));
+    }
+    rows.sort_by(|a, b| {
+        b["player_minutes"]
+            .as_f64()
+            .partial_cmp(&a["player_minutes"].as_f64())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let month = from.format("%Y-%m").to_string();
+    match q.format.as_deref() {
+        None | Some("json") => Ok(Json(
+            json!({"month": month, "from": from, "to": to, "projects": rows, "totals": total}),
+        )
+        .into_response()),
+        Some("csv") => {
+            let mut csv = String::from(
+                "project_id,name,plan,player_minutes,room_minutes,bytes_in,bytes_out,rooms_created,cap_player_minutes,cap_bytes,deleted_at\n",
+            );
+            for r in &rows {
+                let cell = |k: &str| match &r[k] {
+                    Value::Null => String::new(),
+                    Value::String(s) => csv_cell(s),
+                    v => v.to_string(),
+                };
+                csv.push_str(&format!(
+                    "{},{},{},{},{},{},{},{},{},{},{}\n",
+                    cell("project_id"),
+                    cell("name"),
+                    cell("plan"),
+                    cell("player_minutes"),
+                    cell("room_minutes"),
+                    cell("bytes_in"),
+                    cell("bytes_out"),
+                    cell("rooms_created"),
+                    cell("cap_player_minutes"),
+                    cell("cap_bytes"),
+                    cell("deleted_at"),
+                ));
+            }
+            Ok((
+                [
+                    (
+                        axum::http::header::CONTENT_TYPE,
+                        "text/csv; charset=utf-8".to_string(),
+                    ),
+                    (
+                        axum::http::header::CONTENT_DISPOSITION,
+                        format!("attachment; filename=\"aurix-net-billing-{month}.csv\""),
+                    ),
+                ],
+                csv,
+            )
+                .into_response())
+        }
+        _ => Err(NetError::Invalid("format: json or csv".into()).into()),
+    }
 }
 
 async fn op_create_token(

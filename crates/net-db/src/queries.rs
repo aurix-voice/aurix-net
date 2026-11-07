@@ -678,6 +678,54 @@ pub async fn usage_between(
 }
 
 /// Fleet-wide usage: the same hourly rows summed over every project.
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct ProjectMetricRow {
+    pub project_id: Uuid,
+    pub metric: String,
+    pub quantity: f64,
+}
+
+/// Per-project metric totals in [from, to) — the monthly billing report.
+pub async fn usage_by_project_between(
+    pool: &DbPool,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<ProjectMetricRow>> {
+    sqlx::query_as::<_, ProjectMetricRow>(
+        "SELECT project_id, metric, SUM(quantity)::float8 AS quantity FROM usage_hours \
+         WHERE hour >= $1 AND hour < $2 GROUP BY project_id, metric",
+    )
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
+/// Rooms created per project in [from, to).
+pub async fn rooms_created_between(
+    pool: &DbPool,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<(Uuid, i64)>> {
+    sqlx::query_as::<_, (Uuid, i64)>(
+        "SELECT project_id, COUNT(*) FROM rooms WHERE created_at >= $1 AND created_at < $2 GROUP BY project_id",
+    )
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
+/// Every project including soft-deleted ones (billing must still see them).
+pub async fn list_projects_all(pool: &DbPool) -> Result<Vec<ProjectRow>> {
+    sqlx::query_as::<_, ProjectRow>("SELECT * FROM projects ORDER BY created_at")
+        .fetch_all(pool)
+        .await
+        .map_err(db_err)
+}
+
 pub async fn usage_fleet_between(
     pool: &DbPool,
     from: DateTime<Utc>,

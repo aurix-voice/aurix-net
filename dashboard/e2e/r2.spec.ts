@@ -381,3 +381,12 @@ test("operator adds and removes a fleet alert webhook", async ({ page }) => {
   await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
   await expect(page.getByRole("row", { name: /e2e-alert/ })).toHaveCount(0);
 });
+
+test("operator sees the month billing table on the fleet usage page", async ({ page }) => {
+  const name = uniq("e2e-bill");
+  await api(page, "POST", "/v1/operator/projects", { name });
+  await page.goto("/usage");
+  const card = page.getByTestId("billing");
+  await expect(card).toContainText(name);
+  await expect(card).toContainText("Fleet total");
+});

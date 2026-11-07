@@ -12,6 +12,7 @@ import { RequireScope } from "@/shell/Guards";
 import { Button } from "@/ui/Button";
 import { PageHeader } from "@/ui/Page";
 import { useToast } from "@/ui/Toast";
+import { BillingCard } from "@/components/BillingCard";
 import { RejectionsCard } from "@/components/RejectionsCard";
 import { Stat } from "@/ui/Primitives";
 
@@ -98,6 +99,11 @@ function UsageBody() {
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px] mb-5">
           <div />
           <RejectionsCard data={rejections.data} loading={rejections.isLoading} />
+        </div>
+      ) : null}
+      {operator && !projectId ? (
+        <div className="mb-5">
+          <BillingCard />
         </div>
       ) : null}
       <div className="grid gap-4 xl:grid-cols-2">

@@ -1,4 +1,4 @@
-import type { OperatorWebhook } from "@/api/client";
+import type { Billing, OperatorWebhook } from "@/api/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 
@@ -453,4 +453,10 @@ export function useTicket(id: string | null) {
 export function useCancelTicket() {
   const api = useApi();
   return useMutation({ mutationFn: (id: string) => api.del(`/v1/matchmaking/tickets/${id}`) });
+}
+
+export function useBilling(month: string) {
+  const api = useApi();
+  const { operator } = useAuth();
+  return useQuery({ queryKey: ["billing", month], enabled: operator, queryFn: () => api.get<Billing>("/v1/operator/billing", { month }) });
 }

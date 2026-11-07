@@ -297,6 +297,27 @@ export interface OperatorToken {
   revoked_at: string | null;
   last_used_at: string | null;
 }
+export interface BillingProject {
+  project_id: string;
+  name: string;
+  plan: string;
+  player_minutes: number;
+  room_minutes: number;
+  bytes_in: number;
+  bytes_out: number;
+  rooms_created: number;
+  cap_player_minutes: number | null;
+  cap_bytes: number | null;
+  deleted_at: string | null;
+  disabled_at: string | null;
+}
+export interface Billing {
+  month: string;
+  from: string;
+  to: string;
+  projects: BillingProject[];
+  totals: Record<string, number>;
+}
 export interface OperatorWebhook {
   id: string;
   url: string;
