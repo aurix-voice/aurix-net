@@ -29,6 +29,10 @@ pub struct ServerConfig {
     /// Bearer token for `GET /metrics`; empty leaves it open (bind it to a private interface).
     #[serde(default)]
     pub metrics_token: String,
+    /// Browser origins allowed on the HTTP API (`https://game.example.com`). Empty = any
+    /// origin (fine for development; production should list the game's origins).
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +122,7 @@ public_host = "127.0.0.1"
 heartbeat_secs = 30
 trusted_proxies = []
 metrics_token = ""
+allowed_origins = []
 
 [transport]
 quic_addr = "0.0.0.0:7000"

@@ -190,7 +190,10 @@ async fn main() -> anyhow::Result<()> {
             net_api::ratelimit::http_guard,
         ))
         .layer(tower_http::trace::TraceLayer::new_for_http())
-        .layer(tower_http::cors::CorsLayer::permissive());
+        .layer(cors_layer(
+            &cfg.server.allowed_origins,
+            &cfg.server.environment,
+        ));
     let listener = tokio::net::TcpListener::bind(cfg.server.http_addr).await?;
     info!(addr = %cfg.server.http_addr, node = %node_id, "control plane listening");
     let shutdown = {
@@ -218,6 +221,24 @@ async fn main() -> anyhow::Result<()> {
     .with_graceful_shutdown(shutdown)
     .await?;
     Ok(())
+}
+
+/// CORS for browser clients: an explicit origin list, or any origin when none is configured
+/// (logged as a warning outside development).
+fn cors_layer(origins: &[String], environment: &str) -> tower_http::cors::CorsLayer {
+    use tower_http::cors::{AllowOrigin, CorsLayer};
+    if origins.is_empty() {
+        if environment != "development" {
+            warn!("server.allowed_origins is empty: any browser origin may call the HTTP API");
+        }
+        return CorsLayer::permissive();
+    }
+    let list: Vec<axum::http::HeaderValue> =
+        origins.iter().filter_map(|o| o.parse().ok()).collect();
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(list))
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers(tower_http::cors::Any)
 }
 
 /// Ctrl-C or SIGTERM (what Docker, systemd and Kubernetes send).
