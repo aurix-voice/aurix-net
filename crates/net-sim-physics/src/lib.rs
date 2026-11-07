@@ -223,6 +223,8 @@ struct Contact {
     feature: u8,
     normal_impulse: Fx,
     tangent_impulse: Fx,
+    /// Restitution target from the pre-solve approach speed (Box2D velocity bias).
+    bias: Fx,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -322,6 +324,7 @@ impl World {
             }
         }
         self.update_manifolds();
+        self.prepare_contacts();
         self.warm_start();
         for _ in 0..self.cfg.velocity_iterations {
             self.solve_velocities();
@@ -446,6 +449,28 @@ impl World {
         self.events = events;
     }
 
+    /// Restitution uses the approach speed before any impulse of this step is applied.
+    fn prepare_contacts(&mut self) {
+        let threshold = self.cfg.restitution_threshold;
+        for m in &mut self.manifolds {
+            let a = &self.bodies[&m.a];
+            let b = &self.bodies[&m.b];
+            let restitution = a.restitution.max(b.restitution);
+            for c in &mut m.contacts {
+                let ra = c.point - a.position;
+                let rb = c.point - b.position;
+                let rel = (b.velocity + perp(rb).scale(b.angular_velocity))
+                    - (a.velocity + perp(ra).scale(a.angular_velocity));
+                let vn = rel.dot(c.normal);
+                c.bias = if -vn > threshold {
+                    -vn * restitution
+                } else {
+                    Fx::ZERO
+                };
+            }
+        }
+    }
+
     fn warm_start(&mut self) {
         for m in &self.manifolds {
             for c in &m.contacts {
@@ -464,13 +489,9 @@ impl World {
     }
 
     fn solve_velocities(&mut self) {
-        let threshold = self.cfg.restitution_threshold;
         let mut manifolds = std::mem::take(&mut self.manifolds);
         for m in &mut manifolds {
             let friction = self.bodies[&m.a].friction.max(self.bodies[&m.b].friction);
-            let restitution = self.bodies[&m.a]
-                .restitution
-                .max(self.bodies[&m.b].restitution);
             for c in &mut m.contacts {
                 let a = &self.bodies[&m.a];
                 let b = &self.bodies[&m.b];
@@ -486,12 +507,7 @@ impl World {
                 if k == Fx::ZERO {
                     continue;
                 }
-                let bounce = if -vn > threshold {
-                    -vn * restitution
-                } else {
-                    Fx::ZERO
-                };
-                let mut j = (-vn + bounce) / k;
+                let mut j = (-vn + c.bias) / k;
                 let old = c.normal_impulse;
                 c.normal_impulse = (old + j).max(Fx::ZERO);
                 j = c.normal_impulse - old;
@@ -624,6 +640,7 @@ fn collide(a: &Body, b: &Body) -> Vec<Contact> {
                 feature: 0,
                 normal_impulse: Fx::ZERO,
                 tangent_impulse: Fx::ZERO,
+                bias: Fx::ZERO,
             }]
         }
         (Shape::Circle { radius }, Shape::Polygon { .. }) => {
@@ -694,6 +711,7 @@ fn circle_polygon(c: FxVec2, r: Fx, v: &[FxVec2], flip: bool) -> Vec<Contact> {
         feature: i as u8,
         normal_impulse: Fx::ZERO,
         tangent_impulse: Fx::ZERO,
+        bias: Fx::ZERO,
     }]
 }
 
@@ -779,6 +797,7 @@ fn polygon_polygon(a: &[FxVec2], b: &[FxVec2]) -> Vec<Contact> {
                 feature: (ri * 8 + inc) as u8 ^ (k as u8) << 7,
                 normal_impulse: Fx::ZERO,
                 tangent_impulse: Fx::ZERO,
+                bias: Fx::ZERO,
             });
         }
     }
