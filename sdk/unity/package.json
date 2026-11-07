@@ -1,0 +1,9 @@
+{
+  "name": "com.aurix.net",
+  "displayName": "Aurix Net",
+  "version": "0.1.0",
+  "unity": "2021.3",
+  "description": "Aurix Net client: rooms, relay events, server-authoritative sync and deterministic lockstep over QUIC/WebSocket.",
+  "license": "Apache-2.0",
+  "author": { "name": "Aurix" }
+}

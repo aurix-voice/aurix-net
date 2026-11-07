@@ -1,0 +1,7 @@
+{
+  "name": "Aurix.Net",
+  "rootNamespace": "Aurix.Net",
+  "references": [],
+  "allowUnsafeCode": true,
+  "autoReferenced": true
+}
