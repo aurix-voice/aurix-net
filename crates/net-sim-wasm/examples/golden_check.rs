@@ -25,6 +25,16 @@ fn main() {
         j_native, j_wasm,
         "wasm32 and native joint simulations diverged"
     );
+    let d3_native = net_sim_wasm::sim3_golden_hash();
+    let d3f = instance
+        .get_typed_func::<(), u64>(&mut store, "sim3_golden_hash")
+        .expect("export");
+    let d3_wasm = d3f.call(&mut store, ()).expect("call");
+    println!("3d native {d3_native:#x}\n3d wasm   {d3_wasm:#x}");
+    assert_eq!(
+        d3_native, d3_wasm,
+        "wasm32 and native 3D simulations diverged"
+    );
     let nav_native = net_sim_wasm::sim_nav_golden_hash();
     let g = instance
         .get_typed_func::<(), u64>(&mut store, "sim_nav_golden_hash")

@@ -11,6 +11,9 @@ use net_sim_physics::{
 };
 use std::cell::RefCell;
 
+mod sim3;
+pub use sim3::*;
+
 struct Slot {
     world: World,
     kcc: Vec<CharacterController>,
