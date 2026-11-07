@@ -93,12 +93,18 @@ export function useRooms() {
 }
 export function useRoom(id: string) {
   const api = useApi();
-  return useQuery({ queryKey: qk.room(id), queryFn: () => api.get<RoomDetail>(`/v1/rooms/${id}`), refetchInterval: LIVE });
+  const { operator } = useAuth();
+  const path = operator ? `/v1/operator/rooms/${id}` : `/v1/rooms/${id}`;
+  return useQuery({ queryKey: qk.room(id), queryFn: () => api.get<RoomDetail>(path), refetchInterval: LIVE });
 }
 export function useCloseRoom() {
   const api = useApi();
   const qc = useQueryClient();
-  return useMutation({ mutationFn: (id: string) => api.del(`/v1/rooms/${id}`), onSuccess: () => void qc.invalidateQueries({ queryKey: ["rooms"] }) });
+  const { operator } = useAuth();
+  return useMutation({
+    mutationFn: (id: string) => api.del(operator ? `/v1/operator/rooms/${id}` : `/v1/rooms/${id}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["rooms"] }),
+  });
 }
 export function useUsage(from: string, to: string) {
   const api = useApi();

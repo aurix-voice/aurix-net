@@ -1,22 +1,21 @@
-# Aurix operator dashboard
+# Aurix Net console
 
-Standalone operator UI for an Aurix fleet: Vite + React + TypeScript SPA served by Caddy from its
-own image (`ghcr.io/aurix-voice/aurix-dashboard`). The node never serves it; the SPA talks to the
-node's `/v1` and `/admin` routes same-origin through Caddy's reverse proxy with an administrator
-JWT, and can do nothing the API does not allow.
+Operator console for an Aurix Net cluster: nodes, projects, live rooms, usage, API keys, webhooks,
+WASM modules, matchmaking and the audit log. Single-page app (Vite + React + TypeScript + Tailwind)
+shipped as its own image; the node never serves it. The SPA talks to the node only through a
+same-origin proxy (`/v1/*`, `/healthz`), so the token never leaves the console's origin.
 
-Full documentation: [docs/src/operations/dashboard.md](../docs/src/operations/dashboard.md)
-(deployment with Compose / Helm / Traefik, sign-in, roles, compatibility, limits).
+Sign in with the node's operator token (`auth.admin_token`, whole fleet) or a project API key
+(`an_…`, that project only). Sessions live in the browser's local storage and are revalidated
+against `/v1/me` on load.
 
-```bash
+```sh
 npm ci
-AURIX_API_URL=http://127.0.0.1:8080 npm run dev                # http://127.0.0.1:5173
-npm run check && npm run lint && npm test && npm run build     # tsc, eslint, vitest, dist/
-AURIX_E2E_ADMIN_EMAIL=… AURIX_E2E_ADMIN_PASSWORD=… npm run e2e  # Playwright against a live node
-docker build -f dashboard/Dockerfile -t aurix-dashboard:local ..  # from the repository root
+NET_API_URL=http://127.0.0.1:8090 npm run dev                  # http://127.0.0.1:5174
+npm run check && npm run lint && npm test && npm run build
+AURIX_NET_E2E_TOKEN=… npm run e2e                               # Playwright against a live node
 ```
 
-Layout: `src/api` (typed client over `sdk/server/node/src`, TanStack Query hooks, SSE), `src/auth`
-(password / OIDC / first-administrator setup, permission gating), `src/pages/*` (one directory per
-section), `src/ui` (design system), `src/i18n` (RU / EN), `e2e/` (Playwright, `DASHBOARD_URL` to
-target a deployed container), `Caddyfile` + `Dockerfile` (runtime image).
+Production: `docker build -f dashboard/Dockerfile .` from the repository root; run with
+`NET_API_URL=http://net:8090` pointing at a node (see `Caddyfile`). The image is non-root and
+serves on port 8080.

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import type { NewKey } from "@/api/client";
 import { useI18n } from "@/i18n";
@@ -15,8 +15,13 @@ export function NewKeyDialog({ open, onOpenChange, create }: { open: boolean; on
   const [name, setName] = useState("");
   const [scopes, setScopes] = useState<string[]>(["rooms", "read"]);
   const [created, setCreated] = useState<NewKey | null>(null);
+  const keepOpen = useRef(false);
   const toggle = (s: string) => setScopes((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
   const close = (o: boolean) => {
+    if (!o && keepOpen.current) {
+      keepOpen.current = false;
+      return;
+    }
     if (!o) {
       setCreated(null);
       setName("");
@@ -38,7 +43,11 @@ export function NewKeyDialog({ open, onOpenChange, create }: { open: boolean; on
       title={t("keys.new")}
       submitLabel={t("common.create")}
       disabled={!name.trim() || scopes.length === 0}
-      onSubmit={async () => setCreated(await create({ name: name.trim(), scopes }))}
+      onSubmit={async () => {
+        const k = await create({ name: name.trim(), scopes });
+        keepOpen.current = true;
+        setCreated(k);
+      }}
     >
       <Field label={t("common.name")} htmlFor="key-name" required>
         <Input id="key-name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />

@@ -25,7 +25,7 @@ export function RoomsPage() {
   const close = useCloseRoom();
   const [q, setQ] = useState("");
   const [closing, setClosing] = useState<LiveRoom | null>(null);
-  const canClose = !operator && can("rooms");
+  const canClose = operator || can("rooms");
 
   const rows = (rooms.data ?? []).filter((r) => !q || r.name.toLowerCase().includes(q.toLowerCase()) || r.room.startsWith(q) || r.mode === q);
   const cols: Column<LiveRoom>[] = [

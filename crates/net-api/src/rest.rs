@@ -74,6 +74,10 @@ pub fn router(st: Shared) -> Router {
         .route("/v1/operator/projects/:id/limits", post(op_set_limits))
         .route("/v1/operator/nodes", get(op_nodes))
         .route("/v1/operator/rooms", get(op_rooms))
+        .route(
+            "/v1/operator/rooms/:id",
+            get(op_room).delete(op_delete_room),
+        )
         .route("/v1/operator/audit", get(op_audit))
         .route("/v1/operator/projects/:id", get(op_project))
         .route("/v1/operator/projects/:id/usage", get(op_usage))
@@ -391,9 +395,16 @@ async fn get_room(
     if row.project_id != key.project_id {
         return Err(NetError::NotFound("room".into()).into());
     }
+    Ok(Json(room_detail(&st, row).await?))
+}
+
+/// Persisted row + live Redis state + players hosted on this node (empty when the room lives
+/// on another node).
+async fn room_detail(st: &Shared, row: net_db::models::RoomRow) -> Result<Value> {
+    let id = row.id;
     let live = st
         .redis
-        .get_room(ProjectId::from_uuid(key.project_id), RoomId::from_uuid(id))
+        .get_room(ProjectId::from_uuid(row.project_id), RoomId::from_uuid(id))
         .await?;
     let players: Vec<Value> = st
         .host
@@ -407,7 +418,44 @@ async fn get_room(
                 .collect()
         })
         .unwrap_or_default();
-    Ok(Json(json!({"room": row, "live": live, "players": players})))
+    Ok(json!({"room": row, "live": live, "players": players}))
+}
+
+/// Operator view of any room in the cluster.
+async fn op_room(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    let row = queries::get_room(&st.pool, id).await?;
+    Ok(Json(room_detail(&st, row).await?))
+}
+
+/// Operator force-close of any room (abuse response); audited.
+async fn op_delete_room(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    operator(&st, &h)?;
+    let row = queries::get_room(&st.pool, id).await?;
+    close_room(
+        &st,
+        ProjectId::from_uuid(row.project_id),
+        RoomId::from_uuid(id),
+    )
+    .await;
+    audit_log(
+        &st,
+        Some(row.project_id),
+        "operator",
+        "room.close",
+        &id.to_string(),
+        json!({}),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Lockstep replay (input journal) of a closed room, kept for 24 h.
