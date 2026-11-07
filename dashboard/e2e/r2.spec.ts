@@ -249,7 +249,7 @@ test("operator looks up a player and bans from the lookup", async ({ page }) => 
 
 test("operator exports fleet usage as CSV", async ({ page }) => {
   await page.goto("/usage");
-  const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Export CSV" }).click()]);
+  const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Export CSV" }).first().click()]);
   expect(download.suggestedFilename()).toMatch(/^aurix-net-usage-fleet-\d{8}-\d{8}\.csv$/);
   const path = await download.path();
   expect(path).toBeTruthy();
@@ -284,7 +284,7 @@ test("operator opens live stats of a node", async ({ page }) => {
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByText("Control sessions")).toBeVisible();
   await expect(dialog.getByText("Memory (RSS)")).toBeVisible();
-  await expect(dialog.getByText(/\d+ MB/)).toBeVisible();
+  await expect(dialog.getByText(/\d+ MB/).first()).toBeVisible();
 });
 
 test("operator issues a named token on Settings, it authenticates and is named in the audit log, then revokes it", async ({ page }) => {
@@ -325,7 +325,7 @@ test("operator broadcasts a notice to a project from its page", async ({ page })
 
 test("operator exports the audit log as CSV", async ({ page }) => {
   await page.goto("/audit");
-  const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Export CSV" }).click()]);
+  const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Export CSV" }).first().click()]);
   expect(download.suggestedFilename()).toMatch(/^aurix-net-audit-.*\.csv$/);
   const fs = await import("node:fs/promises");
   const text = await fs.readFile((await download.path()), "utf8");
