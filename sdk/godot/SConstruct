@@ -1,0 +1,8 @@
+#!/usr/bin/env python
+# Requires godot-cpp checked out next to this file: git clone -b 4.2 https://github.com/godotengine/godot-cpp
+import os
+env = SConscript("godot-cpp/SConstruct")
+env.Append(CPPPATH=["src/"], LIBPATH=[os.environ.get("AURIX_NET_LIB", "../../target/release")], LIBS=["aurix_net"])
+sources = Glob("src/*.cpp")
+lib = env.SharedLibrary("bin/libaurixnet_godot{}{}".format(env["suffix"], env["SHLIBSUFFIX"]), source=sources)
+Default(lib)

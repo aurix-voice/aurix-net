@@ -2,7 +2,7 @@
 
 Open-source game networking service: rooms and relay, server-authoritative state sync, deterministic lockstep. Companion of Aurix Voice; separate server, database and client. One server, one client, three room modes (`relay`, `sync`, `lockstep`). Priced by node-hours, never by CCU.
 
-Status: relay, sync and lockstep modes, client library, C ABI, CLI, webhooks and matchmaking work locally. Engine SDKs are next. See `docs/modes.md` and `docs/api.md`.
+Status: relay, sync and lockstep modes, client library, C ABI, CLI, webhooks and matchmaking work locally. Engine SDKs are next. See `docs/modes.md`, `docs/api.md` and `docs/sdk.md` (Rust, C, C++, Unity, Unreal, Godot, Web).
 
 ## Quickstart
 
