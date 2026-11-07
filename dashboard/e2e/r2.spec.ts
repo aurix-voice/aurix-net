@@ -354,3 +354,15 @@ test("operator sets a monthly player-minutes cap and the health strip shows it",
   const detail = await api<{ effective_limits: { monthly_player_minutes: number | null } }>(page, "GET", `/v1/operator/projects/${project.project.id}`);
   expect(detail.effective_limits.monthly_player_minutes).toBe(100);
 });
+
+test("operator issues a key restricted to networks and the table shows it", async ({ page }) => {
+  const project = await api<{ project: { id: string } }>(page, "POST", "/v1/operator/projects", { name: uniq("e2e-cidr") });
+  await page.goto(`/projects/${project.project.id}`);
+  await page.getByRole("button", { name: "Issue key" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Name").fill("backend");
+  await dialog.getByLabel("Allowed IPs").fill("203.0.113.0/24, 198.51.100.7");
+  await dialog.getByRole("button", { name: "Create" }).click();
+  await dialog.getByRole("button", { name: "Close", exact: true }).last().click();
+  await expect(page.getByRole("row", { name: /backend/ })).toContainText("2 network(s)");
+});

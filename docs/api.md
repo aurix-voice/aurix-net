@@ -31,7 +31,7 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | GET | `/v1/rooms/:id/replay` | `read` | lockstep input journal (24 h after close) |
 | GET | `/v1/usage?format=csv` | read | same rows as CSV (`hour,metric,quantity`, attachment) for billing exports; also on `/v1/operator/usage` and `/v1/operator/projects/:id/usage` |
 | GET | `/v1/usage` | `read` | node-hours, events, bytes per hour |
-| GET/POST/DELETE | `/v1/keys[/:id]` | `admin` | API keys (plaintext shown once) |
+| GET/POST/DELETE | `/v1/keys[/:id]` | `admin` | API keys (plaintext shown once); `{name, scopes[], expires_in_secs?, allowed_cidrs?[]}` — with `allowed_cidrs` (CIDR or IP, ≤32) the key is accepted only from those networks (client IP after `trusted_proxies`), otherwise 403 and rejection `ip_denied` |
 | GET/POST/DELETE | `/v1/webhooks[/:id]` | `admin` | webhooks (`url, events[]` — names from [webhooks.md](webhooks.md), empty = all), secret shown once |
 | GET | `/v1/matchmaking` | read | live queue: `searching[]` (ticket, player, mode, region, max_players, age_secs) and `matched.last_hour` / `matched.last_24h` (rooms formed); operators: `GET /v1/operator/projects/:id/matchmaking` |
 | POST | `/v1/matchmaking/tickets` | `rooms` | `{player_id, mode, region?, max_players, min_players, max_wait_secs, props}` → `{ticket, state}` |
@@ -49,7 +49,7 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | GET/POST | `/v1/bans` | read / rooms | project deny-list; POST `{player_id, reason?, duration_secs?}` (omit duration = permanent). Banned players get 403 `banned…` at `/v1/grants` and at join; counted as rejection reason `banned` |
 | DELETE | `/v1/bans/:player_id` | rooms | lift a ban |
 | GET/POST/DELETE | `/v1/operator/projects/:id/bans[/:player_id]` | operator | same for operators |
-| GET | `/v1/rejections` | read | why this project's players/keys were turned away in the last `?hours=` (≤26, default 24): hourly `series` + `total` by reason — `rate_limited`, `quota`, `usage_cap`, `capacity`, `room_full`, `suspended`, `banned`, `region`, `grant`. Counted on every node (Redis), 26 h retention |
+| GET | `/v1/rejections` | read | why this project's players/keys were turned away in the last `?hours=` (≤26, default 24): hourly `series` + `total` by reason — `rate_limited`, `quota`, `usage_cap`, `ip_denied`, `capacity`, `room_full`, `suspended`, `banned`, `region`, `grant`. Counted on every node (Redis), 26 h retention |
 | GET | `/v1/operator/projects/:id/rejections` | operator | same for operators |
 | GET | `/v1/webhooks/:id/deliveries` | read | last deliveries of a webhook (`?limit=`, ≤500): event, ok, HTTP status, attempts, latency, error; kept `retention.webhook_deliveries_days` (7) |
 | POST | `/v1/webhooks/:id/rotate` | admin | new signing secret (shown once), `{grace_secs?}` (default 24 h, max 7 d): until then deliveries also carry `X-Aurix-Signature-Previous` signed with the old secret; audited `webhook.rotate`; operators: `POST /v1/operator/projects/:id/webhooks/:wid/rotate` |

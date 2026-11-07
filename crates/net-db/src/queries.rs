@@ -47,6 +47,7 @@ pub async fn set_project_limits(pool: &DbPool, id: Uuid, limits: &serde_json::Va
 
 // ---------- api keys ----------
 
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_api_key(
     pool: &DbPool,
     project_id: Uuid,
@@ -55,9 +56,10 @@ pub async fn insert_api_key(
     name: &str,
     scopes: &[String],
     expires_at: Option<DateTime<Utc>>,
+    allowed_cidrs: &[String],
 ) -> Result<ApiKeyRow> {
     sqlx::query_as::<_, ApiKeyRow>(
-        "INSERT INTO api_keys (id, project_id, key_hash, prefix, name, scopes, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *",
+        "INSERT INTO api_keys (id, project_id, key_hash, prefix, name, scopes, expires_at, allowed_cidrs) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",
     )
     .bind(Uuid::now_v7())
     .bind(project_id)
@@ -66,6 +68,7 @@ pub async fn insert_api_key(
     .bind(name)
     .bind(scopes)
     .bind(expires_at)
+    .bind(allowed_cidrs)
     .fetch_one(pool)
     .await
     .map_err(db_err)

@@ -26,6 +26,8 @@ pub struct ApiKeyRow {
     pub last_used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub expires_at: Option<DateTime<Utc>>,
+    /// Empty = any source address.
+    pub allowed_cidrs: Vec<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]

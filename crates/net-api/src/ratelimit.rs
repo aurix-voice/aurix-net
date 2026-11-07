@@ -136,6 +136,10 @@ impl Guards {
 #[derive(Clone, Copy, Debug)]
 pub struct ClientIp(pub IpAddr);
 
+/// Resolved client address, written by the middleware (any client-supplied value is replaced)
+/// so authentication helpers that only see headers can enforce per-key allowlists.
+pub const CLIENT_IP_HEADER: &str = "x-aurix-client-ip";
+
 /// Axum middleware: per-IP request budget, the `ClientIp` extension for handlers, and the
 /// per-IP budget for failed authentications (401 → 429 once spent).
 pub async fn http_guard(
@@ -150,6 +154,9 @@ pub async fn http_guard(
         return (StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
     }
     req.extensions_mut().insert(ClientIp(ip));
+    if let Ok(v) = ip.to_string().parse() {
+        req.headers_mut().insert(CLIENT_IP_HEADER, v);
+    }
     let resp = next.run(req).await;
     // Failed REST auth (bad API key / operator token) shares the per-IP auth-failure budget
     // with WebSocket grant failures; once it is spent the caller sees 429 instead of 401,

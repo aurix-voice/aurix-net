@@ -14,13 +14,14 @@ import { Badge, Card, Mono } from "@/ui/Primitives";
 import { DataTable, type Column } from "@/ui/Table";
 
 export function keyColumns(t: (k: never, v?: never) => string, locale: "en" | "ru", onRevoke?: (k: ApiKey) => void): Column<ApiKey>[] {
-  const tt = t as unknown as (k: string) => string;
+  const tt = t as unknown as (k: string, v?: Record<string, string | number>) => string;
   return [
     { key: "name", header: tt("common.name"), sort: (k) => k.name, cell: (k) => <span className="font-medium">{k.name}</span> },
     { key: "prefix", header: tt("keys.prefix"), cell: (k) => <Mono>an_{k.prefix}…</Mono> },
     { key: "scopes", header: tt("keys.scopes"), cell: (k) => <span className="flex gap-1 flex-wrap">{k.scopes.map((s) => <Badge key={s}>{s}</Badge>)}</span> },
     { key: "created", header: tt("common.created"), sort: (k) => k.created_at, cell: (k) => <span className="text-fg-muted">{fmtDateTimeShort(locale, k.created_at)}</span> },
     { key: "used", header: tt("keys.lastUsed"), sort: (k) => k.last_used_at ?? "", cell: (k) => <span className="text-fg-muted">{k.last_used_at ? fmtRelative(locale, k.last_used_at) : "—"}</span> },
+    { key: "cidrs", header: tt("keys.cidrs"), cell: (k) => (k.allowed_cidrs?.length ? <span title={k.allowed_cidrs.join(", ")}><Badge>{tt("keys.cidrs.n", { n: k.allowed_cidrs.length })}</Badge></span> : <span className="text-fg-muted">{tt("keys.cidrs.any")}</span>) },
     { key: "expires", header: tt("keys.expires"), sort: (k) => k.expires_at ?? "", cell: (k) => <span className="text-fg-muted">{k.expires_at ? fmtDateTimeShort(locale, k.expires_at) : tt("keys.expires.never")}</span> },
     {
       key: "state",

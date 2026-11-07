@@ -11,11 +11,12 @@ const SCOPES = ["rooms", "read", "admin"] as const;
 const EXPIRIES = [0, 30, 90, 365] as const;
 
 /** Create form + one-time plaintext reveal; the key is never fetchable again. */
-export function NewKeyDialog({ open, onOpenChange, create }: { open: boolean; onOpenChange: (o: boolean) => void; create: (body: { name: string; scopes: string[]; expires_in_secs?: number }) => Promise<NewKey> }) {
+export function NewKeyDialog({ open, onOpenChange, create }: { open: boolean; onOpenChange: (o: boolean) => void; create: (body: { name: string; scopes: string[]; expires_in_secs?: number; allowed_cidrs?: string[] }) => Promise<NewKey> }) {
   const { t } = useI18n();
   const [name, setName] = useState("");
   const [scopes, setScopes] = useState<string[]>(["rooms", "read"]);
   const [expiryDays, setExpiryDays] = useState<number>(0);
+  const [cidrs, setCidrs] = useState("");
   const [created, setCreated] = useState<NewKey | null>(null);
   const keepOpen = useRef(false);
   const toggle = (s: string) => setScopes((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
@@ -46,7 +47,11 @@ export function NewKeyDialog({ open, onOpenChange, create }: { open: boolean; on
       submitLabel={t("common.create")}
       disabled={!name.trim() || scopes.length === 0}
       onSubmit={async () => {
-        const k = await create({ name: name.trim(), scopes, expires_in_secs: expiryDays ? expiryDays * 86_400 : undefined });
+        const cidrList = cidrs
+          .split(",")
+          .map((c) => c.trim())
+          .filter(Boolean);
+        const k = await create({ name: name.trim(), scopes, expires_in_secs: expiryDays ? expiryDays * 86_400 : undefined, allowed_cidrs: cidrList.length ? cidrList : undefined });
         keepOpen.current = true;
         setCreated(k);
       }}
@@ -60,6 +65,9 @@ export function NewKeyDialog({ open, onOpenChange, create }: { open: boolean; on
             <Checkbox key={s} label={t(`keys.scope.${s}`)} checked={scopes.includes(s)} onChange={() => toggle(s)} />
           ))}
         </div>
+      </Field>
+      <Field label={t("keys.cidrs")} htmlFor="key-cidrs" hint={t("keys.cidrs.hint")}>
+        <Input id="key-cidrs" value={cidrs} onChange={(e) => setCidrs(e.target.value)} placeholder="203.0.113.0/24, 2001:db8::/32" />
       </Field>
       <Field label={t("keys.expires")} htmlFor="key-expiry">
         <NativeSelect id="key-expiry" value={String(expiryDays)} onChange={(e) => setExpiryDays(Number(e.target.value))}>

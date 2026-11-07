@@ -15,6 +15,7 @@ use net_db::models::ApiKeyRow;
 use net_db::queries;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::net::IpAddr;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -195,6 +196,18 @@ async fn api_key(st: &Shared, h: &HeaderMap, scope: Scope) -> Result<ApiKeyRow> 
             "key lacks scope {}",
             scope.as_str()
         )));
+    }
+    if !row.allowed_cidrs.is_empty() {
+        let ip = h
+            .get(crate::ratelimit::CLIENT_IP_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<IpAddr>().ok());
+        if !ip.is_some_and(|ip| cidr_allows(&row.allowed_cidrs, ip)) {
+            reject(st, ProjectId::from_uuid(row.project_id), "ip_denied");
+            return Err(NetError::Forbidden(
+                "api key is not allowed from this address".into(),
+            ));
+        }
     }
     let _ = queries::touch_api_key(&st.pool, row.id).await;
     Ok(row)
@@ -1502,6 +1515,38 @@ struct KeyReq {
     /// Seconds until the key stops authenticating; omit for no expiry.
     #[serde(default)]
     expires_in_secs: Option<u64>,
+    /// Source networks allowed to use the key (CIDR or bare IP); empty = anywhere.
+    #[serde(default)]
+    allowed_cidrs: Vec<String>,
+}
+
+/// Normalises `allowed_cidrs`: bare IPs become /32 or /128, at most 32 entries.
+fn parse_cidrs(v: &[String]) -> Result<Vec<String>> {
+    if v.len() > 32 {
+        return Err(NetError::Invalid(
+            "allowed_cidrs: at most 32 entries".into(),
+        ));
+    }
+    v.iter()
+        .map(|c| {
+            let c = c.trim();
+            if let Ok(ip) = c.parse::<IpAddr>() {
+                let bits = if ip.is_ipv4() { 32 } else { 128 };
+                return Ok(format!("{ip}/{bits}"));
+            }
+            net_common::ipnet::IpNet::parse(c)
+                .map(|_| c.to_string())
+                .ok_or_else(|| {
+                    NetError::Invalid(format!("allowed_cidrs: {c:?} is not an IP or CIDR"))
+                })
+        })
+        .collect()
+}
+
+fn cidr_allows(cidrs: &[String], ip: IpAddr) -> bool {
+    cidrs
+        .iter()
+        .any(|c| net_common::ipnet::IpNet::parse(c).is_some_and(|n| n.contains(ip)))
 }
 
 fn key_expiry(secs: Option<u64>) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -1527,15 +1572,23 @@ async fn issue_key(
     name: &str,
     scopes: &[String],
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    allowed_cidrs: &[String],
 ) -> Result<Value> {
     let scopes = validate_scopes(scopes)?;
     let m = ApiKeyMaterial::generate();
     let row = queries::insert_api_key(
-        &st.pool, project, &m.hash, &m.prefix, name, &scopes, expires_at,
+        &st.pool,
+        project,
+        &m.hash,
+        &m.prefix,
+        name,
+        &scopes,
+        expires_at,
+        allowed_cidrs,
     )
     .await?;
     Ok(
-        json!({"id": row.id, "key": m.plaintext, "prefix": row.prefix, "scopes": row.scopes, "name": row.name, "expires_at": row.expires_at}),
+        json!({"id": row.id, "key": m.plaintext, "prefix": row.prefix, "scopes": row.scopes, "name": row.name, "expires_at": row.expires_at, "allowed_cidrs": row.allowed_cidrs}),
     )
 }
 
@@ -1546,12 +1599,14 @@ async fn create_key(
 ) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Admin).await?;
     key_write(&st, &key)?;
+    let cidrs = parse_cidrs(&req.allowed_cidrs)?;
     let out = issue_key(
         &st,
         key.project_id,
         &req.name,
         &req.scopes,
         key_expiry(req.expires_in_secs),
+        &cidrs,
     )
     .await?;
     audit_log(
@@ -1560,7 +1615,7 @@ async fn create_key(
         &format!("key:{}", key.id),
         "key.create",
         out["id"].as_str().unwrap_or_default(),
-        json!({"name": req.name, "scopes": req.scopes, "expires_at": out["expires_at"]}),
+        json!({"name": req.name, "scopes": req.scopes, "expires_at": out["expires_at"], "allowed_cidrs": cidrs}),
     )
     .await;
     Ok(Json(out))
@@ -1682,6 +1737,7 @@ async fn op_create_project(
         "default",
         &["rooms".into(), "read".into(), "admin".into()],
         None,
+        &[],
     )
     .await?;
     queries::audit(
@@ -1711,12 +1767,14 @@ async fn op_create_key(
 ) -> ApiResult<Json<Value>> {
     let op = operator(&st, &h).await?;
     queries::get_project(&st.pool, id).await?;
+    let cidrs = parse_cidrs(&req.allowed_cidrs)?;
     let out = issue_key(
         &st,
         id,
         &req.name,
         &req.scopes,
         key_expiry(req.expires_in_secs),
+        &cidrs,
     )
     .await?;
     audit_log(
@@ -1725,7 +1783,7 @@ async fn op_create_key(
         &op.actor,
         "key.create",
         out["id"].as_str().unwrap_or_default(),
-        json!({"name": req.name, "scopes": req.scopes, "expires_at": out["expires_at"]}),
+        json!({"name": req.name, "scopes": req.scopes, "expires_at": out["expires_at"], "allowed_cidrs": cidrs}),
     )
     .await;
     Ok(Json(out))
@@ -2584,7 +2642,7 @@ fn key_json(r: &ApiKeyRow) -> Value {
     json!({
         "id": r.id, "prefix": r.prefix, "name": r.name, "scopes": r.scopes,
         "created_at": r.created_at, "last_used_at": r.last_used_at, "revoked_at": r.revoked_at,
-        "expires_at": r.expires_at
+        "expires_at": r.expires_at, "allowed_cidrs": r.allowed_cidrs
     })
 }
 
