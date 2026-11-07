@@ -3,7 +3,7 @@
 ## Network
 
 - Postgres and Redis on a private network only, with authentication (`DATABASE_URL`
-  with a strong password and `sslmode=require`; Redis `requirepass`/ACL and TLS or a private
+  with a strong password and `sslmode=require`; Redis `requirepass`/ACL via `redis://:password@host`, TLS via `rediss://` (built in), or a private
   link). The node never exposes them.
 - Public ports: `server.http_addr` (TCP, control plane + WS tunnel), `transport.quic_addr`
   (UDP), `transport.webtransport_addr` (UDP). Everything else closed.

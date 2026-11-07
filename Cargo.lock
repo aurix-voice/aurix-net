@@ -1843,6 +1843,7 @@ dependencies = [
 name = "net-client"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "base64 0.22.1",
  "bytes",
  "futures",
@@ -2679,12 +2680,16 @@ dependencies = [
  "num-bigint",
  "percent-encoding",
  "pin-project-lite",
+ "rustls",
+ "rustls-native-certs",
  "ryu",
  "sha1_smol",
  "socket2",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "url",
+ "webpki-roots",
 ]
 
 [[package]]
