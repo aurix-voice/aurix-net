@@ -12,8 +12,11 @@ pub type DbPool = sqlx::PgPool;
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
 pub async fn create_pool(cfg: &DatabaseConfig) -> Result<DbPool> {
+    // Short acquire timeout: during a Postgres outage joins and REST calls fail fast instead
+    // of hanging for sqlx's default 30 s (room tick loops never touch the pool).
     let pool = PgPoolOptions::new()
         .max_connections(cfg.max_connections)
+        .acquire_timeout(std::time::Duration::from_secs(5))
         .connect(&cfg.url)
         .await
         .map_err(|e| NetError::Database(format!("connect: {e}")))?;
