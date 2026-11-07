@@ -1,0 +1,16 @@
+[package]
+name = "net-sim-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Flat ABI over net-sim-physics for WASM (Web/Unity) and native FFI consumers"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+net-fpmath = { path = "../net-fpmath" }
+net-sim-physics = { path = "../net-sim-physics" }
+
+[dev-dependencies]
+wasmtime = { workspace = true }

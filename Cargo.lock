@@ -2054,6 +2054,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "net-sim-wasm"
+version = "0.1.0"
+dependencies = [
+ "net-fpmath",
+ "net-sim-physics",
+ "wasmtime",
+]
+
+[[package]]
 name = "net-transport"
 version = "0.1.0"
 dependencies = [
