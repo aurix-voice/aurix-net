@@ -11,6 +11,7 @@ members = [
     "crates/net-rollback",
     "crates/net-client",
     "crates/net-ffi",
+    "crates/net-cli",
     "crates/net-auth",
     "crates/net-db",
     "crates/net-control",
