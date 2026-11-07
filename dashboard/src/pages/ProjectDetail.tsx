@@ -3,8 +3,9 @@ import { ArrowLeft, Plus } from "lucide-react";
 import { useState } from "react";
 
 import type { ApiKey, LiveRoom, Module, Webhook } from "@/api/client";
-import { useCreateKey, useOpDeleteModule, useOpDeleteWebhook, useProject, useRegions, useRevokeProjectKey, useSetLimits, useSetSuspended, useDeleteProject } from "@/api/hooks";
+import { useCreateKey, useOpDeleteModule, useOpDeleteWebhook, useProject, useRegions, useRevokeProjectKey, useSetLimits, useSetSuspended, useDeleteProject, useRejectionsFor } from "@/api/hooks";
 import { ConnectCard } from "@/components/ConnectCard";
+import { RejectionsCard } from "@/components/RejectionsCard";
 import { useAuth } from "@/auth/AuthProvider";
 import { NewKeyDialog } from "@/components/NewKeyDialog";
 import { useI18n } from "@/i18n";
@@ -88,6 +89,7 @@ function ProjectBody() {
   const regions = useRegions();
   const setSuspended = useSetSuspended(projectId);
   const deleteProject = useDeleteProject();
+  const rejections = useRejectionsFor(projectId);
   const [inspecting, setInspecting] = useState<Webhook | null>(null);
   const navigate = useNavigate();
   const [deletingProject, setDeletingProject] = useState(false);
@@ -269,6 +271,9 @@ function ProjectBody() {
           <Card className="p-4">
             <KV cols={1} items={[{ k: t("common.created"), v: fmtDateTimeShort(locale, p.created_at) }, { k: t("projects.plan"), v: p.plan }]} />
           </Card>
+          <Section title={t("projects.health")}>
+            <RejectionsCard data={rejections.data} loading={rejections.isLoading} />
+          </Section>
           <Section title={t("projects.connect")}>
             <ConnectCard regions={regions.data ?? []} allowed={Array.isArray(p.limits?.allowed_regions) ? (p.limits.allowed_regions as string[]) : undefined} />
           </Section>

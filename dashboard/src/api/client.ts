@@ -242,6 +242,11 @@ export interface Webhook {
   /** Only in the create response. */
   secret?: string;
 }
+export interface Rejections {
+  hours: number;
+  total: Record<string, number>;
+  series: { t: string; counts: Record<string, number> }[];
+}
 export interface WebhookDelivery {
   id: string;
   webhook_id: string;

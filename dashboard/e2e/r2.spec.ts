@@ -153,3 +153,19 @@ test("webhook deliveries dialog shows the outcome of a test send", async ({ page
   await expect(dialog.getByRole("row").filter({ hasText: "test" }).first()).toBeVisible({ timeout: 20_000 });
   await expect(dialog.getByText("failed").first()).toBeVisible();
 });
+
+test("project page counts rejected grants while the project is suspended", async ({ page }) => {
+  const project = await api<{ project: { id: string }; key: { key: string } }>(page, "POST", "/v1/operator/projects", { name: uniq("e2e-rej") });
+  await api(page, "POST", `/v1/operator/projects/${project.project.id}/suspend`, { suspended: true });
+  for (let i = 0; i < 2; i++) {
+    const res = await page.request.post("/v1/grants", {
+      headers: { authorization: `Bearer ${project.key.key}`, "content-type": "application/json" },
+      data: { player_id: "p1", name: "P" },
+    });
+    expect(res.status()).toBe(403);
+  }
+  await page.goto(`/projects/${project.project.id}`);
+  await expect(page.getByText(/Rejections · last 24 h/)).toBeVisible();
+  const row = page.locator("dl div").filter({ hasText: "Project suspended" });
+  await expect(row.locator("dd")).toHaveText("2", { timeout: 15_000 });
+});

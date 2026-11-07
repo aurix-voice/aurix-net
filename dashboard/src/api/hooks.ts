@@ -3,7 +3,7 @@ import { useMemo } from "react";
 
 import { useAuth } from "@/auth/AuthProvider";
 
-import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Webhook, type WebhookDelivery } from "./client";
+import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Rejections, type Webhook, type WebhookDelivery } from "./client";
 
 export function useApi(): NetClient {
   const { token } = useAuth();
@@ -153,6 +153,25 @@ export function useCreateWebhook() {
   return useMutation({ mutationFn: (body: { url: string; events: string[] }) => api.post<Webhook>("/v1/webhooks", body), onSuccess: () => void qc.invalidateQueries({ queryKey: qk.webhooks }) });
 }
 /** Delivery log of one webhook. `projectId` switches to the operator route. */
+/** Why the project's players/keys were turned away in the last N hours (fleet-wide, from Redis). */
+export function useRejections(hours = 24) {
+  const api = useApi();
+  const { operator, projectId } = useAuth();
+  return useQuery({
+    queryKey: ["rejections", operator ? projectId : "me", hours],
+    enabled: !operator || !!projectId,
+    refetchInterval: 15_000,
+    queryFn: () => api.get<Rejections>(operator ? `/v1/operator/projects/${projectId}/rejections` : "/v1/rejections", { hours }),
+  });
+}
+export function useRejectionsFor(projectId: string, hours = 24) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["rejections", projectId, hours],
+    refetchInterval: 15_000,
+    queryFn: () => api.get<Rejections>(`/v1/operator/projects/${projectId}/rejections`, { hours }),
+  });
+}
 export function useWebhookDeliveries(webhookId: string | null, projectId?: string) {
   const api = useApi();
   return useQuery({

@@ -93,6 +93,8 @@ pub fn router(st: Shared) -> Router {
         .route("/v1/internal/rooms/:id/players", get(internal_players))
         .route("/v1/internal/drain", post(internal_drain))
         .route("/v1/webhooks/:id/deliveries", get(webhook_deliveries))
+        .route("/v1/rejections", get(rejections))
+        .route("/v1/operator/projects/:id/rejections", get(op_rejections))
         .route("/v1/webhooks/:id/test", post(webhook_test))
         .route(
             "/v1/operator/projects/:id/webhooks/:wid/deliveries",
@@ -133,6 +135,7 @@ async fn api_key(st: &Shared, h: &HeaderMap, scope: Scope) -> Result<ApiKeyRow> 
     // A suspended project keeps read access so the team can see its state; everything that
     // creates load (grants, rooms, matchmaking, uploads) is refused.
     if auth.project_disabled_at.is_some() && scope != Scope::Read {
+        reject(st, ProjectId::from_uuid(auth.key.project_id), "suspended");
         return Err(NetError::Forbidden("project suspended".into()));
     }
     let row = auth.key;
@@ -178,8 +181,67 @@ fn key_write(st: &Shared, key: &ApiKeyRow) -> Result<()> {
     if st.guards.key_writes.allow(key.id) {
         Ok(())
     } else {
+        reject(st, ProjectId::from_uuid(key.project_id), "rate_limited");
         Err(NetError::RateLimited)
     }
+}
+
+/// Records why a project's player/key was turned away (hourly Redis buckets, see
+/// `RedisStore::incr_rejection`). Off the request path; failures are only logged.
+pub(crate) fn reject(st: &Shared, project: ProjectId, reason: &'static str) {
+    let redis = st.redis.clone();
+    tokio::spawn(async move {
+        if let Err(e) = redis.incr_rejection(project, reason).await {
+            tracing::debug!(error = %e, reason, "rejection counter");
+        }
+    });
+}
+
+#[derive(Deserialize)]
+struct RejectionsQuery {
+    #[serde(default)]
+    hours: Option<u32>,
+}
+
+async fn rejections_json(st: &Shared, project: Uuid, hours: Option<u32>) -> Result<Value> {
+    let hours = hours.unwrap_or(24).clamp(1, 26);
+    let buckets = st
+        .redis
+        .get_rejections(ProjectId::from_uuid(project), hours)
+        .await?;
+    let mut total: std::collections::BTreeMap<String, i64> = Default::default();
+    let series: Vec<Value> = buckets
+        .into_iter()
+        .map(|(t, counts)| {
+            for (k, v) in &counts {
+                *total.entry(k.clone()).or_default() += v;
+            }
+            let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(t, 0)
+                .map(|d| d.to_rfc3339())
+                .unwrap_or_default();
+            json!({"t": ts, "counts": counts})
+        })
+        .collect();
+    Ok(json!({"hours": hours, "total": total, "series": series}))
+}
+
+async fn rejections(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Query(q): Query<RejectionsQuery>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Read).await?;
+    Ok(Json(rejections_json(&st, key.project_id, q.hours).await?))
+}
+
+async fn op_rejections(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(q): Query<RejectionsQuery>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    Ok(Json(rejections_json(&st, id, q.hours).await?))
 }
 
 /// Per-key grant budget (`limits.grants_per_sec_per_key`): one grant per player login.
@@ -187,6 +249,7 @@ fn key_grant(st: &Shared, key: &ApiKeyRow) -> Result<()> {
     if st.guards.key_grants.allow(key.id) {
         Ok(())
     } else {
+        reject(st, ProjectId::from_uuid(key.project_id), "rate_limited");
         Err(NetError::RateLimited)
     }
 }

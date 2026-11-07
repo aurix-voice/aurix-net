@@ -38,6 +38,8 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | POST | `/v1/operator/projects/:id/keys` | operator | |
 | POST | `/v1/operator/projects/:id/limits` | operator | quotas: `max_open_rooms, max_players_per_room, max_events_per_sec_per_room, max_events_per_sec_per_player, max_player_props_bytes, max_event_bytes, regions` |
 | POST | `/v1/operator/projects/:id/suspend` | operator | `{suspended}`: while suspended the project's keys can only read; grants, joins, room creation and writes get 403 `project suspended`. Live rooms drain as players leave. |
+| GET | `/v1/rejections` | read | why this project's players/keys were turned away in the last `?hours=` (≤26, default 24): hourly `series` + `total` by reason — `rate_limited`, `quota`, `capacity`, `room_full`, `suspended`, `region`, `grant`. Counted on every node (Redis), 26 h retention |
+| GET | `/v1/operator/projects/:id/rejections` | operator | same for operators |
 | GET | `/v1/webhooks/:id/deliveries` | read | last deliveries of a webhook (`?limit=`, ≤500): event, ok, HTTP status, attempts, latency, error; kept `retention.webhook_deliveries_days` (7) |
 | POST | `/v1/webhooks/:id/test` | admin | queue a `test` event to that webhook only; result shows in its deliveries |
 | GET/POST | `/v1/operator/projects/:id/webhooks/:wid/deliveries` · `/test` | operator | same for operators (test is audited as `webhook.test`) |

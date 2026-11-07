@@ -278,6 +278,46 @@ impl RedisStore {
         Ok(n as u32 <= limit)
     }
 
+    /// Per-project rejection counters in hourly buckets (`net:rej:{project}:{hour}` hashes,
+    /// 26 h TTL). Fire-and-forget from the hot path; one HINCRBY + EXPIRE.
+    pub async fn incr_rejection(&self, project: ProjectId, reason: &str) -> Result<()> {
+        let mut c = self.conn.clone();
+        let hour = chrono::Utc::now().timestamp() / 3600;
+        let k = format!("net:rej:{project}:{hour}");
+        redis::pipe()
+            .atomic()
+            .hincr(&k, reason, 1)
+            .ignore()
+            .expire(&k, 26 * 3600)
+            .ignore()
+            .query_async::<()>(&mut c)
+            .await
+            .map_err(|e| NetError::Redis(e.to_string()))
+    }
+
+    /// Hourly rejection buckets for the last `hours` (oldest first); each entry is
+    /// `(hour_start_unix, reason -> count)`. Missing hours are returned as empty maps.
+    pub async fn get_rejections(
+        &self,
+        project: ProjectId,
+        hours: u32,
+    ) -> Result<Vec<(i64, std::collections::HashMap<String, i64>)>> {
+        let mut c = self.conn.clone();
+        let now = chrono::Utc::now().timestamp() / 3600;
+        let hours = hours.clamp(1, 26) as i64;
+        let mut out = Vec::with_capacity(hours as usize);
+        for h in (now - hours + 1)..=now {
+            let k = format!("net:rej:{project}:{h}");
+            let m: std::collections::HashMap<String, i64> = redis::cmd("HGETALL")
+                .arg(&k)
+                .query_async(&mut c)
+                .await
+                .map_err(|e| NetError::Redis(e.to_string()))?;
+            out.push((h * 3600, m));
+        }
+        Ok(out)
+    }
+
     pub fn raw(&self) -> ConnectionManager {
         self.conn.clone()
     }

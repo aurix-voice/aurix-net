@@ -490,6 +490,7 @@ impl Session {
     fn check_room_scope(&self, g: &Grant, name: &str) -> Result<()> {
         if let Some(r) = &g.room {
             if r != name {
+                crate::rest::reject(&self.st, g.project, "grant");
                 return Err(NetError::Forbidden(format!("grant is limited to room {r}")));
             }
         }
@@ -555,6 +556,7 @@ impl Session {
         region: Option<String>,
     ) -> Result<Arc<Mutex<HostedRoom>>> {
         if !g.can("create") {
+            crate::rest::reject(&self.st, g.project, "grant");
             return Err(NetError::Forbidden("grant may not create rooms".into()));
         }
         if self.st.is_draining() {
@@ -602,22 +604,26 @@ impl Session {
         }
         let project = queries::get_project(&self.st.pool, g.project.0).await?;
         if project.disabled_at.is_some() {
+            crate::rest::reject(&self.st, g.project, "suspended");
             return Err(NetError::Forbidden("project disabled".into()));
         }
         let limits = ProjectLimits::from_json(&project.limits).effective(&self.st.cfg.limits);
         if let Some(allowed) = &limits.allowed_regions {
             if !allowed.iter().any(|r| r == self.st.region.as_str()) {
+                crate::rest::reject(&self.st, g.project, "region");
                 return Err(NetError::Forbidden("region not allowed for project".into()));
             }
         }
         let open_rooms = queries::count_open_rooms(&self.st.pool, g.project.0).await?;
         if open_rooms >= limits.max_rooms as i64 {
+            crate::rest::reject(&self.st, g.project, "quota");
             return Err(NetError::QuotaExceeded(format!(
                 "max {} open rooms",
                 limits.max_rooms
             )));
         }
         if self.st.host.len() >= self.st.cfg.limits.max_rooms_per_node as usize {
+            crate::rest::reject(&self.st, g.project, "capacity");
             return Err(NetError::QuotaExceeded("node is full".into()));
         }
         let max_players = max_players
@@ -723,7 +729,12 @@ impl Session {
                     spectator,
                     Instant::now(),
                 )
-                .map_err(room_err)?;
+                .map_err(|e| {
+                    if matches!(e, RoomError::Full) {
+                        crate::rest::reject(&self.st, g.project, "room_full");
+                    }
+                    room_err(e)
+                })?;
             hr.sessions.insert(
                 actor,
                 Attached {

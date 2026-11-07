@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 
 import type { Usage as UsageData } from "@/api/client";
-import { useUsage } from "@/api/hooks";
+import { useRejections, useUsage } from "@/api/hooks";
 import { ChartCard, TimeSeriesChart, type Point, type SeriesDef } from "@/components/charts";
 import { RangePicker, useRange } from "@/components/RangePicker";
 import { useI18n } from "@/i18n";
@@ -9,6 +9,7 @@ import { fmtBytes, fmtNumber } from "@/lib/format";
 import { useAuth } from "@/auth/AuthProvider";
 import { RequireScope } from "@/shell/Guards";
 import { PageHeader } from "@/ui/Page";
+import { RejectionsCard } from "@/components/RejectionsCard";
 import { Stat } from "@/ui/Primitives";
 
 type Metric = "room_minutes" | "player_minutes" | "bytes_in" | "bytes_out";
@@ -36,6 +37,7 @@ function UsageBody() {
   const [range, setRange] = useRange("7d");
   const { operator, projectId } = useAuth();
   const q = useUsage(range.from, range.to);
+  const rejections = useRejections(24);
   const points = useMemo(() => toPoints(q.data), [q.data]);
   const sum = useMemo(() => totals(q.data), [q.data]);
   const minutes: SeriesDef[] = [
@@ -55,6 +57,12 @@ function UsageBody() {
         <Stat label={t("usage.bytes_in")} value={fmtBytes(locale, sum.bytes_in)} hint={t("usage.total")} />
         <Stat label={t("usage.bytes_out")} value={fmtBytes(locale, sum.bytes_out)} hint={t("usage.total")} />
       </div>
+      {!operator || projectId ? (
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px] mb-5">
+          <div />
+          <RejectionsCard data={rejections.data} loading={rejections.isLoading} />
+        </div>
+      ) : null}
       <div className="grid gap-4 xl:grid-cols-2">
         <ChartCard title={`${t("usage.room_minutes")} · ${t("usage.player_minutes")}`} description={t("usage.desc")} series={minutes} query={q}>
           <TimeSeriesChart data={points} series={minutes} empty={t("common.empty")} />
