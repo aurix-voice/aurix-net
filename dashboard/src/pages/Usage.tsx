@@ -6,7 +6,8 @@ import { ChartCard, TimeSeriesChart, type Point, type SeriesDef } from "@/compon
 import { RangePicker, useRange } from "@/components/RangePicker";
 import { useI18n } from "@/i18n";
 import { fmtBytes, fmtNumber } from "@/lib/format";
-import { RequireProject, RequireScope } from "@/shell/Guards";
+import { useAuth } from "@/auth/AuthProvider";
+import { RequireScope } from "@/shell/Guards";
 import { PageHeader } from "@/ui/Page";
 import { Stat } from "@/ui/Primitives";
 
@@ -33,6 +34,7 @@ export function totals(u: UsageData | undefined): Record<Metric, number> {
 function UsageBody() {
   const { t, locale } = useI18n();
   const [range, setRange] = useRange("7d");
+  const { operator, projectId } = useAuth();
   const q = useUsage(range.from, range.to);
   const points = useMemo(() => toPoints(q.data), [q.data]);
   const sum = useMemo(() => totals(q.data), [q.data]);
@@ -46,7 +48,7 @@ function UsageBody() {
   ];
   return (
     <>
-      <PageHeader title={t("usage.title")} description={t("usage.desc")} actions={<RangePicker value={range} onChange={setRange} />} />
+      <PageHeader title={operator && !projectId ? t("usage.fleetTitle") : t("usage.title")} description={t("usage.desc")} actions={<RangePicker value={range} onChange={setRange} />} />
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 mb-5">
         <Stat label={t("usage.room_minutes")} value={fmtNumber(locale, Math.round(sum.room_minutes))} hint={t("usage.total")} />
         <Stat label={t("usage.player_minutes")} value={fmtNumber(locale, Math.round(sum.player_minutes))} hint={t("usage.total")} />
@@ -68,7 +70,7 @@ function UsageBody() {
 export function UsagePage() {
   return (
     <RequireScope scope="read">
-      <RequireProject>{() => <UsageBody />}</RequireProject>
+      <UsageBody />
     </RequireScope>
   );
 }

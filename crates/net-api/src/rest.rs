@@ -80,6 +80,8 @@ pub fn router(st: Shared) -> Router {
             get(op_room).delete(op_delete_room),
         )
         .route("/v1/operator/audit", get(op_audit))
+        .route("/v1/operator/usage", get(op_fleet_usage))
+        .route("/v1/operator/rooms/:id/replay", get(op_replay))
         .route("/v1/operator/projects/:id", get(op_project))
         .route("/v1/operator/projects/:id/usage", get(op_usage))
         .route("/v1/operator/projects/:id/rooms", get(op_project_rooms))
@@ -996,6 +998,34 @@ async fn op_project(
         "modules": modules,
         "rooms": rooms,
     })))
+}
+
+async fn op_fleet_usage(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Query(q): Query<UsageQuery>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    let to = q.to.unwrap_or_else(Utc::now);
+    let from = q.from.unwrap_or(to - chrono::Duration::days(30));
+    let rows = queries::usage_fleet_between(&st.pool, from, to).await?;
+    Ok(Json(json!({"from": from, "to": to, "usage": rows})))
+}
+
+async fn op_replay(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    let row = queries::get_room(&st.pool, id).await?;
+    let body = st
+        .redis
+        .get_replay(ProjectId::from_uuid(row.project_id), RoomId::from_uuid(id))
+        .await?
+        .ok_or_else(|| NetError::NotFound("replay".into()))?;
+    let v: Value = serde_json::from_slice(&body).map_err(|e| NetError::Internal(e.to_string()))?;
+    Ok(Json(v))
 }
 
 async fn op_usage(

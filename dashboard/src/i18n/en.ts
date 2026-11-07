@@ -169,6 +169,8 @@ export const en = {
   "rooms.empty.desc": "Rooms appear here the moment a client joins or creates one.",
   "rooms.schema": "Schema",
   // ---- usage
+  "usage.fleetTitle": "Usage · all projects",
+  "overview.usage24h": "Last 24 hours",
   "usage.title": "Usage",
   "usage.desc": "Metered per hour by every node: room-minutes, player-minutes and bytes. This is what node-hours billing is based on.",
   "usage.room_minutes": "Room-minutes",

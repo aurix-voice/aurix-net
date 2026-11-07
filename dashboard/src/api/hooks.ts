@@ -22,6 +22,7 @@ export const qk = {
   rooms: ["rooms"] as const,
   room: (id: string) => ["rooms", id] as const,
   usage: (from: string, to: string) => ["usage", from, to] as const,
+  fleetUsage: (from: string, to: string) => ["fleet-usage", from, to] as const,
   keys: ["keys"] as const,
   webhooks: ["webhooks"] as const,
   modules: ["modules"] as const,
@@ -109,11 +110,9 @@ export function useCloseRoom() {
 export function useUsage(from: string, to: string) {
   const api = useApi();
   const { operator, projectId } = useAuth();
-  return useQuery({
-    queryKey: operator && projectId ? qk.projectUsage(projectId, from, to) : qk.usage(from, to),
-    queryFn: () => api.get<Usage>(operator && projectId ? `/v1/operator/projects/${projectId}/usage` : "/v1/usage", { from, to }),
-    enabled: !operator || !!projectId,
-  });
+  const path = operator ? (projectId ? `/v1/operator/projects/${projectId}/usage` : "/v1/operator/usage") : "/v1/usage";
+  const key = operator ? (projectId ? qk.projectUsage(projectId, from, to) : qk.fleetUsage(from, to)) : qk.usage(from, to);
+  return useQuery({ queryKey: key, queryFn: () => api.get<Usage>(path, { from, to }) });
 }
 export function useKeys() {
   const api = useApi();

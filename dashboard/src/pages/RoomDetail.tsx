@@ -14,7 +14,7 @@ import { DataTable } from "@/ui/Table";
 export function RoomDetailPage() {
   const { roomId } = useParams({ from: "/shell/rooms/$roomId" });
   const { t, locale } = useI18n();
-  const { token } = useAuth();
+  const { token, operator } = useAuth();
   const q = useRoom(roomId);
   if (q.isLoading) return <Loading />;
   if (q.isError) return <QueryError error={q.error} onRetry={() => void q.refetch()} />;
@@ -23,7 +23,7 @@ export function RoomDetailPage() {
   const live = d.live;
 
   async function downloadReplay() {
-    const res = await fetch(`/v1/rooms/${roomId}/replay`, { headers: { authorization: `Bearer ${token}` } });
+    const res = await fetch(operator ? `/v1/operator/rooms/${roomId}/replay` : `/v1/rooms/${roomId}/replay`, { headers: { authorization: `Bearer ${token}` } });
     if (!res.ok) return;
     const blob = await res.blob();
     const a = document.createElement("a");

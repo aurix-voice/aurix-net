@@ -555,6 +555,22 @@ pub async fn usage_between(
     .map_err(db_err)
 }
 
+/// Fleet-wide usage: the same hourly rows summed over every project.
+pub async fn usage_fleet_between(
+    pool: &DbPool,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<UsageRow>> {
+    sqlx::query_as::<_, UsageRow>(
+        "SELECT hour, metric, SUM(quantity)::float8 AS quantity FROM usage_hours WHERE hour >= $1 AND hour < $2 GROUP BY hour, metric ORDER BY hour, metric",
+    )
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
 pub async fn audit(
     pool: &DbPool,
     project_id: Option<Uuid>,

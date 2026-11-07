@@ -1,8 +1,12 @@
 import { Link } from "@tanstack/react-router";
+import { useMemo } from "react";
 import { ArrowRight } from "lucide-react";
 
 import type { NodeRow } from "@/api/client";
-import { useHealth, useNodes, useRooms } from "@/api/hooks";
+import { useHealth, useNodes, useRooms, useUsage } from "@/api/hooks";
+import { ChartCard, TimeSeriesChart, type SeriesDef } from "@/components/charts";
+import { presetRange } from "@/components/RangePicker";
+import { toPoints } from "@/pages/Usage";
 import { useAuth } from "@/auth/AuthProvider";
 import { useI18n } from "@/i18n";
 import { fmtDuration, fmtNumber } from "@/lib/format";
@@ -21,6 +25,13 @@ export function OverviewPage() {
   const h = health.data;
   const live = (nodes.data ?? []).filter((n) => !nodeStale(n.last_heartbeat) || !operator);
   const players = (rooms.data ?? []).reduce((a, r) => a + r.players, 0);
+  const day = useMemo(() => presetRange("24h"), []);
+  const usage = useUsage(day.from, day.to);
+  const usagePoints = useMemo(() => toPoints(usage.data), [usage.data]);
+  const usageSeries: SeriesDef[] = [
+    { key: "player_minutes", label: t("usage.player_minutes"), color: "var(--fg)", area: true },
+    { key: "room_minutes", label: t("usage.room_minutes"), color: "var(--accent)" },
+  ];
 
   const nodeCols: Column<NodeRow>[] = [
     { key: "id", header: t("nodes.host"), cell: (n) => <Mono>{n.public_host}</Mono> },
@@ -90,6 +101,9 @@ export function OverviewPage() {
             )}
           </Card>
         </Section>
+        <ChartCard title={t("overview.usage24h")} description={t("usage.desc")} series={usageSeries} query={usage}>
+          <TimeSeriesChart data={usagePoints} series={usageSeries} height={180} />
+        </ChartCard>
       </div>
     </>
   );
