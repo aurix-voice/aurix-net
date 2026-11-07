@@ -131,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // First heartbeat before serving so the node is discoverable immediately.
-    heartbeat(&st, &http_url, false).await?;
+    heartbeat(&st, &http_url, st.is_draining()).await?;
     registry.refresh().await?;
     registry.spawn_refresh(Duration::from_secs(cfg.server.heartbeat_secs));
 
@@ -174,7 +174,7 @@ async fn main() -> anyhow::Result<()> {
             iv.tick().await;
             loop {
                 iv.tick().await;
-                if let Err(e) = heartbeat(&st, &http_url, false).await {
+                if let Err(e) = heartbeat(&st, &http_url, st.is_draining()).await {
                     warn!(error = %e, "heartbeat failed");
                 }
             }

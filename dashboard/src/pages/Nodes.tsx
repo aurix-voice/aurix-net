@@ -1,13 +1,17 @@
 import { Link } from "@tanstack/react-router";
+import { useState } from "react";
 
 import type { NodeRow } from "@/api/client";
-import { useNodes, useRegions } from "@/api/hooks";
+import { useNodes, useRegions, useSetNodeDraining } from "@/api/hooks";
 import { useAuth } from "@/auth/AuthProvider";
 import { useI18n } from "@/i18n";
 import { fmtDateTimeShort, fmtNumber, fmtPercent, fmtRelative } from "@/lib/format";
 import { nodeStale } from "@/lib/rooms";
 import { PageHeader } from "@/ui/Page";
+import { Button } from "@/ui/Button";
+import { ConfirmDialog } from "@/ui/Dialog";
 import { Badge, Card, IdChip, Mono, Progress, Tip } from "@/ui/Primitives";
+import { useToast } from "@/ui/Toast";
 import { DataTable, type Column } from "@/ui/Table";
 
 export function NodesPage() {
@@ -15,6 +19,9 @@ export function NodesPage() {
   const nodes = useNodes();
   const regions = useRegions();
   const { selectProject } = useAuth();
+  const toast = useToast();
+  const setDraining = useSetNodeDraining();
+  const [draining, setDrainingNode] = useState<NodeRow | null>(null);
   const cols: Column<NodeRow>[] = [
     {
       key: "host",
@@ -80,6 +87,16 @@ export function NodesPage() {
       ),
     },
     { key: "cert", header: t("nodes.cert"), cell: (n) => <Mono title={n.cert_sha256}>{n.cert_sha256.slice(0, 12)}…</Mono> },
+    {
+      key: "actions",
+      header: "",
+      align: "right",
+      cell: (n) => (
+        <Button variant="ghost" size="sm" disabled={nodeStale(n.last_heartbeat)} onClick={() => setDrainingNode(n)}>
+          {n.draining ? t("nodes.undrain") : t("nodes.drain")}
+        </Button>
+      ),
+    },
   ];
   return (
     <>
@@ -108,6 +125,21 @@ export function NodesPage() {
       <Card>
         <DataTable rows={nodes.data} columns={cols} rowKey={(n) => n.id} loading={nodes.isLoading} error={nodes.error} />
       </Card>
+      <ConfirmDialog
+        open={draining !== null}
+        onOpenChange={(o) => {
+          if (!o) setDrainingNode(null);
+        }}
+        title={draining?.draining ? t("nodes.undrain") : t("nodes.drain")}
+        description={draining ? (draining.draining ? t("nodes.undrain.confirm", { host: `${draining.public_host}:${draining.quic_port}` }) : t("nodes.drain.confirm", { host: `${draining.public_host}:${draining.quic_port}`, n: draining.rooms })) : ""}
+        confirmLabel={draining?.draining ? t("nodes.undrain") : t("nodes.drain")}
+        variant={draining?.draining ? "primary" : "danger"}
+        onConfirm={async () => {
+          if (!draining) return;
+          const r = await setDraining.mutateAsync({ nodeId: draining.id, draining: !draining.draining });
+          toast.ok(r.draining ? t("nodes.drain.done", { n: r.rooms_handed_off }) : t("nodes.undrain.done"));
+        }}
+      />
     </>
   );
 }

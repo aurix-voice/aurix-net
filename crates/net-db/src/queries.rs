@@ -204,6 +204,24 @@ pub async fn list_live_nodes(pool: &DbPool, stale_secs: i64) -> Result<Vec<NodeR
 }
 
 /// Every registered node, live or not.
+pub async fn set_node_draining(pool: &DbPool, id: Uuid, draining: bool) -> Result<bool> {
+    let r = sqlx::query("UPDATE nodes SET draining = $2 WHERE id = $1")
+        .bind(id)
+        .bind(draining)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(r.rows_affected() > 0)
+}
+
+pub async fn get_node(pool: &DbPool, id: Uuid) -> Result<Option<NodeRow>> {
+    sqlx::query_as::<_, NodeRow>("SELECT * FROM nodes WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(db_err)
+}
+
 pub async fn list_all_nodes(pool: &DbPool) -> Result<Vec<NodeRow>> {
     sqlx::query_as::<_, NodeRow>("SELECT * FROM nodes ORDER BY region, load_factor")
         .fetch_all(pool)

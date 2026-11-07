@@ -91,6 +91,8 @@ pub fn router(st: Shared) -> Router {
             delete(op_delete_module),
         )
         .route("/v1/internal/rooms/:id/players", get(internal_players))
+        .route("/v1/internal/drain", post(internal_drain))
+        .route("/v1/operator/nodes/:id/drain", post(op_drain_node))
         .route("/v1/operator/rooms/:id/replay", get(op_replay))
         .route("/v1/operator/projects/:id", get(op_project))
         .route("/v1/operator/projects/:id/usage", get(op_usage))
@@ -941,6 +943,107 @@ async fn op_set_limits(
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct DrainReq {
+    draining: bool,
+}
+
+/// Drain this node without stopping the process: refuse new joins, hand every live room off
+/// to the fleet through Redis checkpoints, answer 503 on `/healthz` so the balancer pulls it.
+/// `draining=false` puts the node back into rotation (it starts adopting rooms again).
+async fn set_local_draining(st: &Shared, draining: bool) -> Result<usize> {
+    st.draining
+        .store(draining, std::sync::atomic::Ordering::Relaxed);
+    let handed = if draining {
+        crate::ws::handoff_all(st).await
+    } else {
+        0
+    };
+    queries::set_node_draining(&st.pool, st.node_id.0, draining).await?;
+    tracing::info!(draining, rooms_handed_off = handed, "drain state changed");
+    Ok(handed)
+}
+
+async fn internal_drain(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Json(req): Json<DrainReq>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    let handed = set_local_draining(&st, req.draining).await?;
+    Ok(Json(
+        json!({"node_id": st.node_id.0, "draining": req.draining, "rooms_handed_off": handed}),
+    ))
+}
+
+async fn op_drain_node(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<DrainReq>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    let out = if id == st.node_id.0 {
+        let handed = set_local_draining(&st, req.draining).await?;
+        json!({"node_id": id, "draining": req.draining, "rooms_handed_off": handed})
+    } else {
+        let node = queries::get_node(&st.pool, id)
+            .await?
+            .ok_or_else(|| NetError::NotFound("node not found".into()))?;
+        internal_post(
+            &st,
+            &node.http_url,
+            "/v1/internal/drain",
+            json!({"draining": req.draining}),
+        )
+        .await?
+    };
+    audit_log(
+        &st,
+        None,
+        "operator",
+        if req.draining {
+            "node.drain"
+        } else {
+            "node.undrain"
+        },
+        &id.to_string(),
+        out.clone(),
+    )
+    .await;
+    Ok(Json(out))
+}
+
+/// Node-to-node call with the fleet admin token: short timeout, no redirects.
+async fn internal_post(st: &Shared, http_url: &str, path: &str, body: Value) -> Result<Value> {
+    if st.cfg.auth.admin_token.is_empty() {
+        return Err(NetError::Internal(
+            "admin_token unset; cannot reach other nodes".into(),
+        ));
+    }
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| NetError::Internal(e.to_string()))?;
+    let res = http
+        .post(format!("{}{path}", http_url.trim_end_matches('/')))
+        .bearer_auth(&st.cfg.auth.admin_token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| NetError::Internal(e.to_string()))?;
+    if !res.status().is_success() {
+        return Err(NetError::Internal(format!(
+            "node answered {}",
+            res.status()
+        )));
+    }
+    res.json()
+        .await
+        .map_err(|e| NetError::Internal(e.to_string()))
 }
 
 async fn op_nodes(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {

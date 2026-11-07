@@ -236,6 +236,18 @@ export function useSetSuspended(projectId: string) {
     },
   });
 }
+export function useSetNodeDraining() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ nodeId, draining }: { nodeId: string; draining: boolean }) =>
+      api.post<{ node_id: string; draining: boolean; rooms_handed_off: number }>(`/v1/operator/nodes/${nodeId}/drain`, { draining }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.nodes });
+      void qc.invalidateQueries({ queryKey: qk.regions });
+    },
+  });
+}
 export function useFileTicket() {
   const api = useApi();
   return useMutation({ mutationFn: (body: Record<string, unknown>) => api.post<Ticket>("/v1/matchmaking/tickets", body) });

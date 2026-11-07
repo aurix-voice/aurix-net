@@ -98,3 +98,21 @@ test("operator can suspend and resume a project; suspended keys cannot issue gra
   await page.getByPlaceholder(/^Action/).fill("project.suspend");
   await expect(page.getByRole("row").filter({ hasText: "project.suspend" }).first()).toBeVisible();
 });
+
+test("operator can drain another node from the console and put it back", async ({ page }) => {
+  const me = await api<{ node_id: string }>(page, "GET", "/v1/me");
+  const { nodes } = await api<{ nodes: { id: string; public_host: string; quic_port: number; draining: boolean; last_heartbeat: string }[] }>(page, "GET", "/v1/operator/nodes");
+  const other = nodes.find((n) => n.id !== me.node_id && !n.draining && Date.now() - Date.parse(n.last_heartbeat) < 30_000);
+  test.skip(!other, "needs a second live node");
+  const row = page.getByRole("row", { name: new RegExp(`${other!.public_host}:${other!.quic_port}`) });
+  await page.goto("/nodes");
+  await row.getByRole("button", { name: "Drain" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Drain" }).click();
+  await expect(row.getByText("Draining")).toBeVisible();
+  await row.getByRole("button", { name: "Back in rotation" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Back in rotation" }).click();
+  await expect(row.getByText("Draining")).toHaveCount(0);
+  await page.goto("/audit");
+  await page.getByPlaceholder(/^Action/).fill("node.");
+  await expect(page.getByRole("row").filter({ hasText: "node.drain" }).first()).toBeVisible();
+});
