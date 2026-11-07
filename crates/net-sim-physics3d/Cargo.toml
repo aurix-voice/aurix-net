@@ -1,0 +1,11 @@
+[package]
+name = "net-sim-physics3d"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Deterministic fixed-point 3D rigid-body physics for Aurix Sim (spheres, capsules, boxes)"
+
+[dependencies]
+net-fpmath = { path = "../net-fpmath" }
+serde = { workspace = true }
+serde_json = { workspace = true }

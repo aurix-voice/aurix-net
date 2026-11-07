@@ -105,4 +105,9 @@ and wasm32 (CI matrix) — the same vectors shipped to the C# and TS ports.
   joints/motor retune, contact events and circle cast over the flat ABI + Web/Unity wrappers;
   joint golden hash `0x4bcc781a484ceeed` native == wasm32. Polygon/capsule sweeps are not
   implemented (circle cast covers characters and projectiles).
-- Not yet: 3D (phase 3), bot kit (HFSM/BT).
+- Phase 3 (in progress): `net-sim-physics3d` — spheres, capsules, boxes (static/kinematic/
+  dynamic), 3D grid broadphase, analytic sphere/capsule contacts, sphere/capsule vs box,
+  box-box SAT (15 axes) with reference-face clipping (≤4 points), sequential impulses with warm
+  starting, two-axis friction, restitution, positional correction, quaternion integration
+  (`FxQuat`/`FxMat3` in net-fpmath), raycasts, snapshot/restore/hash; tests run two worlds and
+  compare hashes. Not yet: convex hulls, 3D joints/KCC, flat ABI + wrappers, bot kit (HFSM/BT).
