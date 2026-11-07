@@ -59,6 +59,7 @@ export function RoomDetailPage() {
         main={
           <>
             {!live ? <Callout tone="warn">{t("rooms.detail.noLive")}</Callout> : null}
+            {d.players_source === "unavailable" ? <Callout tone="warn">{t("rooms.detail.playersUnavailable")}</Callout> : null}
             <Section title={t("rooms.detail.players")}>
               <Card>
                 <DataTable

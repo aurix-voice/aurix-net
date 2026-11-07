@@ -41,7 +41,16 @@ export const overviewRoute = createRoute({ getParentRoute: () => shellRoute, pat
 export const nodesRoute = createRoute({ getParentRoute: () => shellRoute, path: "/nodes", component: NodesPage });
 export const projectsRoute = createRoute({ getParentRoute: () => shellRoute, path: "/projects", component: ProjectsPage });
 export const projectDetailRoute = createRoute({ getParentRoute: () => shellRoute, path: "/projects/$projectId", component: ProjectDetailPage });
-export const roomsRoute = createRoute({ getParentRoute: () => shellRoute, path: "/rooms", component: RoomsPage });
+export const roomsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/rooms",
+  component: RoomsPage,
+  validateSearch: (s: Record<string, unknown>): { node?: string; mode?: string; state?: string } => ({
+    node: typeof s.node === "string" && s.node ? s.node : undefined,
+    mode: typeof s.mode === "string" && s.mode ? s.mode : undefined,
+    state: typeof s.state === "string" && s.state ? s.state : undefined,
+  }),
+});
 export const roomDetailRoute = createRoute({ getParentRoute: () => shellRoute, path: "/rooms/$roomId", component: RoomDetailPage });
 export const usageRoute = createRoute({ getParentRoute: () => shellRoute, path: "/usage", component: UsagePage });
 export const keysRoute = createRoute({ getParentRoute: () => shellRoute, path: "/keys", component: KeysPage });

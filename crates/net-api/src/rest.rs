@@ -81,6 +81,7 @@ pub fn router(st: Shared) -> Router {
         )
         .route("/v1/operator/audit", get(op_audit))
         .route("/v1/operator/usage", get(op_fleet_usage))
+        .route("/v1/internal/rooms/:id/players", get(internal_players))
         .route("/v1/operator/rooms/:id/replay", get(op_replay))
         .route("/v1/operator/projects/:id", get(op_project))
         .route("/v1/operator/projects/:id/usage", get(op_usage))
@@ -401,27 +402,96 @@ async fn get_room(
     Ok(Json(room_detail(&st, row).await?))
 }
 
-/// Persisted row + live Redis state + players hosted on this node (empty when the room lives
-/// on another node).
+/// Players of a room hosted on this node, or `None` when it is not hosted here.
+fn local_players(st: &Shared, id: Uuid) -> Option<Vec<Value>> {
+    st.host.get(RoomId::from_uuid(id)).map(|hr| {
+        hr.lock()
+            .room
+            .player_infos()
+            .into_iter()
+            .map(|p| json!({"actor": p.actor, "player_id": p.player_id, "name": p.name, "online": p.online}))
+            .collect()
+    })
+}
+
+/// Node-to-node: player list of a room hosted here, for consoles pointed at a different node.
+/// Guarded by the fleet-wide admin token; never proxied further (a room is hosted by one node).
+async fn internal_players(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    let players =
+        local_players(&st, id).ok_or_else(|| NetError::NotFound("room not hosted here".into()))?;
+    Ok(Json(json!({"players": players})))
+}
+
+/// Persisted row + live Redis state + players. Players come from this node when it hosts the
+/// room, otherwise from the hosting node over its HTTP API (admin token, 3 s budget); when that
+/// fails `players_source` says so instead of silently showing an empty list.
 async fn room_detail(st: &Shared, row: net_db::models::RoomRow) -> Result<Value> {
     let id = row.id;
     let live = st
         .redis
         .get_room(ProjectId::from_uuid(row.project_id), RoomId::from_uuid(id))
         .await?;
-    let players: Vec<Value> = st
-        .host
-        .get(RoomId::from_uuid(id))
-        .map(|hr| {
-            hr.lock()
-                .room
-                .player_infos()
-                .into_iter()
-                .map(|p| json!({"actor": p.actor, "player_id": p.player_id, "name": p.name, "online": p.online}))
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(json!({"room": row, "live": live, "players": players}))
+    let (players, source): (Vec<Value>, &str) = match local_players(st, id) {
+        Some(p) => (p, "local"),
+        None => match row
+            .node_id
+            .and_then(|n| st.registry.get(net_common::NodeId::from_uuid(n)))
+        {
+            Some(n) if n.id != st.node_id && live.is_some() => {
+                match remote_players(st, &n.http_url, id).await {
+                    Ok(p) => (p, "remote"),
+                    Err(e) => {
+                        tracing::warn!(room = %id, node = %n.http_url, error = %e, "remote players unavailable");
+                        (Vec::new(), "unavailable")
+                    }
+                }
+            }
+            _ => (Vec::new(), "none"),
+        },
+    };
+    Ok(json!({"room": row, "live": live, "players": players, "players_source": source}))
+}
+
+async fn remote_players(st: &Shared, http_url: &str, id: Uuid) -> Result<Vec<Value>> {
+    if st.cfg.auth.admin_token.is_empty() {
+        return Err(NetError::Internal(
+            "admin_token unset; cannot query hosting node".into(),
+        ));
+    }
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| NetError::Internal(e.to_string()))?;
+    let url = format!(
+        "{}/v1/internal/rooms/{id}/players",
+        http_url.trim_end_matches('/')
+    );
+    let res = http
+        .get(url)
+        .bearer_auth(&st.cfg.auth.admin_token)
+        .send()
+        .await
+        .map_err(|e| NetError::Internal(e.to_string()))?;
+    if !res.status().is_success() {
+        return Err(NetError::Internal(format!(
+            "hosting node answered {}",
+            res.status()
+        )));
+    }
+    let v: Value = res
+        .json()
+        .await
+        .map_err(|e| NetError::Internal(e.to_string()))?;
+    Ok(v.get("players")
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default())
 }
 
 /// Operator view of any room in the cluster.

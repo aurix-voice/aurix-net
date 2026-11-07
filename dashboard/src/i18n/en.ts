@@ -142,6 +142,12 @@ export const en = {
   "projects.limit.allowed_regions": "Allowed regions (comma-separated)",
   "projects.issueKey": "Issue key",
   // ---- rooms
+  "rooms.filter.anyMode": "Any mode",
+  "rooms.filter.anyState": "Any state",
+  "rooms.filter.anyNode": "Any node",
+  "rooms.filter.clear": "Clear filters",
+  "rooms.detail.playersUnavailable": "The hosting node did not answer; the player list may be incomplete.",
+  "nodes.region.live": (v) => `${v.n} live`,
   "rooms.title": "Rooms",
   "rooms.desc": "Rooms currently hosted in the region. Closing a room disconnects its players.",
   "rooms.mode": "Mode",

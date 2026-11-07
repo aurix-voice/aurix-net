@@ -222,6 +222,7 @@ export interface RoomDetail {
   room: RoomRow;
   live: LiveRoom | null;
   players: Array<{ actor: number; player_id: string; name: string; online: boolean }>;
+  players_source?: "local" | "remote" | "unavailable" | "none";
 }
 export interface UsageRow {
   hour: string;

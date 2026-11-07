@@ -1,16 +1,16 @@
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { DoorOpen } from "lucide-react";
 import { useState } from "react";
 
 import type { LiveRoom } from "@/api/client";
-import { useCloseRoom, useRooms } from "@/api/hooks";
+import { useCloseRoom, useNodes, useRooms } from "@/api/hooks";
 import { useAuth } from "@/auth/AuthProvider";
 import { useI18n } from "@/i18n";
 import { fmtNumber } from "@/lib/format";
 import { modeTone } from "@/lib/rooms";
 import { Button } from "@/ui/Button";
 import { ConfirmDialog } from "@/ui/Dialog";
-import { Input } from "@/ui/Input";
+import { Input, NativeSelect } from "@/ui/Input";
 import { PageHeader, Toolbar } from "@/ui/Page";
 import { Badge, Card, EmptyState, IdChip } from "@/ui/Primitives";
 import { DataTable, type Column } from "@/ui/Table";
@@ -22,12 +22,29 @@ export function RoomsPage() {
   const navigate = useNavigate();
   const toast = useToast();
   const rooms = useRooms();
+  const nodes = useNodes();
   const close = useCloseRoom();
+  const search = useSearch({ strict: false });
+  const setFilter = (patch: Partial<typeof search>) => void navigate({ to: "/rooms", search: { ...search, ...patch }, replace: true });
   const [q, setQ] = useState("");
   const [closing, setClosing] = useState<LiveRoom | null>(null);
   const canClose = operator || can("rooms");
 
-  const rows = (rooms.data ?? []).filter((r) => !q || r.name.toLowerCase().includes(q.toLowerCase()) || r.room.startsWith(q) || r.mode === q);
+  const all = rooms.data ?? [];
+  const modes = [...new Set(all.map((r) => r.mode))].sort();
+  const nodeIds = [...new Set(all.map((r) => r.node))].sort();
+  const nodeLabel = (id: string) => {
+    const n = (nodes.data ?? []).find((x) => x.id === id);
+    return n ? `${n.public_host}:${n.quic_port} · ${n.region}` : `${id.slice(0, 8)}…`;
+  };
+  const rows = all.filter(
+    (r) =>
+      (!q || r.name.toLowerCase().includes(q.toLowerCase()) || r.room.startsWith(q) || r.mode === q) &&
+      (!search.node || r.node === search.node) &&
+      (!search.mode || r.mode === search.mode) &&
+      (!search.state || (search.state === "open" ? r.open : search.state === "closed" ? !r.open : search.state === "hidden" ? !r.visible : true)),
+  );
+  const filtered = !!(search.node || search.mode || search.state);
   const cols: Column<LiveRoom>[] = [
     {
       key: "name",
@@ -93,6 +110,33 @@ export function RoomsPage() {
       <Card>
         <Toolbar end={<span className="text-xs text-fg-muted tabular-nums">{t("common.total")}: {fmtNumber(locale, rows.length)}</span>}>
           <Input placeholder={t("common.search")} value={q} onChange={(e) => setQ(e.target.value)} className="w-56" />
+          <NativeSelect aria-label={t("rooms.mode")} value={search.mode ?? ""} onChange={(e) => setFilter({ mode: e.target.value || undefined })} className="w-36">
+            <option value="">{t("rooms.filter.anyMode")}</option>
+            {modes.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </NativeSelect>
+          <NativeSelect aria-label={t("rooms.state")} value={search.state ?? ""} onChange={(e) => setFilter({ state: e.target.value || undefined })} className="w-36">
+            <option value="">{t("rooms.filter.anyState")}</option>
+            <option value="open">{t("rooms.open")}</option>
+            <option value="closed">{t("rooms.closed")}</option>
+            <option value="hidden">{t("rooms.hidden")}</option>
+          </NativeSelect>
+          <NativeSelect aria-label={t("rooms.node")} value={search.node ?? ""} onChange={(e) => setFilter({ node: e.target.value || undefined })} className="w-60">
+            <option value="">{t("rooms.filter.anyNode")}</option>
+            {[...new Set([...nodeIds, ...(search.node ? [search.node] : [])])].map((id) => (
+              <option key={id} value={id}>
+                {nodeLabel(id)}
+              </option>
+            ))}
+          </NativeSelect>
+          {filtered ? (
+            <Button variant="ghost" size="sm" onClick={() => void navigate({ to: "/rooms", search: {}, replace: true })}>
+              {t("rooms.filter.clear")}
+            </Button>
+          ) : null}
         </Toolbar>
         <DataTable
           rows={rows}
