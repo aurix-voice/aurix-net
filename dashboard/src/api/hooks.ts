@@ -3,7 +3,7 @@ import { useMemo } from "react";
 
 import { useAuth } from "@/auth/AuthProvider";
 
-import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Rejections, type Webhook, type WebhookDelivery } from "./client";
+import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Ban, type Rejections, type Webhook, type WebhookDelivery } from "./client";
 
 export function useApi(): NetClient {
   const { token } = useAuth();
@@ -172,6 +172,32 @@ export function useRejections(hours = 24) {
     enabled: !operator || !!projectId,
     refetchInterval: 15_000,
     queryFn: () => api.get<Rejections>(operator ? `/v1/operator/projects/${projectId}/rejections` : "/v1/rejections", { hours }),
+  });
+}
+/** Player deny-list. `projectId` switches to the operator routes. */
+export function useBans(projectId?: string) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ["bans", projectId ?? "me"],
+    queryFn: async () => (await api.get<{ bans: Ban[] }>(projectId ? `/v1/operator/projects/${projectId}/bans` : "/v1/bans")).bans,
+  });
+}
+export function useAddBan(projectId?: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { player_id: string; reason?: string; duration_secs?: number }) =>
+      api.post<{ ban: Ban }>(projectId ? `/v1/operator/projects/${projectId}/bans` : "/v1/bans", body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["bans", projectId ?? "me"] }),
+  });
+}
+export function useRemoveBan(projectId?: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (playerId: string) =>
+      api.del(projectId ? `/v1/operator/projects/${projectId}/bans/${encodeURIComponent(playerId)}` : `/v1/bans/${encodeURIComponent(playerId)}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["bans", projectId ?? "me"] }),
   });
 }
 export function useRejectionsFor(projectId: string, hours = 24) {

@@ -40,7 +40,10 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | POST | `/v1/operator/projects/:id/suspend` | operator | `{suspended}`: while suspended the project's keys can only read; grants, joins, room creation and writes get 403 `project suspended`. Live rooms drain as players leave. |
 | DELETE | `/v1/rooms/:id/players/:actor` | rooms | kick a player (`?reason=` ≤64 printable ASCII chars, shown to the client as `left{reason}`); works for rooms hosted on any node; audited as `player.kick` |
 | DELETE | `/v1/operator/rooms/:id/players/:actor` | operator | same for operators |
-| GET | `/v1/rejections` | read | why this project's players/keys were turned away in the last `?hours=` (≤26, default 24): hourly `series` + `total` by reason — `rate_limited`, `quota`, `capacity`, `room_full`, `suspended`, `region`, `grant`. Counted on every node (Redis), 26 h retention |
+| GET/POST | `/v1/bans` | read / rooms | project deny-list; POST `{player_id, reason?, duration_secs?}` (omit duration = permanent). Banned players get 403 `banned…` at `/v1/grants` and at join; counted as rejection reason `banned` |
+| DELETE | `/v1/bans/:player_id` | rooms | lift a ban |
+| GET/POST/DELETE | `/v1/operator/projects/:id/bans[/:player_id]` | operator | same for operators |
+| GET | `/v1/rejections` | read | why this project's players/keys were turned away in the last `?hours=` (≤26, default 24): hourly `series` + `total` by reason — `rate_limited`, `quota`, `capacity`, `room_full`, `suspended`, `banned`, `region`, `grant`. Counted on every node (Redis), 26 h retention |
 | GET | `/v1/operator/projects/:id/rejections` | operator | same for operators |
 | GET | `/v1/webhooks/:id/deliveries` | read | last deliveries of a webhook (`?limit=`, ≤500): event, ok, HTTP status, attempts, latency, error; kept `retention.webhook_deliveries_days` (7) |
 | POST | `/v1/webhooks/:id/test` | admin | queue a `test` event to that webhook only; result shows in its deliveries |
@@ -186,5 +189,5 @@ in its rooms get `left{reason:"rehost"}` and rejoin the same room name on any no
 ## Audit log
 
 Every admin/operator mutation writes a row to the `audit` table (`actor` is `key:<api key id>` or
-`operator`): `project.create`, `project.limits`, `project.suspend`, `project.resume`, `project.delete`, `node.drain`, `node.undrain`, `room.close`, `webhook.test`, `player.kick`, `key.create`, `key.revoke`, `webhook.create`,
+`operator`): `project.create`, `project.limits`, `project.suspend`, `project.resume`, `project.delete`, `node.drain`, `node.undrain`, `room.close`, `webhook.test`, `player.kick`, `player.ban`, `player.unban`, `key.create`, `key.revoke`, `webhook.create`,
 `webhook.delete`, `module.put`, `module.delete`. Rows are kept for `retention.audit_days` (90).

@@ -35,6 +35,16 @@ pub struct ApiKeyAuth {
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]
+pub struct BanRow {
+    pub project_id: Uuid,
+    pub player_id: String,
+    pub reason: String,
+    pub created_by: String,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize)]
 pub struct WebhookDeliveryRow {
     pub id: Uuid,
     pub webhook_id: Uuid,

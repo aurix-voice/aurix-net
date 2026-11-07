@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { Activity, BarChart3, Boxes, Cpu, DoorOpen, KeyRound, LayoutDashboard, ScrollText, Server, Shuffle, Webhook } from "lucide-react";
+import { Activity, Ban, BarChart3, Boxes, Cpu, DoorOpen, KeyRound, LayoutDashboard, ScrollText, Server, Shuffle, Webhook } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { useAuth } from "@/auth/AuthProvider";
@@ -8,7 +8,7 @@ import { cn } from "@/lib/cn";
 
 import { Logo } from "./Logo";
 
-type To = "/" | "/nodes" | "/projects" | "/rooms" | "/usage" | "/keys" | "/webhooks" | "/modules" | "/matchmaking" | "/audit";
+type To = "/" | "/nodes" | "/projects" | "/rooms" | "/usage" | "/keys" | "/webhooks" | "/bans" | "/modules" | "/matchmaking" | "/audit";
 interface NavItem {
   to: To;
   label: MessageKey;
@@ -36,6 +36,7 @@ const SECTIONS: Array<{ label: MessageKey; items: NavItem[] }> = [
       { to: "/keys", projectKey: true, label: "nav.keys", icon: <KeyRound className="size-4" />, scope: "admin" },
       { to: "/webhooks", projectKey: true, label: "nav.webhooks", icon: <Webhook className="size-4" />, scope: "admin" },
       { to: "/modules", projectKey: true, label: "nav.modules", icon: <Cpu className="size-4" />, scope: "admin" },
+      { to: "/bans", projectKey: true, label: "nav.bans", icon: <Ban className="size-4" />, scope: "rooms" },
       { to: "/matchmaking", projectKey: true, label: "nav.matchmaking", icon: <Shuffle className="size-4" />, scope: "rooms" },
     ],
   },

@@ -169,3 +169,28 @@ test("project page counts rejected grants while the project is suspended", async
   const row = page.locator("dl div").filter({ hasText: "Project suspended" });
   await expect(row.locator("dd")).toHaveText("2", { timeout: 15_000 });
 });
+
+test("operator bans a player from the project page; grants for that id are refused until lifted", async ({ page }) => {
+  const project = await api<{ project: { id: string }; key: { key: string } }>(page, "POST", "/v1/operator/projects", { name: uniq("e2e-ban") });
+  const grant = () =>
+    page.request.post("/v1/grants", {
+      headers: { authorization: `Bearer ${project.key.key}`, "content-type": "application/json" },
+      data: { player_id: "cheater-1", name: "C" },
+    });
+  expect((await grant()).status()).toBe(200);
+  await page.goto(`/projects/${project.project.id}`);
+  await page.getByRole("tab", { name: /Bans/ }).click();
+  await page.getByRole("button", { name: "Ban player" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("textbox").nth(0).fill("cheater-1");
+  await dialog.getByRole("textbox").nth(1).fill("speedhack");
+  await dialog.getByRole("button", { name: "Ban player" }).click();
+  await expect(page.getByRole("row").filter({ hasText: "cheater-1" })).toBeVisible();
+  const refused = await grant();
+  expect(refused.status()).toBe(403);
+  expect(await refused.text()).toContain("speedhack");
+  await page.getByRole("row").filter({ hasText: "cheater-1" }).getByRole("button", { name: "Lift" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Lift" }).click();
+  await expect(page.getByRole("row").filter({ hasText: "cheater-1" })).toHaveCount(0);
+  expect((await grant()).status()).toBe(200);
+});

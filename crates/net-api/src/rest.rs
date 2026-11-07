@@ -110,6 +110,16 @@ pub fn router(st: Shared) -> Router {
             delete(internal_kick),
         )
         .route("/v1/rooms/:id/players/:actor", delete(kick_player))
+        .route("/v1/bans", get(list_bans).post(create_ban))
+        .route("/v1/bans/:player_id", delete(delete_ban))
+        .route(
+            "/v1/operator/projects/:id/bans",
+            get(op_list_bans).post(op_create_ban),
+        )
+        .route(
+            "/v1/operator/projects/:id/bans/:player_id",
+            delete(op_delete_ban),
+        )
         .route(
             "/v1/operator/rooms/:id/players/:actor",
             delete(op_kick_player),
@@ -373,6 +383,13 @@ async fn create_grant(
 ) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Rooms).await?;
     key_grant(&st, &key)?;
+    if !valid_player_id(&req.player_id) {
+        return Err(NetError::Invalid("player_id: 1..=128 chars".into()).into());
+    }
+    if let Some(b) = queries::get_ban(&st.pool, key.project_id, &req.player_id).await? {
+        reject(&st, ProjectId::from_uuid(key.project_id), "banned");
+        return Err(NetError::Forbidden(ban_message(&b)).into());
+    }
     let scopes: Vec<&str> = req
         .scopes
         .as_ref()
@@ -1156,6 +1173,124 @@ async fn close_room_anywhere(st: &Shared, project: ProjectId, id: Uuid) {
         }
     }
     close_room(st, project, room).await;
+}
+
+fn valid_player_id(p: &str) -> bool {
+    let n = p.chars().count();
+    (1..=128).contains(&n) && !p.chars().any(char::is_control)
+}
+
+pub(crate) fn ban_message(b: &net_db::models::BanRow) -> String {
+    match (&b.reason, b.expires_at) {
+        (r, Some(e)) if !r.is_empty() => format!("banned until {}: {r}", e.to_rfc3339()),
+        (_, Some(e)) => format!("banned until {}", e.to_rfc3339()),
+        (r, None) if !r.is_empty() => format!("banned: {r}"),
+        _ => "banned".into(),
+    }
+}
+
+#[derive(Deserialize)]
+struct BanReq {
+    player_id: String,
+    #[serde(default)]
+    reason: String,
+    /// Seconds from now; omit for a permanent ban.
+    #[serde(default)]
+    duration_secs: Option<u64>,
+}
+
+async fn add_ban(st: &Shared, project: Uuid, req: &BanReq, by: &str) -> Result<Value> {
+    if !valid_player_id(&req.player_id) {
+        return Err(NetError::Invalid("player_id: 1..=128 chars".into()));
+    }
+    if req.reason.chars().count() > 256 {
+        return Err(NetError::Invalid("reason: at most 256 chars".into()));
+    }
+    let expires = req
+        .duration_secs
+        .filter(|d| *d > 0)
+        .map(|d| chrono::Utc::now() + chrono::Duration::seconds(d.min(10 * 365 * 86_400) as i64));
+    let row =
+        queries::upsert_ban(&st.pool, project, &req.player_id, &req.reason, by, expires).await?;
+    audit_log(
+        st,
+        Some(project),
+        by,
+        "player.ban",
+        &req.player_id,
+        json!({"reason": req.reason, "expires_at": row.expires_at}),
+    )
+    .await;
+    Ok(json!({"ban": row}))
+}
+
+async fn remove_ban(st: &Shared, project: Uuid, player_id: &str, by: &str) -> Result<()> {
+    if !queries::delete_ban(&st.pool, project, player_id).await? {
+        return Err(NetError::NotFound("ban not found".into()));
+    }
+    audit_log(st, Some(project), by, "player.unban", player_id, json!({})).await;
+    Ok(())
+}
+
+async fn list_bans(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Read).await?;
+    Ok(Json(
+        json!({"bans": queries::list_bans(&st.pool, key.project_id).await?}),
+    ))
+}
+
+async fn create_ban(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Json(req): Json<BanReq>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Rooms).await?;
+    key_write(&st, &key)?;
+    Ok(Json(
+        add_ban(&st, key.project_id, &req, &format!("key:{}", key.id)).await?,
+    ))
+}
+
+async fn delete_ban(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(player_id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let key = api_key(&st, &h, Scope::Rooms).await?;
+    remove_ban(&st, key.project_id, &player_id, &format!("key:{}", key.id)).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn op_list_bans(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    Ok(Json(
+        json!({"bans": queries::list_bans(&st.pool, id).await?}),
+    ))
+}
+
+async fn op_create_ban(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<BanReq>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    queries::get_project(&st.pool, id).await?;
+    Ok(Json(add_ban(&st, id, &req, "operator").await?))
+}
+
+async fn op_delete_ban(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((id, player_id)): Path<(Uuid, String)>,
+) -> ApiResult<StatusCode> {
+    operator(&st, &h)?;
+    remove_ban(&st, id, &player_id, "operator").await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

@@ -744,6 +744,70 @@ pub async fn purge_webhook_deliveries(pool: &DbPool, days: u32) -> Result<u64> {
     Ok(r.rows_affected())
 }
 
+pub async fn upsert_ban(
+    pool: &DbPool,
+    project_id: Uuid,
+    player_id: &str,
+    reason: &str,
+    created_by: &str,
+    expires_at: Option<DateTime<Utc>>,
+) -> Result<BanRow> {
+    sqlx::query_as::<_, BanRow>(
+        "INSERT INTO bans (project_id, player_id, reason, created_by, expires_at) VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (project_id, player_id) DO UPDATE SET reason = EXCLUDED.reason, created_by = EXCLUDED.created_by, \
+         expires_at = EXCLUDED.expires_at, created_at = now() RETURNING *",
+    )
+    .bind(project_id)
+    .bind(player_id)
+    .bind(reason)
+    .bind(created_by)
+    .bind(expires_at)
+    .fetch_one(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn delete_ban(pool: &DbPool, project_id: Uuid, player_id: &str) -> Result<bool> {
+    let r = sqlx::query("DELETE FROM bans WHERE project_id = $1 AND player_id = $2")
+        .bind(project_id)
+        .bind(player_id)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(r.rows_affected() > 0)
+}
+
+pub async fn list_bans(pool: &DbPool, project_id: Uuid) -> Result<Vec<BanRow>> {
+    sqlx::query_as::<_, BanRow>(
+        "SELECT * FROM bans WHERE project_id = $1 AND (expires_at IS NULL OR expires_at > now()) \
+         ORDER BY created_at DESC LIMIT 1000",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
+/// Active ban for this player, if any (expired rows are ignored and reaped lazily).
+pub async fn get_ban(pool: &DbPool, project_id: Uuid, player_id: &str) -> Result<Option<BanRow>> {
+    sqlx::query_as::<_, BanRow>(
+        "SELECT * FROM bans WHERE project_id = $1 AND player_id = $2 AND (expires_at IS NULL OR expires_at > now())",
+    )
+    .bind(project_id)
+    .bind(player_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn purge_expired_bans(pool: &DbPool) -> Result<u64> {
+    let r = sqlx::query("DELETE FROM bans WHERE expires_at IS NOT NULL AND expires_at < now()")
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(r.rows_affected())
+}
+
 pub async fn purge_closed_rooms(pool: &DbPool, days: u32) -> Result<u64> {
     if days == 0 {
         return Ok(0);

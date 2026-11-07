@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import type { ApiKey, LiveRoom, Module, Webhook } from "@/api/client";
 import { useCreateKey, useOpDeleteModule, useOpDeleteWebhook, useProject, useRegions, useRevokeProjectKey, useSetLimits, useSetSuspended, useDeleteProject, useRejectionsFor } from "@/api/hooks";
+import { BansPanel } from "@/components/BansPanel";
 import { ConnectCard } from "@/components/ConnectCard";
 import { RejectionsCard } from "@/components/RejectionsCard";
 import { useAuth } from "@/auth/AuthProvider";
@@ -190,6 +191,7 @@ function ProjectBody() {
               { value: "rooms", label: t("projects.detail.rooms"), count: d.rooms.length },
               { value: "webhooks", label: t("projects.detail.webhooks"), count: d.webhooks.length },
               { value: "modules", label: t("projects.detail.modules"), count: d.modules.length },
+              { value: "bans", label: t("bans.title") },
             ]}
           >
             <TabPanel value="keys">
@@ -238,6 +240,9 @@ function ProjectBody() {
                   },
                 ]}
               />
+            </TabPanel>
+            <TabPanel value="bans">
+              <BansPanel projectId={p.id} />
             </TabPanel>
             <TabPanel value="modules">
               <DataTable

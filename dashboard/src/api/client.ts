@@ -242,6 +242,14 @@ export interface Webhook {
   /** Only in the create response. */
   secret?: string;
 }
+export interface Ban {
+  project_id: string;
+  player_id: string;
+  reason: string;
+  created_by: string;
+  expires_at: string | null;
+  created_at: string;
+}
 export interface Rejections {
   hours: number;
   total: Record<string, number>;

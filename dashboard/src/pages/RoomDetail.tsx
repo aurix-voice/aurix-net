@@ -3,7 +3,7 @@ import { ArrowLeft, Download } from "lucide-react";
 import { useState } from "react";
 
 import type { RoomDetail } from "@/api/client";
-import { useKickPlayer, useRoom } from "@/api/hooks";
+import { useAddBan, useKickPlayer, useRoom } from "@/api/hooks";
 import { useAuth } from "@/auth/AuthProvider";
 import { useI18n } from "@/i18n";
 import { fmtDateTimeShort } from "@/lib/format";
@@ -25,6 +25,8 @@ export function RoomDetailPage() {
   const kick = useKickPlayer(roomId);
   const [kicking, setKicking] = useState<RoomDetail["players"][number] | null>(null);
   const [kickReason, setKickReason] = useState("");
+  const [alsoBan, setAlsoBan] = useState(false);
+  const addBan = useAddBan(operator ? (q.data?.room.project_id ?? undefined) : undefined);
   if (q.isLoading) return <Loading />;
   if (q.isError) return <QueryError error={q.error} onRetry={() => void q.refetch()} />;
   const d = q.data!;
@@ -100,6 +102,7 @@ export function RoomDetailPage() {
                 if (!o) {
                   setKicking(null);
                   setKickReason("");
+                  setAlsoBan(false);
                 }
               }}
               title={t("rooms.kick")}
@@ -108,11 +111,16 @@ export function RoomDetailPage() {
               variant="danger"
               onConfirm={async () => {
                 if (!kicking) return;
+                if (alsoBan) await addBan.mutateAsync({ player_id: kicking.player_id, reason: kickReason.trim() || undefined });
                 await kick.mutateAsync({ actor: kicking.actor, reason: kickReason.trim() || undefined });
                 toast.ok(t("rooms.kick.done", { name: kicking.name || kicking.player_id }));
               }}
             >
               <Input aria-label={t("rooms.kick.reason")} placeholder={t("rooms.kick.reason")} value={kickReason} maxLength={64} onChange={(e) => setKickReason(e.target.value)} />
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" className="size-4 accent-fg" checked={alsoBan} onChange={(e) => setAlsoBan(e.target.checked)} />
+                {t("rooms.kick.ban")}
+              </label>
             </ConfirmDialog>
             <Section title={t("rooms.detail.props")}>
               <CodeBlock value={JSON.stringify(live?.props ?? room.props, null, 2)} />

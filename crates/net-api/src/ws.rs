@@ -607,6 +607,10 @@ impl Session {
             crate::rest::reject(&self.st, g.project, "suspended");
             return Err(NetError::Forbidden("project disabled".into()));
         }
+        if let Some(b) = queries::get_ban(&self.st.pool, g.project.0, &g.player_id).await? {
+            crate::rest::reject(&self.st, g.project, "banned");
+            return Err(NetError::Forbidden(crate::rest::ban_message(&b)));
+        }
         let limits = ProjectLimits::from_json(&project.limits).effective(&self.st.cfg.limits);
         if let Some(allowed) = &limits.allowed_regions {
             if !allowed.iter().any(|r| r == self.st.region.as_str()) {
