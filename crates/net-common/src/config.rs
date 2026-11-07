@@ -11,6 +11,40 @@ pub struct NetConfig {
     pub redis: RedisConfig,
     pub auth: AuthConfig,
     pub limits: LimitsConfig,
+    #[serde(default)]
+    pub retention: RetentionConfig,
+}
+
+/// How long closed rows stay in Postgres before the hourly janitor deletes them (0 = keep forever).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetentionConfig {
+    #[serde(default = "d_closed_rooms_days")]
+    pub closed_rooms_days: u32,
+    #[serde(default = "d_audit_days")]
+    pub audit_days: u32,
+    /// Billing rows (`usage_hours`); keep well past your invoicing window.
+    #[serde(default = "d_usage_days")]
+    pub usage_days: u32,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            closed_rooms_days: d_closed_rooms_days(),
+            audit_days: d_audit_days(),
+            usage_days: d_usage_days(),
+        }
+    }
+}
+
+fn d_closed_rooms_days() -> u32 {
+    7
+}
+fn d_audit_days() -> u32 {
+    90
+}
+fn d_usage_days() -> u32 {
+    400
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +211,11 @@ ws_connects_per_min_per_ip = 600
 auth_failures_per_min_per_ip = 20
 writes_per_sec_per_key = 20
 grants_per_sec_per_key = 500
+
+[retention]
+closed_rooms_days = 7
+audit_days = 90
+usage_days = 400
 "#;
 
 impl NetConfig {

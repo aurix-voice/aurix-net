@@ -576,3 +576,42 @@ pub async fn audit(
     .map_err(db_err)?;
     Ok(())
 }
+
+/// Rows closed longer than `days` ago; 0 disables. Returns the number deleted.
+pub async fn purge_closed_rooms(pool: &DbPool, days: u32) -> Result<u64> {
+    if days == 0 {
+        return Ok(0);
+    }
+    let r = sqlx::query(
+        "DELETE FROM rooms WHERE state = 'closed' AND closed_at < now() - ($1 * interval '1 day')",
+    )
+    .bind(days as f64)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(r.rows_affected())
+}
+
+pub async fn purge_audit(pool: &DbPool, days: u32) -> Result<u64> {
+    if days == 0 {
+        return Ok(0);
+    }
+    let r = sqlx::query("DELETE FROM audit WHERE created_at < now() - ($1 * interval '1 day')")
+        .bind(days as f64)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(r.rows_affected())
+}
+
+pub async fn purge_usage(pool: &DbPool, days: u32) -> Result<u64> {
+    if days == 0 {
+        return Ok(0);
+    }
+    let r = sqlx::query("DELETE FROM usage_hours WHERE hour < now() - ($1 * interval '1 day')")
+        .bind(days as f64)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(r.rows_affected())
+}

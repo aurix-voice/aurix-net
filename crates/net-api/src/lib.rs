@@ -2,6 +2,7 @@
 
 pub mod data;
 pub mod host;
+pub mod janitor;
 pub mod lockstep;
 pub mod matchmaking;
 pub mod metering;
