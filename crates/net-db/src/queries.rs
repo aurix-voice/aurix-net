@@ -906,6 +906,60 @@ pub async fn list_audit_for_target(
     .map_err(db_err)
 }
 
+pub async fn insert_operator_token(
+    pool: &DbPool,
+    name: &str,
+    token_hash: &str,
+    prefix: &str,
+    created_by: &str,
+    expires_at: Option<DateTime<Utc>>,
+) -> Result<OperatorTokenRow> {
+    sqlx::query_as::<_, OperatorTokenRow>(
+        "INSERT INTO operator_tokens (id, name, token_hash, prefix, created_by, expires_at) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *",
+    )
+    .bind(Uuid::now_v7())
+    .bind(name)
+    .bind(token_hash)
+    .bind(prefix)
+    .bind(created_by)
+    .bind(expires_at)
+    .fetch_one(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn list_operator_tokens(pool: &DbPool) -> Result<Vec<OperatorTokenRow>> {
+    sqlx::query_as::<_, OperatorTokenRow>("SELECT * FROM operator_tokens ORDER BY created_at DESC")
+        .fetch_all(pool)
+        .await
+        .map_err(db_err)
+}
+
+pub async fn revoke_operator_token(pool: &DbPool, id: Uuid) -> Result<Option<OperatorTokenRow>> {
+    sqlx::query_as::<_, OperatorTokenRow>(
+        "UPDATE operator_tokens SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL RETURNING *",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)
+}
+
+/// Live (not revoked, not expired) operator token by hash; stamps `last_used_at` at most once a minute.
+pub async fn find_operator_token(
+    pool: &DbPool,
+    token_hash: &str,
+) -> Result<Option<OperatorTokenRow>> {
+    sqlx::query_as::<_, OperatorTokenRow>(
+        "UPDATE operator_tokens SET last_used_at = CASE WHEN last_used_at IS NULL OR last_used_at < now() - interval '60 seconds' THEN now() ELSE last_used_at END \
+         WHERE token_hash = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) RETURNING *",
+    )
+    .bind(token_hash)
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)
+}
+
 pub async fn list_audit(
     pool: &DbPool,
     project: Option<Uuid>,

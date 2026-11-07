@@ -5,6 +5,7 @@ import { LoginPage } from "@/auth/LoginPage";
 import { authStore } from "@/auth/store";
 import { AuditPage } from "@/pages/Audit";
 import { BansPage } from "@/pages/Bans";
+import { SettingsPage } from "@/pages/Settings";
 import { KeysPage } from "@/pages/Keys";
 import { MatchmakingPage } from "@/pages/Matchmaking";
 import { ModulesPage } from "@/pages/Modules";
@@ -57,13 +58,14 @@ export const usageRoute = createRoute({ getParentRoute: () => shellRoute, path: 
 export const keysRoute = createRoute({ getParentRoute: () => shellRoute, path: "/keys", component: KeysPage });
 export const webhooksRoute = createRoute({ getParentRoute: () => shellRoute, path: "/webhooks", component: WebhooksPage });
 export const bansRoute = createRoute({ getParentRoute: () => shellRoute, path: "/bans", component: BansPage });
+export const settingsRoute = createRoute({ getParentRoute: () => shellRoute, path: "/settings", component: SettingsPage });
 export const modulesRoute = createRoute({ getParentRoute: () => shellRoute, path: "/modules", component: ModulesPage });
 export const matchmakingRoute = createRoute({ getParentRoute: () => shellRoute, path: "/matchmaking", component: MatchmakingPage });
 export const auditRoute = createRoute({ getParentRoute: () => shellRoute, path: "/audit", component: AuditPage });
 
 const routeTree = rootRoute.addChildren([
   authRoute.addChildren([loginRoute]),
-  shellRoute.addChildren([overviewRoute, nodesRoute, projectsRoute, projectDetailRoute, roomsRoute, roomDetailRoute, usageRoute, keysRoute, webhooksRoute, bansRoute, modulesRoute, matchmakingRoute, auditRoute]),
+  shellRoute.addChildren([overviewRoute, nodesRoute, projectsRoute, projectDetailRoute, roomsRoute, roomDetailRoute, usageRoute, keysRoute, webhooksRoute, bansRoute, settingsRoute, modulesRoute, matchmakingRoute, auditRoute]),
 ]);
 
 export const router = createRouter({ routeTree, defaultPreload: "intent" });

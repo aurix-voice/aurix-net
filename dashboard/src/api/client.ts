@@ -286,6 +286,19 @@ export interface NodeStats {
   rooms_adopted: number;
   rss_mb: number | null;
 }
+export interface OperatorToken {
+  id: string;
+  name: string;
+  prefix: string;
+  created_by: string;
+  created_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+  last_used_at: string | null;
+}
+export interface NewOperatorToken extends OperatorToken {
+  token: string;
+}
 export interface Attention {
   stale_nodes: { id: string; public_host: string; quic_port: number; region: string; last_heartbeat: string }[];
   draining_nodes: { id: string; public_host: string; quic_port: number; region: string; rooms: number }[];

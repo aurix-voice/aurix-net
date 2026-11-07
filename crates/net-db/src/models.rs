@@ -36,6 +36,20 @@ pub struct ApiKeyAuth {
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]
+pub struct OperatorTokenRow {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(skip_serializing)]
+    pub token_hash: String,
+    pub prefix: String,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize)]
 pub struct FailingWebhookRow {
     pub project_id: Uuid,
     pub webhook_id: Uuid,

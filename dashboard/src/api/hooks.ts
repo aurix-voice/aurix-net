@@ -3,7 +3,7 @@ import { useMemo } from "react";
 
 import { useAuth } from "@/auth/AuthProvider";
 
-import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Attention, type Ban, type MatchmakingStats, type NodeStats, type PlayerLookup, type RotatedWebhook, type Rejections, type Webhook, type WebhookDelivery } from "./client";
+import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Attention, type Ban, type MatchmakingStats, type NewOperatorToken, type NodeStats, type OperatorToken, type PlayerLookup, type RotatedWebhook, type Rejections, type Webhook, type WebhookDelivery } from "./client";
 
 export function useApi(): NetClient {
   const { token } = useAuth();
@@ -205,6 +205,24 @@ export function useNodeStats(nodeId: string | null) {
     retry: false,
     queryFn: () => api.get<NodeStats>(`/v1/operator/nodes/${nodeId}/stats`),
   });
+}
+export function useOperatorTokens() {
+  const api = useApi();
+  const { operator } = useAuth();
+  return useQuery({ queryKey: ["operator-tokens"], enabled: operator, queryFn: async () => (await api.get<{ tokens: OperatorToken[] }>("/v1/operator/tokens")).tokens });
+}
+export function useCreateOperatorToken() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; expires_in_secs?: number }) => api.post<NewOperatorToken>("/v1/operator/tokens", body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["operator-tokens"] }),
+  });
+}
+export function useRevokeOperatorToken() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: (id: string) => api.del(`/v1/operator/tokens/${id}`), onSuccess: () => void qc.invalidateQueries({ queryKey: ["operator-tokens"] }) });
 }
 export function useAttention() {
   const api = useApi();

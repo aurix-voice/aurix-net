@@ -286,3 +286,26 @@ test("operator opens live stats of a node", async ({ page }) => {
   await expect(dialog.getByText("Memory (RSS)")).toBeVisible();
   await expect(dialog.getByText(/\d+ MB/)).toBeVisible();
 });
+
+test("operator issues a named token on Settings, it authenticates and is named in the audit log, then revokes it", async ({ page }) => {
+  const name = uniq("ci-bot");
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "New token" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Name").fill(name);
+  await dialog.getByRole("button", { name: "Create" }).click();
+  const token = (await page.getByRole("dialog").locator("pre, code").first().innerText()).trim();
+  expect(token.length).toBeGreaterThan(20);
+  await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).last().click();
+  const me = await page.request.get("/v1/me", { headers: { authorization: `Bearer ${token}` } });
+  expect(me.ok()).toBeTruthy();
+  expect(((await me.json()) as { actor: string }).actor).toBe(`op:${name}`);
+  const audit = await page.request.get("/v1/operator/audit?action=operator_token.create", { headers: { authorization: `Bearer ${token}` } });
+  expect(((await audit.json()) as { audit: { details: { name: string } }[] }).audit.some((a) => a.details.name === name)).toBeTruthy();
+  const row = page.getByRole("row").filter({ hasText: name });
+  await row.getByRole("button", { name: "Revoke" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Revoke" }).click();
+  await expect(row.getByText("Revoked")).toBeVisible();
+  const after = await page.request.get("/v1/me", { headers: { authorization: `Bearer ${token}` } });
+  expect(after.status()).toBe(401);
+});

@@ -53,6 +53,8 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | POST | `/v1/webhooks/:id/test` | admin | queue a `test` event to that webhook only; result shows in its deliveries |
 | GET/POST | `/v1/operator/projects/:id/webhooks/:wid/deliveries` · `/test` | operator | same for operators (test is audited as `webhook.test`) |
 | DELETE | `/v1/operator/projects/:id` | operator | soft delete: live rooms closed fleet-wide, all keys revoked, webhooks/modules removed; usage and audit rows stay |
+| GET/POST | `/v1/operator/tokens` | operator | named operator tokens: POST `{name, expires_in_secs?}` returns the plaintext once; they authenticate every operator route and appear in audit as actor `op:<name>` (the config `admin_token` stays actor `operator`) |
+| DELETE | `/v1/operator/tokens/:id` | operator | revoke (audited `operator_token.revoke`) |
 | GET | `/v1/operator/attention` | operator | what needs a look now: `stale_nodes` (no heartbeat > 30 s), `draining_nodes`, `suspended_projects`, `failing_webhooks` (failed deliveries in the last hour), `rejections` (projects with rejections this hour, by reason) |
 | GET | `/v1/operator/nodes` | operator | all nodes incl. draining |
 | GET | `/v1/operator/nodes/:id/stats` | operator | live process stats of one node (answered by that node): uptime, rooms by mode, players/spectators, control sessions, datagram/byte counters, sync tick avg/p99 ms, overruns, lost deltas, resyncs, desyncs, adopted rooms, RSS |
@@ -195,5 +197,5 @@ in its rooms get `left{reason:"rehost"}` and rejoin the same room name on any no
 ## Audit log
 
 Every admin/operator mutation writes a row to the `audit` table (`actor` is `key:<api key id>` or
-`operator`): `project.create`, `project.limits`, `project.suspend`, `project.resume`, `project.delete`, `node.drain`, `node.undrain`, `room.close`, `webhook.test`, `player.kick`, `player.ban`, `player.unban`, `webhook.rotate`, `key.create`, `key.revoke`, `webhook.create`,
+`operator`): `project.create`, `project.limits`, `project.suspend`, `project.resume`, `project.delete`, `node.drain`, `node.undrain`, `room.close`, `webhook.test`, `player.kick`, `player.ban`, `player.unban`, `webhook.rotate`, `operator_token.create`, `operator_token.revoke`, `key.create`, `key.revoke`, `webhook.create`,
 `webhook.delete`, `module.put`, `module.delete`. Rows are kept for `retention.audit_days` (90).

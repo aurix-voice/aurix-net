@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { Activity, Ban, BarChart3, Boxes, Cpu, DoorOpen, KeyRound, LayoutDashboard, ScrollText, Server, Shuffle, Webhook } from "lucide-react";
+import { Activity, Ban, BarChart3, Boxes, Cpu, DoorOpen, KeyRound, Settings, LayoutDashboard, ScrollText, Server, Shuffle, Webhook } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { useAuth } from "@/auth/AuthProvider";
@@ -8,7 +8,7 @@ import { cn } from "@/lib/cn";
 
 import { Logo } from "./Logo";
 
-type To = "/" | "/nodes" | "/projects" | "/rooms" | "/usage" | "/keys" | "/webhooks" | "/bans" | "/modules" | "/matchmaking" | "/audit";
+type To = "/" | "/nodes" | "/projects" | "/rooms" | "/usage" | "/keys" | "/webhooks" | "/bans" | "/modules" | "/matchmaking" | "/audit" | "/settings";
 interface NavItem {
   to: To;
   label: MessageKey;
@@ -42,7 +42,10 @@ const SECTIONS: Array<{ label: MessageKey; items: NavItem[] }> = [
   },
   {
     label: "nav.section.system",
-    items: [{ to: "/audit", label: "nav.audit", icon: <ScrollText className="size-4" />, scope: "read" }],
+    items: [
+      { to: "/audit", label: "nav.audit", icon: <ScrollText className="size-4" />, scope: "read" },
+      { to: "/settings", operator: true, label: "nav.settings", icon: <Settings className="size-4" /> },
+    ],
   },
 ];
 
