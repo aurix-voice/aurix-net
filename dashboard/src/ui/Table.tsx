@@ -88,7 +88,7 @@ export function DataTable<Row>({
   const cellPad = dense ? "px-3 py-1.5" : "px-3 py-2";
 
   return (
-    <div className={cn("overflow-x-auto subtle-scroll", className)}>
+    <div className={cn("overflow-x-auto subtle-scroll min-w-0 max-w-full", className)}>
       <table className="w-full text-[13px] border-collapse">
         <thead>
           <tr className="border-b border-border">

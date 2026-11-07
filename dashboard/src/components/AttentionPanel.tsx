@@ -18,7 +18,7 @@ export function AttentionPanel({ data, loading }: { data: Attention | undefined;
         </Badge>
       </div>
       {data && count === 0 ? <div className="text-sm text-fg-muted">{t("attention.quiet.desc")}</div> : null}
-      <ul className="space-y-1.5 text-sm">
+      <ul className="space-y-1.5 text-sm min-w-0">
         {data?.stale_nodes.map((n) => (
           <li key={`s-${n.id}`} className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-2 min-w-0">
@@ -47,11 +47,11 @@ export function AttentionPanel({ data, loading }: { data: Attention | undefined;
           </li>
         ))}
         {data?.failing_webhooks.map((w) => (
-          <li key={`w-${w.webhook_id}`} className="flex items-center justify-between gap-2">
+          <li key={`w-${w.webhook_id}`} className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
             <span className="flex items-center gap-2 min-w-0">
               <Badge tone="danger">{t("attention.webhook")}</Badge>
               <Link to="/projects/$projectId" params={{ projectId: w.project_id }} className="truncate hover:underline">{w.project_name || w.project_id.slice(0, 8)}</Link>
-              <Mono className="truncate text-xs text-fg-muted">{w.url}</Mono>
+              <Mono className="hidden sm:inline truncate text-xs text-fg-muted">{w.url}</Mono>
             </span>
             <span className="text-xs text-fg-muted whitespace-nowrap">{t("attention.failed", { f: fmtNumber(locale, w.failed), n: fmtNumber(locale, w.total) })}</span>
           </li>

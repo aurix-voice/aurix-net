@@ -191,7 +191,7 @@ function ProjectBody() {
         }}
       />
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <Card>
+        <Card className="min-w-0">
           <Tabs
             value={tab}
             onValueChange={setTab}
@@ -289,7 +289,7 @@ function ProjectBody() {
             </TabPanel>
           </Tabs>
         </Card>
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-4 min-w-0">
           <Section title={t("projects.limits")}>
             <LimitsForm key={JSON.stringify(p.limits)} projectId={p.id} limits={p.limits} effective={d.effective_limits} />
           </Section>
