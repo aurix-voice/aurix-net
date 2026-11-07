@@ -76,6 +76,8 @@ pub struct ClientView {
     pub interest: BTreeSet<EntityId>,
     /// Entity whose position defines the viewpoint (the player's avatar).
     pub viewpoint: Option<EntityId>,
+    /// Extra viewpoints (camera, scope target); at most `MAX_VIEWPOINTS` in total are used.
+    pub extra_viewpoints: Vec<EntityId>,
     pub last_tick: Option<Tick>,
 }
 
@@ -90,6 +92,7 @@ impl ClientView {
             lost_deltas: 0,
             interest: BTreeSet::new(),
             viewpoint: None,
+            extra_viewpoints: Vec::new(),
             last_tick: None,
         }
     }
@@ -141,7 +144,13 @@ impl ClientView {
 pub struct Replicator {
     pub cfg: ReplicationConfig,
     pos_cid: Option<(u16, usize)>,
+    /// Component ids flagged `@owner_only` / `@global` in the schema.
+    owner_only: HashSet<u16>,
+    global: HashSet<u16>,
 }
+
+/// Viewpoints per client (`viewpoint` + `extra_viewpoints`).
+pub const MAX_VIEWPOINTS: usize = 4;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ApplyError {
@@ -159,7 +168,22 @@ impl Replicator {
             .position
             .as_ref()
             .and_then(|(name, idx)| schema.component(name).map(|c| (c.id, *idx)));
-        Self { cfg, pos_cid }
+        Self {
+            cfg,
+            pos_cid,
+            owner_only: schema
+                .components
+                .iter()
+                .filter(|c| c.owner_only)
+                .map(|c| c.id)
+                .collect(),
+            global: schema
+                .components
+                .iter()
+                .filter(|c| c.global)
+                .map(|c| c.id)
+                .collect(),
+        }
     }
 
     fn position(&self, e: &Entity) -> Option<[f32; 3]> {
@@ -177,11 +201,15 @@ impl Replicator {
     /// Entities relevant to the viewer this tick: own entities, explicit interest, server
     /// entities without position, and everything within the AOI radius of the viewpoint.
     pub fn relevant(&self, frame: &Frame, view: &ClientView) -> Vec<EntityId> {
-        let origin = view
+        let origins: Vec<(i32, i32)> = view
             .viewpoint
-            .and_then(|v| frame.entity(v))
-            .and_then(|e| self.position(e))
-            .map(|p| self.cell(p));
+            .iter()
+            .chain(view.extra_viewpoints.iter())
+            .take(MAX_VIEWPOINTS)
+            .filter_map(|v| frame.entity(*v))
+            .filter_map(|e| self.position(e))
+            .map(|p| self.cell(p))
+            .collect();
         let r = self.cfg.aoi_radius as i32;
         frame
             .entities()
@@ -189,20 +217,47 @@ impl Replicator {
                 if e.owner == Some(view.actor)
                     || view.interest.contains(&e.id)
                     || self.cfg.aoi_cell <= 0.0
+                    || e.components.keys().any(|c| self.global.contains(c))
                 {
                     return true;
                 }
-                match (self.position(e), origin) {
-                    (Some(p), Some(o)) => {
+                match self.position(e) {
+                    None => true,
+                    Some(_) if origins.is_empty() => true,
+                    Some(p) => {
+                        // Hysteresis: something already in view stays until one cell further.
+                        let r = if view.known.contains_key(&e.id) {
+                            r + 1
+                        } else {
+                            r
+                        };
                         let c = self.cell(p);
-                        (c.0 - o.0).abs() <= r && (c.1 - o.1).abs() <= r
+                        origins
+                            .iter()
+                            .any(|o| (c.0 - o.0).abs() <= r && (c.1 - o.1).abs() <= r)
                     }
-                    (None, _) => true,
-                    (Some(_), None) => true,
                 }
             })
             .map(|e| e.id)
             .collect()
+    }
+
+    /// Components of `e` this viewer may see (`@owner_only` hides from non-owners).
+    fn visible<'a>(
+        &self,
+        e: &'a Entity,
+        viewer: ActorId,
+    ) -> std::borrow::Cow<'a, BTreeMap<u16, ComponentValue>> {
+        if self.owner_only.is_empty() || e.owner == Some(viewer) {
+            return std::borrow::Cow::Borrowed(&e.components);
+        }
+        std::borrow::Cow::Owned(
+            e.components
+                .iter()
+                .filter(|(c, _)| !self.owner_only.contains(c))
+                .map(|(c, v)| (*c, v.clone()))
+                .collect(),
+        )
     }
 
     /// Builds the delta for one client and advances its baseline for everything included.
@@ -247,7 +302,7 @@ impl Replicator {
                     }
                     _ => 0.0,
                 };
-                let changed = e.owner != k.owner || e.components != k.components;
+                let changed = e.owner != k.owner || *self.visible(e, view.actor) != k.components;
                 let age = tick.wrapping_sub(k.last_sent);
                 k.priority += if changed {
                     1.0 / (1.0 + dist / self.cfg.aoi_cell.max(1.0))
@@ -284,6 +339,7 @@ impl Replicator {
                 continue;
             }
             let e = frame.entity(id).unwrap();
+            let vis = self.visible(e, view.actor);
             let k = view.known.get(&id).unwrap();
             let mut ew = BitWriter::new();
             ew.write_bits(id.to_u64(), 48);
@@ -295,13 +351,13 @@ impl Replicator {
                 None => ew.write_bool(false),
             }
             let mut comps: Vec<(u16, Option<&ComponentValue>)> = Vec::new();
-            for (cid, v) in &e.components {
+            for (cid, v) in vis.iter() {
                 if k.components.get(cid) != Some(v) {
                     comps.push((*cid, Some(v)));
                 }
             }
             for cid in k.components.keys() {
-                if !e.components.contains_key(cid) {
+                if !vis.contains_key(cid) {
                     comps.push((*cid, None));
                 }
             }
@@ -334,8 +390,9 @@ impl Replicator {
             }
             let nbits = ew.bit_len();
             append_bits(&mut w, &ew.finish(), nbits);
+            let vis = vis.into_owned();
             let k = view.known.get_mut(&id).unwrap();
-            k.components = e.components.clone();
+            k.components = vis;
             k.owner = e.owner;
             k.last_sent = tick;
             k.priority = 0.0;
@@ -683,5 +740,92 @@ mod tests {
         tracker.on_delta(4, 4);
         let (last, bits) = tracker.ack().unwrap();
         assert_eq!(view.ack(last, bits), 0);
+    }
+
+    #[test]
+    fn owner_only_and_global_flags() {
+        let sch = Schema::parse(
+            "component Transform {\n pos: vec3 @range(-1000, 1000, 0.01)\n}\ncomponent Inv @owner_only {\n n: u8\n}\ncomponent Score @global {\n s: u8\n}",
+        )
+        .unwrap();
+        let mut server = Frame::new(sch.clone(), FrameConfig::default(), 1);
+        let mut owner = Frame::new(sch.clone(), FrameConfig::default(), 1);
+        let mut other = Frame::new(sch.clone(), FrameConfig::default(), 1);
+        let rep = Replicator::new(
+            ReplicationConfig {
+                aoi_cell: 10.0,
+                aoi_radius: 1,
+                ..Default::default()
+            },
+            &server.schema,
+        );
+        let me = server.spawn(Some(ActorId(1))).unwrap();
+        server.set(me, "Transform", tf(0.0, 0.0)).unwrap();
+        server.set(me, "Inv", hp(7)).unwrap();
+        let you = server.spawn(Some(ActorId(2))).unwrap();
+        server.set(you, "Transform", tf(5.0, 0.0)).unwrap();
+        let score = server.spawn(None).unwrap();
+        server.set(score, "Transform", tf(900.0, 0.0)).unwrap();
+        server.set(score, "Score", hp(3)).unwrap();
+        let mut v1 = ClientView::new(ActorId(1));
+        v1.viewpoint = Some(me);
+        let mut v2 = ClientView::new(ActorId(2));
+        v2.viewpoint = Some(you);
+        Replicator::apply(&mut owner, &rep.build(&server, &mut v1)).unwrap();
+        Replicator::apply(&mut other, &rep.build(&server, &mut v2)).unwrap();
+        assert_eq!(owner.get(me, "Inv"), Some(&hp(7)));
+        assert!(other.entity(me).is_some() && other.get(me, "Inv").is_none());
+        // far away, but @global
+        assert_eq!(other.get(score, "Score"), Some(&hp(3)));
+        // a change to the hidden component sends nothing to the non-owner
+        server.get_mut(me, "Inv").unwrap().fields[0] = Value::UInt(8);
+        server.advance(|_| {});
+        let d = rep.build(&server, &mut v2);
+        assert_eq!(d.len(), 12);
+        let d = rep.build(&server, &mut v1);
+        assert!(d.len() > 12);
+        Replicator::apply(&mut owner, &d).unwrap();
+        assert_eq!(owner.get(me, "Inv"), Some(&hp(8)));
+    }
+
+    #[test]
+    fn aoi_hysteresis_and_extra_viewpoints() {
+        let mut server = Frame::new(schema(), FrameConfig::default(), 1);
+        let mut client = Frame::new(schema(), FrameConfig::default(), 1);
+        let rep = Replicator::new(
+            ReplicationConfig {
+                aoi_cell: 10.0,
+                aoi_radius: 1,
+                ..Default::default()
+            },
+            &server.schema,
+        );
+        let me = server.spawn(Some(ActorId(7))).unwrap();
+        server.set(me, "Transform", tf(0.0, 0.0)).unwrap();
+        let edge = server.spawn(None).unwrap();
+        server.set(edge, "Transform", tf(15.0, 0.0)).unwrap();
+        let scope = server.spawn(None).unwrap();
+        server.set(scope, "Transform", tf(200.0, 0.0)).unwrap();
+        let near_scope = server.spawn(None).unwrap();
+        server.set(near_scope, "Transform", tf(205.0, 0.0)).unwrap();
+        let mut view = ClientView::new(ActorId(7));
+        view.viewpoint = Some(me);
+        Replicator::apply(&mut client, &rep.build(&server, &mut view)).unwrap();
+        assert!(client.entity(edge).is_some() && client.entity(near_scope).is_none());
+        // one cell past the radius: still in view (hysteresis)
+        server.get_mut(edge, "Transform").unwrap().fields[0] = Value::Vec3([25.0, 0.0, 0.0]);
+        server.advance(|_| {});
+        Replicator::apply(&mut client, &rep.build(&server, &mut view)).unwrap();
+        assert!(client.entity(edge).is_some());
+        // two cells past: gone
+        server.get_mut(edge, "Transform").unwrap().fields[0] = Value::Vec3([35.0, 0.0, 0.0]);
+        server.advance(|_| {});
+        Replicator::apply(&mut client, &rep.build(&server, &mut view)).unwrap();
+        assert!(client.entity(edge).is_none());
+        // a second viewpoint pulls in what is around it
+        view.extra_viewpoints.push(scope);
+        server.advance(|_| {});
+        Replicator::apply(&mut client, &rep.build(&server, &mut view)).unwrap();
+        assert!(client.entity(near_scope).is_some());
     }
 }

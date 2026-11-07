@@ -81,6 +81,12 @@ component Health {
 }
 ```
 
+Component flags go on the header line: `component Inventory @owner_only { ... }` is sent only
+to the entity's owner (hidden information stays on the server), `component Score @global { ... }`
+makes any entity carrying it relevant to everyone regardless of AOI. AOI itself: up to 4
+viewpoints per client (`viewpoint` + extras, e.g. camera or scope target), and an entity already
+in view stays until it is one cell further out than the radius (hysteresis against flicker).
+
 Types: `bool`, `u8..u64`, `i8..i64`, `bits(n)`, `f32`, `f32 @range(min,max,res)`,
 `vec2`/`vec3 @range(...)`, `quat`, `string(max)`, `bytes(max)`. The blake3 hash of the
 canonical schema is returned in `joined.schema_hash`; a client that sends a different

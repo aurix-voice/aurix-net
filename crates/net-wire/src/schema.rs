@@ -72,6 +72,13 @@ pub struct Component {
     pub id: u16,
     pub name: String,
     pub fields: Vec<Field>,
+    /// `@owner_only`: replicated only to the entity's owner (inventory, hand of cards).
+    #[serde(default)]
+    pub owner_only: bool,
+    /// `@global`: an entity carrying this component is relevant to everyone regardless of AOI
+    /// (score, match timer).
+    #[serde(default)]
+    pub global: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -210,7 +217,22 @@ impl Schema {
                         msg: "missing '}'".into(),
                     });
                 }
-                let name = rest.trim_end_matches('{').trim();
+                let header = rest.trim_end_matches('{').trim();
+                let mut parts = header.split_whitespace();
+                let name = parts.next().unwrap_or("");
+                let (mut owner_only, mut global) = (false, false);
+                for flag in parts {
+                    match flag {
+                        "@owner_only" => owner_only = true,
+                        "@global" => global = true,
+                        _ => {
+                            return Err(SchemaError::Parse {
+                                line,
+                                msg: format!("unknown component flag {flag}"),
+                            })
+                        }
+                    }
+                }
                 if !ident_ok(name) {
                     return Err(SchemaError::Parse {
                         line,
@@ -223,11 +245,20 @@ impl Schema {
                 if components.len() >= 4096 {
                     return Err(SchemaError::TooMany);
                 }
-                canonical.push_str(&format!("component {name} {{\n"));
+                canonical.push_str(&format!("component {name}"));
+                if owner_only {
+                    canonical.push_str(" @owner_only");
+                }
+                if global {
+                    canonical.push_str(" @global");
+                }
+                canonical.push_str(" {\n");
                 cur = Some(Component {
                     id: components.len() as u16,
                     name: name.to_string(),
                     fields: Vec::new(),
+                    owner_only,
+                    global,
                 });
                 continue;
             }
@@ -350,5 +381,17 @@ component Health {
         );
         assert!(Schema::parse("component A {\n x: u8\n x: u8\n}").is_err());
         assert!(Schema::parse("component A {\n x: u8\n").is_err());
+    }
+
+    #[test]
+    fn component_flags() {
+        let s = Schema::parse("component Inv @owner_only {\n n: u8\n}\ncomponent Score @global {\n s: u16\n}\ncomponent P {\n x: u8\n}").unwrap();
+        assert!(s.component("Inv").unwrap().owner_only && !s.component("Inv").unwrap().global);
+        assert!(s.component("Score").unwrap().global);
+        assert!(!s.component("P").unwrap().owner_only && !s.component("P").unwrap().global);
+        let plain = Schema::parse("component Inv {\n n: u8\n}").unwrap();
+        let flagged = Schema::parse("component Inv @owner_only {\n n: u8\n}").unwrap();
+        assert_ne!(plain.hash, flagged.hash);
+        assert!(Schema::parse("component A @nope {\n x: u8\n}").is_err());
     }
 }
