@@ -580,4 +580,48 @@ mod tests {
         assert_eq!(n, 101);
         assert_eq!(r3.replay("").inputs.len(), r.replay("").inputs.len());
     }
+
+    #[test]
+    fn catchup_is_contiguous_across_chunks_and_past_journal_end() {
+        // Journal has inputs only up to tick 553, room is at 600, checkpoint at 300: the tail
+        // must still cover 300..599 contiguously (empty bundles past the journal end), and the
+        // 255-bundles-per-frame limit must not drop or duplicate anything.
+        let mut r = LockstepRoom::new(60, 1);
+        let a = ActorId(1);
+        r.on_join(a);
+        r.master = Some(a);
+        for t in 0..600u32 {
+            if t < 554 {
+                r.handle(a, SyncRoom::encode_input(Tick(t), &[vec![t as u8, 1, 2]]));
+            }
+            let _ = r.tick();
+            if t == 299 {
+                assert!(r.handle(a, LockstepRoom::encode_checkpoint(Tick(300), 1, b"s")));
+            }
+        }
+        let snap = r.snapshot();
+        assert_eq!(
+            (snap.tick, snap.journal_from, snap.journal.len()),
+            (600, 300, 254)
+        );
+        let mut r2 = LockstepRoom::restore(snap);
+        let frames = r2.on_late_join();
+        assert_eq!(
+            LockstepRoom::decode_catchup(frames[0].clone())
+                .unwrap()
+                .tick,
+            300
+        );
+        let mut expect = 300u32;
+        for f in &frames[1..] {
+            let bundles = LockstepRoom::decode_bundles(f.clone());
+            assert!(!bundles.is_empty());
+            for (t, inputs) in bundles {
+                assert_eq!(t.0, expect, "gap/dup at {expect}");
+                assert_eq!(inputs.contains_key(&a), t.0 < 554);
+                expect += 1;
+            }
+        }
+        assert_eq!(expect, 600);
+    }
 }
