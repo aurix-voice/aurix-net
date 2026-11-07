@@ -58,7 +58,12 @@ pub struct DatabaseConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RedisConfig {
+    /// `redis://` or `rediss://` (TLS) URL, password included (`rediss://:pw@host:6379/`).
     pub url: String,
+    /// Optional PEM file with the CA that signed the Redis server certificate (private CAs);
+    /// empty = WebPKI roots.
+    #[serde(default)]
+    pub ca_cert: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

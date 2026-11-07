@@ -2,6 +2,7 @@ use clap::Parser;
 use net_api::rest;
 use net_api::state::AppState;
 use net_auth::GrantSigner;
+use net_common::config::RedisConfig;
 use net_common::{NetConfig, NodeId, RegionId};
 use net_control::{NodeRegistry, RedisStore};
 use net_db::queries::{self, NodeHeartbeat};
@@ -44,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
         info!("migrations applied");
         return Ok(());
     }
-    let redis = RedisStore::connect(&cfg.redis.url).await?;
+    let redis = RedisStore::connect(&cfg.redis.url, &cfg.redis.ca_cert).await?;
 
     let node_id = cfg
         .server
@@ -158,7 +159,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
-    tokio::spawn(lobby_forwarder(st.clone(), cfg.redis.url.clone()));
+    tokio::spawn(lobby_forwarder(st.clone(), cfg.redis.clone()));
     {
         let st = st.clone();
         let http_url = http_url.clone();
@@ -288,18 +289,18 @@ async fn heartbeat(st: &Arc<AppState>, http_url: &str, draining: bool) -> anyhow
 }
 
 /// Forwards Redis lobby publications (from every node) to local lobby subscribers.
-async fn lobby_forwarder(st: Arc<AppState>, url: String) {
+async fn lobby_forwarder(st: Arc<AppState>, redis: RedisConfig) {
     loop {
-        if let Err(e) = lobby_forward_once(&st, &url).await {
+        if let Err(e) = lobby_forward_once(&st, &redis).await {
             warn!(error = %e, "lobby forwarder stopped; retrying");
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
 
-async fn lobby_forward_once(st: &Arc<AppState>, url: &str) -> anyhow::Result<()> {
+async fn lobby_forward_once(st: &Arc<AppState>, redis: &RedisConfig) -> anyhow::Result<()> {
     use futures::StreamExt;
-    let client = redis::Client::open(url)?;
+    let client = net_control::redis_store::redis_client(&redis.url, &redis.ca_cert)?;
     let mut ps = client.get_async_pubsub().await?;
     ps.psubscribe("net:p:*:lobby").await?;
     let mut stream = ps.on_message();

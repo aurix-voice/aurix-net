@@ -66,3 +66,6 @@ versioned in JSON and tolerates added fields.
 `NET__SERVER__PUBLIC_HOST`, ...) or mount a TOML and pass `--config /etc/aurix-net/net.toml` (needed
 for list values such as `trusted_proxies` / `allowed_origins`). `deploy/docker-compose.prod.yml` is a
 two-node reference layout.
+
+Redis over TLS: `redis.url = "rediss://:password@host:6390/"`; for a private CA set `redis.ca_cert` to the
+PEM path (`NET__REDIS__CA_CERT=/etc/aurix-net/redis-ca.pem`), otherwise WebPKI roots are used.

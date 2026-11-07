@@ -26,9 +26,56 @@ pub struct RedisStore {
 
 const ROOM_TTL_SECS: i64 = 120;
 
+/// Redis client for `url`; `ca_cert` (PEM path) pins a private CA for `rediss://` servers.
+pub fn redis_client(url: &str, ca_cert: &str) -> Result<redis::Client> {
+    if ca_cert.is_empty() {
+        return redis::Client::open(url).map_err(|e| NetError::Redis(e.to_string()));
+    }
+    let pem = std::fs::read(ca_cert)
+        .map_err(|e| NetError::Redis(format!("redis.ca_cert {ca_cert}: {e}")))?;
+    redis::Client::build_with_tls(
+        url,
+        redis::TlsCertificates {
+            client_tls: None,
+            root_cert: Some(pem),
+        },
+    )
+    .map_err(|e| NetError::Redis(e.to_string()))
+}
+
+/// `redis://user:pw@host/` -> `redis://***@host/` for logs and errors.
+pub fn redact_url(url: &str) -> String {
+    match (url.find("//"), url.rfind('@')) {
+        (Some(i), Some(j)) if j > i + 2 => format!("{}***{}", &url[..i + 2], &url[j..]),
+        _ => url.to_string(),
+    }
+}
+
 impl RedisStore {
-    pub async fn connect(url: &str) -> Result<Self> {
-        let client = redis::Client::open(url).map_err(|e| NetError::Redis(e.to_string()))?;
+    pub async fn connect(url: &str, ca_cert: &str) -> Result<Self> {
+        let client = redis_client(url, ca_cert)?;
+        // ConnectionManager retries forever; probe once so a bad URL, password or TLS
+        // certificate fails the startup fast with the real error instead of hanging.
+        let probe = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            client.get_multiplexed_async_connection(),
+        )
+        .await;
+        match probe {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                return Err(NetError::Redis(format!(
+                    "cannot connect to {}: {e}",
+                    redact_url(url)
+                )))
+            }
+            Err(_) => {
+                return Err(NetError::Redis(format!(
+                    "cannot connect to {}: timeout",
+                    redact_url(url)
+                )))
+            }
+        }
         let conn = ConnectionManager::new(client)
             .await
             .map_err(|e| NetError::Redis(e.to_string()))?;
@@ -224,5 +271,17 @@ impl RedisStore {
 
     pub fn raw(&self) -> ConnectionManager {
         self.conn.clone()
+    }
+}
+
+#[cfg(test)]
+mod redact_tests {
+    #[test]
+    fn redacts_userinfo() {
+        assert_eq!(
+            super::redact_url("rediss://:secret@h:6390/"),
+            "rediss://***@h:6390/"
+        );
+        assert_eq!(super::redact_url("redis://h:6379/"), "redis://h:6379/");
     }
 }
