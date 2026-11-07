@@ -26,6 +26,13 @@ pub struct TicketReq {
     pub max_wait_secs: u64,
     #[serde(default)]
     pub props: serde_json::Map<String, serde_json::Value>,
+    /// Player attributes other tickets may filter on (rank, language, ...); not part of the bucket.
+    #[serde(default)]
+    pub attrs: serde_json::Map<String, serde_json::Value>,
+    /// SQL-like condition the *other* players' `attrs` must satisfy (`rank >= 10 AND lang = 'en'`).
+    /// Two tickets only share a room when each one's filter accepts the other's attrs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
 }
 fn d_max() -> u16 {
     8
@@ -132,24 +139,54 @@ pub fn match_tickets(tickets: &mut [Ticket], now_ms: u64) -> (Vec<Uuid>, Vec<Str
             first.min_players as usize,
             first.max_wait_secs,
         );
-        let oldest_age = tickets[idx[0]].age_secs(now_ms);
-        let mut i = 0;
-        while i < n {
-            let left = n - i;
-            let take = if left >= max {
-                max
-            } else if left >= min.max(1) && oldest_age >= wait {
-                left
-            } else {
-                break;
+        let filters: Vec<Option<crate::mmfilter::Filter>> = idx
+            .iter()
+            .map(|i| {
+                tickets[*i]
+                    .req
+                    .filter
+                    .as_deref()
+                    .and_then(|f| crate::mmfilter::Filter::parse(f).ok())
+            })
+            .collect();
+        let attrs: Vec<serde_json::Map<String, serde_json::Value>> =
+            idx.iter().map(|i| tickets[*i].req.attrs.clone()).collect();
+        let compatible = |a: usize, b: usize| -> bool {
+            let ok = |f: &Option<crate::mmfilter::Filter>, other: usize| {
+                f.as_ref().is_none_or(|f| f.matches(&attrs[other]))
             };
-            let room = format!("mm-{}", &Uuid::now_v7().simple().to_string()[..12]);
-            let players: Vec<String> = idx[i..i + take]
+            ok(&filters[a], b) && ok(&filters[b], a)
+        };
+        // Greedy: the oldest unassigned ticket seeds a group, later tickets join when they are
+        // mutually compatible with every member. A group fills a room when it reaches `max`, or
+        // when its seed has waited `wait` seconds and the group has `min` players.
+        let mut taken = vec![false; n];
+        for seed in 0..n {
+            if taken[seed] {
+                continue;
+            }
+            let mut group = vec![seed];
+            for cand in (seed + 1..n).filter(|c| !taken[*c]) {
+                if group.len() >= max {
+                    break;
+                }
+                if group.iter().all(|m| compatible(*m, cand)) {
+                    group.push(cand);
+                }
+            }
+            let seed_age = tickets[idx[seed]].age_secs(now_ms);
+            let ready = group.len() >= max || (group.len() >= min.max(1) && seed_age >= wait);
+            if !ready {
+                continue;
+            }
+            let room = format!("mm-{}", &Uuid::new_v4().simple().to_string()[..12]);
+            let players: Vec<String> = group
                 .iter()
-                .map(|j| tickets[*j].req.player_id.clone())
+                .map(|g| tickets[idx[*g]].req.player_id.clone())
                 .collect();
-            for j in &idx[i..i + take] {
-                let t = &mut tickets[*j];
+            for g in &group {
+                taken[*g] = true;
+                let t = &mut tickets[idx[*g]];
                 t.state = TicketState::Matched {
                     room: room.clone(),
                     mode: t.req.mode,
@@ -161,7 +198,6 @@ pub fn match_tickets(tickets: &mut [Ticket], now_ms: u64) -> (Vec<Uuid>, Vec<Str
                 }
             }
             rooms.push(room);
-            i += take;
         }
     }
     (changed, rooms)
@@ -241,6 +277,17 @@ impl Matchmaker {
         project: ProjectId,
         req: TicketReq,
     ) -> Result<Ticket> {
+        if let Some(f) = req.filter.as_deref() {
+            crate::mmfilter::Filter::parse(f)
+                .map_err(|e| NetError::Invalid(format!("filter: {e}")))?;
+        }
+        if serde_json::to_vec(&req.attrs)
+            .map(|v| v.len())
+            .unwrap_or(usize::MAX)
+            > 1024
+        {
+            return Err(NetError::Invalid("attrs larger than 1 KiB".into()));
+        }
         let ids = self.searching_ids(redis).await?;
         for mut t in self.load_many(redis, &ids).await? {
             if t.project == project && t.req.player_id == req.player_id && t.searching() {
@@ -403,6 +450,8 @@ mod tests {
             min_players: min,
             max_wait_secs: wait,
             props: props.as_object().cloned().unwrap_or_default(),
+            attrs: Default::default(),
+            filter: None,
         }
     }
 
@@ -421,6 +470,45 @@ mod tests {
             TicketState::Matched { room, .. } => Some(room),
             _ => None,
         }
+    }
+
+    #[test]
+    fn filters_split_a_bucket_by_attrs() {
+        let t = |p: &str, rank: i64, filter: &str| {
+            let mut r = req(p, 2, 2, 15, serde_json::json!({}));
+            r.attrs = serde_json::json!({"rank": rank})
+                .as_object()
+                .cloned()
+                .unwrap();
+            r.filter = Some(filter.to_string());
+            Ticket {
+                id: Uuid::now_v7(),
+                project: ProjectId::from_uuid(Uuid::nil()),
+                req: r,
+                created_ms: 0,
+                state: TicketState::Searching { waiting: 0 },
+            }
+        };
+        let mut tickets = vec![
+            t("low", 5, "rank < 10"),
+            t("high", 50, "rank >= 40"),
+            t("low2", 7, "rank < 10"),
+            t("high2", 45, "rank >= 40"),
+        ];
+        let (_, rooms) = match_tickets(&mut tickets, 1000);
+        assert_eq!(rooms.len(), 2);
+        let room_of = |p: &str| match &tickets.iter().find(|t| t.req.player_id == p).unwrap().state
+        {
+            TicketState::Matched { room, .. } => room.clone(),
+            s => panic!("{p}: {s:?}"),
+        };
+        assert_eq!(room_of("low"), room_of("low2"));
+        assert_eq!(room_of("high"), room_of("high2"));
+        assert_ne!(room_of("low"), room_of("high"));
+        // one-sided rejection keeps them apart even though the other side would accept
+        let mut odd = vec![t("picky", 30, "rank > 100"), t("open", 30, "rank > 0")];
+        let (_, rooms) = match_tickets(&mut odd, 1000);
+        assert!(rooms.is_empty());
     }
 
     #[test]

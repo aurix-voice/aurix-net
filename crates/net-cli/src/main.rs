@@ -74,6 +74,12 @@ enum Cmd {
         min_players: u16,
         #[arg(long, default_value_t = 15)]
         max_wait_secs: u64,
+        /// Player attributes as JSON (`{"rank": 1450}`) other tickets may filter on
+        #[arg(long)]
+        attrs: Option<String>,
+        /// SQL-like condition on the other players' attrs (`rank >= 1300 AND rank <= 1600`)
+        #[arg(long)]
+        filter: Option<String>,
     },
     /// Usage (node-hours, events, bytes)
     Usage,
@@ -244,10 +250,16 @@ async fn main() -> anyhow::Result<()> {
             max_players,
             min_players,
             max_wait_secs,
+            attrs,
+            filter,
         } => {
             need(&cli.api_key, "--api-key")?;
+            let attrs: serde_json::Value = match attrs {
+                Some(a) => serde_json::from_str(&a).map_err(|e| anyhow::anyhow!("--attrs: {e}"))?,
+                None => json!({}),
+            };
             let t = dev
-                .call(POST, "/v1/matchmaking/tickets", Some(json!({"player_id": player_id, "mode": mode, "max_players": max_players, "min_players": min_players, "max_wait_secs": max_wait_secs})))
+                .call(POST, "/v1/matchmaking/tickets", Some(json!({"player_id": player_id, "mode": mode, "max_players": max_players, "min_players": min_players, "max_wait_secs": max_wait_secs, "attrs": attrs, "filter": filter})))
                 .await?;
             let id = t["ticket"].as_str().unwrap_or_default().to_string();
             loop {

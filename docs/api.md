@@ -48,7 +48,7 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | GET/POST/DELETE | `/v1/keys[/:id]` | `admin` | API keys (plaintext shown once); `{name, scopes[], expires_in_secs?, allowed_cidrs?[]}` — with `allowed_cidrs` (CIDR or IP, ≤32) the key is accepted only from those networks (client IP after `trusted_proxies`), otherwise 403 and rejection `ip_denied` |
 | GET/POST/DELETE | `/v1/webhooks[/:id]` | `admin` | webhooks (`url, events[]` — names from [webhooks.md](webhooks.md), empty = all), secret shown once |
 | GET | `/v1/matchmaking` | read | live queue: `searching[]` (ticket, player, mode, region, max_players, age_secs) and `matched.last_hour` / `matched.last_24h` (rooms formed); operators: `GET /v1/operator/projects/:id/matchmaking` |
-| POST | `/v1/matchmaking/tickets` | `rooms` | `{player_id, mode, region?, max_players, min_players, max_wait_secs, props}` → `{ticket, state}` |
+| POST | `/v1/matchmaking/tickets` | `rooms` | `{player_id, mode, region?, max_players, min_players, max_wait_secs, props, attrs?, filter?}` → `{ticket, state}` |
 | GET/DELETE | `/v1/matchmaking/tickets/:id` | `read`/`rooms` | `state: searching{waiting} | matched{room, mode, max_players, players} | cancelled` |
 | GET/POST | `/v1/operator/projects` | operator | projects; create returns the first key |
 | POST | `/v1/operator/projects/:id/grants` | operator | test grant for a project (`player_id`, `name`, `room`, `scopes`, `ttl_secs` ≤ 3600, default 300); suspended/banned → 403; audited `grant.issue` (token never logged) |
@@ -168,6 +168,15 @@ POST JSON `{event, project, at, data}` with `X-Aurix-Event` and
 3. Client `join_or_create` with `name = state.room`, the same `mode`, `max_players`.
 Tickets group by `(mode, region, max_players, props)`; a match starts when the group is full
 or the oldest ticket waited `max_wait_secs` with at least `min_players`.
+
+Skill/attribute matching: a ticket may carry `attrs` (≤ 1 KiB of JSON: `{"rank": 1450, "lang": "en"}`) and a
+`filter` — a SQL-like condition the *other* players' attrs must satisfy, e.g.
+`rank >= 1300 AND rank <= 1600 AND lang = 'en'`. Two tickets share a room only when each filter accepts
+the other's attrs (so a "picky" player never lands with someone who would reject them). Grammar:
+`attr op value` with `= != <> < <= > >=`, numbers / 'strings' / true|false, `AND`, `OR`, `NOT`, parentheses;
+≤ 256 chars, ≤ 16 comparisons; a missing attribute fails every comparison. Bad filters are rejected with 400
+at filing. `props` still bucket exactly (map, game mode) — use `attrs` for ranges. To widen a search over time,
+re-file the ticket with a looser filter after `max_wait_secs`.
 
 Tickets live in Redis (`net:mm:*`), so a ticket filed on any node of the region matches
 tickets filed on every other node and `GET` works from any node; one node at a time runs the
