@@ -114,3 +114,14 @@ Host RSS climbs with the first batches (room churn, dump storage) and stays flat
 overruns; desync dumps for every batch were listed and downloadable through `/v1/rooms/:id/desyncs`.
 
 - `NET_HTTP=… NET_API_KEY=… node --test sdk/web/test/referee-live.test.mjs` — lockstep referee: a lying client is flagged by the node's own hash, the node state is stored as desync dump actor 0, room detail reports `referee: true` (upload `crates/net-game/examples/arena.wat` as module `arena` with an admin key first).
+
+## CI (`.github/workflows/ci.yml`)
+
+| job | what runs |
+|---|---|
+| `rust` | fmt, clippy `-D warnings`, workspace tests, migrations on a fresh Postgres, `net-sim-wasm` wasm32 + native builds and `golden_check` (all six golden hashes native == wasm32); uploads the `.wasm`, `libnet_sim_wasm.so` and the debug `aurix-net-server` for the jobs below |
+| `supply-chain` | `cargo audit`, `cargo deny check` |
+| `sdk-web` | `tsc` build + node tests of the Web SDK (sim tests load the wasm artifact; live tests skip without `NET_API_KEY`) |
+| `sdk-csharp` | dotnet builds of the live/rehost checks and the managed test runner (P/Invokes the native artifact) |
+| `console` | dashboard `check`/`lint`/`test`/`build`, then the live Playwright suite against a node started from the artifact with Postgres/Redis services (`AURIX_NET_E2E_TOKEN` = that node's `auth.admin_token`) |
+| `docker` | buildx of the node image (`Dockerfile`) and the console image (`dashboard/Dockerfile`), no push |

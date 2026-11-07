@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: "rustfmt, clippy" }
+        with: { components: "rustfmt, clippy", targets: "wasm32-unknown-unknown" }
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -33,6 +33,21 @@ jobs:
         env:
           NET__DATABASE__URL: postgres://aurix:aurix@127.0.0.1:5432/aurix_net
           NET__REDIS__URL: redis://127.0.0.1:6379/
+      - name: aurix-sim wasm32 == native (golden hashes)
+        run: |
+          cargo build --release --target wasm32-unknown-unknown -p net-sim-wasm
+          cargo build --release -p net-sim-wasm
+          cargo run -p net-sim-wasm --example golden_check
+      - name: artifacts for the SDK and console jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-and-server
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            target/wasm32-unknown-unknown/release/net_sim_wasm.wasm
+            target/release/libnet_sim_wasm.so
+            target/debug/aurix-net-server
 
   supply-chain:
     runs-on: ubuntu-latest
@@ -46,9 +61,12 @@ jobs:
 
   sdk-web:
     runs-on: ubuntu-latest
+    needs: rust
     defaults: { run: { working-directory: sdk/web } }
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: sim-and-server, path: target }
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - run: npm ci
@@ -57,13 +75,65 @@ jobs:
 
   sdk-csharp:
     runs-on: ubuntu-latest
+    needs: rust
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: sim-and-server, path: target }
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: 8.0.x }
       - run: dotnet build -c Release "sdk/unity/BuildCheck~/managed-live/managed-live.csproj"
       - run: dotnet build -c Release "sdk/unity/BuildCheck~/managed-rehost/managed-rehost.csproj"
       - run: dotnet run -c Release --project "sdk/unity/BuildCheck~/managed-tests/managed-tests.csproj"
+
+  console:
+    runs-on: ubuntu-latest
+    needs: rust
+    defaults: { run: { working-directory: dashboard } }
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: aurix, POSTGRES_PASSWORD: aurix, POSTGRES_DB: aurix_net }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U aurix" --health-interval 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+    env:
+      NET__DATABASE__URL: postgres://aurix:aurix@127.0.0.1:5432/aurix_net
+      NET__REDIS__URL: redis://127.0.0.1:6379/
+      NET__AUTH__ADMIN_TOKEN: ci-operator-token
+      NET__AUTH__GRANT_SECRET: ci-grant-secret-ci-grant-secret-ci-grant
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: dashboard/package-lock.json }
+      - run: npm ci
+      - run: npm run check
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - uses: actions/download-artifact@v4
+        with: { name: sim-and-server, path: ../target }
+      - name: start a node for the live e2e suite
+        run: |
+          chmod +x ../target/debug/aurix-net-server
+          ../target/debug/aurix-net-server --migrate-only
+          nohup ../target/debug/aurix-net-server > /tmp/node.log 2>&1 &
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8090/healthz && break; sleep 1; done
+          curl -fs http://127.0.0.1:8090/healthz
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+        env:
+          CI: "1"
+          NET_API_URL: http://127.0.0.1:8090
+          AURIX_NET_E2E_TOKEN: ci-operator-token
+      - name: node log
+        if: failure()
+        run: tail -n 200 /tmp/node.log
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with: { name: playwright-report, path: dashboard/playwright-report, retention-days: 7 }
 
   docker:
     runs-on: ubuntu-latest
@@ -75,5 +145,13 @@ jobs:
           context: .
           push: false
           tags: aurix-net:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: dashboard/Dockerfile
+          push: false
+          tags: aurix-net-console:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
