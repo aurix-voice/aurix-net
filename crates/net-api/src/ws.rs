@@ -725,6 +725,8 @@ impl Session {
                 let ds = DataSession::new(DataSink::Ws(self.bin.clone()), self.st.metrics.clone());
                 let ds = attach_data(&r.hosted, r.actor, ds);
                 spawn_ticker(&self.st, ds.clone());
+                // Same as the QUIC path: an empty frame tells the client the path is open.
+                ds.send(net_common::Channel::ReliableOrdered, Bytes::new());
                 self.data = Some(ds);
                 Ok(())
             }

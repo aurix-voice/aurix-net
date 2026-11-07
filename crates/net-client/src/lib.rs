@@ -296,17 +296,18 @@ impl Client {
                     }
                 }
             }));
-            self.ctl
-                .send(Message::Binary(ticket))
-                .await
-                .map_err(|_| ClientError::Disconnected)?;
             let dp = Arc::new(DataPath {
                 link,
                 sink: Sink::Ws(ws_tx),
             });
+            // Register before sending the ticket: the server's ack may arrive immediately.
             if let Some(slot) = &self.tunnel_slot {
                 *slot.lock() = Some(dp.clone());
             }
+            self.ctl
+                .send(Message::Binary(ticket))
+                .await
+                .map_err(|_| ClientError::Disconnected)?;
             dp
         } else {
             let transport = quic::transport_config(Duration::from_secs(15), Duration::from_secs(5));
