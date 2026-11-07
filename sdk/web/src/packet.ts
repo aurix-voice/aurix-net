@@ -1,7 +1,7 @@
 // 12-byte datagram header, big-endian: u8 version, u8 kind, u16 seq, u16 ack, u32 ack_bits, u16 tick.
 export const PROTOCOL_VERSION = 1;
 export const HEADER_LEN = 12;
-export const MAX_DATAGRAM = 1200;
+export const MAX_DATAGRAM = 1100;
 export const MAX_UNFRAGMENTED = MAX_DATAGRAM - HEADER_LEN;
 export const FLAG_ACK_ONLY = 0x80, FLAG_HAS_ACK = 0x40, FLAG_BATCH = 0x20;
 export enum Channel { Unreliable = 0, Reliable = 1, ReliableUnordered = 2 }

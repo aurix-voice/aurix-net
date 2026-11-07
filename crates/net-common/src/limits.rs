@@ -1,7 +1,10 @@
 //! Hard protocol limits. Project quotas live in the control plane; these never move.
 
 /// Maximum datagram payload we emit (QUIC/WebTransport safe on the public internet).
-pub const MAX_DATAGRAM: usize = 1200;
+/// Whole packet (header + payload) budget. QUIC starts at a 1200-byte MTU and its own
+/// framing takes ~50 bytes before PMTU discovery raises the limit, so stay well below 1200
+/// or the first datagrams of a connection fail with TooLarge (no retransmit helps).
+pub const MAX_DATAGRAM: usize = 1100;
 /// Bytes of the fixed data-packet header.
 pub const HEADER_LEN: usize = 12;
 /// Largest message a channel accepts; larger ones are fragmented.

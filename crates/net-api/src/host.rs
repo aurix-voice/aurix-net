@@ -59,7 +59,14 @@ impl DataSession {
             self.metrics.datagrams_out.inc();
             self.metrics.bytes_out.inc_by(d.len() as u64);
             let ok = match &self.sink {
-                DataSink::Quic(c) => c.send_datagram(d).is_ok(),
+                DataSink::Quic(c) => match c.send_datagram(d) {
+                    Ok(()) => true,
+                    Err(quinn::SendDatagramError::TooLarge) => {
+                        tracing::warn!(max = ?c.max_datagram_size(), "datagram too large for path");
+                        false
+                    }
+                    Err(_) => false,
+                },
                 DataSink::WebTransport(c) => c.send_datagram(d).is_ok(),
                 DataSink::Ws(tx) => tx.try_send(d).is_ok(),
             };

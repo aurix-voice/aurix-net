@@ -71,7 +71,7 @@ frame and use binary frames as datagrams.
 12-byte header: `u8 version, u8 kind, u16 seq, u16 ack, u32 ack_bits, u16 tick`. `kind`
 low bits = channel (0 unreliable-sequenced, 1 reliable-ordered, 2 reliable-unordered) and
 fragment flags; `0x40` has-ack, `0x20` batch (payload = `u16 len, bytes` repeated), `0x80`
-ack-only. Max datagram 1200 bytes, messages up to 64 KiB fragmented. Frames inside: relay
+ack-only. Max datagram 1100 bytes, messages up to 64 KiB fragmented. Frames inside: relay
 event frame or a mode frame (`docs/modes.md`).
 
 ### WebTransport (browsers)
