@@ -13,7 +13,17 @@ fn main() {
         .get_typed_func::<(), u64>(&mut store, "sim_golden_hash")
         .expect("export");
     let wasm = f.call(&mut store, ()).expect("call");
-    println!("native {native:#x}\nwasm   {wasm:#x}");
+    println!("physics native {native:#x}\nphysics wasm   {wasm:#x}");
     assert_eq!(native, wasm, "wasm32 and native simulations diverged");
+    let nav_native = net_sim_wasm::sim_nav_golden_hash();
+    let g = instance
+        .get_typed_func::<(), u64>(&mut store, "sim_nav_golden_hash")
+        .expect("export");
+    let nav_wasm = g.call(&mut store, ()).expect("call");
+    println!("nav native {nav_native:#x}\nnav wasm   {nav_wasm:#x}");
+    assert_eq!(
+        nav_native, nav_wasm,
+        "wasm32 and native navigation diverged"
+    );
     println!("OK: identical");
 }

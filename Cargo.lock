@@ -2067,6 +2067,7 @@ name = "net-sim-wasm"
 version = "0.1.0"
 dependencies = [
  "net-fpmath",
+ "net-sim-nav",
  "net-sim-physics",
  "wasmtime",
 ]

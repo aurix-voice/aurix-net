@@ -4,6 +4,7 @@
 #![deny(clippy::float_arithmetic)]
 
 use net_fpmath::{Fx, FxVec2};
+use net_sim_nav::{Agent, Crowd, CrowdConfig, FlowField, NavMesh};
 use net_sim_physics::{Body, BodyId, BodyKind, CharacterController, Shape, World, WorldConfig};
 use std::cell::RefCell;
 
@@ -11,6 +12,10 @@ struct Slot {
     world: World,
     kcc: Vec<CharacterController>,
     snapshot: Vec<u8>,
+    nav: Option<NavMesh>,
+    crowd: Crowd,
+    /// Output buffer for paths (x0, y0, x1, y1, ...) read with `sim_nav_point`.
+    points: Vec<i64>,
 }
 
 thread_local! {
@@ -46,6 +51,12 @@ pub extern "C" fn sim_world_new(gravity_x: i64, gravity_y: i64, tick_hz: u32) ->
         world: World::new(cfg),
         kcc: Vec::new(),
         snapshot: Vec::new(),
+        nav: None,
+        crowd: Crowd::new(CrowdConfig {
+            dt: Fx::from_ratio(1, tick_hz.max(1) as i64),
+            ..CrowdConfig::default()
+        }),
+        points: Vec::new(),
     };
     WORLDS.with(|w| {
         let mut w = w.borrow_mut();
@@ -380,6 +391,301 @@ pub extern "C" fn sim_golden_hash() -> u64 {
     hash
 }
 
+// ---- navigation -------------------------------------------------------------------------------
+
+/// Grid navmesh: `cols × rows` cells of size `cell` from (ox, oy); blocked cells are given as
+/// (col, row) pairs in the snapshot buffer (u32 LE pairs: fill with `sim_snapshot_set_*`).
+#[no_mangle]
+pub extern "C" fn sim_nav_grid(h: u32, ox: i64, oy: i64, cell: i64, cols: u32, rows: u32) -> u32 {
+    with(h, |s| {
+        let blocked: Vec<(u32, u32)> = s
+            .snapshot
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| {
+                (
+                    u32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                    u32::from_le_bytes([c[4], c[5], c[6], c[7]]),
+                )
+            })
+            .collect();
+        s.nav = Some(NavMesh::grid(
+            FxVec2::new(Fx(ox), Fx(oy)),
+            Fx(cell),
+            cols,
+            rows,
+            &blocked,
+        ));
+        s.crowd.fields.clear();
+        1
+    })
+    .unwrap_or(0)
+}
+
+/// Load a navmesh from its JSON bytes placed in the snapshot buffer (see `NavMesh::to_bytes`).
+#[no_mangle]
+pub extern "C" fn sim_nav_load(h: u32) -> u32 {
+    with(h, |s| match NavMesh::from_bytes(&s.snapshot) {
+        Some(m) => {
+            s.nav = Some(m);
+            s.crowd.fields.clear();
+            1
+        }
+        None => 0,
+    })
+    .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn sim_nav_hash(h: u32) -> u64 {
+    with(h, |s| s.nav.as_ref().map(|m| m.hash()).unwrap_or(0)).unwrap_or(0)
+}
+
+/// Polygon containing (x, y), or u32::MAX.
+#[no_mangle]
+pub extern "C" fn sim_nav_locate(h: u32, x: i64, y: i64) -> u32 {
+    with(h, |s| {
+        s.nav
+            .as_ref()
+            .and_then(|m| m.locate(FxVec2::new(Fx(x), Fx(y))))
+            .unwrap_or(u32::MAX)
+    })
+    .unwrap_or(u32::MAX)
+}
+
+/// Find a path; returns the number of waypoints stored for `sim_nav_point` (0 = no path).
+#[no_mangle]
+pub extern "C" fn sim_nav_path(h: u32, x0: i64, y0: i64, x1: i64, y1: i64, mask: u32) -> u32 {
+    with(h, |s| {
+        s.points.clear();
+        let Some(m) = s.nav.as_ref() else { return 0 };
+        match m.find_path(
+            FxVec2::new(Fx(x0), Fx(y0)),
+            FxVec2::new(Fx(x1), Fx(y1)),
+            mask,
+        ) {
+            Some(path) => {
+                for p in &path.points {
+                    s.points.push(p.x.0);
+                    s.points.push(p.y.0);
+                }
+                path.points.len() as u32
+            }
+            None => 0,
+        }
+    })
+    .unwrap_or(0)
+}
+
+/// Coordinate `i` (0 = x0, 1 = y0, 2 = x1, ...) of the last path.
+#[no_mangle]
+pub extern "C" fn sim_nav_point(h: u32, i: u32) -> i64 {
+    with(h, |s| s.points.get(i as usize).copied().unwrap_or(0)).unwrap_or(0)
+}
+
+/// Mesh raycast; returns 1 and stores the hit point in `sim_ray_get(1..=2)` when blocked.
+#[no_mangle]
+pub extern "C" fn sim_nav_raycast(h: u32, x0: i64, y0: i64, x1: i64, y1: i64) -> u32 {
+    with(h, |s| {
+        let Some(m) = s.nav.as_ref() else { return 0 };
+        match m.raycast(FxVec2::new(Fx(x0), Fx(y0)), FxVec2::new(Fx(x1), Fx(y1))) {
+            Some(hit) => {
+                LAST_RAY.with(|r| {
+                    *r.borrow_mut() = [
+                        0,
+                        hit.point.x.0,
+                        hit.point.y.0,
+                        hit.poly as i64,
+                        hit.edge as i64,
+                    ]
+                });
+                1
+            }
+            None => 0,
+        }
+    })
+    .unwrap_or(0)
+}
+
+/// Build a flow field towards (x, y); returns its index (u32::MAX when unreachable).
+#[no_mangle]
+pub extern "C" fn sim_nav_field(h: u32, x: i64, y: i64, mask: u32) -> u32 {
+    with(h, |s| {
+        let Some(m) = s.nav.as_ref() else {
+            return u32::MAX;
+        };
+        match FlowField::build(m, FxVec2::new(Fx(x), Fx(y)), mask) {
+            Some(f) => s.crowd.add_field(f),
+            None => u32::MAX,
+        }
+    })
+    .unwrap_or(u32::MAX)
+}
+
+/// Add a crowd agent; returns its id (0 = no navmesh).
+#[no_mangle]
+pub extern "C" fn sim_agent_add(h: u32, x: i64, y: i64, radius: i64, max_speed: i64) -> u32 {
+    with(h, |s| {
+        let Some(m) = s.nav.as_ref() else { return 0 };
+        s.crowd.add(
+            m,
+            Agent::new(FxVec2::new(Fx(x), Fx(y)), Fx(radius), Fx(max_speed)),
+        )
+    })
+    .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn sim_agent_remove(h: u32, id: u32) {
+    with(h, |s| s.crowd.remove(id));
+}
+
+/// Steer towards a point (clears any flow field).
+#[no_mangle]
+pub extern "C" fn sim_agent_target(h: u32, id: u32, x: i64, y: i64) {
+    with(h, |s| {
+        if let Some(a) = s.crowd.agents.get_mut(&id) {
+            a.target = Some(FxVec2::new(Fx(x), Fx(y)));
+            a.field = None;
+            a.arrived = false;
+        }
+    });
+}
+
+/// Follow a flow field (clears any point target).
+#[no_mangle]
+pub extern "C" fn sim_agent_follow(h: u32, id: u32, field: u32) {
+    with(h, |s| {
+        if let Some(a) = s.crowd.agents.get_mut(&id) {
+            a.field = Some(field);
+            a.target = None;
+            a.arrived = false;
+        }
+    });
+}
+
+#[no_mangle]
+pub extern "C" fn sim_agent_stop(h: u32, id: u32) {
+    with(h, |s| {
+        if let Some(a) = s.crowd.agents.get_mut(&id) {
+            a.field = None;
+            a.target = None;
+            a.vel = FxVec2::ZERO;
+        }
+    });
+}
+
+/// Agent field: 0 = x, 1 = y, 2 = vx, 3 = vy, 4 = arrived (0/1), 5 = polygon.
+#[no_mangle]
+pub extern "C" fn sim_agent_get(h: u32, id: u32, field: u32) -> i64 {
+    with(h, |s| {
+        s.crowd
+            .agents
+            .get(&id)
+            .map(|a| match field {
+                0 => a.pos.x.0,
+                1 => a.pos.y.0,
+                2 => a.vel.x.0,
+                3 => a.vel.y.0,
+                4 => a.arrived as i64,
+                _ => a.poly as i64,
+            })
+            .unwrap_or(0)
+    })
+    .unwrap_or(0)
+}
+
+/// Advance the crowd one tick (call alongside `sim_step`).
+#[no_mangle]
+pub extern "C" fn sim_crowd_step(h: u32) {
+    with(h, |s| {
+        if let Some(m) = s.nav.as_ref() {
+            s.crowd.step(m);
+        }
+    });
+}
+
+#[no_mangle]
+pub extern "C" fn sim_crowd_hash(h: u32) -> u64 {
+    with(h, |s| s.crowd.hash()).unwrap_or(0)
+}
+
+/// Snapshot the crowd into the snapshot buffer; returns its length.
+#[no_mangle]
+pub extern "C" fn sim_crowd_snapshot(h: u32) -> u32 {
+    with(h, |s| {
+        s.snapshot = s.crowd.snapshot();
+        s.snapshot.len() as u32
+    })
+    .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn sim_crowd_restore(h: u32) -> u32 {
+    with(h, |s| match Crowd::restore(&s.snapshot) {
+        Some(c) => {
+            s.crowd = c;
+            1
+        }
+        None => 0,
+    })
+    .unwrap_or(0)
+}
+
+/// Navigation reference scenario: 8×6 grid with a wall, 6 agents on a flow field and two
+/// head-on agents, 600 ticks; equal on native and wasm32.
+#[no_mangle]
+pub extern "C" fn sim_nav_golden_hash() -> u64 {
+    let h = sim_world_new(0, 0, 60);
+    sim_snapshot_set_len(h, 40);
+    for r in 0..5u32 {
+        for (k, b) in 4u32
+            .to_le_bytes()
+            .iter()
+            .chain(r.to_le_bytes().iter())
+            .enumerate()
+        {
+            sim_snapshot_set_byte(h, r * 8 + k as u32, *b as u32);
+        }
+    }
+    sim_nav_grid(h, 0, 0, Fx::ONE.0, 8, 6);
+    let goal = (Fx::from_ratio(15, 2).0, Fx::HALF.0);
+    let field = sim_nav_field(h, goal.0, goal.1, u32::MAX);
+    for i in 0..6i64 {
+        let id = sim_agent_add(
+            h,
+            (Fx::HALF + Fx::from_ratio(i % 3, 2)).0,
+            (Fx::HALF + Fx::from_ratio(i / 3, 1)).0,
+            Fx::from_ratio(1, 4).0,
+            Fx::from_int(3).0,
+        );
+        sim_agent_follow(h, id, field);
+    }
+    let l = sim_agent_add(
+        h,
+        Fx::from_ratio(11, 2).0,
+        Fx::HALF.0,
+        Fx::from_ratio(1, 4).0,
+        Fx::from_int(2).0,
+    );
+    sim_agent_target(h, l, Fx::from_ratio(15, 2).0, Fx::from_ratio(11, 2).0);
+    let r = sim_agent_add(
+        h,
+        Fx::from_ratio(15, 2).0,
+        Fx::from_ratio(11, 2).0,
+        Fx::from_ratio(1, 4).0,
+        Fx::from_int(2).0,
+    );
+    sim_agent_target(h, r, Fx::from_ratio(11, 2).0, Fx::HALF.0);
+    for _ in 0..600 {
+        sim_crowd_step(h);
+    }
+    let hash = sim_crowd_hash(h) ^ sim_nav_hash(h);
+    sim_world_free(h);
+    hash
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +696,33 @@ mod tests {
         let b = sim_golden_hash();
         assert_eq!(a, b);
         eprintln!("native golden hash: {a:#x}");
+    }
+
+    #[test]
+    fn nav_golden_hash_is_stable_and_paths_work() {
+        let a = sim_nav_golden_hash();
+        assert_eq!(a, sim_nav_golden_hash());
+        eprintln!("native nav golden hash: {a:#x}");
+        let h = sim_world_new(0, 0, 60);
+        sim_snapshot_set_len(h, 0);
+        sim_nav_grid(h, 0, 0, Fx::ONE.0, 4, 4);
+        let n = sim_nav_path(
+            h,
+            Fx::HALF.0,
+            Fx::HALF.0,
+            Fx::from_ratio(7, 2).0,
+            Fx::from_ratio(7, 2).0,
+            u32::MAX,
+        );
+        assert!((2..=4).contains(&n), "open grid path has {n} waypoints");
+        assert_eq!(Fx(sim_nav_point(h, 2 * (n - 1))), Fx::from_ratio(7, 2));
+        assert_eq!(Fx(sim_nav_point(h, 2 * (n - 1) + 1)), Fx::from_ratio(7, 2));
+        assert_eq!(
+            sim_nav_raycast(h, Fx::HALF.0, Fx::HALF.0, Fx::from_int(9).0, Fx::HALF.0),
+            1
+        );
+        assert!((Fx(sim_ray_get(1)) - Fx::from_int(4)).abs() < Fx::from_ratio(1, 1000));
+        sim_world_free(h);
     }
 
     #[test]

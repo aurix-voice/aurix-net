@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 net-fpmath = { path = "../net-fpmath" }
 net-sim-physics = { path = "../net-sim-physics" }
+net-sim-nav = { path = "../net-sim-nav" }
 
 [dev-dependencies]
 wasmtime = { workspace = true }
