@@ -116,3 +116,21 @@ test("operator can drain another node from the console and put it back", async (
   await page.getByPlaceholder(/^Action/).fill("node.");
   await expect(page.getByRole("row").filter({ hasText: "node.drain" }).first()).toBeVisible();
 });
+
+test("operator deletes a project after typing its name; keys stop working and history stays", async ({ page }) => {
+  const name = uniq("e2e-del");
+  const project = await api<{ project: { id: string }; key: { key: string } }>(page, "POST", "/v1/operator/projects", { name });
+  await page.goto(`/projects/${project.project.id}`);
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("button", { name: "Delete project" })).toBeDisabled();
+  await dialog.getByLabel("Name").fill(name);
+  await dialog.getByRole("button", { name: "Delete project" }).click();
+  await expect(page).toHaveURL(/\/projects$/);
+  await expect(page.getByRole("row", { name: new RegExp(name) })).toHaveCount(0);
+  const res = await page.request.get("/v1/rooms", { headers: { authorization: `Bearer ${project.key.key}` } });
+  expect(res.status()).toBe(401);
+  await page.goto("/audit");
+  await page.getByPlaceholder(/^Action/).fill("project.delete");
+  await expect(page.getByRole("row").filter({ hasText: project.project.id.slice(0, 8) }).first()).toBeVisible();
+});

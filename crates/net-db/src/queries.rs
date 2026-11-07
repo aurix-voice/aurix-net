@@ -27,10 +27,12 @@ pub async fn get_project(pool: &DbPool, id: Uuid) -> Result<ProjectRow> {
 }
 
 pub async fn list_projects(pool: &DbPool) -> Result<Vec<ProjectRow>> {
-    sqlx::query_as::<_, ProjectRow>("SELECT * FROM projects ORDER BY created_at")
-        .fetch_all(pool)
-        .await
-        .map_err(db_err)
+    sqlx::query_as::<_, ProjectRow>(
+        "SELECT * FROM projects WHERE deleted_at IS NULL ORDER BY created_at",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
 }
 
 pub async fn set_project_limits(pool: &DbPool, id: Uuid, limits: &serde_json::Value) -> Result<()> {
@@ -65,6 +67,49 @@ pub async fn insert_api_key(
     .fetch_one(pool)
     .await
     .map_err(db_err)
+}
+
+/// Marks the project deleted and disabled in one step; keys/webhooks/modules are handled by the
+/// caller so the operator gets counts back. Returns false if already deleted or unknown.
+pub async fn soft_delete_project(pool: &DbPool, id: Uuid) -> Result<bool> {
+    let r = sqlx::query(
+        "UPDATE projects SET deleted_at = now(), disabled_at = COALESCE(disabled_at, now()) \
+         WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(r.rows_affected() > 0)
+}
+
+pub async fn revoke_all_api_keys(pool: &DbPool, project_id: Uuid) -> Result<u64> {
+    let r = sqlx::query(
+        "UPDATE api_keys SET revoked_at = now() WHERE project_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(project_id)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(r.rows_affected())
+}
+
+pub async fn delete_webhooks_of_project(pool: &DbPool, project_id: Uuid) -> Result<u64> {
+    let r = sqlx::query("DELETE FROM webhooks WHERE project_id = $1")
+        .bind(project_id)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(r.rows_affected())
+}
+
+pub async fn delete_modules_of_project(pool: &DbPool, project_id: Uuid) -> Result<u64> {
+    let r = sqlx::query("DELETE FROM game_modules WHERE project_id = $1")
+        .bind(project_id)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(r.rows_affected())
 }
 
 pub async fn set_project_disabled(pool: &DbPool, id: Uuid, disabled: bool) -> Result<bool> {

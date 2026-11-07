@@ -248,6 +248,14 @@ export function useSetNodeDraining() {
     },
   });
 }
+export function useDeleteProject() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) => api.del<{ closed_rooms: number; revoked_keys: number }>(`/v1/operator/projects/${projectId}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.projects }),
+  });
+}
 export function useFileTicket() {
   const api = useApi();
   return useMutation({ mutationFn: (body: Record<string, unknown>) => api.post<Ticket>("/v1/matchmaking/tickets", body) });

@@ -92,9 +92,13 @@ pub fn router(st: Shared) -> Router {
         )
         .route("/v1/internal/rooms/:id/players", get(internal_players))
         .route("/v1/internal/drain", post(internal_drain))
+        .route("/v1/internal/rooms/:id", delete(internal_close_room))
         .route("/v1/operator/nodes/:id/drain", post(op_drain_node))
         .route("/v1/operator/rooms/:id/replay", get(op_replay))
-        .route("/v1/operator/projects/:id", get(op_project))
+        .route(
+            "/v1/operator/projects/:id",
+            get(op_project).delete(op_delete_project),
+        )
         .route("/v1/operator/projects/:id/usage", get(op_usage))
         .route("/v1/operator/projects/:id/rooms", get(op_project_rooms))
         .with_state(st)
@@ -530,12 +534,7 @@ async fn op_delete_room(
 ) -> ApiResult<StatusCode> {
     operator(&st, &h)?;
     let row = queries::get_room(&st.pool, id).await?;
-    close_room(
-        &st,
-        ProjectId::from_uuid(row.project_id),
-        RoomId::from_uuid(id),
-    )
-    .await;
+    close_room_anywhere(&st, ProjectId::from_uuid(row.project_id), id).await;
     audit_log(
         &st,
         Some(row.project_id),
@@ -966,6 +965,106 @@ async fn set_local_draining(st: &Shared, draining: bool) -> Result<usize> {
     Ok(handed)
 }
 
+/// Closes a live room no matter which node hosts it: locally through `close_room`, otherwise by
+/// asking the hosting node (so its players get `left` and its memory is freed). Falls back to
+/// the DB/Redis close when the hosting node is unreachable.
+async fn close_room_anywhere(st: &Shared, project: ProjectId, id: Uuid) {
+    let room = RoomId::from_uuid(id);
+    if st.host.get(room).is_some() {
+        close_room(st, project, room).await;
+        return;
+    }
+    let live = st.redis.get_room(project, room).await.ok().flatten();
+    let node = live
+        .as_ref()
+        .and_then(|l| Uuid::parse_str(&l.node).ok())
+        .and_then(|n| st.registry.get(net_common::NodeId::from_uuid(n)));
+    if let Some(n) = node.filter(|n| n.id != st.node_id) {
+        match internal_delete(st, &n.http_url, &format!("/v1/internal/rooms/{id}")).await {
+            Ok(()) => return,
+            Err(e) => {
+                tracing::warn!(room = %id, node = %n.http_url, error = %e, "remote close failed; closing locally")
+            }
+        }
+    }
+    close_room(st, project, room).await;
+}
+
+async fn internal_close_room(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    operator(&st, &h)?;
+    let room = RoomId::from_uuid(id);
+    let project = st
+        .host
+        .get(room)
+        .map(|h| h.lock().project)
+        .ok_or_else(|| NetError::NotFound("room not hosted here".into()))?;
+    close_room(&st, project, room).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn internal_delete(st: &Shared, http_url: &str, path: &str) -> Result<()> {
+    if st.cfg.auth.admin_token.is_empty() {
+        return Err(NetError::Internal(
+            "admin_token unset; cannot reach other nodes".into(),
+        ));
+    }
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| NetError::Internal(e.to_string()))?;
+    let res = http
+        .delete(format!("{}{path}", http_url.trim_end_matches('/')))
+        .bearer_auth(&st.cfg.auth.admin_token)
+        .send()
+        .await
+        .map_err(|e| NetError::Internal(e.to_string()))?;
+    if !res.status().is_success() {
+        return Err(NetError::Internal(format!(
+            "node answered {}",
+            res.status()
+        )));
+    }
+    Ok(())
+}
+
+/// Delete a project: every live room is closed fleet-wide, all keys revoked, webhooks and
+/// modules removed. The project row stays (soft delete) so usage and audit history survive.
+async fn op_delete_project(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    if !queries::soft_delete_project(&st.pool, id).await? {
+        return Err(NetError::NotFound("project not found".into()).into());
+    }
+    let project = ProjectId::from_uuid(id);
+    let live = st.redis.list_rooms(project).await.unwrap_or_default();
+    let closed = live.len();
+    for r in live {
+        close_room_anywhere(&st, project, r.room.0).await;
+    }
+    let revoked = queries::revoke_all_api_keys(&st.pool, id).await?;
+    let webhooks = queries::delete_webhooks_of_project(&st.pool, id).await?;
+    let modules = queries::delete_modules_of_project(&st.pool, id).await?;
+    let details = json!({"closed_rooms": closed, "revoked_keys": revoked, "webhooks": webhooks, "modules": modules});
+    audit_log(
+        &st,
+        Some(id),
+        "operator",
+        "project.delete",
+        &id.to_string(),
+        details.clone(),
+    )
+    .await;
+    Ok(Json(details))
+}
+
 async fn internal_drain(
     State(st): State<Shared>,
     h: HeaderMap,
@@ -1254,6 +1353,9 @@ async fn op_project(
 ) -> ApiResult<Json<Value>> {
     operator(&st, &h)?;
     let p = queries::get_project(&st.pool, id).await?;
+    if p.deleted_at.is_some() {
+        return Err(NetError::NotFound("project deleted".into()).into());
+    }
     let keys: Vec<Value> = queries::list_api_keys(&st.pool, id)
         .await?
         .iter()

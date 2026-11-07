@@ -1,9 +1,9 @@
-import { Link, useParams } from "@tanstack/react-router";
+import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { ArrowLeft, Plus } from "lucide-react";
 import { useState } from "react";
 
 import type { ApiKey, LiveRoom, Module, Webhook } from "@/api/client";
-import { useCreateKey, useOpDeleteModule, useOpDeleteWebhook, useProject, useRegions, useRevokeProjectKey, useSetLimits, useSetSuspended } from "@/api/hooks";
+import { useCreateKey, useOpDeleteModule, useOpDeleteWebhook, useProject, useRegions, useRevokeProjectKey, useSetLimits, useSetSuspended, useDeleteProject } from "@/api/hooks";
 import { ConnectCard } from "@/components/ConnectCard";
 import { useAuth } from "@/auth/AuthProvider";
 import { NewKeyDialog } from "@/components/NewKeyDialog";
@@ -86,6 +86,10 @@ function ProjectBody() {
   const [revoking, setRevoking] = useState<ApiKey | null>(null);
   const regions = useRegions();
   const setSuspended = useSetSuspended(projectId);
+  const deleteProject = useDeleteProject();
+  const navigate = useNavigate();
+  const [deletingProject, setDeletingProject] = useState(false);
+  const [confirmName, setConfirmName] = useState("");
   const [suspending, setSuspending] = useState(false);
   const delWebhook = useOpDeleteWebhook(projectId);
   const delModule = useOpDeleteModule(projectId);
@@ -113,6 +117,9 @@ function ProjectBody() {
         description={<IdChip id={p.id} short={36} />}
         actions={
           <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" className="text-danger" onClick={() => setDeletingProject(true)}>
+              {t("common.delete")}
+            </Button>
             <Button variant={p.disabled_at ? "secondary" : "ghost"} size="sm" onClick={() => setSuspending(true)}>
               {p.disabled_at ? t("projects.resume") : t("projects.suspend")}
             </Button>
@@ -130,6 +137,32 @@ function ProjectBody() {
           {d.rooms.length ? ` ${t("projects.suspended.live", { n: d.rooms.length })}` : ""}
         </Callout>
       ) : null}
+      <ConfirmDialog
+        open={deletingProject}
+        onOpenChange={(o) => {
+          setDeletingProject(o);
+          if (!o) setConfirmName("");
+        }}
+        title={t("projects.delete")}
+        description={t("projects.delete.confirm", { name: p.name })}
+        confirmLabel={t("projects.delete")}
+        variant="danger"
+        disabled={confirmName.trim() !== p.name}
+        onConfirm={async () => {
+          const r = await deleteProject.mutateAsync(p.id);
+          toast.ok(t("projects.delete.done", { rooms: r.closed_rooms, keys: r.revoked_keys }));
+          selectProject(null);
+          void navigate({ to: "/projects" });
+        }}
+      >
+        <Input
+          aria-label={t("common.name")}
+          placeholder={p.name}
+          value={confirmName}
+          onChange={(e) => setConfirmName(e.target.value)}
+          autoComplete="off"
+        />
+      </ConfirmDialog>
       <ConfirmDialog
         open={suspending}
         onOpenChange={setSuspending}

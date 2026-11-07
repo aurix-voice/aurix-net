@@ -11,6 +11,7 @@ pub struct ProjectRow {
     pub limits: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub disabled_at: Option<DateTime<Utc>>,
+    pub deleted_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, FromRow)]
