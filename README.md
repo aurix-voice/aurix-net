@@ -2,7 +2,7 @@
 
 Open-source game networking service: rooms and relay, server-authoritative state sync, deterministic lockstep. Companion of Aurix Voice; separate server, database and client. One server, one client, three room modes (`relay`, `sync`, `lockstep`). Priced by node-hours, never by CCU.
 
-Status: stage 0 (transport, control plane, relay mode) works locally. `sync` and `lockstep` are next.
+Status: relay, sync and lockstep modes, client library, C ABI, CLI, webhooks and matchmaking work locally. Engine SDKs are next. See `docs/modes.md` and `docs/api.md`.
 
 ## Quickstart
 
@@ -31,7 +31,16 @@ Config: TOML file via `--config`, every key overridable as `NET__SECTION__KEY` (
 | `net-rooms` | relay room logic: membership, props with CAS, events/targets/groups/cache, master, kick, offline slots |
 | `net-api` | WebSocket control channel, QUIC data plane, REST + operator API, metrics |
 | `net-server` | the node binary `aurix-net-server` |
-| `net-loadtest` | bots: N rooms x M players, loss/latency report |
+| `net-wire` | schema IDL, bit codec, quantization, deltas |
+| `net-sim` | simulation frame: entities, components, inputs, snapshot/hash |
+| `net-replication` | per-client baselines, AOI, priority, delta build/apply |
+| `net-lagcomp` | hitbox history, rewind raycasts |
+| `net-fpmath` | Q32.32 fixed point, deterministic trig and RNG |
+| `net-rollback` | prediction, rollback, hashes, replays |
+| `net-client` | Rust client (control + data path) |
+| `net-ffi` | `libaurix_net` C ABI + `include/aurix_net.h` |
+| `net-cli` | `aurix-net` command line |
+| `net-loadtest` | bots: relay / sync / lockstep, loss/latency/tick report |
 
 ## Protocol in one paragraph
 
