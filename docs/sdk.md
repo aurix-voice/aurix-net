@@ -161,3 +161,20 @@ Joints, contact events and shape casts are on the same handle: `jointDistance` (
 sweeps a circle and reports where it first touches (C#: `JointDistance/JointRevolute/JointWeld/
 RemoveJoint/SetMotor/Events/CircleCast`). Reference hash `sim_joint_golden_hash()` =
 `0x4bcc781a484ceeed` on native and wasm32.
+
+### 3D worlds
+
+The same module hosts `net-sim-physics3d`: `sim.world3(gravity, hz)` → `Sim3World` with
+`addSphere/addBox/addCapsule`, `setMaterial/setLayers/setVelocity/setPosition/setRotation`
+(`Sim3World.axisAngle` builds quaternions), `applyImpulse(id, impulse, at?)`, `body(id)`
+(position, rotation, velocity, angular velocity), `raycast`, `events`, `snapshot/restore/hash`.
+C#: `Aurix.Net.Sim.Sim3World` with the same surface (`Vec3`, `Quat.AxisAngle`, `Body3State`,
+`Ray3Hit`). Reference hash `sim3_golden_hash()` = `0x0a9c7e6fc4fa43bf` on native and wasm32.
+
+```ts
+const w3 = sim.world3();
+w3.addBox(BodyKind.Static, { x: 0, y: -0.5, z: 0 }, { x: 50, y: 0.5, z: 50 });
+const crate = w3.addBox(BodyKind.Dynamic, { x: 0, y: 3, z: 0 }, { x: 0.5, y: 0.5, z: 0.5 });
+w3.setRotation(crate, Sim3World.axisAngle({ x: 0, y: 0, z: 1 }, 0.3));
+// per tick: w3.step(); lockstep.reportHash(tick, w3.hash());
+```

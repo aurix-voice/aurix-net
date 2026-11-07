@@ -74,3 +74,23 @@ test("sim wasm: joints golden hash, contact events and circle cast", async () =>
   assert.ok(hit && hit.body === ball && Math.abs(hit.point.x - -0.9) < 0.01, `circle cast ${JSON.stringify(hit)}`);
   w.free();
 });
+
+test("sim wasm: 3D golden hash, resting sphere, snapshot and raycast", async () => {
+  const sim = await Sim.load(await readFile(WASM));
+  assert.equal(sim.golden3Hash(), 0x0a9c7e6fc4fa43bfn);
+  const w = sim.world3();
+  w.addBox(BodyKind.Static, { x: 0, y: -0.5, z: 0 }, { x: 10, y: 0.5, z: 10 });
+  const ball = w.addSphere(BodyKind.Dynamic, { x: 0, y: 3, z: 0 }, 0.5);
+  for (let i = 0; i < 240; i++) w.step();
+  const b = w.body(ball);
+  assert.ok(Math.abs(b.position.y - 0.5) < 0.03, `sphere y ${b.position.y}`);
+  const snap = w.snapshot();
+  const h = w.hash();
+  w.setPosition(ball, { x: 0, y: 9, z: 0 });
+  assert.notEqual(w.hash(), h);
+  assert.ok(w.restore(snap));
+  assert.equal(w.hash(), h);
+  const hit = w.raycast({ x: 0, y: 5, z: 0 }, { x: 0, y: -10, z: 0 });
+  assert.ok(hit && hit.body === ball && Math.abs(hit.point.y - 1) < 0.05, `ray ${JSON.stringify(hit)}`);
+  w.free();
+});

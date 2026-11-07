@@ -71,6 +71,32 @@ interface SimExports {
   sim_event_get(h: number, i: number, field: number): number;
   sim_circlecast(h: number, x: bigint, y: bigint, dx: bigint, dy: bigint, r: bigint, mask: number): number;
   sim_joint_golden_hash(): bigint;
+  sim3_world_new(gx: bigint, gy: bigint, gz: bigint, hz: number): number;
+  sim3_world_free(h: number): void;
+  sim3_step(h: number): void;
+  sim3_tick(h: number): bigint;
+  sim3_hash(h: number): bigint;
+  sim3_snapshot(h: number): number;
+  sim3_snapshot_byte(h: number, i: number): number;
+  sim3_snapshot_set_len(h: number, n: number): void;
+  sim3_snapshot_set_byte(h: number, i: number, b: number): void;
+  sim3_restore(h: number): number;
+  sim3_add_sphere(h: number, k: number, x: bigint, y: bigint, z: bigint, r: bigint, density: bigint): number;
+  sim3_add_box(h: number, k: number, x: bigint, y: bigint, z: bigint, hx: bigint, hy: bigint, hz: bigint, density: bigint): number;
+  sim3_add_capsule(h: number, k: number, x: bigint, y: bigint, z: bigint, halfLen: bigint, r: bigint, density: bigint): number;
+  sim3_remove_body(h: number, id: number): number;
+  sim3_set_material(h: number, id: number, friction: bigint, restitution: bigint, sensor: number): void;
+  sim3_set_layers(h: number, id: number, layer: number, mask: number): void;
+  sim3_set_velocity(h: number, id: number, vx: bigint, vy: bigint, vz: bigint, wx: bigint, wy: bigint, wz: bigint): void;
+  sim3_set_position(h: number, id: number, x: bigint, y: bigint, z: bigint): void;
+  sim3_set_rotation(h: number, id: number, qx: bigint, qy: bigint, qz: bigint, qw: bigint): void;
+  sim3_apply_impulse(h: number, id: number, ix: bigint, iy: bigint, iz: bigint, atPoint: number, px: bigint, py: bigint, pz: bigint): void;
+  sim3_body_get(h: number, id: number, field: number): bigint;
+  sim3_raycast(h: number, x: bigint, y: bigint, z: bigint, dx: bigint, dy: bigint, dz: bigint, mask: number): number;
+  sim3_ray_get(field: number): bigint;
+  sim3_events_len(h: number): number;
+  sim3_event_get(h: number, i: number, field: number): number;
+  sim3_golden_hash(): bigint;
 }
 
 export interface BodyState {
@@ -114,6 +140,14 @@ export class Sim {
   /** Joint reference scenario hash; must equal the native value (`0x4bcc781a484ceeed`). */
   jointGoldenHash(): bigint {
     return this.e.sim_joint_golden_hash();
+  }
+  /** 3D reference scenario hash; must equal the native value (`0x0a9c7e6fc4fa43bf`). */
+  golden3Hash(): bigint {
+    return this.e.sim3_golden_hash();
+  }
+  /** Create a 3D world (gravity in m/s², tick rate). */
+  world3(gravity: { x: number; y: number; z: number } = { x: 0, y: -10, z: 0 }, tickHz = 60): Sim3World {
+    return new Sim3World(this.e, this.e.sim3_world_new(fx(gravity.x), fx(gravity.y), fx(gravity.z), tickHz));
   }
 
   world(gravity = { x: 0, y: -10 }, tickHz = 60): SimWorld {
@@ -321,5 +355,95 @@ export class SimWorld {
     if (!r) return null;
     const g = (i: number) => num(this.e.sim_ray_get(i));
     return { body: r - 1, fraction: g(0), point: { x: g(1), y: g(2) }, normal: { x: g(3), y: g(4) } };
+  }
+}
+
+export type Vec3 = { x: number; y: number; z: number };
+export type Quat = { x: number; y: number; z: number; w: number };
+export type Body3State = { position: Vec3; rotation: Quat; velocity: Vec3; angularVelocity: Vec3 };
+export type Ray3Hit = { body: number; fraction: number; point: Vec3; normal: Vec3 };
+
+/** Deterministic 3D world (spheres, boxes, capsules) over the same wasm module. */
+export class Sim3World {
+  constructor(private readonly e: SimExports, readonly handle: number) {}
+  free() {
+    this.e.sim3_world_free(this.handle);
+  }
+  step() {
+    this.e.sim3_step(this.handle);
+  }
+  tick(): number {
+    return Number(this.e.sim3_tick(this.handle));
+  }
+  hash(): bigint {
+    return this.e.sim3_hash(this.handle);
+  }
+  snapshot(): Uint8Array {
+    const n = this.e.sim3_snapshot(this.handle);
+    const out = new Uint8Array(n);
+    for (let i = 0; i < n; i++) out[i] = this.e.sim3_snapshot_byte(this.handle, i);
+    return out;
+  }
+  restore(bytes: Uint8Array): boolean {
+    this.e.sim3_snapshot_set_len(this.handle, bytes.length);
+    for (let i = 0; i < bytes.length; i++) this.e.sim3_snapshot_set_byte(this.handle, i, bytes[i]);
+    return this.e.sim3_restore(this.handle) === 1;
+  }
+  addSphere(kind: BodyKind, p: Vec3, radius: number, density = 1): number {
+    return this.e.sim3_add_sphere(this.handle, kind, fx(p.x), fx(p.y), fx(p.z), fx(radius), fx(density));
+  }
+  addBox(kind: BodyKind, p: Vec3, half: Vec3, density = 1): number {
+    return this.e.sim3_add_box(this.handle, kind, fx(p.x), fx(p.y), fx(p.z), fx(half.x), fx(half.y), fx(half.z), fx(density));
+  }
+  /** Capsule along the body y axis. */
+  addCapsule(kind: BodyKind, p: Vec3, halfLen: number, radius: number, density = 1): number {
+    return this.e.sim3_add_capsule(this.handle, kind, fx(p.x), fx(p.y), fx(p.z), fx(halfLen), fx(radius), fx(density));
+  }
+  remove(id: number): boolean {
+    return this.e.sim3_remove_body(this.handle, id) === 1;
+  }
+  setMaterial(id: number, friction: number, restitution: number, sensor = false) {
+    this.e.sim3_set_material(this.handle, id, fx(friction), fx(restitution), sensor ? 1 : 0);
+  }
+  setLayers(id: number, layer: number, mask: number) {
+    this.e.sim3_set_layers(this.handle, id, layer >>> 0, mask >>> 0);
+  }
+  setVelocity(id: number, v: Vec3, w: Vec3 = { x: 0, y: 0, z: 0 }) {
+    this.e.sim3_set_velocity(this.handle, id, fx(v.x), fx(v.y), fx(v.z), fx(w.x), fx(w.y), fx(w.z));
+  }
+  setPosition(id: number, p: Vec3) {
+    this.e.sim3_set_position(this.handle, id, fx(p.x), fx(p.y), fx(p.z));
+  }
+  setRotation(id: number, q: Quat) {
+    this.e.sim3_set_rotation(this.handle, id, fx(q.x), fx(q.y), fx(q.z), fx(q.w));
+  }
+  /** Axis-angle helper for `setRotation` (axis must be unit length). */
+  static axisAngle(axis: Vec3, angle: number): Quat {
+    const s = Math.sin(angle / 2);
+    return { x: axis.x * s, y: axis.y * s, z: axis.z * s, w: Math.cos(angle / 2) };
+  }
+  applyImpulse(id: number, impulse: Vec3, at?: Vec3) {
+    this.e.sim3_apply_impulse(this.handle, id, fx(impulse.x), fx(impulse.y), fx(impulse.z), at ? 1 : 0, fx(at?.x ?? 0), fx(at?.y ?? 0), fx(at?.z ?? 0));
+  }
+  body(id: number): Body3State {
+    const g = (f: number) => num(this.e.sim3_body_get(this.handle, id, f));
+    return {
+      position: { x: g(0), y: g(1), z: g(2) },
+      rotation: { x: g(3), y: g(4), z: g(5), w: g(6) },
+      velocity: { x: g(7), y: g(8), z: g(9) },
+      angularVelocity: { x: g(10), y: g(11), z: g(12) },
+    };
+  }
+  raycast(from: Vec3, dir: Vec3, mask = 0xffffffff): Ray3Hit | null {
+    const r = this.e.sim3_raycast(this.handle, fx(from.x), fx(from.y), fx(from.z), fx(dir.x), fx(dir.y), fx(dir.z), mask >>> 0);
+    if (!r) return null;
+    const g = (i: number) => num(this.e.sim3_ray_get(i));
+    return { body: r - 1, fraction: g(0), point: { x: g(1), y: g(2), z: g(3) }, normal: { x: g(4), y: g(5), z: g(6) } };
+  }
+  events(): { a: number; b: number; begin: boolean }[] {
+    const n = this.e.sim3_events_len(this.handle);
+    const out = [];
+    for (let i = 0; i < n; i++) out.push({ a: this.e.sim3_event_get(this.handle, i, 0), b: this.e.sim3_event_get(this.handle, i, 1), begin: this.e.sim3_event_get(this.handle, i, 2) === 1 });
+    return out;
   }
 }

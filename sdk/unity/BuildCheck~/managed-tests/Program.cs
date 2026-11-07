@@ -166,6 +166,18 @@ static class Program
         Check(a.Raycast(0, 5, 0, -10, out var hit) && hit.Body == ballA && Math.Abs(hit.Ny - 1) < 1e-6, "sim: raycast hits the ball from above");
         Check(SimWorld.NavGoldenHash() == 0x746c5a608abe2f26UL, "nav: golden hash equals the Rust/wasm value");
         Check(SimWorld.JointGoldenHash() == 0x4bcc781a484ceeedUL, "joints: golden hash equals the Rust/wasm value");
+        Check(Sim3World.GoldenHash() == 0x0a9c7e6fc4fa43bfUL, "sim3: golden hash equals the Rust/wasm value");
+        using (var w3 = new Sim3World())
+        {
+            w3.AddBox(BodyKind.Static, new Vec3(0, -0.5, 0), new Vec3(10, 0.5, 10));
+            uint ball3 = w3.AddSphere(BodyKind.Dynamic, new Vec3(0, 3, 0), 0.5);
+            for (int i = 0; i < 240; i++) w3.Step();
+            Check(Math.Abs(w3.Body(ball3).Position.Y - 0.5) < 0.03, "sim3: sphere rests on the floor");
+            var snap3 = w3.Snapshot(); ulong h3 = w3.Hash();
+            w3.SetPosition(ball3, new Vec3(0, 9, 0));
+            Check(w3.Hash() != h3 && w3.Restore(snap3) && w3.Hash() == h3, "sim3: snapshot round-trip");
+            Check(w3.Raycast(new Vec3(0, 5, 0), new Vec3(0, -10, 0), out var h3hit) && h3hit.Body == ball3 && Math.Abs(h3hit.Point.Y - 1) < 0.05, "sim3: raycast hits the sphere");
+        }
         using (var j = new SimWorld(0, -10))
         {
             uint floor = j.AddBox(BodyKind.Static, 0, -0.5, 10, 0.5);

@@ -110,4 +110,6 @@ and wasm32 (CI matrix) — the same vectors shipped to the C# and TS ports.
   box-box SAT (15 axes) with reference-face clipping (≤4 points), sequential impulses with warm
   starting, two-axis friction, restitution, positional correction, quaternion integration
   (`FxQuat`/`FxMat3` in net-fpmath), raycasts, snapshot/restore/hash; tests run two worlds and
-  compare hashes. Not yet: convex hulls, 3D joints/KCC, flat ABI + wrappers, bot kit (HFSM/BT).
+  compare hashes; exposed as `sim3_*` over the flat ABI with Web `Sim3World` / Unity `Sim3World`
+  wrappers, golden hash `0x0a9c7e6fc4fa43bf` native == wasm32. Not yet: convex hulls, 3D
+  joints/KCC, bot kit (HFSM/BT).
