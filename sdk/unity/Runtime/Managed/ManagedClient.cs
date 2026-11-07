@@ -12,6 +12,8 @@ using System.Threading.Tasks;
 
 namespace Aurix.Net.Managed
 {
+    public enum CacheOp : byte { None = 0, Add = 1, Remove = 2 }
+
     public sealed class ManagedClient : IDisposable
     {
         ClientWebSocket _ws;
@@ -149,8 +151,12 @@ namespace Aurix.Net.Managed
         }
 
         public void SendData(Channel channel, byte[] payload) { _link.Send(channel, payload); if (channel != Channel.Unreliable) FlushLink(); }
-        public void SendEvent(byte code, byte[] payload, Target target = Target.Others, bool reliable = false, ushort[] actors = null, ushort? group = null)
-            => SendData(reliable ? Channel.Reliable : Channel.Unreliable, Event.Encode(code, payload, target, actors, group));
+        /// <param name="cache">Add keeps the event for late joiners (current cache slice, see CacheSliceAsync); Remove drops your earlier cached events with the same code.</param>
+        public void SendEvent(byte code, byte[] payload, Target target = Target.Others, bool reliable = false, ushort[] actors = null, ushort? group = null, CacheOp cache = CacheOp.None)
+            => SendData(reliable || cache != CacheOp.None ? Channel.Reliable : Channel.Unreliable, Event.Encode(code, payload, target, actors, group, cache));
+        /// <summary>Relay event-cache slices: "increase" opens the next slice, "set" picks one, "purge" drops one slice, "purge_up_to" every slice up to index.</summary>
+        public Task CacheSliceAsync(string op, ushort? index = null) =>
+            SendControlAsync("{\"t\":\"cache_slice\",\"op\":\"" + op + "\"" + (index.HasValue ? ",\"index\":" + index.Value : "") + "}");
 
         /// <summary>Pushes queued unreliable messages; call at the end of the frame.</summary>
         public void Flush() { _link.FlushBatch(); FlushLink(); }
@@ -240,11 +246,11 @@ namespace Aurix.Net.Managed
     /// <summary>Relay event frame codec (u8 code, u8 flags, u16 from, [u16 group], [u16 n, n*u16], payload).</summary>
     public static class Event
     {
-        public static byte[] Encode(byte code, byte[] payload, Target target, ushort[] actors = null, ushort? group = null)
+        public static byte[] Encode(byte code, byte[] payload, Target target, ushort[] actors = null, ushort? group = null, CacheOp cache = CacheOp.None)
         {
             int n = target == Target.Actors ? (actors?.Length ?? 0) : 0;
             var b = new byte[4 + (group.HasValue ? 2 : 0) + (target == Target.Actors ? 2 + n * 2 : 0) + (payload?.Length ?? 0)];
-            int o = 0; b[o++] = code; b[o++] = (byte)((int)target | (group.HasValue ? 0x10 : 0)); b[o++] = 0; b[o++] = 0;
+            int o = 0; b[o++] = code; b[o++] = (byte)((int)target | (group.HasValue ? 0x10 : 0) | (cache == CacheOp.Add ? 0x04 : cache == CacheOp.Remove ? 0x08 : 0)); b[o++] = 0; b[o++] = 0;
             if (group.HasValue) { b[o++] = (byte)(group.Value >> 8); b[o++] = (byte)group.Value; }
             if (target == Target.Actors) { b[o++] = (byte)(n >> 8); b[o++] = (byte)n; for (int i = 0; i < n; i++) { b[o++] = (byte)(actors[i] >> 8); b[o++] = (byte)actors[i]; } }
             if (payload != null) Array.Copy(payload, 0, b, o, payload.Length);

@@ -1,6 +1,6 @@
 import { Channel } from "./packet.js";
 import { Link, Received } from "./link.js";
-import { encodeEvent, decodeEvent, Target } from "./event.js";
+import { encodeEvent, decodeEvent, Target, CacheOp } from "./event.js";
 export { Channel } from "./packet.js";
 export { Link } from "./link.js";
 export { encodeEvent, decodeEvent } from "./event.js";
@@ -161,7 +161,12 @@ export class Client {
 
   /** Queue a data message; unreliable ones leave on flush()/timer. */
   sendData(channel: Channel, payload: Uint8Array) { this.link.send(channel, payload); if (channel === Channel.Reliable) this.flushLink(); }
-  sendEvent(code: number, payload: Uint8Array, target: Target = "others", reliable = false) { this.sendData(reliable ? Channel.Reliable : Channel.Unreliable, encodeEvent(code, payload, target)); }
+  /** Relay event; `opts.cache` keeps it for late joiners (see `cacheSlice`), `opts.group` sends to one interest group. */
+  sendEvent(code: number, payload: Uint8Array, target: Target = "others", reliable = false, opts: { group?: number; cache?: CacheOp } = {}) {
+    this.sendData(reliable || opts.cache ? Channel.Reliable : Channel.Unreliable, encodeEvent(code, payload, target, opts.group, opts.cache));
+  }
+  /** Relay event-cache slices: `increase` opens the next slice, `set` picks one, `purge` drops one slice, `purge_up_to` every slice up to `index`. */
+  cacheSlice(op: "increase" | "set" | "purge" | "purge_up_to", index?: number) { this.send({ t: "cache_slice", op, index }); }
   /** Push queued unreliable messages now (call at end of frame). */
   flush() { this.link.flushBatch(); this.flushLink(); }
   get stats() { return this.link.stats; }
