@@ -84,6 +84,23 @@ through the same link/channels. Browsers pin the certificate via `serverCertific
 regenerated on every start. The WebSocket tunnel remains the fallback. Manual browser check:
 `sdk/web/test/browser.html` (two clients, echo over WebTransport).
 
+## Metrics (`GET /metrics`, Prometheus)
+
+| Metric | Meaning |
+|---|---|
+| `net_rooms`, `net_players`, `net_control_sessions` | hosted rooms, online players, control connections |
+| `net_datagrams_in/out_total`, `net_bytes_in/out_total` | data path volume |
+| `net_events_total{channel}` | relayed events / deltas / bundles |
+| `net_errors_total{code}` | client-visible errors by code |
+| `net_sync_tick_seconds` | sync/lockstep tick duration histogram |
+| `net_tick_overruns_total` | ticks longer than the tick period |
+| `net_sync_lost_deltas_total` | deltas clients lost (re-sent in full) |
+| `net_sync_resyncs_total` | full-snapshot requests |
+| `net_sync_aoi_starved_total` | client-ticks where the byte budget deferred entities |
+| `net_sync_inputs_rate_limited_total`, `net_sync_invalid_inputs_total` | dropped input frames |
+| `net_lockstep_desyncs_total` | hash reports disagreeing with the majority |
+| `net_rooms_adopted_total` | rooms taken over from a dead node |
+
 ## Usage metering
 
 Every node adds per project and hour: `room_minutes`, `player_minutes`, `bytes_in`,

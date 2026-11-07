@@ -191,6 +191,7 @@ pub struct SyncRoom {
     input_tokens: HashMap<ActorId, f32>,
     pub inputs_rate_limited: u64,
     pub invalid_inputs: u64,
+    pub resyncs: u64,
 }
 
 /// Input frames a client may send in a burst before the per-tick allowance applies.
@@ -279,6 +280,7 @@ impl SyncRoom {
             input_tokens: HashMap::new(),
             inputs_rate_limited: 0,
             invalid_inputs: 0,
+            resyncs: 0,
         })
     }
 
@@ -358,6 +360,7 @@ impl SyncRoom {
                 true
             }
             KIND_RESYNC => {
+                self.resyncs += 1;
                 if let Some(v) = self.views.get_mut(&actor) {
                     v.reset();
                 }
@@ -428,6 +431,16 @@ impl SyncRoom {
         self.history = History::new(self.hz as usize * 2);
         self.logic.reset();
         Ok(())
+    }
+
+    /// (resync requests, starved client-ticks) since the last call.
+    pub fn take_replication_stats(&mut self) -> (u64, u64) {
+        let starved = self
+            .views
+            .values_mut()
+            .map(|v| std::mem::take(&mut v.starved))
+            .sum();
+        (std::mem::take(&mut self.resyncs), starved)
     }
 
     /// (rate-limited, invalid) input frames since the last call.

@@ -18,6 +18,11 @@ pub struct Metrics {
     pub sync_lost_deltas: IntCounter,
     pub sync_inputs_rate_limited: IntCounter,
     pub sync_invalid_inputs: IntCounter,
+    pub sync_resyncs: IntCounter,
+    pub sync_aoi_starved: IntCounter,
+    pub tick_overruns: IntCounter,
+    pub lockstep_desyncs: IntCounter,
+    pub rooms_adopted: IntCounter,
 }
 
 impl Metrics {
@@ -64,9 +69,34 @@ impl Metrics {
             "net_sync_invalid_inputs_total",
             "input frames dropped as malformed or too far ahead of the room tick",
         );
+        let sync_resyncs = c(
+            "net_sync_resyncs_total",
+            "clients that asked for a full snapshot (baselines dropped)",
+        );
+        let sync_aoi_starved = c(
+            "net_sync_aoi_starved_total",
+            "client-ticks where the byte budget deferred relevant entities",
+        );
+        let tick_overruns = c(
+            "net_tick_overruns_total",
+            "sync/lockstep ticks that took longer than the tick period",
+        );
+        let lockstep_desyncs = c(
+            "net_lockstep_desyncs_total",
+            "lockstep hash reports that disagreed with the majority",
+        );
+        let rooms_adopted = c(
+            "net_rooms_adopted_total",
+            "rooms this node took over from a dead node (failover)",
+        );
         Self {
             sync_tick,
             sync_lost_deltas,
+            sync_resyncs,
+            sync_aoi_starved,
+            tick_overruns,
+            lockstep_desyncs,
+            rooms_adopted,
             sync_inputs_rate_limited,
             sync_invalid_inputs,
             rooms: g("net_rooms", "open rooms on this node"),

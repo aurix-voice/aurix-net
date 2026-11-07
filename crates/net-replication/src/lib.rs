@@ -72,6 +72,8 @@ pub struct ClientView {
     pending_despawn: BTreeSet<EntityId>,
     /// Deltas the client lost (reported or assumed); drained by the room for metrics.
     pub lost_deltas: u64,
+    /// Ticks where the byte budget deferred relevant entities; drained for metrics.
+    pub starved: u64,
     /// Entities the game forces into view (team mates, objectives) regardless of AOI.
     pub interest: BTreeSet<EntityId>,
     /// Entity whose position defines the viewpoint (the player's avatar).
@@ -90,6 +92,7 @@ impl ClientView {
             acked_any: false,
             pending_despawn: BTreeSet::new(),
             lost_deltas: 0,
+            starved: 0,
             interest: BTreeSet::new(),
             viewpoint: None,
             extra_viewpoints: Vec::new(),
@@ -386,6 +389,7 @@ impl Replicator {
                 }
             }
             if (w.bit_len() + ew.bit_len()).div_ceil(8) > self.cfg.budget_bytes && sent > 0 {
+                view.starved += 1;
                 break;
             }
             let nbits = ew.bit_len();

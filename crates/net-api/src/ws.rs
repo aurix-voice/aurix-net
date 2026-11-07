@@ -854,6 +854,9 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
                 let (limited, invalid) = sy.take_input_stats();
                 st.metrics.sync_inputs_rate_limited.inc_by(limited);
                 st.metrics.sync_invalid_inputs.inc_by(invalid);
+                let (resyncs, starved) = sy.take_replication_stats();
+                st.metrics.sync_resyncs.inc_by(resyncs);
+                st.metrics.sync_aoi_starved.inc_by(starved);
                 n += 1;
                 if n.is_multiple_of(checkpoint_every) {
                     checkpoint = Some((project, sy.checkpoint()));
@@ -900,7 +903,11 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
                 dispatch(&g, outgoing, &st.metrics);
             }
         }
-        st.metrics.sync_tick.observe(t0.elapsed().as_secs_f64());
+        let took = t0.elapsed();
+        if took > period {
+            st.metrics.tick_overruns.inc();
+        }
+        st.metrics.sync_tick.observe(took.as_secs_f64());
         if let Some((project, body)) = checkpoint {
             let redis = st.redis.clone();
             tokio::spawn(async move {
@@ -977,7 +984,7 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
             }
             for (tick, actor, strikes, resync) in desyncs {
                 let untrusted = strikes >= crate::lockstep::UNTRUSTED_AFTER;
-                st.metrics.errors.with_label_values(&["desync"]).inc();
+                st.metrics.lockstep_desyncs.inc();
                 // The desynced client reloads from the master's confirmed state + journal tail.
                 if let Some(ds) = g.sessions.get(&actor).and_then(|s| s.data.as_ref()) {
                     for f in resync {
@@ -1013,7 +1020,11 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                 }
             });
         }
-        st.metrics.sync_tick.observe(t0.elapsed().as_secs_f64());
+        let took = t0.elapsed();
+        if took > period {
+            st.metrics.tick_overruns.inc();
+        }
+        st.metrics.sync_tick.observe(took.as_secs_f64());
         if let Some((project, body)) = checkpoint {
             let redis = st.redis.clone();
             tokio::spawn(async move {
@@ -1195,7 +1206,7 @@ pub async fn adopt_room(
         tokio::spawn(run_lockstep(st.clone(), room_id, period));
     }
     st.metrics.rooms.set(st.host.len() as i64);
-    st.metrics.errors.with_label_values(&["room_adopted"]).inc();
+    st.metrics.rooms_adopted.inc();
     tracing::info!(room = %room_id, name = %row.name, mode = %row.mode, restored, "adopted orphaned room");
     st.webhooks.emit(
         project,
