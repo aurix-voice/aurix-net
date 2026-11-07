@@ -50,7 +50,7 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | GET/POST/DELETE | `/v1/keys[/:id]` | `admin` | API keys (plaintext shown once); `{name, scopes[], expires_in_secs?, allowed_cidrs?[]}` — with `allowed_cidrs` (CIDR or IP, ≤32) the key is accepted only from those networks (client IP after `trusted_proxies`), otherwise 403 and rejection `ip_denied` |
 | GET/POST/DELETE | `/v1/webhooks[/:id]` | `admin` | webhooks (`url, events[]` — names from [webhooks.md](webhooks.md), empty = all), secret shown once |
 | GET | `/v1/matchmaking` | read | live queue: `searching[]` (ticket, player, mode, region, max_players, age_secs) and `matched.last_hour` / `matched.last_24h` (rooms formed); operators: `GET /v1/operator/projects/:id/matchmaking` |
-| POST | `/v1/matchmaking/tickets` | `rooms` | `{player_id, mode, region?, max_players, min_players, max_wait_secs, props, attrs?, filter?, fill_existing?, match_type?}` → `{ticket, state}` |
+| POST | `/v1/matchmaking/tickets` | `rooms` | `{player_id, mode, region?, max_players, min_players, bots?, max_wait_secs, props, attrs?, filter?, fill_existing?, match_type?}` → `{ticket, state}` |
 | GET/DELETE | `/v1/matchmaking/tickets/:id` | `read`/`rooms` | `state: searching{waiting} | matched{room, mode, max_players, players} | cancelled` |
 | GET/POST | `/v1/operator/projects` | operator | projects; create returns the first key |
 | POST | `/v1/operator/projects/:id/grants` | operator | test grant for a project (`player_id`, `name`, `room`, `scopes`, `ttl_secs` ≤ 3600, default 300); suspended/banned → 403; audited `grant.issue` (token never logged) |
@@ -188,6 +188,11 @@ default), `serial` (emptiest first) or `random`. The result is `matched` with `p
 also do this directly on the control plane: `{"t":"join_random","filter":{..exact props..},"expr":"map = 'dust'",
 "match_type":"fill"}` — the node answers with its own matching room or a `room_elsewhere:<url>#<room>`
 redirect to the node that hosts one.
+
+Bot backfill: `bots: true` on a ticket means "if `max_wait_secs` runs out short-handed, start anyway
+and report the empty seats". When every member of a group agreed, the ticket state and the
+`match.found` webhook carry `bots: <seats>`; the game (room master or WASM logic) spawns that many
+AI players — the service never fakes players itself.
 
 Party slots: `reserved: ["p2","p3"]` on room creation (REST, `create`, `join_or_create`) holds those seats
 for 60 s — other players see the room as full until the party has arrived or the hold lapses. Matchmaking

@@ -38,6 +38,11 @@ pub struct TicketReq {
     /// `fill` (fullest first, default), `serial` (emptiest first), `random`.
     #[serde(default)]
     pub fill_existing: bool,
+    /// When `max_wait_secs` runs out with fewer than `max_players`, hand the group a room anyway
+    /// and report the empty seats as `bots` so the game (master or WASM logic) fills them with AI —
+    /// bot backfill; without it the group simply starts short-handed.
+    #[serde(default)]
+    pub bots: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub match_type: Option<String>,
 }
@@ -62,6 +67,9 @@ pub enum TicketState {
         mode: RoomMode,
         max_players: u16,
         players: Vec<String>,
+        /// Seats the game should fill with bots (0 unless the ticket asked for `bots`).
+        #[serde(default)]
+        bots: u16,
     },
     Cancelled,
 }
@@ -74,6 +82,7 @@ pub struct MatchFound {
     pub mode: RoomMode,
     pub players: Vec<String>,
     pub tickets: Vec<Uuid>,
+    pub bots: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,6 +200,7 @@ pub fn fill_existing(
             mode: t.req.mode,
             max_players,
             players: vec![t.req.player_id.clone()],
+            bots: 0,
         };
         changed.push(t.id);
     }
@@ -267,6 +277,12 @@ pub fn match_tickets(tickets: &mut [Ticket], now_ms: u64) -> (Vec<Uuid>, Vec<Str
                 .iter()
                 .map(|g| tickets[idx[*g]].req.player_id.clone())
                 .collect();
+            // short-handed start: bot seats when every member agreed to play with bots
+            let bots = if group.len() < max && group.iter().all(|g| tickets[idx[*g]].req.bots) {
+                (max - group.len()) as u16
+            } else {
+                0
+            };
             for g in &group {
                 taken[*g] = true;
                 let t = &mut tickets[idx[*g]];
@@ -275,6 +291,7 @@ pub fn match_tickets(tickets: &mut [Ticket], now_ms: u64) -> (Vec<Uuid>, Vec<Str
                     mode: t.req.mode,
                     max_players: t.req.max_players,
                     players: players.clone(),
+                    bots,
                 };
                 if !changed.contains(&t.id) {
                     changed.push(t.id);
@@ -456,6 +473,7 @@ impl Matchmaker {
                 room,
                 mode,
                 players,
+                bots,
                 ..
             } = &t.state
             {
@@ -470,6 +488,7 @@ impl Matchmaker {
                         mode: *mode,
                         players: players.clone(),
                         tickets: vec![t.id],
+                        bots: *bots,
                     }),
                 }
             }
@@ -535,6 +554,44 @@ impl Matchmaker {
 mod tests {
     use super::*;
 
+    #[test]
+    fn bot_backfill_reports_empty_seats_only_when_everyone_agreed() {
+        let p = ProjectId::new();
+        let with_bots = |id: &str| {
+            let mut r = req(id, 4, 2, 15, serde_json::json!({}));
+            r.bots = true;
+            r
+        };
+        let mut ts = vec![
+            ticket(p, with_bots("a"), 1000),
+            ticket(p, with_bots("b"), 1100),
+        ];
+        // before max_wait nothing starts; after it the pair starts with 2 bot seats
+        assert!(match_tickets(&mut ts, 5_000).1.is_empty());
+        let (_, rooms) = match_tickets(&mut ts, 20_000);
+        assert_eq!(rooms.len(), 1);
+        for t in &ts {
+            assert!(
+                matches!(&t.state, TicketState::Matched { bots: 2, players, .. } if players.len() == 2)
+            );
+        }
+        // one member without `bots`: the group starts short-handed, no bot seats
+        let mut ts = vec![
+            ticket(p, with_bots("c"), 1000),
+            ticket(p, req("d", 4, 2, 15, serde_json::json!({})), 1100),
+        ];
+        match_tickets(&mut ts, 20_000);
+        assert!(matches!(&ts[0].state, TicketState::Matched { bots: 0, .. }));
+        // a full group never gets bots
+        let mut ts: Vec<Ticket> = ["e", "f", "g", "h"]
+            .iter()
+            .enumerate()
+            .map(|(i, id)| ticket(p, with_bots(id), 1000 + i as u64))
+            .collect();
+        match_tickets(&mut ts, 1_500);
+        assert!(matches!(&ts[3].state, TicketState::Matched { bots: 0, .. }));
+    }
+
     fn req(player: &str, max: u16, min: u16, wait: u64, props: serde_json::Value) -> TicketReq {
         TicketReq {
             player_id: player.into(),
@@ -547,6 +604,7 @@ mod tests {
             attrs: Default::default(),
             filter: None,
             fill_existing: false,
+            bots: false,
             match_type: None,
         }
     }

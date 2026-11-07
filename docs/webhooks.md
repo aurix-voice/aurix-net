@@ -27,7 +27,7 @@ The envelope is always `event`, `project`, `at` (RFC 3339, UTC) and `data`. Veri
 | `room.rehosted` | `{"room":"<uuid>","name":"lobby-1","mode":"sync","node":"<node-uuid>","restored":true}` | the room was adopted by another node after a drain or node loss; `restored` is false when no checkpoint was found and the room started fresh |
 | `player.joined` | `{"room":"<uuid>","actor":3}` | a player finished auth + join; `actor` is the per-room id (0..N) |
 | `player.left` | `{"room":"<uuid>","actor":3,"kicked":true}` | a player left or timed out (`player_ttl`); `kicked` is present only for kicks |
-| `match.found` | `{"room":"lobby-7f3a","mode":"sync","players":["p1","p2"],"tickets":["<uuid>","<uuid>"]}` | matchmaking grouped tickets; `room` is the room name the players will join with their grants (`tickets` lists the matched ticket ids) |
+| `match.found` | `{"room":"lobby-7f3a","mode":"sync","players":["p1","p2"],"tickets":["<uuid>","<uuid>"],"bots":2}` | matchmaking grouped tickets; `room` is the room name the players will join with their grants (`tickets` lists the matched ticket ids) |
 | `test` | `{"webhook":"<uuid>"}` | sent by `POST /v1/webhooks/:id/test` or the console; ignores the event filter |
 
 A webhook with an empty `events` list receives every event. Unknown names are rejected at registration.

@@ -166,6 +166,7 @@ async fn main() -> anyhow::Result<()> {
                                     "mode": format!("{:?}", m.mode).to_lowercase(),
                                     "players": m.players,
                                     "tickets": m.tickets,
+                                    "bots": m.bots,
                                 }),
                             );
                         }
