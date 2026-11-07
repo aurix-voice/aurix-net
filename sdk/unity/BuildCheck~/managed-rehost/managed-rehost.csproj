@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="../../Runtime/Client.cs" />
+    <Compile Include="../../Runtime/Native.cs" />
+    <Compile Include="../../Runtime/Managed/*.cs" />
+    <Compile Include="../../Runtime/Unity/*.cs" />
+    <Compile Include="../managed-live/Stubs/*.cs" />
+  </ItemGroup>
+</Project>
