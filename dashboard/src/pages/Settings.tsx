@@ -26,6 +26,7 @@ function TokensCard() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [expiryDays, setExpiryDays] = useState(0);
+  const [cidrs, setCidrs] = useState("");
   const [created, setCreated] = useState<NewOperatorToken | null>(null);
   const [revoking, setRevoking] = useState<OperatorToken | null>(null);
   const cols: Column<OperatorToken>[] = [
@@ -33,7 +34,8 @@ function TokensCard() {
     { key: "prefix", header: t("keys.prefix"), cell: (x) => <Mono>an_{x.prefix}…</Mono> },
     { key: "by", header: t("audit.actor"), cell: (x) => <Mono>{x.created_by}</Mono> },
     { key: "created", header: t("common.created"), cell: (x) => <span className="text-fg-muted">{fmtDateTimeShort(locale, x.created_at)}</span> },
-    { key: "used", header: t("keys.lastUsed"), cell: (x) => <span className="text-fg-muted">{x.last_used_at ? fmtRelative(locale, x.last_used_at) : "—"}</span> },
+    { key: "used", header: t("keys.lastUsed"), cell: (x) => <span className="text-fg-muted">{x.last_used_at ? fmtRelative(locale, x.last_used_at) : "—"}{x.last_used_ip ? <Mono className="ml-1.5">{x.last_used_ip}</Mono> : null}</span> },
+    { key: "cidrs", header: t("keys.cidrs"), cell: (x) => (x.allowed_cidrs?.length ? <span title={x.allowed_cidrs.join(", ")}><Badge>{t("keys.cidrs.n", { n: x.allowed_cidrs.length })}</Badge></span> : <span className="text-fg-muted">{t("keys.cidrs.any")}</span>) },
     { key: "expires", header: t("keys.expires"), cell: (x) => <span className="text-fg-muted">{x.expires_at ? fmtDateTimeShort(locale, x.expires_at) : t("keys.expires.never")}</span> },
     {
       key: "state",
@@ -76,14 +78,22 @@ function TokensCard() {
         submitLabel={t("common.create")}
         disabled={!name.trim()}
         onSubmit={async () => {
-          const r = await create.mutateAsync({ name: name.trim(), expires_in_secs: expiryDays ? expiryDays * 86_400 : undefined });
+          const cidrList = cidrs
+            .split(",")
+            .map((c) => c.trim())
+            .filter(Boolean);
+          const r = await create.mutateAsync({ name: name.trim(), expires_in_secs: expiryDays ? expiryDays * 86_400 : undefined, allowed_cidrs: cidrList.length ? cidrList : undefined });
           setOpen(false);
           setName("");
+          setCidrs("");
           setCreated(r);
         }}
       >
         <Field label={t("common.name")} htmlFor="op-token-name" required>
           <Input id="op-token-name" value={name} onChange={(e) => setName(e.target.value)} autoFocus maxLength={64} />
+        </Field>
+        <Field label={t("keys.cidrs")} htmlFor="op-token-cidrs" hint={t("settings.tokens.cidrs.hint")}>
+          <Input id="op-token-cidrs" value={cidrs} onChange={(e) => setCidrs(e.target.value)} placeholder="203.0.113.0/24, 2001:db8::/32" />
         </Field>
         <Field label={t("keys.expires")} htmlFor="op-token-expiry">
           <NativeSelect id="op-token-expiry" value={String(expiryDays)} onChange={(e) => setExpiryDays(Number(e.target.value))}>

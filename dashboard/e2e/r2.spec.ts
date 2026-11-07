@@ -390,3 +390,19 @@ test("operator sees the month billing table on the fleet usage page", async ({ p
   await expect(card).toContainText(name);
   await expect(card).toContainText("Fleet total");
 });
+
+test("operator token restricted to networks shows its allowlist", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "New token" }).click();
+  const dialog = page.getByRole("dialog");
+  const name = uniq("ci-bot");
+  await dialog.getByLabel("Name").fill(name);
+  await dialog.getByLabel("Allowed IPs").fill("203.0.113.0/24");
+  await dialog.getByRole("button", { name: "Create" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).last().click();
+  const row = page.getByRole("row", { name: new RegExp(name) });
+  await expect(row).toContainText("1 network(s)");
+  await row.getByRole("button", { name: "Revoke" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Revoke" }).click();
+  await expect(row).toContainText("Revoked");
+});

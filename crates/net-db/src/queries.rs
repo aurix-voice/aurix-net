@@ -1099,9 +1099,10 @@ pub async fn insert_operator_token(
     prefix: &str,
     created_by: &str,
     expires_at: Option<DateTime<Utc>>,
+    allowed_cidrs: &[String],
 ) -> Result<OperatorTokenRow> {
     sqlx::query_as::<_, OperatorTokenRow>(
-        "INSERT INTO operator_tokens (id, name, token_hash, prefix, created_by, expires_at) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *",
+        "INSERT INTO operator_tokens (id, name, token_hash, prefix, created_by, expires_at, allowed_cidrs) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *",
     )
     .bind(Uuid::now_v7())
     .bind(name)
@@ -1109,6 +1110,7 @@ pub async fn insert_operator_token(
     .bind(prefix)
     .bind(created_by)
     .bind(expires_at)
+    .bind(allowed_cidrs)
     .fetch_one(pool)
     .await
     .map_err(db_err)
@@ -1135,12 +1137,15 @@ pub async fn revoke_operator_token(pool: &DbPool, id: Uuid) -> Result<Option<Ope
 pub async fn find_operator_token(
     pool: &DbPool,
     token_hash: &str,
+    ip: Option<&str>,
 ) -> Result<Option<OperatorTokenRow>> {
     sqlx::query_as::<_, OperatorTokenRow>(
-        "UPDATE operator_tokens SET last_used_at = CASE WHEN last_used_at IS NULL OR last_used_at < now() - interval '60 seconds' THEN now() ELSE last_used_at END \
+        "UPDATE operator_tokens SET last_used_at = CASE WHEN last_used_at IS NULL OR last_used_at < now() - interval '60 seconds' THEN now() ELSE last_used_at END, \
+         last_used_ip = COALESCE($2, last_used_ip) \
          WHERE token_hash = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) RETURNING *",
     )
     .bind(token_hash)
+    .bind(ip)
     .fetch_optional(pool)
     .await
     .map_err(db_err)

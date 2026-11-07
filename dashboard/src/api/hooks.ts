@@ -216,7 +216,7 @@ export function useCreateOperatorToken() {
   const api = useApi();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string; expires_in_secs?: number }) => api.post<NewOperatorToken>("/v1/operator/tokens", body),
+    mutationFn: (body: { name: string; expires_in_secs?: number; allowed_cidrs?: string[] }) => api.post<NewOperatorToken>("/v1/operator/tokens", body),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["operator-tokens"] }),
   });
 }

@@ -240,7 +240,24 @@ async fn operator(st: &Shared, h: &HeaderMap) -> Result<Operator> {
         });
     }
     if looks_like_key(t) {
-        if let Some(row) = queries::find_operator_token(&st.pool, &hash_key(t)).await? {
+        let ip = h
+            .get(crate::ratelimit::CLIENT_IP_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        if let Some(row) =
+            queries::find_operator_token(&st.pool, &hash_key(t), ip.as_deref()).await?
+        {
+            if !row.allowed_cidrs.is_empty()
+                && !ip
+                    .as_deref()
+                    .and_then(|v| v.parse::<IpAddr>().ok())
+                    .is_some_and(|ip| cidr_allows(&row.allowed_cidrs, ip))
+            {
+                st.metrics.errors.with_label_values(&["ip_denied"]).inc();
+                return Err(NetError::Forbidden(
+                    "operator token is not allowed from this address".into(),
+                ));
+            }
             return Ok(Operator {
                 actor: format!("op:{}", row.name),
             });
@@ -255,11 +272,15 @@ struct OperatorTokenReq {
     name: String,
     #[serde(default)]
     expires_in_secs: Option<u64>,
+    /// Source networks allowed to use the token (CIDR or bare IP); empty = anywhere.
+    #[serde(default)]
+    allowed_cidrs: Vec<String>,
 }
 
 fn operator_token_json(r: &net_db::models::OperatorTokenRow) -> Value {
     json!({"id": r.id, "name": r.name, "prefix": r.prefix, "created_by": r.created_by, "created_at": r.created_at,
-           "expires_at": r.expires_at, "revoked_at": r.revoked_at, "last_used_at": r.last_used_at})
+           "expires_at": r.expires_at, "revoked_at": r.revoked_at, "last_used_at": r.last_used_at,
+           "allowed_cidrs": r.allowed_cidrs, "last_used_ip": r.last_used_ip})
 }
 
 async fn op_list_tokens(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
@@ -528,6 +549,7 @@ async fn op_create_token(
     {
         return Err(NetError::Invalid("name: 1-64 printable ASCII characters".into()).into());
     }
+    let cidrs = parse_cidrs(&req.allowed_cidrs)?;
     let m = ApiKeyMaterial::generate();
     let row = queries::insert_operator_token(
         &st.pool,
@@ -536,6 +558,7 @@ async fn op_create_token(
         &m.prefix,
         &op.actor,
         key_expiry(req.expires_in_secs),
+        &cidrs,
     )
     .await?;
     audit_log(
@@ -544,7 +567,7 @@ async fn op_create_token(
         &op.actor,
         "operator_token.create",
         &row.id.to_string(),
-        json!({"name": row.name, "expires_at": row.expires_at}),
+        json!({"name": row.name, "expires_at": row.expires_at, "allowed_cidrs": row.allowed_cidrs}),
     )
     .await;
     let mut out = operator_token_json(&row);

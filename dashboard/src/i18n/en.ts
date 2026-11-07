@@ -355,6 +355,7 @@ export const en = {
   "billing.rooms": "Rooms created",
   "billing.deleted": "deleted",
   "billing.totals": (v) => `Fleet total: ${v.pm} player-minutes · ${v.rm} room-minutes · ${v.bytes} · ${v.rooms} rooms`,
+  "settings.tokens.cidrs.hint": "Office / VPN / CI networks; empty = anywhere. Enforced on every operator call; the last address used shows in the table.",
   "rooms.title": "Rooms",
   "rooms.desc": "Rooms currently hosted in the region. Closing a room disconnects its players.",
   "rooms.mode": "Mode",

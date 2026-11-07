@@ -49,6 +49,9 @@ pub struct OperatorTokenRow {
     pub expires_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
+    /// Empty = any source address.
+    pub allowed_cidrs: Vec<String>,
+    pub last_used_ip: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]

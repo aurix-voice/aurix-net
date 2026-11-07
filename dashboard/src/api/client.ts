@@ -296,6 +296,8 @@ export interface OperatorToken {
   expires_at: string | null;
   revoked_at: string | null;
   last_used_at: string | null;
+  allowed_cidrs?: string[];
+  last_used_ip?: string | null;
 }
 export interface BillingProject {
   project_id: string;
