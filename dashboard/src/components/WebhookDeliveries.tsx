@@ -10,11 +10,11 @@ import { useToast } from "@/ui/Toast";
 
 /** Recent deliveries of one webhook with a "send test" action. Operator sessions pass the
  * project id so the operator routes are used. */
-export function WebhookDeliveriesDialog({ webhook, projectId, onClose }: { webhook: Webhook | null; projectId?: string; onClose: () => void }) {
+export function WebhookDeliveriesDialog({ webhook, projectId, fleet, onClose }: { webhook: Pick<Webhook, "id" | "url"> | null; projectId?: string; fleet?: boolean; onClose: () => void }) {
   const { t, locale } = useI18n();
   const toast = useToast();
-  const q = useWebhookDeliveries(webhook?.id ?? null, projectId);
-  const test = useTestWebhook(projectId);
+  const q = useWebhookDeliveries(webhook?.id ?? null, projectId, fleet);
+  const test = useTestWebhook(projectId, fleet);
   return (
     <Dialog
       open={!!webhook}

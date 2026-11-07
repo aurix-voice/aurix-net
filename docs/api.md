@@ -58,6 +58,7 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | DELETE | `/v1/operator/projects/:id` | operator | soft delete: live rooms closed fleet-wide, all keys revoked, webhooks/modules removed; usage and audit rows stay |
 | GET/POST | `/v1/operator/tokens` | operator | named operator tokens: POST `{name, expires_in_secs?}` returns the plaintext once; they authenticate every operator route and appear in audit as actor `op:<name>` (the config `admin_token` stays actor `operator`) |
 | DELETE | `/v1/operator/tokens/:id` | operator | revoke (audited `operator_token.revoke`) |
+| GET/POST/DELETE | `/v1/operator/webhooks[/:id]` · `GET /:id/deliveries` · `POST /:id/test` | operator | fleet alert webhooks (`{url, events[]}`, secret shown once; events in [webhooks.md](webhooks.md#operator-alerts-fleet-level)); audited `operator_webhook.create/delete/test` |
 | GET | `/v1/audit?format=csv` · `/v1/operator/audit?format=csv` | read / operator | same filters (`action`, `actor`, `limit`, operator `project`) as CSV attachment: id, created_at, project_id, actor, action, target, details (JSON) |
 | GET | `/v1/operator/attention` | operator | what needs a look now: `stale_nodes` (no heartbeat > 30 s), `draining_nodes`, `suspended_projects`, `failing_webhooks` (failed deliveries in the last hour), `rejections` (projects with rejections this hour, by reason) |
 | GET | `/v1/operator/nodes` | operator | all nodes incl. draining |

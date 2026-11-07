@@ -366,3 +366,18 @@ test("operator issues a key restricted to networks and the table shows it", asyn
   await dialog.getByRole("button", { name: "Close", exact: true }).last().click();
   await expect(page.getByRole("row", { name: /backend/ })).toContainText("2 network(s)");
 });
+
+test("operator adds and removes a fleet alert webhook", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "New alert webhook" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("URL").fill("http://127.0.0.1:9/e2e-alert");
+  await dialog.getByLabel("node.stale").check();
+  await dialog.getByRole("button", { name: "Create" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).last().click();
+  const row = page.getByRole("row", { name: /e2e-alert/ });
+  await expect(row).toContainText("node.stale");
+  await row.getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
+  await expect(page.getByRole("row", { name: /e2e-alert/ })).toHaveCount(0);
+});

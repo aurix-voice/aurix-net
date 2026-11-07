@@ -70,3 +70,19 @@ def verify(raw_body: bytes, header: str | None, secret: str) -> bool:
 ```
 
 Answer 2xx quickly (204 is fine) and do the work asynchronously; anything slower than 5 s counts as a failed attempt.
+
+## Operator alerts (fleet level)
+
+Operators can register their own receivers under **Settings → Alert webhooks** (`GET/POST/DELETE /v1/operator/webhooks[/:id]`, `GET …/:id/deliveries`, `POST …/:id/test`). Same envelope and signature; `project` is `null` and the subject lives in `data`.
+
+| Event | `data` | Fires when |
+|---|---|---|
+| `node.stale` | node row (`id`, `region`, `last_heartbeat`, …) | a node missed heartbeats for 30 s |
+| `node.draining` | node row + `rooms` | a node is draining for a rolling restart |
+| `project.suspended` | `{id, name, since}` | a project is suspended |
+| `project.usage_cap` | `{project_id, project_name, metric, used, cap, hard}` | ≥80 % of a monthly cap (`hard: false`) and again at 100 % (`hard: true`) |
+| `project.rejections` | `{project_id, project_name, total, by}` | players were turned away in the last hour |
+| `webhook.failing` | `{project_id, project_name, webhook_id, url, failed, total}` | a project webhook failed in the last hour |
+| `test` | `{webhook}` | `POST /v1/operator/webhooks/:id/test` |
+
+One node (Redis leader lock) evaluates the conditions every minute; each subject fires at most once per hour while the condition persists, so a stuck node produces one alert an hour, not sixty. Deliveries are logged like project webhooks (`retention.webhook_deliveries_days`).

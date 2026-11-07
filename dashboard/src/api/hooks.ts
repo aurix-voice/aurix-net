@@ -1,3 +1,4 @@
+import type { OperatorWebhook } from "@/api/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 
@@ -287,27 +288,42 @@ export function useRejectionsFor(projectId: string, hours = 24) {
     queryFn: () => api.get<Rejections>(`/v1/operator/projects/${projectId}/rejections`, { hours }),
   });
 }
-export function useWebhookDeliveries(webhookId: string | null, projectId?: string) {
+function webhookBase(webhookId: string, projectId?: string, fleet?: boolean) {
+  if (fleet) return `/v1/operator/webhooks/${webhookId}`;
+  return projectId ? `/v1/operator/projects/${projectId}/webhooks/${webhookId}` : `/v1/webhooks/${webhookId}`;
+}
+export function useWebhookDeliveries(webhookId: string | null, projectId?: string, fleet?: boolean) {
   const api = useApi();
   return useQuery({
-    queryKey: ["webhook-deliveries", projectId ?? "me", webhookId],
+    queryKey: ["webhook-deliveries", fleet ? "fleet" : (projectId ?? "me"), webhookId],
     enabled: !!webhookId,
     refetchInterval: 3000,
-    queryFn: async () =>
-      (
-        await api.get<{ deliveries: WebhookDelivery[] }>(
-          projectId ? `/v1/operator/projects/${projectId}/webhooks/${webhookId}/deliveries` : `/v1/webhooks/${webhookId}/deliveries`,
-          { limit: 50 },
-        )
-      ).deliveries,
+    queryFn: async () => (await api.get<{ deliveries: WebhookDelivery[] }>(`${webhookBase(webhookId!, projectId, fleet)}/deliveries`, { limit: 50 })).deliveries,
   });
 }
-export function useTestWebhook(projectId?: string) {
+export function useTestWebhook(projectId?: string, fleet?: boolean) {
   const api = useApi();
   return useMutation({
-    mutationFn: (webhookId: string) =>
-      api.post<{ queued: boolean }>(projectId ? `/v1/operator/projects/${projectId}/webhooks/${webhookId}/test` : `/v1/webhooks/${webhookId}/test`),
+    mutationFn: (webhookId: string) => api.post<{ queued: boolean }>(`${webhookBase(webhookId, projectId, fleet)}/test`),
   });
+}
+export function useAlertWebhooks() {
+  const api = useApi();
+  const { operator } = useAuth();
+  return useQuery({ queryKey: ["operator-webhooks"], enabled: operator, queryFn: async () => (await api.get<{ webhooks: OperatorWebhook[] }>("/v1/operator/webhooks")).webhooks });
+}
+export function useCreateAlertWebhook() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { url: string; events: string[] }) => api.post<OperatorWebhook>("/v1/operator/webhooks", body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["operator-webhooks"] }),
+  });
+}
+export function useDeleteAlertWebhook() {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: (id: string) => api.del(`/v1/operator/webhooks/${id}`), onSuccess: () => void qc.invalidateQueries({ queryKey: ["operator-webhooks"] }) });
 }
 /** New signing secret (shown once); the previous one keeps signing for the grace period. */
 export function useRotateWebhook(projectId?: string) {

@@ -176,6 +176,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
     tokio::spawn(lobby_forwarder(st.clone(), cfg.redis.clone()));
+    tokio::spawn(net_api::alerts::run(st.clone()));
     {
         let st = st.clone();
         let http_url = http_url.clone();

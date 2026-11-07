@@ -27,6 +27,30 @@ pub const EVENTS: &[&str] = &[
     "test",
 ];
 
+/// Fleet-level alerts delivered to operator webhooks (`/v1/operator/webhooks`). Each fires at
+/// most once per hour per subject while the condition persists.
+pub const OPERATOR_EVENTS: &[&str] = &[
+    "node.stale",
+    "node.draining",
+    "project.suspended",
+    "project.usage_cap",
+    "project.rejections",
+    "webhook.failing",
+    "test",
+];
+
+pub fn validate_operator_events(events: &[String]) -> Result<(), NetError> {
+    for e in events {
+        if !OPERATOR_EVENTS.contains(&e.as_str()) {
+            return Err(NetError::Invalid(format!(
+                "events: unknown event {e:?}; known: {}",
+                OPERATOR_EVENTS.join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Registration-time check so a typo (`room.create`) does not silently subscribe to nothing.
 pub fn validate_events(events: &[String]) -> Result<(), NetError> {
     if events.len() > EVENTS.len() {
@@ -96,6 +120,15 @@ impl Dispatcher {
 
     /// Sends a `test` event to one webhook only (ignores its event filter); the outcome lands in
     /// the delivery log like any other emission.
+    /// Fleet-level alert: delivered to operator webhooks, `project` is null in the body.
+    pub fn emit_fleet(&self, event: &'static str, payload: serde_json::Value) {
+        self.emit(ProjectId::from_uuid(Uuid::nil()), event, payload);
+    }
+
+    pub fn test_fleet(&self, webhook: Uuid) {
+        self.test(ProjectId::from_uuid(Uuid::nil()), webhook);
+    }
+
     pub fn test(&self, project: ProjectId, webhook: Uuid) {
         let _ = self.tx.try_send(WebhookEvent {
             project,
@@ -207,22 +240,36 @@ async fn worker(
                 c.hooks.clone()
             }
             _ => {
-                let rows = queries::list_webhooks(&pool, ev.project.0)
-                    .await
-                    .unwrap_or_default();
-                let hooks: Vec<Hook> = rows
-                    .into_iter()
-                    .map(|r| Hook {
-                        id: r.id,
-                        url: r.url,
-                        secret: r.secret,
-                        previous: r.previous_secret.filter(|_| {
-                            r.previous_secret_expires_at
-                                .is_some_and(|t| t > chrono::Utc::now())
-                        }),
-                        events: r.events,
-                    })
-                    .collect();
+                let hooks: Vec<Hook> = if ev.project.0.is_nil() {
+                    queries::list_operator_webhooks(&pool)
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|r| Hook {
+                            id: r.id,
+                            url: r.url,
+                            secret: r.secret,
+                            previous: None,
+                            events: r.events,
+                        })
+                        .collect()
+                } else {
+                    queries::list_webhooks(&pool, ev.project.0)
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|r| Hook {
+                            id: r.id,
+                            url: r.url,
+                            secret: r.secret,
+                            previous: r.previous_secret.filter(|_| {
+                                r.previous_secret_expires_at
+                                    .is_some_and(|t| t > chrono::Utc::now())
+                            }),
+                            events: r.events,
+                        })
+                        .collect()
+                };
                 cache.insert(
                     ev.project,
                     Cached {
@@ -236,9 +283,14 @@ async fn worker(
         if hooks.is_empty() {
             continue;
         }
+        let project_field = if ev.project.0.is_nil() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::String(ev.project.to_string())
+        };
         let body = serde_json::json!({
             "event": ev.event,
-            "project": ev.project.to_string(),
+            "project": project_field,
             "at": chrono::Utc::now().to_rfc3339(),
             "data": ev.payload,
         })
@@ -279,6 +331,21 @@ async fn worker(
                 )
                 .await;
                 let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
+                if project.is_nil() {
+                    let d = queries::NewOperatorDelivery {
+                        webhook_id: id,
+                        event,
+                        ok: outcome.ok,
+                        status: outcome.status,
+                        attempts: outcome.attempts,
+                        latency_ms,
+                        error: outcome.error.as_deref(),
+                    };
+                    if let Err(e) = queries::insert_operator_webhook_delivery(&pool, &d).await {
+                        tracing::warn!(error = %e, "operator webhook delivery log");
+                    }
+                    return;
+                }
                 let d = queries::NewDelivery {
                     webhook_id: id,
                     project_id: project,

@@ -297,6 +297,15 @@ export interface OperatorToken {
   revoked_at: string | null;
   last_used_at: string | null;
 }
+export interface OperatorWebhook {
+  id: string;
+  url: string;
+  events: string[];
+  created_by: string;
+  created_at: string;
+  /** Only in the create response. */
+  secret?: string;
+}
 export interface NewOperatorToken extends OperatorToken {
   token: string;
 }

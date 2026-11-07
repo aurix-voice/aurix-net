@@ -163,3 +163,27 @@ pub struct AuditRow {
     pub details: serde_json::Value,
     pub created_at: DateTime<Utc>,
 }
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct OperatorWebhookRow {
+    pub id: Uuid,
+    pub url: String,
+    #[serde(skip_serializing)]
+    pub secret: String,
+    pub events: Vec<String>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct OperatorWebhookDeliveryRow {
+    pub id: Uuid,
+    pub webhook_id: Uuid,
+    pub event: String,
+    pub ok: bool,
+    pub status: Option<i16>,
+    pub attempts: i16,
+    pub latency_ms: i32,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+}

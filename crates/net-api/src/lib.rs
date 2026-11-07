@@ -1,5 +1,6 @@
 //! HTTP/WebSocket control plane and QUIC data plane of a node.
 
+pub mod alerts;
 pub mod data;
 pub mod host;
 pub mod janitor;

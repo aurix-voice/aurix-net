@@ -92,6 +92,19 @@ pub fn router(st: Shared) -> Router {
             get(op_list_tokens).post(op_create_token),
         )
         .route("/v1/operator/tokens/:id", delete(op_revoke_token))
+        .route(
+            "/v1/operator/webhooks",
+            get(op_list_alert_webhooks).post(op_create_alert_webhook),
+        )
+        .route("/v1/operator/webhooks/:id", delete(op_delete_alert_webhook))
+        .route(
+            "/v1/operator/webhooks/:id/deliveries",
+            get(op_alert_webhook_deliveries),
+        )
+        .route(
+            "/v1/operator/webhooks/:id/test",
+            post(op_alert_webhook_test),
+        )
         .route("/v1/operator/projects/:id/matchmaking", get(op_mm_stats))
         .route(
             "/v1/operator/projects/:id/players/:player_id",
@@ -257,6 +270,103 @@ async fn op_list_tokens(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Jso
 }
 
 /// Issue a named operator token; the plaintext is returned once.
+#[derive(Deserialize)]
+struct AlertWebhookReq {
+    url: String,
+    #[serde(default)]
+    events: Vec<String>,
+}
+
+async fn op_list_alert_webhooks(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
+    operator(&st, &h).await?;
+    let rows = queries::list_operator_webhooks(&st.pool).await?;
+    Ok(Json(json!({"webhooks": rows})))
+}
+
+async fn op_create_alert_webhook(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Json(req): Json<AlertWebhookReq>,
+) -> ApiResult<Json<Value>> {
+    let op = operator(&st, &h).await?;
+    crate::webhooks::validate_webhook_url(&req.url, st.cfg.server.environment == "development")?;
+    crate::webhooks::validate_operator_events(&req.events)?;
+    let secret = ApiKeyMaterial::generate().plaintext;
+    let row = queries::insert_operator_webhook(&st.pool, &req.url, &secret, &req.events, &op.actor)
+        .await?;
+    audit_log(
+        &st,
+        None,
+        &op.actor,
+        "operator_webhook.create",
+        &row.id.to_string(),
+        json!({"url": row.url, "events": row.events}),
+    )
+    .await;
+    let mut out = serde_json::to_value(&row).unwrap_or_default();
+    out["secret"] = Value::String(secret);
+    Ok(Json(out))
+}
+
+async fn op_delete_alert_webhook(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    let op = operator(&st, &h).await?;
+    if !queries::delete_operator_webhook(&st.pool, id).await? {
+        return Err(NetError::NotFound("webhook not found".into()).into());
+    }
+    st.webhooks.invalidate(ProjectId::from_uuid(Uuid::nil()));
+    audit_log(
+        &st,
+        None,
+        &op.actor,
+        "operator_webhook.delete",
+        &id.to_string(),
+        json!({}),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn op_alert_webhook_deliveries(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(q): Query<DeliveriesQuery>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h).await?;
+    queries::get_operator_webhook(&st.pool, id)
+        .await?
+        .ok_or_else(|| NetError::NotFound("webhook not found".into()))?;
+    let rows =
+        queries::list_operator_webhook_deliveries(&st.pool, id, q.limit.unwrap_or(50)).await?;
+    Ok(Json(json!({"deliveries": rows})))
+}
+
+async fn op_alert_webhook_test(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    let op = operator(&st, &h).await?;
+    queries::get_operator_webhook(&st.pool, id)
+        .await?
+        .ok_or_else(|| NetError::NotFound("webhook not found".into()))?;
+    st.webhooks.test_fleet(id);
+    audit_log(
+        &st,
+        None,
+        &op.actor,
+        "operator_webhook.test",
+        &id.to_string(),
+        json!({}),
+    )
+    .await;
+    Ok(Json(json!({"queued": true})))
+}
+
 async fn op_create_token(
     State(st): State<Shared>,
     h: HeaderMap,
@@ -2492,6 +2602,12 @@ async fn internal_post(st: &Shared, http_url: &str, path: &str, body: Value) -> 
 /// suspended projects, webhooks failing in the last hour, projects with rejections this hour.
 async fn op_attention(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
     operator(&st, &h).await?;
+    Ok(Json(attention_value(&st).await?))
+}
+
+/// Everything that deserves an operator's eye right now; shared by `/v1/operator/attention`
+/// and the alert loop.
+pub(crate) async fn attention_value(st: &Shared) -> Result<Value> {
     let now = chrono::Utc::now();
     let nodes = queries::list_all_nodes(&st.pool).await?;
     let stale: Vec<Value> = nodes
@@ -2546,7 +2662,7 @@ async fn op_attention(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<
         if l.monthly_player_minutes.is_none() && l.monthly_bytes.is_none() {
             continue;
         }
-        let (minutes, bytes) = usage_month(&st, p.id).await?;
+        let (minutes, bytes) = usage_month(st, p.id).await?;
         for (metric, used, cap) in [
             ("player_minutes", minutes, l.monthly_player_minutes),
             ("bytes", bytes, l.monthly_bytes),
@@ -2558,14 +2674,14 @@ async fn op_attention(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<
             }
         }
     }
-    Ok(Json(json!({
+    Ok(json!({
         "stale_nodes": stale,
         "draining_nodes": draining,
         "suspended_projects": suspended,
         "failing_webhooks": failing_webhooks,
         "rejections": rejections,
         "usage_caps": usage_caps,
-    })))
+    }))
 }
 
 async fn op_nodes(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {

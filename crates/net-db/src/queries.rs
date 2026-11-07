@@ -802,6 +802,111 @@ pub async fn webhook_delivery_stats_last_hour(pool: &DbPool, project: Uuid) -> R
     .map_err(db_err)
 }
 
+pub async fn insert_operator_webhook(
+    pool: &DbPool,
+    url: &str,
+    secret: &str,
+    events: &[String],
+    created_by: &str,
+) -> Result<OperatorWebhookRow> {
+    sqlx::query_as::<_, OperatorWebhookRow>(
+        "INSERT INTO operator_webhooks (id, url, secret, events, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING *",
+    )
+    .bind(Uuid::now_v7())
+    .bind(url)
+    .bind(secret)
+    .bind(events)
+    .bind(created_by)
+    .fetch_one(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn list_operator_webhooks(pool: &DbPool) -> Result<Vec<OperatorWebhookRow>> {
+    sqlx::query_as::<_, OperatorWebhookRow>("SELECT * FROM operator_webhooks ORDER BY created_at")
+        .fetch_all(pool)
+        .await
+        .map_err(db_err)
+}
+
+pub async fn get_operator_webhook(pool: &DbPool, id: Uuid) -> Result<Option<OperatorWebhookRow>> {
+    sqlx::query_as::<_, OperatorWebhookRow>("SELECT * FROM operator_webhooks WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(db_err)
+}
+
+pub async fn delete_operator_webhook(pool: &DbPool, id: Uuid) -> Result<bool> {
+    let r = sqlx::query("DELETE FROM operator_webhooks WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(r.rows_affected() > 0)
+}
+
+pub struct NewOperatorDelivery<'a> {
+    pub webhook_id: Uuid,
+    pub event: &'a str,
+    pub ok: bool,
+    pub status: Option<i16>,
+    pub attempts: i16,
+    pub latency_ms: i32,
+    pub error: Option<&'a str>,
+}
+
+pub async fn insert_operator_webhook_delivery(
+    pool: &DbPool,
+    d: &NewOperatorDelivery<'_>,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO operator_webhook_deliveries (id, webhook_id, event, ok, status, attempts, latency_ms, error) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(d.webhook_id)
+    .bind(d.event)
+    .bind(d.ok)
+    .bind(d.status)
+    .bind(d.attempts)
+    .bind(d.latency_ms)
+    .bind(d.error)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(())
+}
+
+pub async fn list_operator_webhook_deliveries(
+    pool: &DbPool,
+    webhook_id: Uuid,
+    limit: i64,
+) -> Result<Vec<OperatorWebhookDeliveryRow>> {
+    sqlx::query_as::<_, OperatorWebhookDeliveryRow>(
+        "SELECT * FROM operator_webhook_deliveries WHERE webhook_id = $1 ORDER BY created_at DESC LIMIT $2",
+    )
+    .bind(webhook_id)
+    .bind(limit.clamp(1, 500))
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn purge_operator_webhook_deliveries(pool: &DbPool, days: u32) -> Result<u64> {
+    if days == 0 {
+        return Ok(0);
+    }
+    let r = sqlx::query(
+        "DELETE FROM operator_webhook_deliveries WHERE created_at < now() - make_interval(days => $1)",
+    )
+    .bind(days as i32)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(r.rows_affected())
+}
+
 pub async fn purge_webhook_deliveries(pool: &DbPool, days: u32) -> Result<u64> {
     if days == 0 {
         return Ok(0);
