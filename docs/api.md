@@ -5,6 +5,20 @@ Base URL: a node's HTTP address (local default `http://127.0.0.1:8090`). Develop
 operator token. Game clients never hold an API key — they receive a short-lived **grant**
 (JWT) from your backend and present it on the WebSocket.
 
+## Who does what: operator vs project
+
+Two roles, the same in a self-hosted fleet and in a managed one:
+
+- **Operator** — whoever runs the nodes (you, your team, or a cloud provider). Holds the config
+  `admin_token` or a named operator token; sees every project, sets quotas and monthly caps,
+  drains nodes, suspends projects, reads the fleet audit and billing report. Quotas exist to keep
+  one project (or one bug) from eating the fleet; every default is "no limit".
+- **Project** — a game team with an API key. Sees and manages only its own project: keys, webhooks,
+  WASM modules, bans, matchmaking, usage, rejections and audit; reads its effective limits but
+  cannot change them. Game clients hold neither — only short-lived grants.
+
+Self-hosting means you are both; nothing in the operator role is locked behind a plan.
+
 ## Keys, grants, scopes
 
 | Scope | Allows |

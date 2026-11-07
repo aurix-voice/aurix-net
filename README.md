@@ -19,6 +19,10 @@ curl -s -X POST localhost:8090/v1/operator/projects -H 'Authorization: Bearer ch
 
 Config: TOML file via `--config`, every key overridable as `NET__SECTION__KEY` (see `crates/net-common/src/config.rs`).
 
+Two roles run it: the **operator** (whoever hosts the nodes — sets quotas, drains, suspends, bills) and
+**projects** (API keys scoped to one game). Self-hosting means you are both; see
+[docs/api.md](docs/api.md#who-does-what-operator-vs-project).
+
 ## Layout
 
 | Crate | Role |

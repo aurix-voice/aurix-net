@@ -81,3 +81,18 @@ only sqlx "slow acquire" warnings, node healthy afterwards.
 
 All limits at defaults (`[limits]`): these runs are the regression bar for "limits never cut legitimate
 players"; a 128-player join burst from one IP must stay at failed=0.
+
+## Soak (1 h, release build, two nodes, bots churning every 5 min)
+
+`scripts/soak-test.sh` runs relay (2 rooms × 8 players @ 20 ev/s, WS tunnel) and sync (1 room × 8 @ 20 Hz)
+bots against node B in 300 s batches for an hour — rooms are created, filled, emptied and closed
+twelve times — while sampling both nodes' live stats every minute (`/v1/operator/nodes/:id/stats`).
+
+| Node | RSS first / last / max | sync tick p99 max | tick overruns |
+|---|---|---|---|
+| B (hosting 3 rooms, 24 players) | 20 / 22 / 22 MB | 0.20 ms | 0 |
+| A (idle peer: heartbeats, lobby, alert leader) | 13 / 17 / 17 MB | — | 0 |
+
+RSS on both nodes plateaus within the first 30 minutes and stays flat through the remaining room/player
+churn: no growth per room lifecycle. Rerun after changes to the room, checkpoint or metering paths;
+a steadily climbing RSS across batches is the regression signal.
