@@ -1,0 +1,11 @@
+[package]
+name = "net-sim-nav"
+version = "0.1.0"
+edition = "2021"
+description = "Deterministic fixed-point navmesh: polygon graph, A* over portals, funnel smoothing, mesh raycast"
+license = "Apache-2.0"
+
+[dependencies]
+net-fpmath = { path = "../net-fpmath" }
+serde = { workspace = true }
+serde_json = { workspace = true }

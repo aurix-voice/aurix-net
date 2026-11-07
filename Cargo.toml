@@ -5,6 +5,7 @@ members = [
     "crates/net-transport",
     "crates/net-wire",
     "crates/net-sim",
+    "crates/net-sim-nav",
     "crates/net-sim-physics",
     "crates/net-sim-wasm",
     "crates/net-replication",
