@@ -488,6 +488,27 @@ pub async fn schema_exists(pool: &DbPool, project_id: Uuid, hash: &str) -> Resul
 
 // ---------- webhooks ----------
 
+/// Swap in a new signing secret; the old one keeps signing (second header) for `grace`.
+pub async fn rotate_webhook_secret(
+    pool: &DbPool,
+    project_id: Uuid,
+    id: Uuid,
+    new_secret: &str,
+    grace: chrono::Duration,
+) -> Result<Option<WebhookRow>> {
+    sqlx::query_as::<_, WebhookRow>(
+        "UPDATE webhooks SET previous_secret = secret, previous_secret_expires_at = $4, secret = $3 \
+         WHERE id = $1 AND project_id = $2 RETURNING *",
+    )
+    .bind(id)
+    .bind(project_id)
+    .bind(new_secret)
+    .bind(Utc::now() + grace)
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)
+}
+
 pub async fn insert_webhook(
     pool: &DbPool,
     project_id: Uuid,

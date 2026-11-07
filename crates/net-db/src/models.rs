@@ -121,6 +121,8 @@ pub struct WebhookRow {
     pub events: Vec<String>,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
+    pub previous_secret: Option<String>,
+    pub previous_secret_expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]

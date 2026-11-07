@@ -3,7 +3,7 @@ import { useMemo } from "react";
 
 import { useAuth } from "@/auth/AuthProvider";
 
-import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Attention, type Ban, type MatchmakingStats, type PlayerLookup, type Rejections, type Webhook, type WebhookDelivery } from "./client";
+import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Attention, type Ban, type MatchmakingStats, type PlayerLookup, type RotatedWebhook, type Rejections, type Webhook, type WebhookDelivery } from "./client";
 
 export function useApi(): NetClient {
   const { token } = useAuth();
@@ -253,6 +253,19 @@ export function useTestWebhook(projectId?: string) {
   return useMutation({
     mutationFn: (webhookId: string) =>
       api.post<{ queued: boolean }>(projectId ? `/v1/operator/projects/${projectId}/webhooks/${webhookId}/test` : `/v1/webhooks/${webhookId}/test`),
+  });
+}
+/** New signing secret (shown once); the previous one keeps signing for the grace period. */
+export function useRotateWebhook(projectId?: string) {
+  const api = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ webhookId, graceSecs }: { webhookId: string; graceSecs?: number }) =>
+      api.post<RotatedWebhook>(projectId ? `/v1/operator/projects/${projectId}/webhooks/${webhookId}/rotate` : `/v1/webhooks/${webhookId}/rotate`, { grace_secs: graceSecs }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.webhooks });
+      if (projectId) void qc.invalidateQueries({ queryKey: qk.project(projectId) });
+    },
   });
 }
 export function useDeleteWebhook() {

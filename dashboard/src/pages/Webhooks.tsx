@@ -10,6 +10,7 @@ import { Button } from "@/ui/Button";
 import { ConfirmDialog, Dialog, FormDialog } from "@/ui/Dialog";
 import { Input } from "@/ui/Input";
 import { PageHeader } from "@/ui/Page";
+import { RotateWebhookDialog } from "@/components/RotateWebhook";
 import { WebhookDeliveriesDialog } from "@/components/WebhookDeliveries";
 import { Badge, Callout, Card, CodeBlock, Field, IdChip, Mono } from "@/ui/Primitives";
 import { DataTable, type Column } from "@/ui/Table";
@@ -27,6 +28,7 @@ function WebhooksBody() {
   const [events, setEvents] = useState("");
   const [created, setCreated] = useState<Webhook | null>(null);
   const [deleting, setDeleting] = useState<Webhook | null>(null);
+  const [rotating, setRotating] = useState<Webhook | null>(null);
   const cols: Column<Webhook>[] = [
     { key: "url", header: t("webhooks.url"), cell: (w) => <Mono className="truncate max-w-[420px] inline-block align-bottom">{w.url}</Mono> },
     { key: "id", header: "ID", cell: (w) => <IdChip id={w.id} /> },
@@ -40,6 +42,9 @@ function WebhooksBody() {
         <span className="flex justify-end gap-1">
           <Button variant="ghost" size="sm" onClick={() => setInspecting(w)}>
             {t("webhooks.deliveries")}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setRotating(w)}>
+            {t("webhooks.rotate")}
           </Button>
           <Button variant="ghost" size="sm" onClick={() => setDeleting(w)}>
             {t("common.delete")}
@@ -88,6 +93,7 @@ function WebhooksBody() {
         {created?.secret ? <CodeBlock value={created.secret} className="mt-3" /> : null}
       </Dialog>
       <WebhookDeliveriesDialog webhook={inspecting} onClose={() => setInspecting(null)} />
+      <RotateWebhookDialog webhook={rotating} onClose={() => setRotating(null)} />
       <ConfirmDialog
         open={!!deleting}
         onOpenChange={(o) => !o && setDeleting(null)}

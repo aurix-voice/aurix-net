@@ -1,6 +1,8 @@
 //! Webhook delivery: events are queued from the hot path and POSTed by one worker per node.
 //! Body is JSON; `X-Aurix-Event` names the event, `X-Aurix-Signature: sha256=<hex>` is
 //! HMAC-SHA256 of the raw body with the webhook secret. Three attempts with backoff.
+//! After a secret rotation `X-Aurix-Signature-Previous` carries the old secret's signature
+//! until the grace period ends, so receivers can switch without dropping events.
 
 use hmac::{Hmac, Mac};
 use net_common::ipnet::is_public_ip;
@@ -8,7 +10,8 @@ use net_common::NetError;
 use net_common::ProjectId;
 use net_db::{queries, DbPool};
 use sha2::Sha256;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -25,6 +28,8 @@ pub struct WebhookEvent {
 #[derive(Clone)]
 pub struct Dispatcher {
     tx: mpsc::Sender<WebhookEvent>,
+    /// Projects whose hook list changed (e.g. secret rotation): the worker drops its cache for them.
+    dirty: Arc<std::sync::Mutex<HashSet<ProjectId>>>,
 }
 
 impl Dispatcher {
@@ -32,14 +37,25 @@ impl Dispatcher {
     /// `allow_private`: development only — lets webhooks target loopback/private addresses.
     pub fn start(pool: DbPool, allow_private: bool) -> Self {
         let (tx, rx) = mpsc::channel(4096);
-        tokio::spawn(worker(pool, rx, allow_private));
-        Self { tx }
+        let dirty = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        tokio::spawn(worker(pool, rx, allow_private, dirty.clone()));
+        Self { tx, dirty }
     }
 
     /// For tests and tools without a database: events are dropped.
     pub fn noop() -> Self {
         let (tx, _rx) = mpsc::channel(1);
-        Self { tx }
+        Self {
+            tx,
+            dirty: Arc::new(std::sync::Mutex::new(HashSet::new())),
+        }
+    }
+
+    /// Call after a project's webhooks change so the next event reloads them from the database.
+    pub fn invalidate(&self, project: ProjectId) {
+        if let Ok(mut d) = self.dirty.lock() {
+            d.insert(project);
+        }
     }
 
     pub fn emit(&self, project: ProjectId, event: &'static str, payload: serde_json::Value) {
@@ -68,6 +84,8 @@ struct Hook {
     id: Uuid,
     url: String,
     secret: String,
+    /// Previous secret while its grace period lasts: deliveries carry a second signature.
+    previous: Option<String>,
     events: Vec<String>,
 }
 
@@ -137,7 +155,12 @@ async fn resolves_public(url: &str) -> bool {
     }
 }
 
-async fn worker(pool: DbPool, mut rx: mpsc::Receiver<WebhookEvent>, allow_private: bool) {
+async fn worker(
+    pool: DbPool,
+    mut rx: mpsc::Receiver<WebhookEvent>,
+    allow_private: bool,
+    dirty: Arc<std::sync::Mutex<HashSet<ProjectId>>>,
+) {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::none())
@@ -145,6 +168,13 @@ async fn worker(pool: DbPool, mut rx: mpsc::Receiver<WebhookEvent>, allow_privat
         .expect("reqwest");
     let mut cache: HashMap<ProjectId, Cached> = HashMap::new();
     while let Some(ev) = rx.recv().await {
+        if dirty
+            .lock()
+            .map(|mut d| d.remove(&ev.project))
+            .unwrap_or(false)
+        {
+            cache.remove(&ev.project);
+        }
         let hooks = match cache.get(&ev.project) {
             Some(c) if c.at.elapsed() < Duration::from_secs(30) && ev.only.is_none() => {
                 c.hooks.clone()
@@ -159,6 +189,10 @@ async fn worker(pool: DbPool, mut rx: mpsc::Receiver<WebhookEvent>, allow_privat
                         id: r.id,
                         url: r.url,
                         secret: r.secret,
+                        previous: r.previous_secret.filter(|_| {
+                            r.previous_secret_expires_at
+                                .is_some_and(|t| t > chrono::Utc::now())
+                        }),
                         events: r.events,
                     })
                     .collect();
@@ -186,6 +220,7 @@ async fn worker(pool: DbPool, mut rx: mpsc::Receiver<WebhookEvent>, allow_privat
             id,
             url,
             secret,
+            previous,
             events,
         } in hooks
         {
@@ -201,11 +236,21 @@ async fn worker(pool: DbPool, mut rx: mpsc::Receiver<WebhookEvent>, allow_privat
             let pool = pool.clone();
             let body = body.clone();
             let sig = sign(&secret, body.as_bytes());
+            let sig_prev = previous.map(|p| sign(&p, body.as_bytes()));
             let event = ev.event;
             let project = ev.project.0;
             tokio::spawn(async move {
                 let started = Instant::now();
-                let outcome = deliver(&http, &url, event, &sig, &body, allow_private).await;
+                let outcome = deliver(
+                    &http,
+                    &url,
+                    event,
+                    &sig,
+                    sig_prev.as_deref(),
+                    &body,
+                    allow_private,
+                )
+                .await;
                 let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
                 let d = queries::NewDelivery {
                     webhook_id: id,
@@ -238,6 +283,7 @@ async fn deliver(
     url: &str,
     event: &str,
     sig: &str,
+    sig_prev: Option<&str>,
     body: &str,
     allow_private: bool,
 ) -> Outcome {
@@ -254,14 +300,15 @@ async fn deliver(
     let mut last_err = None;
     let mut status = None;
     for attempt in 0..3u32 {
-        let r = http
+        let mut req = http
             .post(url)
             .header("content-type", "application/json")
             .header("x-aurix-event", event)
-            .header("x-aurix-signature", sig)
-            .body(body.to_string())
-            .send()
-            .await;
+            .header("x-aurix-signature", sig);
+        if let Some(p) = sig_prev {
+            req = req.header("x-aurix-signature-previous", p);
+        }
+        let r = req.body(body.to_string()).send().await;
         match r {
             Ok(resp) if resp.status().is_success() => {
                 return Outcome {

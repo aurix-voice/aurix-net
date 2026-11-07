@@ -8,6 +8,7 @@ import { BansPanel } from "@/components/BansPanel";
 import { ConnectCard } from "@/components/ConnectCard";
 import { MatchmakingQueue } from "@/components/MatchmakingQueue";
 import { PlayerLookup } from "@/components/PlayerLookup";
+import { RotateWebhookDialog } from "@/components/RotateWebhook";
 import { RejectionsCard } from "@/components/RejectionsCard";
 import { useAuth } from "@/auth/AuthProvider";
 import { NewKeyDialog } from "@/components/NewKeyDialog";
@@ -94,6 +95,7 @@ function ProjectBody() {
   const deleteProject = useDeleteProject();
   const rejections = useRejectionsFor(projectId);
   const [inspecting, setInspecting] = useState<Webhook | null>(null);
+  const [rotating, setRotating] = useState<Webhook | null>(null);
   const navigate = useNavigate();
   const [deletingProject, setDeletingProject] = useState(false);
   const [confirmName, setConfirmName] = useState("");
@@ -145,6 +147,7 @@ function ProjectBody() {
         </Callout>
       ) : null}
       <WebhookDeliveriesDialog webhook={inspecting} projectId={p.id} onClose={() => setInspecting(null)} />
+      <RotateWebhookDialog webhook={rotating} onClose={() => setRotating(null)} projectId={p.id} />
       <ConfirmDialog
         open={deletingProject}
         onOpenChange={(o) => {
@@ -235,6 +238,9 @@ function ProjectBody() {
                       <span className="flex justify-end gap-1">
                         <Button variant="ghost" size="sm" onClick={() => setInspecting(w)}>
                           {t("webhooks.deliveries")}
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setRotating(w)}>
+                          {t("webhooks.rotate")}
                         </Button>
                         <Button variant="ghost" size="sm" onClick={() => setDeleting({ kind: "webhook", id: w.id, label: w.url })}>
                           {t("common.delete")}

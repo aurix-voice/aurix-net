@@ -257,3 +257,23 @@ test("operator exports fleet usage as CSV", async ({ page }) => {
   const text = await fs.readFile(path, "utf8");
   expect(text.split("\n")[0]).toBe("hour,metric,quantity");
 });
+
+test("operator rotates a webhook secret from the project page", async ({ page }) => {
+  const project = await api<{ project: { id: string }; key: { key: string } }>(page, "POST", "/v1/operator/projects", { name: uniq("e2e-rot") });
+  const created = await page.request.post("/v1/webhooks", {
+    headers: { authorization: `Bearer ${project.key.key}`, "content-type": "application/json" },
+    data: { url: "http://127.0.0.1:9/rotate-me", events: [] },
+  });
+  expect(created.ok()).toBeTruthy();
+  const oldSecret = ((await created.json()) as { secret: string }).secret;
+  await page.goto(`/projects/${project.project.id}`);
+  await page.getByRole("tab", { name: /Webhooks/ }).click();
+  await page.getByRole("button", { name: "Rotate secret" }).first().click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Old secret keeps signing for").selectOption("1");
+  await dialog.getByRole("button", { name: "Rotate secret" }).click();
+  await expect(page.getByRole("dialog").getByText(/New signing secret/)).toBeVisible();
+  const shown = await page.getByRole("dialog").locator("pre, code").first().innerText();
+  expect(shown.trim()).not.toBe(oldSecret);
+  expect(shown.trim().length).toBeGreaterThan(20);
+});

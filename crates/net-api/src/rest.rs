@@ -105,9 +105,14 @@ pub fn router(st: Shared) -> Router {
         .route("/v1/rejections", get(rejections))
         .route("/v1/operator/projects/:id/rejections", get(op_rejections))
         .route("/v1/webhooks/:id/test", post(webhook_test))
+        .route("/v1/webhooks/:id/rotate", post(webhook_rotate))
         .route(
             "/v1/operator/projects/:id/webhooks/:wid/deliveries",
             get(op_webhook_deliveries),
+        )
+        .route(
+            "/v1/operator/projects/:id/webhooks/:wid/rotate",
+            post(op_webhook_rotate),
         )
         .route(
             "/v1/operator/projects/:id/webhooks/:wid/test",
@@ -1112,7 +1117,7 @@ async fn list_webhooks(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json
     let key = api_key(&st, &h, Scope::Admin).await?;
     let rows = queries::list_webhooks(&st.pool, key.project_id).await?;
     Ok(Json(
-        json!({"webhooks": rows.into_iter().map(|r| json!({"id": r.id, "url": r.url, "events": r.events, "created_at": r.created_at})).collect::<Vec<_>>()}),
+        json!({"webhooks": rows.into_iter().map(|r| json!({"id": r.id, "url": r.url, "events": r.events, "created_at": r.created_at, "previous_secret_expires_at": r.previous_secret_expires_at})).collect::<Vec<_>>()}),
     ))
 }
 
@@ -1311,6 +1316,66 @@ async fn deliveries_json(
     let rows =
         queries::list_webhook_deliveries(&st.pool, project, wid, limit.unwrap_or(50)).await?;
     Ok(json!({"deliveries": rows}))
+}
+
+#[derive(Deserialize, Default)]
+struct RotateReq {
+    /// How long the previous secret keeps signing (second header). Default 24 h, max 7 days.
+    #[serde(default)]
+    grace_secs: Option<u64>,
+}
+
+/// New signing secret, shown once; the old one stays valid for `grace_secs`.
+async fn rotate_webhook(
+    st: &Shared,
+    project: Uuid,
+    wid: Uuid,
+    req: &RotateReq,
+    by: &str,
+) -> Result<Value> {
+    let grace = chrono::Duration::seconds(req.grace_secs.unwrap_or(86_400).min(7 * 86_400) as i64);
+    let secret = ApiKeyMaterial::generate().plaintext;
+    let row = queries::rotate_webhook_secret(&st.pool, project, wid, &secret, grace)
+        .await?
+        .ok_or_else(|| NetError::NotFound("webhook not found".into()))?;
+    st.webhooks.invalidate(ProjectId::from_uuid(project));
+    audit_log(
+        st,
+        Some(project),
+        by,
+        "webhook.rotate",
+        &wid.to_string(),
+        json!({"url": row.url, "previous_secret_expires_at": row.previous_secret_expires_at}),
+    )
+    .await;
+    Ok(
+        json!({"id": row.id, "secret": row.secret, "previous_secret_expires_at": row.previous_secret_expires_at}),
+    )
+}
+
+async fn webhook_rotate(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    body: Option<Json<RotateReq>>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Admin).await?;
+    key_write(&st, &key)?;
+    let req = body.map(|Json(r)| r).unwrap_or_default();
+    Ok(Json(
+        rotate_webhook(&st, key.project_id, id, &req, &format!("key:{}", key.id)).await?,
+    ))
+}
+
+async fn op_webhook_rotate(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((id, wid)): Path<(Uuid, Uuid)>,
+    body: Option<Json<RotateReq>>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h)?;
+    let req = body.map(|Json(r)| r).unwrap_or_default();
+    Ok(Json(rotate_webhook(&st, id, wid, &req, "operator").await?))
 }
 
 async fn test_webhook(st: &Shared, project: Uuid, wid: Uuid) -> Result<Value> {

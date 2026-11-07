@@ -242,6 +242,13 @@ export interface Webhook {
   created_at?: string;
   /** Only in the create response. */
   secret?: string;
+  /** Set after a rotation while the previous secret still signs. */
+  previous_secret_expires_at?: string | null;
+}
+export interface RotatedWebhook {
+  id: string;
+  secret: string;
+  previous_secret_expires_at: string;
 }
 export interface MatchmakingStats {
   searching: { id: string; player_id: string; mode: string; region: string | null; max_players: number; age_secs: number }[];
