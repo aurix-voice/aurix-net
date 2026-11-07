@@ -28,6 +28,8 @@ namespace Aurix.Net.Managed
         public string LastJoinJson { get; private set; }
         /// <summary>The node shut down and handed the room to another node: call RejoinAsync (NetRunner does).</summary>
         public event Action OnRehost;
+        /// <summary>System notice from the operator or game backend: (text, level = "info" | "warn").</summary>
+        public event Action<string, string> OnNotice;
         public string JoinedJson { get; private set; }
         public string RoomMode { get; private set; }
 
@@ -151,6 +153,7 @@ namespace Aurix.Net.Managed
                     case Text t:
                         OnControl?.Invoke(t.Json);
                         if (Json.Str(t.Json, "t") == "left" && Json.Str(t.Json, "reason") == "rehost") OnRehost?.Invoke();
+                        if (Json.Str(t.Json, "t") == "notice") OnNotice?.Invoke(Json.Str(t.Json, "text"), Json.Str(t.Json, "level"));
                         break;
                     case Bin b:
                         foreach (var r in _link.Receive(b.Data))

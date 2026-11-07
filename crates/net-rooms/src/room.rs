@@ -165,6 +165,26 @@ impl Room {
         self.players.is_empty()
     }
 
+    /// System notice to every online player; returns the frames and how many players get it.
+    pub fn notice(&self, text: &str, level: &str) -> (Vec<Outgoing>, usize) {
+        let out: Vec<Outgoing> = self
+            .players
+            .iter()
+            .filter(|(_, p)| p.online)
+            .map(|(a, _)| {
+                Outgoing::Control(
+                    *a,
+                    ServerMsg::Notice {
+                        text: text.to_string(),
+                        level: level.to_string(),
+                    },
+                )
+            })
+            .collect();
+        let n = out.len();
+        (out, n)
+    }
+
     pub fn summary(&self) -> RoomSummary {
         let props = self
             .cfg

@@ -51,6 +51,7 @@ export class Client {
       const m = JSON.parse(data);
       this.emit("control", m);
       if (m.t === "left" && m.reason === "rehost") this.emit("rehost");
+      if (m.t === "notice") this.emit("notice", String(m.text ?? ""), String(m.level ?? "info"));
       this.waiters = this.waiters.filter((w) => !w(m));
     } else {
       this.onDatagram(new Uint8Array(data as ArrayBuffer));

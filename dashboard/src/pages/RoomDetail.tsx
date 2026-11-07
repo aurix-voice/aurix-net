@@ -1,9 +1,10 @@
 import { Link, useParams } from "@tanstack/react-router";
-import { ArrowLeft, Download } from "lucide-react";
+import { ArrowLeft, Download, Megaphone } from "lucide-react";
 import { useState } from "react";
 
 import type { RoomDetail } from "@/api/client";
 import { useAddBan, useKickPlayer, useRoom } from "@/api/hooks";
+import { NoticeDialog } from "@/components/NoticeDialog";
 import { useAuth } from "@/auth/AuthProvider";
 import { useI18n } from "@/i18n";
 import { fmtDateTimeShort } from "@/lib/format";
@@ -26,6 +27,7 @@ export function RoomDetailPage() {
   const [kicking, setKicking] = useState<RoomDetail["players"][number] | null>(null);
   const [kickReason, setKickReason] = useState("");
   const [alsoBan, setAlsoBan] = useState(false);
+  const [noticing, setNoticing] = useState(false);
   const addBan = useAddBan(operator ? (q.data?.room.project_id ?? undefined) : undefined);
   if (q.isLoading) return <Loading />;
   if (q.isError) return <QueryError error={q.error} onRetry={() => void q.refetch()} />;
@@ -59,13 +61,19 @@ export function RoomDetailPage() {
         }
         description={<IdChip id={room.id} short={36} />}
         actions={
-          room.mode === "lockstep" ? (
-            <Button variant="secondary" size="sm" onClick={() => void downloadReplay()}>
-              <Download className="size-3.5" /> {t("rooms.detail.replay")}
+          <span className="flex gap-2">
+            <Button variant="secondary" size="sm" onClick={() => setNoticing(true)}>
+              <Megaphone className="size-3.5" /> {t("notice.title")}
             </Button>
-          ) : null
+            {room.mode === "lockstep" ? (
+              <Button variant="secondary" size="sm" onClick={() => void downloadReplay()}>
+                <Download className="size-3.5" /> {t("rooms.detail.replay")}
+              </Button>
+            ) : null}
+          </span>
         }
       />
+      <NoticeDialog open={noticing} onOpenChange={setNoticing} roomId={room.id} />
       <SplitLayout
         main={
           <>

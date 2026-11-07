@@ -224,6 +224,23 @@ export function useRevokeOperatorToken() {
   const qc = useQueryClient();
   return useMutation({ mutationFn: (id: string) => api.del(`/v1/operator/tokens/${id}`), onSuccess: () => void qc.invalidateQueries({ queryKey: ["operator-tokens"] }) });
 }
+/** Broadcast a system notice: to one room (any node) or to every live room of a project. */
+export function useNotice() {
+  const api = useApi();
+  const { operator } = useAuth();
+  return useMutation({
+    mutationFn: ({ roomId, projectId, text, level }: { roomId?: string; projectId?: string; text: string; level: "info" | "warn" }) => {
+      const path = roomId
+        ? operator
+          ? `/v1/operator/rooms/${roomId}/notice`
+          : `/v1/rooms/${roomId}/notice`
+        : operator
+          ? `/v1/operator/projects/${projectId}/notice`
+          : "/v1/notice";
+      return api.post<{ rooms: number; players: number }>(path, { text, level });
+    },
+  });
+}
 export function useAttention() {
   const api = useApi();
   const { operator } = useAuth();

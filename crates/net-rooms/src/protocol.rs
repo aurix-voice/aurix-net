@@ -233,6 +233,12 @@ pub enum ServerMsg {
     MasterChanged {
         actor: ActorId,
     },
+    /// System message from the operator or the game backend (maintenance, warnings).
+    /// `level` is `info` or `warn`. Clients that predate it may ignore the tag.
+    Notice {
+        text: String,
+        level: String,
+    },
     LobbyRooms {
         rooms: Vec<RoomSummary>,
     },

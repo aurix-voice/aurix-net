@@ -131,6 +131,12 @@ pub fn router(st: Shared) -> Router {
             delete(internal_kick),
         )
         .route("/v1/rooms/:id/players/:actor", delete(kick_player))
+        .route("/v1/rooms/:id/notice", post(room_notice))
+        .route("/v1/notice", post(project_notice))
+        .route("/v1/operator/rooms/:id/notice", post(op_room_notice))
+        .route("/v1/operator/projects/:id/notice", post(op_project_notice))
+        .route("/v1/internal/rooms/:id/notice", post(internal_room_notice))
+        .route("/v1/internal/notice", post(internal_project_notice))
         .route("/v1/bans", get(list_bans).post(create_ban))
         .route("/v1/bans/:player_id", delete(delete_ban))
         .route(
@@ -787,6 +793,205 @@ fn pct(s: &str) -> String {
         }
     }
     out
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+struct NoticeReq {
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    level: Option<String>,
+}
+
+fn notice_level(req: &NoticeReq) -> Result<(String, &str)> {
+    let text = req.text.trim();
+    if text.is_empty() || text.chars().count() > 512 || text.chars().any(|c| c.is_control()) {
+        return Err(NetError::Invalid(
+            "text: 1-512 characters, no control characters".into(),
+        ));
+    }
+    let level = match req.level.as_deref() {
+        None | Some("info") => "info",
+        Some("warn") => "warn",
+        _ => return Err(NetError::Invalid("level: info or warn".into())),
+    };
+    Ok((text.to_string(), level))
+}
+
+/// Notice to one room wherever it is hosted; returns players reached.
+async fn notice_anywhere(
+    st: &Shared,
+    project: ProjectId,
+    id: Uuid,
+    req: &NoticeReq,
+) -> Result<usize> {
+    let (text, level) = notice_level(req)?;
+    let room = RoomId::from_uuid(id);
+    if st.host.get(room).is_some() {
+        return crate::ws::notice_room(st, room, &text, level);
+    }
+    let live = st
+        .redis
+        .get_room(project, room)
+        .await?
+        .ok_or_else(|| NetError::NotFound("room is not live".into()))?;
+    let node = Uuid::parse_str(&live.node)
+        .ok()
+        .and_then(|n| st.registry.get(net_common::NodeId::from_uuid(n)))
+        .ok_or_else(|| NetError::NotFound("hosting node unknown".into()))?;
+    let v = internal_post(
+        st,
+        &node.http_url,
+        &format!("/v1/internal/rooms/{id}/notice"),
+        json!({"text": text, "level": level}),
+    )
+    .await?;
+    Ok(v["players"].as_u64().unwrap_or(0) as usize)
+}
+
+/// Notice to every live room of a project on every node; returns (rooms, players).
+async fn notice_project_anywhere(
+    st: &Shared,
+    project: Uuid,
+    req: &NoticeReq,
+) -> Result<(usize, usize)> {
+    let (text, level) = notice_level(req)?;
+    let (mut rooms, mut players) =
+        crate::ws::notice_project(st, ProjectId::from_uuid(project), &text, level);
+    let body = json!({"text": text, "level": level});
+    let path = format!("/v1/internal/notice?project={project}");
+    let (path, body) = (path.as_str(), &body);
+    let remote = st
+        .registry
+        .snapshot()
+        .into_iter()
+        .filter(|n| n.id != st.node_id);
+    let results = futures::future::join_all(remote.map(|n| async move {
+        let r = internal_post(st, &n.http_url, path, body.clone()).await;
+        (n, r)
+    }))
+    .await;
+    for (n, r) in results {
+        match r {
+            Ok(v) => {
+                rooms += v["rooms"].as_u64().unwrap_or(0) as usize;
+                players += v["players"].as_u64().unwrap_or(0) as usize;
+            }
+            Err(e) => tracing::warn!(node = %n.http_url, error = %e, "notice: node unreachable"),
+        }
+    }
+    Ok((rooms, players))
+}
+
+async fn room_notice(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<NoticeReq>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Rooms).await?;
+    key_write(&st, &key)?;
+    let row = queries::get_room(&st.pool, id).await?;
+    if row.project_id != key.project_id {
+        return Err(NetError::NotFound("room not found".into()).into());
+    }
+    let players = notice_anywhere(&st, ProjectId::from_uuid(row.project_id), id, &req).await?;
+    audit_log(
+        &st,
+        Some(row.project_id),
+        &format!("key:{}", key.id),
+        "room.notice",
+        &id.to_string(),
+        json!({"text": req.text, "players": players}),
+    )
+    .await;
+    Ok(Json(json!({"rooms": 1, "players": players})))
+}
+
+async fn project_notice(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Json(req): Json<NoticeReq>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Rooms).await?;
+    key_write(&st, &key)?;
+    let (rooms, players) = notice_project_anywhere(&st, key.project_id, &req).await?;
+    audit_log(
+        &st,
+        Some(key.project_id),
+        &format!("key:{}", key.id),
+        "project.notice",
+        &key.project_id.to_string(),
+        json!({"text": req.text, "rooms": rooms, "players": players}),
+    )
+    .await;
+    Ok(Json(json!({"rooms": rooms, "players": players})))
+}
+
+async fn op_room_notice(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<NoticeReq>,
+) -> ApiResult<Json<Value>> {
+    let op = operator(&st, &h).await?;
+    let row = queries::get_room(&st.pool, id).await?;
+    let players = notice_anywhere(&st, ProjectId::from_uuid(row.project_id), id, &req).await?;
+    audit_log(
+        &st,
+        Some(row.project_id),
+        &op.actor,
+        "room.notice",
+        &id.to_string(),
+        json!({"text": req.text, "players": players}),
+    )
+    .await;
+    Ok(Json(json!({"rooms": 1, "players": players})))
+}
+
+async fn op_project_notice(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<NoticeReq>,
+) -> ApiResult<Json<Value>> {
+    let op = operator(&st, &h).await?;
+    let (rooms, players) = notice_project_anywhere(&st, id, &req).await?;
+    audit_log(
+        &st,
+        Some(id),
+        &op.actor,
+        "project.notice",
+        &id.to_string(),
+        json!({"text": req.text, "rooms": rooms, "players": players}),
+    )
+    .await;
+    Ok(Json(json!({"rooms": rooms, "players": players})))
+}
+
+async fn internal_room_notice(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<NoticeReq>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h).await?;
+    let (text, level) = notice_level(&req)?;
+    let players = crate::ws::notice_room(&st, RoomId::from_uuid(id), &text, level)?;
+    Ok(Json(json!({"players": players})))
+}
+
+async fn internal_project_notice(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Query(q): Query<ProjectQuery>,
+    Json(req): Json<NoticeReq>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h).await?;
+    let (text, level) = notice_level(&req)?;
+    let (rooms, players) =
+        crate::ws::notice_project(&st, ProjectId::from_uuid(q.project), &text, level);
+    Ok(Json(json!({"rooms": rooms, "players": players})))
 }
 
 async fn internal_get(st: &Shared, http_url: &str, path: &str) -> Result<Value> {

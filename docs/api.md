@@ -42,6 +42,8 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | POST | `/v1/operator/projects/:id/suspend` | operator | `{suspended}`: while suspended the project's keys can only read; grants, joins, room creation and writes get 403 `project suspended`. Live rooms drain as players leave. |
 | DELETE | `/v1/rooms/:id/players/:actor` | rooms | kick a player (`?reason=` ≤64 printable ASCII chars, shown to the client as `left{reason}`); works for rooms hosted on any node; audited as `player.kick` |
 | DELETE | `/v1/operator/rooms/:id/players/:actor` | operator | same for operators |
+| POST | `/v1/rooms/:id/notice` | rooms | push a system notice `{text (≤512), level: info|warn}` to every online player of the room (any node); clients get `{"t":"notice","text","level"}`; audited `room.notice` |
+| POST | `/v1/notice` | rooms | same to every live room of the project on every node → `{rooms, players}`; audited `project.notice`; operators: `POST /v1/operator/rooms/:id/notice`, `POST /v1/operator/projects/:id/notice` |
 | GET | `/v1/players/:player_id` | read | where a player is right now across every live node (`rooms[]` with room id/name/mode/node/actor), `ban` (or null), last 20 `audit` rows targeting them, `unreachable_nodes`; operators: `GET /v1/operator/projects/:id/players/:player_id` |
 | GET/POST | `/v1/bans` | read / rooms | project deny-list; POST `{player_id, reason?, duration_secs?}` (omit duration = permanent). Banned players get 403 `banned…` at `/v1/grants` and at join; counted as rejection reason `banned` |
 | DELETE | `/v1/bans/:player_id` | rooms | lift a ban |
@@ -197,5 +199,5 @@ in its rooms get `left{reason:"rehost"}` and rejoin the same room name on any no
 ## Audit log
 
 Every admin/operator mutation writes a row to the `audit` table (`actor` is `key:<api key id>` or
-`operator`): `project.create`, `project.limits`, `project.suspend`, `project.resume`, `project.delete`, `node.drain`, `node.undrain`, `room.close`, `webhook.test`, `player.kick`, `player.ban`, `player.unban`, `webhook.rotate`, `operator_token.create`, `operator_token.revoke`, `key.create`, `key.revoke`, `webhook.create`,
+`operator`): `project.create`, `project.limits`, `project.suspend`, `project.resume`, `project.delete`, `node.drain`, `node.undrain`, `room.close`, `webhook.test`, `player.kick`, `player.ban`, `player.unban`, `webhook.rotate`, `operator_token.create`, `operator_token.revoke`, `room.notice`, `project.notice`, `key.create`, `key.revoke`, `webhook.create`,
 `webhook.delete`, `module.put`, `module.delete`. Rows are kept for `retention.audit_days` (90).

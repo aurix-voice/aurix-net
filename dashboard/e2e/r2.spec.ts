@@ -309,3 +309,16 @@ test("operator issues a named token on Settings, it authenticates and is named i
   const after = await page.request.get("/v1/me", { headers: { authorization: `Bearer ${token}` } });
   expect(after.status()).toBe(401);
 });
+
+test("operator broadcasts a notice to a project from its page", async ({ page }) => {
+  const project = await api<{ project: { id: string } }>(page, "POST", "/v1/operator/projects", { name: uniq("e2e-notice") });
+  await page.goto(`/projects/${project.project.id}`);
+  await page.getByRole("button", { name: "Broadcast" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Message").fill("Maintenance in 5 minutes");
+  await dialog.getByLabel("Level").selectOption("warn");
+  await dialog.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText(/Sent to 0 player\(s\) in 0 room\(s\)/)).toBeVisible();
+  const audit = await api<{ audit: { action: string; details: { text: string } }[] }>(page, "GET", `/v1/operator/audit?action=project.notice&project=${project.project.id}`);
+  expect(audit.audit.some((a) => a.details.text === "Maintenance in 5 minutes")).toBeTruthy();
+});

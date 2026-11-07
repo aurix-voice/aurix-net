@@ -1489,6 +1489,36 @@ pub async fn publish_room(st: &Shared, h: &Arc<Mutex<HostedRoom>>) {
 /// Server-side kick (REST): removes the actor from a room hosted on this node, tells the client
 /// `left{reason}`, updates sync/lockstep membership and republishes the room.
 /// Removes `actor` from a room hosted here; returns the kicked player's id for the audit trail.
+/// Pushes a system notice to every online player of a room hosted here; returns the player count.
+pub fn notice_room(st: &Shared, room: RoomId, text: &str, level: &str) -> Result<usize> {
+    let hr = st
+        .host
+        .get(room)
+        .ok_or_else(|| NetError::NotFound("room not hosted here".into()))?;
+    let h = hr.lock();
+    let (out, n) = h.room.notice(text, level);
+    dispatch(&h, out, &st.metrics);
+    Ok(n)
+}
+
+/// Same for every room of a project hosted here: (rooms, players).
+pub fn notice_project(st: &Shared, project: ProjectId, text: &str, level: &str) -> (usize, usize) {
+    let (mut rooms, mut players) = (0usize, 0usize);
+    for hr in st.host.all() {
+        let h = hr.lock();
+        if h.project != project {
+            continue;
+        }
+        let (out, n) = h.room.notice(text, level);
+        if n > 0 {
+            rooms += 1;
+            players += n;
+            dispatch(&h, out, &st.metrics);
+        }
+    }
+    (rooms, players)
+}
+
 pub async fn kick_player(
     st: &Shared,
     room: RoomId,
