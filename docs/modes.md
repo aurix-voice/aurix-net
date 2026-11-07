@@ -28,7 +28,7 @@ disconnected player keeps their slot and how long an empty room stays open (both
 takes over their own slot; the old session gets `left` with reason `session_replaced` and is
 ignored from then on.
 
-Rate limits: a room takes `max_events_per_sec_per_room` events (default 500) and each player
+Rate limits: a room takes `max_events_per_sec_per_room` events (default 2000) and each player
 `max_events_per_sec_per_player` (default 60, burst of 2 s worth); over the limit the event is
 dropped with `rate_limited`. Both are project quotas (`/v1/operator/projects/:id/limits`).
 

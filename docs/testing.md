@@ -23,7 +23,7 @@ Redis). Build once: `cargo build --release`. Create a project and key with the o
 | Web SDK (Node, tunnel) | `cd sdk/web && NET_API_KEY=... npm test` | pass |
 | C / C++ ABI | `crates/net-ffi/ctest/echo.c`, `sdk/cpp/echo_test.cpp` against a live node | `hello=1 ticks=10/10` |
 
-Known limits of the local setup: bots and server share CPU, so the 500 events/s/room figure
+Known limits of the local setup: bots and server share CPU, so the 2000 events/s/room figure
 needs bots on a second machine; the dev certificate changes on every node start (browser pins
 the fingerprint from `joined.data`, nothing to install).
 
