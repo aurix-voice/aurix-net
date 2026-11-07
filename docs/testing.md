@@ -96,3 +96,19 @@ twelve times — while sampling both nodes' live stats every minute (`/v1/operat
 RSS on both nodes plateaus within the first 30 minutes and stays flat through the remaining room/player
 churn: no growth per room lifecycle. Rerun after changes to the room, checkpoint or metering paths;
 a steadily climbing RSS across batches is the regression signal.
+
+
+## Soak 2 — relay + sync + lockstep with forced desyncs (1 h, release, two nodes)
+
+`WEB_KEY=<project key> DURATION=3600 ./scripts/soak-test.sh`: every 5-minute batch runs 2 relay rooms × 8
+players (WS tunnel), 1 sync room × 8, 1 lockstep room × 4 at 30 Hz with a late joiner (catch-up from
+checkpoint + journal), plus the web `lockstep-live` test whose third client lies about its hash, so the
+node collects two desync dumps per batch (stored in Redis for 24 h).
+
+| node | samples | RSS start → end (max) MB | tick p99 max | overruns | rooms / players max |
+|---|---|---|---|---|---|
+| host (725007) | 61 | 20 → 26 (28) | 0.2 ms | 0 | 7 / 31 |
+| idle (087cc9) | 61 | 14 → 18 (18) | 0.2 ms | 0 | 1 / 0 |
+
+Host RSS climbs with the first batches (room churn, dump storage) and stays flat afterwards; no
+overruns; desync dumps for every batch were listed and downloadable through `/v1/rooms/:id/desyncs`.
