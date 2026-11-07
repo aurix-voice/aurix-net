@@ -63,6 +63,7 @@ jobs:
         with: { dotnet-version: 8.0.x }
       - run: dotnet build -c Release "sdk/unity/BuildCheck~/managed-live/managed-live.csproj"
       - run: dotnet build -c Release "sdk/unity/BuildCheck~/managed-rehost/managed-rehost.csproj"
+      - run: dotnet run -c Release --project "sdk/unity/BuildCheck~/managed-tests/managed-tests.csproj"
 
   docker:
     runs-on: ubuntu-latest

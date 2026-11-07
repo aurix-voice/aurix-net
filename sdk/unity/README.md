@@ -44,6 +44,22 @@ by default, or your WASM logic with `props.logic`) replicates deltas to everyone
 `NetTransform` interpolates `InterpolationTicks` behind the server. `[Rpc]` methods travel as
 reliable relay events (`bool, int, long, float, string, byte[], Vector3, Quaternion` args).
 
+Prediction (server-authoritative movement with `props.logic`): keep the local player responsive without
+waiting a round trip. Send raw inputs with `Runner.SendInput(bytes)` (returns the tick), apply the same
+step locally through `Predictor<TState>` (`Aurix.Net.Managed`), and reconcile when your own entity's
+server state arrives:
+
+```csharp
+var pred = new Predictor<Vector3>(transform.position, (pos, input) => Move(pos, input), (a, b) => (a - b).sqrMagnitude > 0.0001f);
+pred.OnCorrected += (was, now) => _visualError += was - now;   // decay _visualError over a few frames
+Runner.OnOwnEntityUpdated += (view, entity, tick) => { if (view == View) pred.Reconcile(tick, ReadPos(entity)); };
+void Tick(byte[] input) { uint t = Runner.SendInput(input); transform.position = pred.Record(t, input) + _visualError; }
+```
+
+`Move` must be the rule your WASM logic applies for one tick of that input (same fixed-point/float math); a
+mismatch is corrected by replaying the unconfirmed inputs on the server state (`Mispredictions` counts them).
+Owner-authoritative rooms (no `logic`) do not need prediction: the owner's `[Sync]` values are the truth.
+
 Relay rooms (no simulation): `Runner.SendEvent(code, bytes, Target.All, reliable: true)` and
 `Runner.OnEvent`. Event codes `0x10–0x13` and `0x20–0x24` are reserved for sync/lockstep frames.
 

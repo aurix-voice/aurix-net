@@ -35,6 +35,11 @@ namespace Aurix.Net.Unity
         public event Action<EventFrame> OnEvent;
         public event Action<string> OnControl;
         public event Action<NetView> OnSpawned, OnDespawned;
+        /// <summary>Server state for an entity you own arrived (tick = server tick). Feed it to a
+        /// <see cref="Predictor{TState}"/> to reconcile when your WASM logic drives the entity.</summary>
+        public event Action<NetView, NetEntity, uint> OnOwnEntityUpdated;
+        /// <summary>Tick stamped on the last input sent (what to pass to <c>Predictor.Record</c>).</summary>
+        public uint LastInputTick => _lastInputTick;
 
         const byte RpcEventCode = 0xF0;
         readonly List<(ComponentDef, ComponentValue)> _writes = new List<(ComponentDef, ComponentValue)>();
@@ -142,7 +147,7 @@ namespace Aurix.Net.Unity
         {
             if (!Views.TryGetValue(e.Id, out var v)) { Spawn(e); return; }
             v.Owner = e.Owner;
-            if (v.IsMine) return;
+            if (v.IsMine) { OnOwnEntityUpdated?.Invoke(v, e, World.ServerTick); return; }
             foreach (var b in v.Behaviours) b.ApplyFromEntity(e, World.ServerTick);
         }
         void Despawn(NetEntity e)
@@ -184,6 +189,17 @@ namespace Aurix.Net.Unity
             _recentInputs.Add(body); while (_recentInputs.Count > 3) _recentInputs.RemoveAt(0);
             if (_writes.Count == 0 && _recentInputs.TrueForAll(b => b.Length == 0)) return;
             Client.SendData(Channel.Unreliable, SyncWorld.EncodeInput(tick - (uint)(_recentInputs.Count - 1), _recentInputs));
+        }
+
+        /// <summary>Sends a raw input frame for the current tick to the server logic (`props.logic`); returns the
+        /// tick it was stamped with. Resent with the next two inputs for loss tolerance.</summary>
+        public uint SendInput(byte[] body)
+        {
+            if (World == null || Client == null) return 0;
+            uint tick = Math.Max(World.ServerTick + 2, _lastInputTick + 1); _lastInputTick = tick;
+            _recentInputs.Add(body ?? Array.Empty<byte>()); while (_recentInputs.Count > 3) _recentInputs.RemoveAt(0);
+            Client.SendData(Channel.Unreliable, SyncWorld.EncodeInput(tick - (uint)(_recentInputs.Count - 1), _recentInputs));
+            return tick;
         }
 
         // ---- events / RPC (relay channel) ----
