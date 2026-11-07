@@ -21,7 +21,9 @@ The envelope is always `event`, `project`, `at` (RFC 3339, UTC) and `data`. Veri
 | Event | `data` | When |
 |---|---|---|
 | `room.created` | `{"room":"<uuid>","name":"lobby-1","mode":"relay|sync|lockstep","region":"eu"}` | a room was opened (by a client join with `create`, or by `POST /v1/rooms`) |
-| `room.closed` | `{"room":"<uuid>"}` | the room ended: last player left and `empty_ttl` passed, or it was closed by the game / an operator |
+| `join.validate` | `{"room":"<uuid>","name":"ranked-7","mode":"sync","room_props":{...},"player_id":"p1","player_name":"Ann","player_props":{...},"spectator":false}` | **synchronous**: sent before a player enters a room (not on rejoin); answer 2xx with `{"allow":true}` (or an empty body) within 2 s, or `{"allow":false,"reason":"season over"}` to refuse — the client gets `join rejected: <reason>`. Receiver down / non-2xx / non-JSON = refused (fail closed) and the rejection counter shows `validate_unavailable`. Subscribe explicitly (`*` does not include it) |
+| `room.closed` | `{"room":"<uuid>","name":"ranked-7","mode":"sync","props":{...},"state":"<base64>"}` | `state` only with room prop `export_state_on_close: true`: the final checkpoint JSON (players, master, sync state or lockstep snapshot), ≤ 256 KiB (`state_too_large: <bytes>` otherwise) — persist matches on your side |
+| `room.closed` (minimal) | `{"room":"<uuid>"}` | the room ended: last player left and `empty_ttl` passed, or it was closed by the game / an operator |
 | `room.rehosted` | `{"room":"<uuid>","name":"lobby-1","mode":"sync","node":"<node-uuid>","restored":true}` | the room was adopted by another node after a drain or node loss; `restored` is false when no checkpoint was found and the room started fresh |
 | `player.joined` | `{"room":"<uuid>","actor":3}` | a player finished auth + join; `actor` is the per-room id (0..N) |
 | `player.left` | `{"room":"<uuid>","actor":3,"kicked":true}` | a player left or timed out (`player_ttl`); `kicked` is present only for kicks |

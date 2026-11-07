@@ -788,6 +788,37 @@ impl Session {
         spectator: bool,
     ) -> Result<()> {
         let g = self.grant()?.clone();
+        if rejoin.is_none() {
+            let (room_id, room_name, mode, props) = {
+                let hr = h.lock();
+                if hr.project != g.project {
+                    return Err(NetError::NotFound("room".into()));
+                }
+                (
+                    hr.room.cfg.id,
+                    hr.room.cfg.name.clone(),
+                    format!("{:?}", hr.room.cfg.mode).to_lowercase(),
+                    hr.room.cfg.props.clone(),
+                )
+            };
+            let payload = serde_json::json!({
+                "room": room_id.to_string(), "name": room_name, "mode": mode, "room_props": props,
+                "player_id": g.player_id, "player_name": g.name, "player_props": player_props,
+                "spectator": spectator,
+            });
+            match self.st.webhooks.validate_join(g.project, payload).await {
+                crate::webhooks::JoinVerdict::Allow => {}
+                crate::webhooks::JoinVerdict::Deny(reason) => {
+                    crate::rest::reject(&self.st, g.project, "validate");
+                    return Err(NetError::Forbidden(format!("join rejected: {reason}")));
+                }
+                crate::webhooks::JoinVerdict::Unavailable(e) => {
+                    tracing::warn!(project = %g.project, error = %e, "join validator unavailable");
+                    crate::rest::reject(&self.st, g.project, "validate_unavailable");
+                    return Err(NetError::Forbidden("join validator unavailable".into()));
+                }
+            }
+        }
         let joined = {
             let mut hr = h.lock();
             if hr.project != g.project {
@@ -1745,15 +1776,47 @@ pub fn fit_replay(r: &mut net_rollback::Replay, max_bytes: usize) -> Option<Vec<
     }
 }
 
+/// `room.closed` payload: name/mode/props always; with room prop `export_state_on_close` the
+/// final checkpoint (players, master, sync state or lockstep snapshot) as base64 so a backend can
+/// persist the match — the "persist room state via webhooks" pattern. Capped at 256 KiB.
+fn closed_payload(g: &mut HostedRoom, id: RoomId) -> Value {
+    const MAX_EXPORT: usize = 256 * 1024;
+    let mut p = serde_json::json!({
+        "room": id.to_string(),
+        "name": g.room.cfg.name,
+        "mode": format!("{:?}", g.room.cfg.mode).to_lowercase(),
+        "props": g.room.cfg.props,
+    });
+    if prop_bool(&g.room.cfg.props, "export_state_on_close", false) {
+        let sync = g.sync.as_mut().map(|s| s.checkpoint());
+        let ls = g.lockstep.as_ref().map(|l| l.snapshot());
+        let bytes = RoomCheckpoint::of(g, sync, ls).encode();
+        if bytes.len() <= MAX_EXPORT {
+            p["state"] = Value::String(base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                &bytes,
+            ));
+        } else {
+            p["state_too_large"] = Value::from(bytes.len());
+        }
+    }
+    p
+}
+
 pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {
-    st.webhooks.emit(
-        project,
-        "room.closed",
-        serde_json::json!({"room": id.to_string()}),
-    );
-    if let Some(h) = st.host.remove(id) {
+    let Some(h) = st.host.remove(id) else {
+        st.webhooks.emit(
+            project,
+            "room.closed",
+            serde_json::json!({"room": id.to_string()}),
+        );
+        return;
+    };
+    {
         let (sessions, replay) = {
-            let g = h.lock();
+            let mut g = h.lock();
+            st.webhooks
+                .emit(project, "room.closed", closed_payload(&mut g, id));
             let replay = g
                 .lockstep
                 .as_ref()

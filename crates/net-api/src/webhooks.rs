@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 /// Every event a webhook can subscribe to (`events: []` means all). Kept in sync with docs/webhooks.md.
 pub const EVENTS: &[&str] = &[
+    "join.validate",
     "room.created",
     "room.closed",
     "room.rehosted",
@@ -81,7 +82,25 @@ pub struct Dispatcher {
     tx: mpsc::Sender<WebhookEvent>,
     /// Projects whose hook list changed (e.g. secret rotation): the worker drops its cache for them.
     dirty: Arc<std::sync::Mutex<HashSet<ProjectId>>>,
+    /// Hooks subscribed to `join.validate`, per project (30 s cache, dropped on `invalidate`).
+    validators: Arc<std::sync::Mutex<HashMap<ProjectId, Cached>>>,
+    pool: Option<DbPool>,
+    http: reqwest::Client,
+    allow_private: bool,
 }
+
+/// Answer of a synchronous `join.validate` webhook.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JoinVerdict {
+    /// No validator configured, or the receiver allowed the join.
+    Allow,
+    /// The receiver answered `{"allow": false}`; `reason` goes back to the client.
+    Deny(String),
+    /// The receiver was unreachable or answered badly: the join is refused (fail closed).
+    Unavailable(String),
+}
+
+const VALIDATE_TIMEOUT: Duration = Duration::from_secs(2);
 
 impl Dispatcher {
     /// Starts the worker; returns the handle used to enqueue events.
@@ -89,8 +108,15 @@ impl Dispatcher {
     pub fn start(pool: DbPool, allow_private: bool) -> Self {
         let (tx, rx) = mpsc::channel(4096);
         let dirty = Arc::new(std::sync::Mutex::new(HashSet::new()));
-        tokio::spawn(worker(pool, rx, allow_private, dirty.clone()));
-        Self { tx, dirty }
+        tokio::spawn(worker(pool.clone(), rx, allow_private, dirty.clone()));
+        Self {
+            tx,
+            dirty,
+            validators: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            pool: Some(pool),
+            http: validate_client(),
+            allow_private,
+        }
     }
 
     /// For tests and tools without a database: events are dropped.
@@ -99,6 +125,10 @@ impl Dispatcher {
         Self {
             tx,
             dirty: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            validators: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            pool: None,
+            http: validate_client(),
+            allow_private: true,
         }
     }
 
@@ -106,6 +136,194 @@ impl Dispatcher {
     pub fn invalidate(&self, project: ProjectId) {
         if let Ok(mut d) = self.dirty.lock() {
             d.insert(project);
+        }
+        if let Ok(mut v) = self.validators.lock() {
+            v.remove(&project);
+        }
+    }
+
+    /// Synchronous pre-join check (fine-grained validation): every webhook of the
+    /// project subscribed to `join.validate` is POSTed `payload` and must answer 2xx with
+    /// `{"allow": true}` (or an empty body) within 2 s; `{"allow": false, "reason": "..."}` refuses
+    /// the join with that reason. Receiver down or non-2xx = refused (fail closed), so only
+    /// subscribe a validator you can keep up. Each call lands in the delivery log.
+    pub async fn validate_join(
+        &self,
+        project: ProjectId,
+        payload: serde_json::Value,
+    ) -> JoinVerdict {
+        let Some(pool) = &self.pool else {
+            return JoinVerdict::Allow;
+        };
+        let hooks = match self.validator_hooks(pool, project).await {
+            Ok(h) => h,
+            Err(e) => return JoinVerdict::Unavailable(format!("validator lookup failed: {e}")),
+        };
+        if hooks.is_empty() {
+            return JoinVerdict::Allow;
+        }
+        let body = serde_json::json!({
+            "event": "join.validate",
+            "project": project.to_string(),
+            "at": chrono::Utc::now().to_rfc3339(),
+            "data": payload,
+        })
+        .to_string();
+        for h in hooks {
+            let started = Instant::now();
+            let (verdict, outcome) = self.ask(&h, &body).await;
+            let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
+            let d = queries::NewDelivery {
+                webhook_id: h.id,
+                project_id: project.0,
+                event: "join.validate",
+                ok: outcome.ok,
+                status: outcome.status,
+                attempts: outcome.attempts,
+                latency_ms,
+                error: outcome.error.as_deref(),
+            };
+            if let Err(e) = queries::insert_webhook_delivery(pool, &d).await {
+                tracing::warn!(error = %e, "webhook delivery log");
+            }
+            if verdict != JoinVerdict::Allow {
+                return verdict;
+            }
+        }
+        JoinVerdict::Allow
+    }
+
+    async fn validator_hooks(
+        &self,
+        pool: &DbPool,
+        project: ProjectId,
+    ) -> net_common::Result<Vec<Hook>> {
+        if let Ok(v) = self.validators.lock() {
+            if let Some(c) = v.get(&project) {
+                if c.at.elapsed() < Duration::from_secs(30) {
+                    return Ok(c.hooks.clone());
+                }
+            }
+        }
+        let hooks: Vec<Hook> = queries::list_webhooks(pool, project.0)
+            .await?
+            .into_iter()
+            .filter(|r| r.events.iter().any(|e| e == "join.validate"))
+            .map(|r| Hook {
+                id: r.id,
+                url: r.url,
+                secret: r.secret,
+                previous: r.previous_secret.filter(|_| {
+                    r.previous_secret_expires_at
+                        .is_some_and(|t| t > chrono::Utc::now())
+                }),
+                events: r.events,
+            })
+            .collect();
+        if let Ok(mut v) = self.validators.lock() {
+            v.insert(
+                project,
+                Cached {
+                    at: Instant::now(),
+                    hooks: hooks.clone(),
+                },
+            );
+        }
+        Ok(hooks)
+    }
+
+    async fn ask(&self, h: &Hook, body: &str) -> (JoinVerdict, Outcome) {
+        if !self.allow_private
+            && (validate_webhook_url(&h.url, false).is_err() || !resolves_public(&h.url).await)
+        {
+            let msg = "target is not a public host".to_string();
+            return (
+                JoinVerdict::Unavailable(msg.clone()),
+                Outcome {
+                    ok: false,
+                    status: None,
+                    attempts: 0,
+                    error: Some(msg),
+                },
+            );
+        }
+        let mut req = self
+            .http
+            .post(&h.url)
+            .header("content-type", "application/json")
+            .header("x-aurix-event", "join.validate")
+            .header("x-aurix-signature", sign(&h.secret, body.as_bytes()));
+        if let Some(p) = &h.previous {
+            req = req.header("x-aurix-signature-previous", sign(p, body.as_bytes()));
+        }
+        match req.body(body.to_string()).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                let code = Some(status.as_u16() as i16);
+                if !status.is_success() {
+                    let msg = format!("validator answered {status}");
+                    return (
+                        JoinVerdict::Unavailable(msg.clone()),
+                        Outcome {
+                            ok: false,
+                            status: code,
+                            attempts: 1,
+                            error: Some(msg),
+                        },
+                    );
+                }
+                let text = resp.text().await.unwrap_or_default();
+                let v: serde_json::Value = if text.trim().is_empty() {
+                    serde_json::json!({"allow": true})
+                } else {
+                    match serde_json::from_str(&text) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            let msg = "validator answered non-JSON".to_string();
+                            return (
+                                JoinVerdict::Unavailable(msg.clone()),
+                                Outcome {
+                                    ok: false,
+                                    status: code,
+                                    attempts: 1,
+                                    error: Some(msg),
+                                },
+                            );
+                        }
+                    }
+                };
+                let allow = v.get("allow").and_then(|a| a.as_bool()).unwrap_or(true);
+                let ok = Outcome {
+                    ok: true,
+                    status: code,
+                    attempts: 1,
+                    error: None,
+                };
+                if allow {
+                    (JoinVerdict::Allow, ok)
+                } else {
+                    let reason = v
+                        .get("reason")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("rejected by validator")
+                        .chars()
+                        .take(200)
+                        .collect::<String>();
+                    (JoinVerdict::Deny(reason), ok)
+                }
+            }
+            Err(e) => {
+                let msg = describe_err(&e);
+                (
+                    JoinVerdict::Unavailable(msg.clone()),
+                    Outcome {
+                        ok: false,
+                        status: None,
+                        attempts: 1,
+                        error: Some(msg),
+                    },
+                )
+            }
         }
     }
 
@@ -362,6 +580,14 @@ async fn worker(
             });
         }
     }
+}
+
+fn validate_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(VALIDATE_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("reqwest")
 }
 
 struct Outcome {

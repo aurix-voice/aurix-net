@@ -6,10 +6,11 @@ import { CodeBlock, Mono } from "@/ui/Primitives";
  * and how to verify `X-Aurix-Signature`. Mirrors docs/webhooks.md. */
 export const WEBHOOK_EVENTS = [
   { name: "room.created", data: `{"room":"<uuid>","name":"lobby-1","mode":"relay|sync|lockstep","region":"eu"}`, when: "a room was opened (by a client join with create, or by POST /v1/rooms)" },
-  { name: "room.closed", data: `{"room":"<uuid>"}`, when: "the room ended: last player left and empty_ttl passed, or it was closed by the game / an operator" },
+  { name: "room.closed", data: `{"room":"<uuid>","name":"ranked-7","mode":"sync","props":{},"state":"<base64, with room prop export_state_on_close>"}`, when: "the room ended: last player left and empty_ttl passed, or it was closed by the game / an operator" },
   { name: "room.rehosted", data: `{"room":"<uuid>","name":"lobby-1","mode":"sync","node":"<node-uuid>","restored":true}`, when: "the room was adopted by another node after a drain or node loss; restored is false when no checkpoint was found and the room started fresh" },
   { name: "player.joined", data: `{"room":"<uuid>","actor":3}`, when: "a player finished auth + join; actor is the per-room id (0..N)" },
   { name: "player.left", data: `{"room":"<uuid>","actor":3,"kicked":true}`, when: "a player left or timed out (player_ttl); kicked is present only for kicks" },
+  { name: "join.validate", data: `{"room":"<uuid>","name":"ranked-7","mode":"sync","room_props":{},"player_id":"p1","player_name":"Ann","player_props":{},"spectator":false}`, when: "synchronous pre-join check: answer 2xx with {\"allow\":true} within 2 s, or {\"allow\":false,\"reason\":\"…\"} to refuse; receiver down = join refused. Subscribe explicitly (`*` does not include it)" },
   { name: "match.found", data: `{"room":"lobby-7f3a","mode":"sync","players":["p1","p2"],"tickets":["<uuid>","<uuid>"]}`, when: "matchmaking grouped tickets; `room` is the room name the players will join with their grants (`tickets` lists the matched ticket ids)" },
   { name: "test", data: `{"webhook":"<uuid>"}`, when: "sent by POST /v1/webhooks/:id/test or the console; ignores the event filter" },
 ] as const;
