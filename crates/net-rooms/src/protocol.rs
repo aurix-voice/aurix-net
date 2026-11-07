@@ -61,6 +61,9 @@ pub enum ClientMsg {
         region: Option<String>,
         #[serde(default)]
         player_props: serde_json::Map<String, serde_json::Value>,
+        /// Player ids whose slots are held for 60 s when this call creates the room (party join).
+        #[serde(default)]
+        reserved: Vec<String>,
     },
     /// Any open, visible room with a free slot, optionally filtered by lobby props.
     JoinRandom {
@@ -68,6 +71,12 @@ pub enum ClientMsg {
         filter: serde_json::Map<String, serde_json::Value>,
         #[serde(default)]
         player_props: serde_json::Map<String, serde_json::Value>,
+        /// SQL-like condition on the room's lobby props (`map = 'dust' AND rank_min <= 1400`).
+        #[serde(default)]
+        expr: Option<String>,
+        /// `fill` (default: most players first), `serial` (fewest players first), `random`.
+        #[serde(default)]
+        match_type: Option<String>,
     },
     Leave,
     SetRoomProps {

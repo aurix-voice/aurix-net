@@ -250,6 +250,7 @@ impl Session {
                         props,
                         lobby_props,
                         region,
+                        Vec::new(),
                     )
                     .await?;
                 self.join_hosted(h, player_props, None, false).await
@@ -287,6 +288,7 @@ impl Session {
                 lobby_props,
                 region,
                 player_props,
+                reserved,
             } => {
                 let g = self.grant()?.clone();
                 self.ensure_not_in_room()?;
@@ -324,6 +326,7 @@ impl Session {
                             props.clone(),
                             lobby_props.clone(),
                             region.clone(),
+                            reserved.clone(),
                         )
                         .await
                     {
@@ -339,28 +342,84 @@ impl Session {
             }
             ClientMsg::JoinRandom {
                 filter,
+                expr,
+                match_type,
                 player_props,
             } => {
                 let g = self.grant()?.clone();
                 self.ensure_not_in_room()?;
-                let candidates = self.st.host.all();
-                let mut pick = None;
-                for h in candidates {
-                    let ok = {
-                        let r = h.lock();
-                        r.project == g.project
-                            && r.room.is_listed()
-                            && filter
-                                .iter()
-                                .all(|(k, v)| r.room.cfg.props.get(k) == Some(v))
-                    };
-                    if ok {
-                        pick = Some(h);
-                        break;
+                let expr = match expr.as_deref() {
+                    Some(e) => Some(
+                        crate::mmfilter::Filter::parse(e)
+                            .map_err(|e| NetError::Invalid(format!("expr: {e}")))?,
+                    ),
+                    None => None,
+                };
+                let accepts = |props: &Map<String, Value>, lobby: &Map<String, Value>| {
+                    filter.iter().all(|(k, v)| props.get(k) == Some(v))
+                        && expr.as_ref().is_none_or(|f| f.matches(lobby))
+                };
+                // Local rooms first (no redirect), then the region-wide list from Redis.
+                let mut local: Vec<net_control::LiveRoom> = Vec::new();
+                for h in self.st.host.all() {
+                    let r = h.lock();
+                    if r.project != g.project || !r.room.is_listed() {
+                        continue;
+                    }
+                    let lobby: Map<String, Value> = r.room.summary().props.into_iter().collect();
+                    if accepts(&r.room.cfg.props, &lobby) {
+                        local.push(net_control::LiveRoom {
+                            room: r.room.id(),
+                            node: self.st.node_id.to_string(),
+                            name: r.room.cfg.name.clone(),
+                            mode: format!("{:?}", r.room.cfg.mode).to_lowercase(),
+                            players: r.room.players().count() as u16,
+                            max_players: r.room.cfg.max_players,
+                            open: true,
+                            visible: true,
+                            props: Value::Object(lobby),
+                        });
                     }
                 }
-                let h = pick.ok_or_else(|| NetError::NotFound("no matching room".into()))?;
-                self.join_hosted(h, player_props, None, false).await
+                let refs: Vec<&net_control::LiveRoom> = local.iter().collect();
+                if let Some(pick) = crate::matchmaking::pick_room(&refs, match_type.as_deref()) {
+                    let h = self
+                        .st
+                        .host
+                        .by_name(g.project, &pick.name)
+                        .ok_or_else(|| NetError::NotFound("no matching room".into()))?;
+                    return self.join_hosted(h, player_props, None, false).await;
+                }
+                let me = self.st.node_id.to_string();
+                let remote: Vec<net_control::LiveRoom> = self
+                    .st
+                    .redis
+                    .list_rooms(g.project)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|r| {
+                        r.node != me
+                            && r.open
+                            && r.visible
+                            && r.players < r.max_players
+                            && filter.is_empty()
+                            && expr
+                                .as_ref()
+                                .is_none_or(|f| r.props.as_object().is_some_and(|p| f.matches(p)))
+                    })
+                    .collect();
+                let refs: Vec<&net_control::LiveRoom> = remote.iter().collect();
+                let pick = crate::matchmaking::pick_room(&refs, match_type.as_deref())
+                    .ok_or_else(|| NetError::NotFound("no matching room".into()))?;
+                let node = uuid::Uuid::parse_str(&pick.node)
+                    .ok()
+                    .and_then(|n| self.st.registry.get(net_common::NodeId::from_uuid(n)))
+                    .ok_or_else(|| NetError::NotFound("no matching room".into()))?;
+                Err(NetError::Conflict(format!(
+                    "room_elsewhere:{}#{}",
+                    node.http_url, pick.name
+                )))
             }
             ClientMsg::Leave => {
                 self.leave(false).await;
@@ -554,6 +613,7 @@ impl Session {
         props: Map<String, Value>,
         lobby_props: Vec<String>,
         region: Option<String>,
+        reserved: Vec<String>,
     ) -> Result<Arc<Mutex<HostedRoom>>> {
         if !g.can("create") {
             crate::rest::reject(&self.st, g.project, "grant");
@@ -648,6 +708,9 @@ impl Session {
             open,
             props: props.clone(),
             lobby_props: lobby_props.clone(),
+            reserved: reserved.iter().take(32).cloned().collect(),
+            reserved_until: (!reserved.is_empty())
+                .then(|| std::time::Instant::now() + Duration::from_secs(60)),
             max_events_per_sec: limits.max_events_per_sec_per_room,
             max_events_per_sec_per_player: limits.max_events_per_sec_per_player,
             max_event_bytes: limits.max_event_bytes,
@@ -1360,6 +1423,8 @@ pub async fn adopt_room(
         open: row.open,
         props: props.clone(),
         lobby_props: row.lobby_props.clone(),
+        reserved: Vec::new(),
+        reserved_until: None,
         max_events_per_sec: limits.max_events_per_sec_per_room,
         max_events_per_sec_per_player: limits.max_events_per_sec_per_player,
         max_event_bytes: limits.max_event_bytes,

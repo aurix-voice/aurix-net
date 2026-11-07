@@ -6,4 +6,5 @@ pub mod redis_store;
 
 pub use nodes::{NodeInfo, NodeRegistry};
 pub use quotas::ProjectLimits;
+pub use redis_store::LiveRoom;
 pub use redis_store::RedisStore;

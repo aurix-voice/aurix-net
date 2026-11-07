@@ -344,6 +344,7 @@ async fn player(
         lobby_props: vec![],
         region: None,
         player_props: Default::default(),
+        reserved: Vec::new(),
     }))
     .await?;
 

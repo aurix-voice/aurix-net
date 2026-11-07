@@ -952,6 +952,9 @@ struct CreateRoomReq {
     props: serde_json::Map<String, Value>,
     #[serde(default)]
     lobby_props: Vec<String>,
+    /// Player ids whose slots are held for 60 s (party join); max 32.
+    #[serde(default)]
+    reserved: Vec<String>,
 }
 fn t() -> bool {
     true
@@ -991,6 +994,9 @@ async fn create_room(
         open: req.open,
         props: req.props.clone(),
         lobby_props: req.lobby_props.clone(),
+        reserved: req.reserved.iter().take(32).cloned().collect(),
+        reserved_until: (!req.reserved.is_empty())
+            .then(|| std::time::Instant::now() + std::time::Duration::from_secs(60)),
         max_events_per_sec: limits.max_events_per_sec_per_room,
         max_events_per_sec_per_player: limits.max_events_per_sec_per_player,
         max_event_bytes: limits.max_event_bytes,

@@ -18,6 +18,10 @@ pub struct RoomConfig {
     pub open: bool,
     pub props: Map<String, Value>,
     pub lobby_props: Vec<String>,
+    /// Player ids with a held slot (a party arriving together); others cannot take those slots
+    /// until `reserved_until` passes.
+    pub reserved: Vec<String>,
+    pub reserved_until: Option<Instant>,
     pub max_events_per_sec: u32,
     /// Events one player may send per second (burst = 2 s worth).
     pub max_events_per_sec_per_player: u32,
@@ -250,6 +254,18 @@ impl Room {
         }
     }
 
+    /// Reserved slots whose player has not arrived yet (0 once the hold expired).
+    pub fn pending_reserved(&self, now: Instant) -> usize {
+        if !self.cfg.reserved_until.is_some_and(|u| now < u) {
+            return 0;
+        }
+        self.cfg
+            .reserved
+            .iter()
+            .filter(|r| !self.by_player.contains_key(r.as_str()))
+            .count()
+    }
+
     pub fn is_listed(&self) -> bool {
         self.cfg.visible && self.cfg.open && self.player_count() < self.cfg.max_players as usize
     }
@@ -299,8 +315,15 @@ impl Room {
         if !self.cfg.open {
             return Err(RoomError::Closed);
         }
-        if !spectator && self.player_count() >= self.cfg.max_players as usize {
-            return Err(RoomError::Full);
+        if !spectator {
+            let held = if self.cfg.reserved.iter().any(|r| r == player_id) {
+                0
+            } else {
+                self.pending_reserved(now)
+            };
+            if self.player_count() + held >= self.cfg.max_players as usize {
+                return Err(RoomError::Full);
+            }
         }
         let actor = ActorId(self.next_actor);
         self.next_actor = self.next_actor.wrapping_add(1).max(1);
@@ -756,6 +779,8 @@ mod tests {
             open: true,
             props: Map::new(),
             lobby_props: vec!["map".into()],
+            reserved: Vec::new(),
+            reserved_until: None,
             max_events_per_sec: 4,
             max_events_per_sec_per_player: 3,
             max_event_bytes: 100,
@@ -950,5 +975,34 @@ mod tests {
         );
         r.leave(a, false, t);
         assert_ne!(r.master(), Some(s));
+    }
+
+    #[test]
+    fn reserved_slots_hold_seats_for_the_party() {
+        let mut c = cfg();
+        c.max_players = 2;
+        c.reserved = vec!["p2".into()];
+        let t0 = Instant::now();
+        c.reserved_until = Some(t0 + Duration::from_secs(60));
+        let mut r = Room::new(c, t0);
+        r.join("p1", "p1", Map::new(), None, false, t0).unwrap();
+        // the only free seat is held for p2
+        assert!(matches!(
+            r.join("stranger", "s", Map::new(), None, false, t0),
+            Err(RoomError::Full)
+        ));
+        assert_eq!(r.pending_reserved(t0), 1);
+        r.join("p2", "p2", Map::new(), None, false, t0).unwrap();
+        assert_eq!(r.pending_reserved(t0), 0);
+        // hold lapsed: a stranger may take an unclaimed reserved seat
+        let mut c = cfg();
+        c.max_players = 2;
+        c.reserved = vec!["late".into()];
+        c.reserved_until = Some(t0 + Duration::from_secs(60));
+        let mut r = Room::new(c, t0);
+        r.join("p1", "p1", Map::new(), None, false, t0).unwrap();
+        let later = t0 + Duration::from_secs(61);
+        r.join("stranger", "s", Map::new(), None, false, later)
+            .unwrap();
     }
 }

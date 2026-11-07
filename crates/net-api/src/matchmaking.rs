@@ -5,7 +5,7 @@
 //! matching pass (short leader lock, re-elected every cycle). 5 minute TTL while searching.
 
 use net_common::{NetError, ProjectId, Result, RoomMode};
-use net_control::RedisStore;
+use net_control::{LiveRoom, RedisStore};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -33,6 +33,13 @@ pub struct TicketReq {
     /// Two tickets only share a room when each one's filter accepts the other's attrs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
+    /// Prefer a seat in an already running open room (same mode, free slot, lobby props satisfy
+    /// `filter`) over waiting for a fresh group; `match_type` picks among candidates:
+    /// `fill` (fullest first, default), `serial` (emptiest first), `random`.
+    #[serde(default)]
+    pub fill_existing: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_type: Option<String>,
 }
 fn d_max() -> u16 {
     8
@@ -114,6 +121,82 @@ pub fn now_ms() -> u64 {
 /// starts full groups, or groups past the oldest ticket's wait with enough players. Mutates
 /// states in place (waiting counts, matches) and returns the ids that changed plus the room
 /// names started.
+/// Picks one room out of `rooms` (already filtered to acceptable ones) by `match_type`.
+pub fn pick_room<'a>(rooms: &[&'a LiveRoom], match_type: Option<&str>) -> Option<&'a LiveRoom> {
+    match match_type.unwrap_or("fill") {
+        "serial" => rooms
+            .iter()
+            .min_by_key(|r| (r.players, r.name.clone()))
+            .copied(),
+        "random" => {
+            let n = rooms.len();
+            (n > 0).then(|| rooms[(now_ms() as usize) % n])
+        }
+        _ => rooms
+            .iter()
+            .max_by_key(|r| (r.players, std::cmp::Reverse(r.name.clone())))
+            .copied(),
+    }
+}
+
+/// Seats `fill_existing` tickets into live rooms before grouping: open, visible, same mode, a free
+/// slot, lobby props accepted by the ticket's filter. Seats taken in this pass are counted so one
+/// free slot is not handed to two tickets.
+pub fn fill_existing(
+    tickets: &mut [Ticket],
+    rooms: &HashMap<ProjectId, Vec<LiveRoom>>,
+) -> Vec<Uuid> {
+    let mut changed = Vec::new();
+    let mut taken: HashMap<(ProjectId, String), u16> = HashMap::new();
+    let mut order: Vec<usize> = (0..tickets.len()).collect();
+    order.sort_by_key(|i| (tickets[*i].created_ms, tickets[*i].id));
+    for i in order {
+        let t = &tickets[i];
+        if !t.searching() || !t.req.fill_existing {
+            continue;
+        }
+        let Some(live) = rooms.get(&t.project) else {
+            continue;
+        };
+        let filter = t
+            .req
+            .filter
+            .as_deref()
+            .and_then(|f| crate::mmfilter::Filter::parse(f).ok());
+        let mode = format!("{:?}", t.req.mode).to_lowercase();
+        let candidates: Vec<&LiveRoom> = live
+            .iter()
+            .filter(|r| {
+                let extra = taken
+                    .get(&(t.project, r.name.clone()))
+                    .copied()
+                    .unwrap_or(0);
+                r.open
+                    && r.visible
+                    && r.mode == mode
+                    && r.players + extra < r.max_players
+                    && filter
+                        .as_ref()
+                        .is_none_or(|f| r.props.as_object().is_some_and(|p| f.matches(p)))
+            })
+            .collect();
+        let Some(room) = pick_room(&candidates, t.req.match_type.as_deref()) else {
+            continue;
+        };
+        let (name, max_players) = (room.name.clone(), room.max_players);
+        *taken.entry((t.project, name.clone())).or_default() += 1;
+        let t = &mut tickets[i];
+        t.state = TicketState::Matched {
+            room: name,
+            mode: t.req.mode,
+            max_players,
+            players: vec![t.req.player_id.clone()],
+        };
+        changed.push(t.id);
+    }
+    changed
+}
+
 pub fn match_tickets(tickets: &mut [Ticket], now_ms: u64) -> (Vec<Uuid>, Vec<String>) {
     let mut groups: HashMap<(ProjectId, String), Vec<usize>> = HashMap::new();
     for (i, t) in tickets.iter().enumerate() {
@@ -354,7 +437,18 @@ impl Matchmaker {
         let mut tickets = self.load_many(redis, &ids).await?;
         let now = now_ms();
         tickets.retain(|t| t.searching() && t.age_secs(now) < SEARCH_TTL_SECS);
-        let (changed, _rooms) = match_tickets(&mut tickets, now);
+        let mut live: HashMap<ProjectId, Vec<LiveRoom>> = HashMap::new();
+        for p in tickets
+            .iter()
+            .filter(|t| t.req.fill_existing)
+            .map(|t| t.project)
+            .collect::<std::collections::HashSet<_>>()
+        {
+            live.insert(p, redis.list_rooms(p).await.unwrap_or_default());
+        }
+        let mut changed = fill_existing(&mut tickets, &live);
+        let (grouped, _rooms) = match_tickets(&mut tickets, now);
+        changed.extend(grouped);
         let mut found: Vec<MatchFound> = Vec::new();
         for t in tickets.iter().filter(|t| changed.contains(&t.id)) {
             self.put(redis, t).await?;
@@ -452,6 +546,8 @@ mod tests {
             props: props.as_object().cloned().unwrap_or_default(),
             attrs: Default::default(),
             filter: None,
+            fill_existing: false,
+            match_type: None,
         }
     }
 
@@ -470,6 +566,65 @@ mod tests {
             TicketState::Matched { room, .. } => Some(room),
             _ => None,
         }
+    }
+
+    #[test]
+    fn fills_existing_rooms_by_match_type() {
+        let room = |name: &str, players: u16, map: &str| LiveRoom {
+            room: net_common::RoomId(Uuid::new_v4()),
+            node: "n".into(),
+            name: name.into(),
+            mode: "relay".into(),
+            players,
+            max_players: 4,
+            open: true,
+            visible: true,
+            props: serde_json::json!({"map": map}),
+        };
+        let project = ProjectId::from_uuid(Uuid::nil());
+        let mut rooms = HashMap::new();
+        rooms.insert(
+            project,
+            vec![
+                room("a", 3, "dust"),
+                room("b", 1, "dust"),
+                room("c", 1, "nuke"),
+                room("full", 4, "dust"),
+            ],
+        );
+        let t = |p: &str, mt: Option<&str>| {
+            let mut r = req(p, 4, 2, 15, serde_json::json!({}));
+            r.fill_existing = true;
+            r.filter = Some("map = 'dust'".into());
+            r.match_type = mt.map(str::to_string);
+            Ticket {
+                id: Uuid::now_v7(),
+                project,
+                req: r,
+                created_ms: 0,
+                state: TicketState::Searching { waiting: 0 },
+            }
+        };
+        let mut tickets = vec![
+            t("p1", None),
+            t("p2", None),
+            t("p3", Some("serial")),
+            t("p4", Some("serial")),
+        ];
+        let changed = fill_existing(&mut tickets, &rooms);
+        assert_eq!(changed.len(), 4);
+        let room_of = |i: usize| match &tickets[i].state {
+            TicketState::Matched { room, .. } => room.clone(),
+            s => panic!("{s:?}"),
+        };
+        assert_eq!(room_of(0), "a"); // fullest with a seat
+        assert_eq!(room_of(1), "b"); // "a" is now full after p1's seat
+        assert_eq!(room_of(2), "b"); // emptiest dust room
+        assert_eq!(room_of(3), "b");
+        let mut none = vec![t("p5", None)];
+        none[0].req.filter = Some("map = 'office'".into());
+        assert!(fill_existing(&mut none, &rooms).is_empty());
+        assert!(none[0].searching());
     }
 
     #[test]

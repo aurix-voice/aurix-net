@@ -85,8 +85,16 @@ export class Client {
       return { client: c2, joined: await c2.join(msg) };
     }
   }
-  async joinOrCreate(name: string, mode: RoomMode = "relay", maxPlayers = 8, props: Record<string, unknown> = {}): Promise<Joined> {
-    return this.join({ t: "join_or_create", name, mode, max_players: maxPlayers, props });
+  /** `reserved`: player ids whose seats are held for 60 s when this call creates the room (a party
+   *  arriving together — pass the `players` list from a matchmaking ticket). */
+  async joinOrCreate(name: string, mode: RoomMode = "relay", maxPlayers = 8, props: Record<string, unknown> = {}, reserved: string[] = []): Promise<Joined> {
+    return this.join({ t: "join_or_create", name, mode, max_players: maxPlayers, props, reserved });
+  }
+  /** Joins a random open room: `filter` must equal room props exactly, `expr` is a SQL-like condition
+   *  on the room's lobby props (`map = 'dust' AND skill <= 1500`), `matchType` picks among candidates
+   *  (`fill` fullest first, `serial` emptiest first, `random`). Follows a redirect to the hosting node. */
+  async joinRandom(filter: Record<string, unknown> = {}, expr?: string, matchType: "fill" | "serial" | "random" = "fill"): Promise<Joined> {
+    return this.join({ t: "join_random", filter, expr, match_type: matchType });
   }
   /** After `left{reason:"rehost"}` (the node shut down and handed the room to another node): a fresh
    *  client in the same room with the same grant. Tries the entry URL, then `fallbackUrls`. */

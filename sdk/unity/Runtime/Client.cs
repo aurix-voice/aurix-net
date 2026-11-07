@@ -80,11 +80,29 @@ namespace Aurix.Net
         }
 
         /// <summary>Joins or creates a room and opens the data path. Returns the actor id.</summary>
-        public int JoinOrCreate(string name, RoomMode mode = RoomMode.Relay, int maxPlayers = 8, string propsJson = null)
+        public int JoinOrCreate(string name, RoomMode mode = RoomMode.Relay, int maxPlayers = 8, string propsJson = null, string[] reserved = null)
         {
             var sb = new StringBuilder("{\"t\":\"join_or_create\",\"name\":").Append(Json(name))
                 .Append(",\"mode\":\"").Append(mode.ToString().ToLowerInvariant()).Append("\",\"max_players\":").Append(maxPlayers);
             if (!string.IsNullOrEmpty(propsJson)) sb.Append(",\"props\":").Append(propsJson);
+            if (reserved != null && reserved.Length > 0)
+            {
+                sb.Append(",\"reserved\":[");
+                for (int i = 0; i < reserved.Length; i++) { if (i > 0) sb.Append(','); sb.Append(Json(reserved[i])); }
+                sb.Append(']');
+            }
+            return Join(sb.Append('}').ToString());
+        }
+
+        /// <summary>Joins a random open room. <paramref name="filterJson"/> must equal room props exactly,
+        /// <paramref name="expr"/> is a SQL-like condition on lobby props ("map = 'dust' AND skill <= 1500"),
+        /// <paramref name="matchType"/> is "fill" (default), "serial" or "random".</summary>
+        public int JoinRandom(string filterJson = null, string expr = null, string matchType = null)
+        {
+            var sb = new StringBuilder("{\"t\":\"join_random\"");
+            if (!string.IsNullOrEmpty(filterJson)) sb.Append(",\"filter\":").Append(filterJson);
+            if (!string.IsNullOrEmpty(expr)) sb.Append(",\"expr\":").Append(Json(expr));
+            if (!string.IsNullOrEmpty(matchType)) sb.Append(",\"match_type\":").Append(Json(matchType));
             return Join(sb.Append('}').ToString());
         }
 

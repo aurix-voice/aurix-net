@@ -19,6 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         lobby_props: vec![],
         region: None,
         player_props: Default::default(),
+        reserved: Vec::new(),
     };
 
     let ga = issue_grant(&http, &key, "alice", "Alice").await?;

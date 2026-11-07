@@ -16,6 +16,7 @@ async fn main() -> anyhow::Result<()> {
         lobby_props: vec![],
         region: None,
         player_props: Default::default(),
+        reserved: Vec::new(),
     };
     let (mut c, j) = Client::connect_and_join(url, grant, Options::default(), join).await?;
     println!("joined room={} actor={} on {url}", j.name, j.actor.0);
