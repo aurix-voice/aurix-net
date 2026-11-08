@@ -54,14 +54,21 @@ pub const KNOWN_SCOPES: &[&str] = &["join", "create", "master", "spectate"];
 pub struct GrantSigner {
     enc: EncodingKey,
     dec: DecodingKey,
+    /// Decoding key of the secret being rotated out; accepted until the operator drops it.
+    prev: Option<DecodingKey>,
     ttl_secs: i64,
 }
 
 impl GrantSigner {
     pub fn new(secret: &str, ttl_secs: u64) -> Self {
+        Self::with_previous(secret, None, ttl_secs)
+    }
+
+    pub fn with_previous(secret: &str, previous: Option<&str>, ttl_secs: u64) -> Self {
         Self {
             enc: EncodingKey::from_secret(secret.as_bytes()),
             dec: DecodingKey::from_secret(secret.as_bytes()),
+            prev: previous.map(|p| DecodingKey::from_secret(p.as_bytes())),
             ttl_secs: ttl_secs as i64,
         }
     }
@@ -121,8 +128,17 @@ impl GrantSigner {
         v.leeway = 5;
         v.validate_exp = true;
         v.required_spec_claims.clear();
-        let data = jsonwebtoken::decode::<GrantClaims>(token, &self.dec, &v)
-            .map_err(|e| NetError::Unauthorized(format!("grant: {e}")))?;
+        let data = match jsonwebtoken::decode::<GrantClaims>(token, &self.dec, &v) {
+            Ok(d) => d,
+            Err(e) if matches!(e.kind(), jsonwebtoken::errors::ErrorKind::InvalidSignature) => {
+                match &self.prev {
+                    Some(prev) => jsonwebtoken::decode::<GrantClaims>(token, prev, &v)
+                        .map_err(|e| NetError::Unauthorized(format!("grant: {e}")))?,
+                    None => return Err(NetError::Unauthorized(format!("grant: {e}"))),
+                }
+            }
+            Err(e) => return Err(NetError::Unauthorized(format!("grant: {e}"))),
+        };
         let c = data.claims;
         let project = c
             .pid
@@ -144,6 +160,25 @@ impl GrantSigner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rotation_accepts_previous_secret_only_while_configured() {
+        let old = GrantSigner::new("old-secret", 60);
+        let (tok, _) = old
+            .issue(ProjectId::new(), "p1", "Ann", None, &["join"], None, None)
+            .unwrap();
+        let rotated = GrantSigner::with_previous("new-secret", Some("old-secret"), 60);
+        assert_eq!(rotated.verify(&tok).unwrap().player_id, "p1");
+        let (fresh, _) = rotated
+            .issue(ProjectId::new(), "p2", "Bob", None, &["join"], None, None)
+            .unwrap();
+        assert_eq!(rotated.verify(&fresh).unwrap().player_id, "p2");
+        assert!(old.verify(&fresh).is_err());
+        let dropped = GrantSigner::new("new-secret", 60);
+        assert!(dropped.verify(&tok).is_err());
+        let wrong = GrantSigner::with_previous("new-secret", Some("other"), 60);
+        assert!(wrong.verify(&tok).is_err());
+    }
 
     #[test]
     fn issue_verify() {

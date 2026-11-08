@@ -70,6 +70,28 @@ docker compose up -d --no-deps node-b
 Players of the drained node get `left{reason:"rehost"}` and rejoin by room name on any node;
 the room's state comes from the checkpoint. Keep ≥ 2 nodes per region or a deploy ends matches.
 
+## Migrations
+
+The node applies `migrations/` (sqlx, forward-only, additive) on every start under Postgres'
+migration lock, so two nodes starting together do not race. For a controlled rollout run the
+new image once with `--migrate-only` (connects, migrates, exits 0 — no Redis needed) before
+replacing nodes; the old version keeps running against the migrated schema until it is swapped.
+There is no down migration: restore from backup to roll a schema change back.
+
+## Secrets and rotation
+
+| Secret | Where | Rotation |
+|---|---|---|
+| `auth.grant_secret` | all nodes of a deployment + your backend never sees it (it calls `/v1/grants`) | set the old value as `auth.grant_secret_previous`, new value as `grant_secret`, rolling-restart; grants signed with either verify until you drop `_previous` after ≥ `grant_ttl_secs` |
+| `auth.admin_token` | nodes, operators | change and rolling-restart; operator sessions re-authenticate |
+| API keys | your backend | `POST /v1/operator/projects/:id/keys` with `expires_in_secs`, switch the backend, revoke the old key — no restart |
+| `server.metrics_token` | nodes, Prometheus | change both, rolling-restart |
+| Postgres / Redis passwords | nodes, `.env` | change on the server, update `NET__DATABASE__URL` / `NET__REDIS__URL`, rolling-restart |
+| Webhook secrets | per webhook | `POST /v1/webhooks/:id/rotate {grace_secs}` — new secret shown once, deliveries carry `X-Aurix-Signature-Previous` until the grace ends (default 24 h) |
+
+Transport tickets (QUIC/WebTransport) are also keyed from `grant_secret` but are issued and
+verified by the same node within seconds, so rotation needs no grace period for them.
+
 ## Backups
 
 Postgres holds everything durable (projects, keys, room history, usage, audit, modules);

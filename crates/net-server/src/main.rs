@@ -111,7 +111,14 @@ async fn main() -> anyhow::Result<()> {
         cfg.server.http_addr.port()
     );
     let st = Arc::new(AppState {
-        grants: GrantSigner::new(&cfg.auth.grant_secret, cfg.auth.grant_ttl_secs),
+        grants: GrantSigner::with_previous(
+            &cfg.auth.grant_secret,
+            cfg.auth
+                .grant_secret_previous
+                .as_deref()
+                .filter(|p| !p.is_empty()),
+            cfg.auth.grant_ttl_secs,
+        ),
         tickets: TicketSigner::new(cfg.auth.grant_secret.as_bytes()),
         host: Default::default(),
         node_id,

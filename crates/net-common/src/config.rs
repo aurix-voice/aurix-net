@@ -115,6 +115,10 @@ pub struct RedisConfig {
 pub struct AuthConfig {
     /// HS256 secret for join grants and data tickets. Required outside `development`.
     pub grant_secret: String,
+    /// Previous `grant_secret` during a rotation: grants signed with it still verify, new grants
+    /// use `grant_secret`. Drop it once `grant_ttl_secs` have passed since the switch.
+    #[serde(default)]
+    pub grant_secret_previous: Option<String>,
     pub grant_ttl_secs: u64,
     /// Static admin token for operator endpoints; empty disables them.
     pub admin_token: String,
@@ -252,6 +256,25 @@ impl NetConfig {
             return Err(NetError::Config(
                 "auth.grant_secret must be a random string of 32+ bytes outside development".into(),
             ));
+        }
+        if let Some(prev) = self
+            .auth
+            .grant_secret_previous
+            .as_deref()
+            .filter(|p| !p.is_empty())
+        {
+            if self.server.environment != "development"
+                && (prev.len() < 32 || prev.starts_with("dev-only"))
+            {
+                return Err(NetError::Config(
+                    "auth.grant_secret_previous must be a random string of 32+ bytes outside development".into(),
+                ));
+            }
+            if prev == self.auth.grant_secret {
+                return Err(NetError::Config(
+                    "auth.grant_secret_previous equals grant_secret: drop it".into(),
+                ));
+            }
         }
         for p in &self.server.trusted_proxies {
             if crate::ipnet::IpNet::parse(p).is_none() {

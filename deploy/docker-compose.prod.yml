@@ -14,6 +14,8 @@ services:
       NET__SERVER__REGION: ${REGION:-eu}
       NET__SERVER__PUBLIC_HOST: node-a.net.example.com
       NET__AUTH__GRANT_SECRET: ${GRANT_SECRET}
+      # During a secret rotation (docs/deployment.md → Secrets and rotation):
+      # NET__AUTH__GRANT_SECRET_PREVIOUS: ${GRANT_SECRET_PREVIOUS}
       NET__AUTH__ADMIN_TOKEN: ${ADMIN_TOKEN}
       NET__SERVER__METRICS_TOKEN: ${METRICS_TOKEN}
       NET__DATABASE__URL: postgres://aurix:${PG_PASSWORD}@postgres:5432/aurix_net?sslmode=disable
@@ -30,6 +32,8 @@ services:
       NET__SERVER__REGION: ${REGION:-eu}
       NET__SERVER__PUBLIC_HOST: node-b.net.example.com
       NET__AUTH__GRANT_SECRET: ${GRANT_SECRET}
+      # During a secret rotation (docs/deployment.md → Secrets and rotation):
+      # NET__AUTH__GRANT_SECRET_PREVIOUS: ${GRANT_SECRET_PREVIOUS}
       NET__AUTH__ADMIN_TOKEN: ${ADMIN_TOKEN}
       NET__SERVER__METRICS_TOKEN: ${METRICS_TOKEN}
       NET__DATABASE__URL: postgres://aurix:${PG_PASSWORD}@postgres:5432/aurix_net?sslmode=disable
