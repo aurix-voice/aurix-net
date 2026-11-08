@@ -25,6 +25,7 @@ pub const EVENTS: &[&str] = &[
     "player.joined",
     "player.left",
     "match.found",
+    "rpc",
     "test",
 ];
 
@@ -84,6 +85,8 @@ pub struct Dispatcher {
     dirty: Arc<std::sync::Mutex<HashSet<ProjectId>>>,
     /// Hooks subscribed to `join.validate`, per project (30 s cache, dropped on `invalidate`).
     validators: Arc<std::sync::Mutex<HashMap<ProjectId, Cached>>>,
+    /// Hooks subscribed to `rpc`, per project (same caching).
+    rpc_hooks: Arc<std::sync::Mutex<HashMap<ProjectId, Cached>>>,
     pool: Option<DbPool>,
     http: reqwest::Client,
     allow_private: bool,
@@ -101,6 +104,28 @@ pub enum JoinVerdict {
 }
 
 const VALIDATE_TIMEOUT: Duration = Duration::from_secs(2);
+/// `rpc` calls: the endpoint has 5 s and may answer at most 16 KiB of JSON.
+pub const RPC_TIMEOUT: Duration = Duration::from_secs(5);
+pub const RPC_MAX_RESPONSE: usize = 16 * 1024;
+
+/// Answer of a client-initiated `rpc` call.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RpcOutcome {
+    pub ok: bool,
+    pub status: Option<u16>,
+    pub body: serde_json::Value,
+    pub error: Option<String>,
+}
+impl RpcOutcome {
+    fn failed(status: Option<u16>, error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            status,
+            body: serde_json::Value::Null,
+            error: Some(error.into()),
+        }
+    }
+}
 
 impl Dispatcher {
     /// Starts the worker; returns the handle used to enqueue events.
@@ -113,6 +138,7 @@ impl Dispatcher {
             tx,
             dirty,
             validators: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            rpc_hooks: Arc::new(std::sync::Mutex::new(HashMap::new())),
             pool: Some(pool),
             http: validate_client(),
             allow_private,
@@ -126,6 +152,7 @@ impl Dispatcher {
             tx,
             dirty: Arc::new(std::sync::Mutex::new(HashSet::new())),
             validators: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            rpc_hooks: Arc::new(std::sync::Mutex::new(HashMap::new())),
             pool: None,
             http: validate_client(),
             allow_private: true,
@@ -138,6 +165,9 @@ impl Dispatcher {
             d.insert(project);
         }
         if let Ok(mut v) = self.validators.lock() {
+            v.remove(&project);
+        }
+        if let Ok(mut v) = self.rpc_hooks.lock() {
             v.remove(&project);
         }
     }
@@ -198,7 +228,18 @@ impl Dispatcher {
         pool: &DbPool,
         project: ProjectId,
     ) -> net_common::Result<Vec<Hook>> {
-        if let Ok(v) = self.validators.lock() {
+        self.hooks_for(pool, project, "join.validate", &self.validators)
+            .await
+    }
+    /// Enabled hooks of `project` subscribed to `event`, cached 30 s (dropped on `invalidate`).
+    async fn hooks_for(
+        &self,
+        pool: &DbPool,
+        project: ProjectId,
+        event: &str,
+        cache: &std::sync::Mutex<HashMap<ProjectId, Cached>>,
+    ) -> net_common::Result<Vec<Hook>> {
+        if let Ok(v) = cache.lock() {
             if let Some(c) = v.get(&project) {
                 if c.at.elapsed() < Duration::from_secs(30) {
                     return Ok(c.hooks.clone());
@@ -208,7 +249,7 @@ impl Dispatcher {
         let hooks: Vec<Hook> = queries::list_webhooks(pool, project.0)
             .await?
             .into_iter()
-            .filter(|r| r.events.iter().any(|e| e == "join.validate"))
+            .filter(|r| r.enabled && r.events.iter().any(|e| e == event))
             .map(|r| Hook {
                 id: r.id,
                 url: r.url,
@@ -220,7 +261,7 @@ impl Dispatcher {
                 events: r.events,
             })
             .collect();
-        if let Ok(mut v) = self.validators.lock() {
+        if let Ok(mut v) = cache.lock() {
             v.insert(
                 project,
                 Cached {
@@ -231,7 +272,96 @@ impl Dispatcher {
         }
         Ok(hooks)
     }
-
+    /// Client-initiated call into the game's backend (WebRPC): the first webhook of the
+    /// project subscribed to `rpc` is POSTed `payload`; its JSON answer (≤ 16 KiB, within 5 s)
+    /// goes back to the caller. One attempt — RPCs are not assumed idempotent. Lands in the
+    /// delivery log like every other webhook call.
+    pub async fn rpc(&self, project: ProjectId, payload: serde_json::Value) -> RpcOutcome {
+        let Some(pool) = &self.pool else {
+            return RpcOutcome::failed(None, "rpc: no database");
+        };
+        let hooks = match self.hooks_for(pool, project, "rpc", &self.rpc_hooks).await {
+            Ok(h) => h,
+            Err(e) => return RpcOutcome::failed(None, format!("rpc endpoint lookup failed: {e}")),
+        };
+        let Some(h) = hooks.first() else {
+            return RpcOutcome::failed(None, "no webhook subscribed to `rpc`");
+        };
+        let body = serde_json::json!({
+            "event": "rpc",
+            "project": project.to_string(),
+            "at": chrono::Utc::now().to_rfc3339(),
+            "data": payload,
+        })
+        .to_string();
+        let started = Instant::now();
+        let out = self.call_rpc(h, &body).await;
+        let d = queries::NewDelivery {
+            webhook_id: h.id,
+            project_id: project.0,
+            event: "rpc",
+            ok: out.ok,
+            status: out.status.map(|s| s as i16),
+            attempts: 1,
+            latency_ms: started.elapsed().as_millis().min(i32::MAX as u128) as i32,
+            error: out.error.as_deref(),
+        };
+        if let Err(e) = queries::insert_webhook_delivery(pool, &d).await {
+            tracing::warn!(error = %e, "webhook delivery log");
+        }
+        out
+    }
+    async fn call_rpc(&self, h: &Hook, body: &str) -> RpcOutcome {
+        if !self.allow_private
+            && (validate_webhook_url(&h.url, false).is_err() || !resolves_public(&h.url).await)
+        {
+            return RpcOutcome::failed(None, "target is not a public host");
+        }
+        let mut req = self
+            .http
+            .post(&h.url)
+            .timeout(RPC_TIMEOUT)
+            .header("content-type", "application/json")
+            .header("x-aurix-event", "rpc")
+            .header("x-aurix-signature", sign(&h.secret, body.as_bytes()));
+        if let Some(p) = &h.previous {
+            req = req.header("x-aurix-signature-previous", sign(p, body.as_bytes()));
+        }
+        let mut resp = match req.body(body.to_string()).send().await {
+            Ok(r) => r,
+            Err(e) => return RpcOutcome::failed(None, format!("rpc endpoint: {e}")),
+        };
+        let status = resp.status().as_u16();
+        let mut buf = Vec::new();
+        loop {
+            match resp.chunk().await {
+                Ok(Some(c)) => {
+                    buf.extend_from_slice(&c);
+                    if buf.len() > RPC_MAX_RESPONSE {
+                        return RpcOutcome::failed(Some(status), "rpc answer too large");
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => return RpcOutcome::failed(Some(status), format!("rpc endpoint: {e}")),
+            }
+        }
+        let body = if buf.iter().all(u8::is_ascii_whitespace) {
+            serde_json::Value::Null
+        } else {
+            match serde_json::from_slice(&buf) {
+                Ok(v) => v,
+                Err(_) => {
+                    return RpcOutcome::failed(Some(status), "rpc endpoint answered non-JSON")
+                }
+            }
+        };
+        RpcOutcome {
+            ok: (200..300).contains(&status),
+            status: Some(status),
+            body,
+            error: None,
+        }
+    }
     async fn ask(&self, h: &Hook, body: &str) -> (JoinVerdict, Outcome) {
         if !self.allow_private
             && (validate_webhook_url(&h.url, false).is_err() || !resolves_public(&h.url).await)
@@ -704,6 +834,104 @@ pub fn sign(secret: &str, body: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// One-shot HTTP server on loopback answering `status` + `body`; returns its URL and the
+    /// request it received.
+    async fn one_shot(
+        status: u16,
+        body: Vec<u8>,
+    ) -> (String, tokio::sync::oneshot::Receiver<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/rpc", l.local_addr().unwrap());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut buf = vec![0u8; 64 * 1024];
+            let mut got = Vec::new();
+            loop {
+                let n = s.read(&mut buf).await.unwrap();
+                got.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&got).to_string();
+                if let Some(h) = text.find("\r\n\r\n") {
+                    let len = text[..h]
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length: "))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if got.len() >= h + 4 + len || n == 0 {
+                        break;
+                    }
+                }
+                if n == 0 {
+                    break;
+                }
+            }
+            let _ = tx.send(String::from_utf8_lossy(&got).to_string());
+            let head = format!(
+                "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = s.write_all(head.as_bytes()).await;
+            let _ = s.write_all(&body).await;
+            let _ = s.shutdown().await;
+        });
+        (url, rx)
+    }
+
+    fn hook(url: String) -> Hook {
+        Hook {
+            id: Uuid::nil(),
+            url,
+            secret: "s3".into(),
+            previous: None,
+            events: vec!["rpc".into()],
+        }
+    }
+
+    #[tokio::test]
+    async fn rpc_call_is_signed_and_answer_comes_back() {
+        let d = Dispatcher::noop();
+        let (url, rx) = one_shot(200, br#"{"echo": 42}"#.to_vec()).await;
+        let body = r#"{"event":"rpc","data":{"name":"echo"}}"#;
+        let out = d.call_rpc(&hook(url), body).await;
+        assert_eq!(out.status, Some(200));
+        assert!(out.ok, "{out:?}");
+        assert_eq!(out.body["echo"], 42);
+        let req = rx.await.unwrap();
+        assert!(req.starts_with("POST /rpc HTTP/1.1"));
+        assert!(req.contains("x-aurix-event: rpc"));
+        assert!(req.contains(&format!(
+            "x-aurix-signature: {}",
+            sign("s3", body.as_bytes())
+        )));
+        assert!(req.ends_with(body));
+    }
+
+    #[tokio::test]
+    async fn rpc_non_2xx_non_json_and_oversize_are_reported() {
+        let d = Dispatcher::noop();
+        let (url, _rx) = one_shot(404, br#"{"error":"nope"}"#.to_vec()).await;
+        let out = d.call_rpc(&hook(url), "{}").await;
+        assert!(!out.ok && out.status == Some(404) && out.body["error"] == "nope");
+        let (url, _rx) = one_shot(200, b"<html>".to_vec()).await;
+        let out = d.call_rpc(&hook(url), "{}").await;
+        assert!(!out.ok && out.error.as_deref() == Some("rpc endpoint answered non-JSON"));
+        let (url, _rx) = one_shot(200, vec![b' '; RPC_MAX_RESPONSE + 1]).await;
+        let out = d.call_rpc(&hook(url), "{}").await;
+        assert!(!out.ok && out.error.as_deref() == Some("rpc answer too large"));
+        let out = d
+            .call_rpc(&hook("http://127.0.0.1:9/rpc".into()), "{}")
+            .await;
+        assert!(!out.ok && out.status.is_none());
+        assert!(d
+            .rpc(ProjectId(Uuid::nil()), serde_json::json!({}))
+            .await
+            .error
+            .is_some());
+    }
+
     #[test]
     fn signature_is_stable() {
         let s = super::sign("secret", b"{}");

@@ -11,6 +11,8 @@ export * from "./lockstep.js";
 export type RoomMode = "relay" | "sync" | "lockstep";
 /** `stats` answer: live rooms/players of the project, grouped by the room prop `lobby` ("" = default lobby). */
 export interface Stats { rooms: number; players: number; lobbies: { lobby: string; rooms: number; players: number }[] }
+/** `rpc` answer: `ok` = your endpoint answered 2xx; `body` is its JSON (null when empty); `error` explains a failed call. */
+export interface RpcResult { ok: boolean; status?: number; body: unknown; error?: string }
 /** `find_friends` answer: online = authenticated somewhere in the fleet or holding a room slot. */
 export interface Friend { player: string; online: boolean; room?: { id: string; name: string; mode: RoomMode; node: string } }
 export interface Joined { room: string; name: string; mode: RoomMode; actor: number; master: number; tick_hz?: number; schema_hash?: string; data: { host: string; port: number; cert_sha256: string; ticket: string; ws_tunnel: boolean; webtransport_url?: string } }
@@ -28,7 +30,7 @@ export class Client {
   private path?: DataPath; forceTunnel = false;
   /** Which data path is in use after join(). */
   get dataPath() { return this.path?.kind; }
-  private listeners = new Map<string, Listener[]>(); private waiters: ((m: any) => boolean)[] = [];
+  private listeners = new Map<string, Listener[]>(); private waiters: ((m: any) => boolean)[] = []; private rpcSeq = 0;
   joined?: Joined; actor = -1;
 
   on(ev: "control" | "data" | "event" | "ready" | "closed" | "rehost", fn: Listener) { (this.listeners.get(ev) ?? this.listeners.set(ev, []).get(ev)!).push(fn); return this; }
@@ -188,6 +190,13 @@ export class Client {
     this.send({ t: "find_friends", players });
     const m = await this.waitFor((m) => m.t === "friends", (m) => m.t === "error");
     return m.friends;
+  }
+  /** Call your backend through the node (WebRPC): the project's webhook subscribed to `rpc` is POSTed `{name, player_id, actor?, room?, body}` and its JSON answer comes back. Body ≤ 8 KiB, 5 calls/s. */
+  async rpc(name: string, body: unknown = null): Promise<RpcResult> {
+    const id = (this.rpcSeq = (this.rpcSeq + 1) >>> 0);
+    this.send({ t: "rpc", id, name, body });
+    const m = await this.waitFor((m) => m.t === "rpc_result" && m.id === id, (m) => m.t === "error");
+    return { ok: m.ok, status: m.status, body: m.body, error: m.error };
   }
   setView(viewpoints: (number | bigint)[] = [], interest: (number | bigint)[] = []) {
     this.send({ t: "set_view", viewpoints: viewpoints.map(Number), interest: interest.map(Number) });

@@ -100,14 +100,14 @@ JSON messages, `"t"` is the type (snake_case). Client → server: `auth{grant}`,
 `set_groups{join, leave}`, `cache_slice{op, index?}` (relay event-cache slices), `set_view{viewpoints, interest}` (sync AOI: extra viewpoints, forced entities),
 `set_master{actor}`, `kick{actor, reason}`, `lobby{subscribe}`,
 `stats` (live rooms/players per lobby), `find_friends{players}` (presence of ≤ 64 players; `stats`/`find_friends` at most once per second per session),
-`ping{ts}`.
+`rpc{id, name, body}` (call your backend through the node, see Webhooks; body ≤ 8 KiB, 5 per second per session), `ping{ts}`.
 
 Server → client: `hello{session, version, region}`, `authed{player_id, name}`,
 `joined{room, name, mode, actor, master, max_players, props, players, data, cached, schema_hash?, tick_hz?}`,
 `left{reason}`, `player_joined{player}`, `player_left{actor, reason}`, `room_props`,
 `player_props`, `event{code, from, data}` (control fallback), `master_changed{actor}`,
 `lobby_rooms{rooms}`, `lobby_update{room, removed}`, `stats{rooms, players, lobbies[{lobby, rooms, players}]}`,
-`friends{friends[{player, online, room?{id, name, mode, node}}]}`, `pong{ts, server_ms}`,
+`friends{friends[{player, online, room?{id, name, mode, node}}]}`, `rpc_result{id, ok, status?, body, error?}`, `pong{ts, server_ms}`,
 `error{code, message}`, `desync{tick, actor}`.
 
 `joined.data` = `{host, port, cert_sha256, ticket(base64), ws_tunnel, webtransport_url?}`: connect QUIC
@@ -165,6 +165,14 @@ POST JSON `{event, project, at, data}` with `X-Aurix-Event` and
 `X-Aurix-Signature: sha256=<hex HMAC-SHA256(secret, body)>`. Events: `room.created
 {room, name, mode, region}`, `room.closed {room}`, `player.joined {room, actor}`,
 `player.left {room, actor}`, `desync {room, tick, actor}`, `room.rehosted {room, name, mode, node, restored}` (room adopted by another node after a node failure). Three attempts; 4xx stops retries.
+
+Two events are synchronous calls rather than notifications: `join.validate` (the receiver
+answers `{"allow": bool, "reason"?}` within 2 s; see Keys, grants, scopes) and `rpc` — a
+client's `rpc{name, body}` is POSTed as `data: {name, player_id, actor?, room?, body}` to the
+first webhook subscribed to `rpc`, which has 5 s to answer up to 16 KiB of JSON; the status and
+body go back to that client as `rpc_result` (WebRPC: leaderboards, inventory, purchases
+without exposing your backend's URL or auth to the client — the node signs every call). One
+attempt, no retries.
 
 ## Matchmaking flow
 

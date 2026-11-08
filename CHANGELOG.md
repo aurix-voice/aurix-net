@@ -8,6 +8,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 ## [Unreleased]
 
 ### Added
+- WebRPC: `rpc{id, name, body}` on the control channel calls the project's webhook subscribed to
+  `rpc` (signed POST, 5 s, ≤ 16 KiB answer) and returns `rpc_result`; Web `client.rpc()`, C#
+  `RpcAsync`, Rust `Client::rpc`. 5 calls/s per session, body ≤ 8 KiB.
 - Sync (owner-authoritative rooms): clients can `spawn`/`write`/`despawn`/`transfer` entities they
   own (op list input, ≤ 32 spawned per actor); a leaving actor's entities are despawned. Web
   `SyncClient.spawn/despawn/transfer/writeEntity`, C# `SyncWorld.EncodeOps`/`SyncOp`, C ABI

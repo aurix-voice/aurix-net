@@ -149,6 +149,15 @@ pub enum ClientMsg {
     FindFriends {
         players: Vec<String>,
     },
+    /// Call into the game's backend through the node (WebRPC): the project's webhook
+    /// subscribed to `rpc` is POSTed `{name, player_id, actor?, room?, body}` and its JSON
+    /// answer comes back as `rpc_result{id}`. Body ≤ 8 KiB, 5 calls per second per session.
+    Rpc {
+        id: u32,
+        name: String,
+        #[serde(default)]
+        body: serde_json::Value,
+    },
     Ping {
         #[serde(default)]
         ts: u64,
@@ -311,6 +320,18 @@ pub enum ServerMsg {
     },
     Friends {
         friends: Vec<FriendInfo>,
+    },
+    /// Answer to `rpc{id}`: `ok` = the endpoint answered 2xx; `body` is its JSON (null when
+    /// empty); `error` explains a failed call (no endpoint, timeout, non-JSON, too large).
+    RpcResult {
+        id: u32,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<u16>,
+        #[serde(default)]
+        body: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     Pong {
         ts: u64,

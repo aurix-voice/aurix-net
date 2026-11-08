@@ -214,6 +214,15 @@ namespace Aurix.Net.Managed
             return await WaitForAsync("friends", timeoutMs);
         }
 
+        int _rpcSeq;
+        /// <summary>Call your backend through the node (WebRPC): the project's webhook subscribed to "rpc" is POSTed {name, player_id, actor?, room?, body}; returns the raw rpc_result JSON {id, ok, status?, body, error?}. bodyJson is a JSON literal (≤ 8 KiB); 5 calls/s.</summary>
+        public async Task<string> RpcAsync(string name, string bodyJson = "null", int timeoutMs = 10000)
+        {
+            var id = (uint)System.Threading.Interlocked.Increment(ref _rpcSeq);
+            await SendControlAsync("{\"t\":\"rpc\",\"id\":" + id + ",\"name\":" + Json.Str(name) + ",\"body\":" + (string.IsNullOrEmpty(bodyJson) ? "null" : bodyJson) + "}");
+            return await WaitForAsync("rpc_result", timeoutMs);
+        }
+
         public Task SetViewAsync(ulong[] viewpoints = null, ulong[] interest = null) =>
             SendControlAsync("{\"t\":\"set_view\",\"viewpoints\":[" + string.Join(",", viewpoints ?? Array.Empty<ulong>()) + "],\"interest\":[" + string.Join(",", interest ?? Array.Empty<ulong>()) + "]}");
 

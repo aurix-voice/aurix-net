@@ -75,7 +75,14 @@ struct Session {
     ip: std::net::IpAddr,
     /// Last `stats` / `find_friends` (fleet fan-out): at most one per second.
     last_lookup: Option<Instant>,
+    /// `rpc` token bucket: `RPC_RATE` per second, burst `RPC_BURST`.
+    rpc_tokens: f32,
+    rpc_at: Instant,
 }
+
+const RPC_RATE: f32 = 5.0;
+const RPC_BURST: f32 = 10.0;
+const RPC_MAX_BODY: usize = 8 * 1024;
 
 async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
     st.metrics.control_sessions.inc();
@@ -112,6 +119,8 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
         lobby: None,
         ip,
         last_lookup: None,
+        rpc_tokens: RPC_BURST,
+        rpc_at: Instant::now(),
     };
     let _ = sess.ctl.try_send(ServerMsg::Hello {
         session: sess.id.to_string(),
@@ -223,6 +232,45 @@ impl Session {
                 }
                 self.st.host.presence_enter(g.project, &g.player_id);
                 self.grant = Some(g);
+                Ok(())
+            }
+            ClientMsg::Rpc { id, name, body } => {
+                let g = self.grant()?.clone();
+                let name_ok = !name.is_empty()
+                    && name.len() <= 64
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'));
+                if !name_ok {
+                    return Err(NetError::Invalid(
+                        "rpc: name is 1..=64 chars of [A-Za-z0-9_.-]".into(),
+                    ));
+                }
+                if serde_json::to_vec(&body).map_or(usize::MAX, |v| v.len()) > RPC_MAX_BODY {
+                    return Err(NetError::Invalid(format!(
+                        "rpc: body over {RPC_MAX_BODY} bytes"
+                    )));
+                }
+                self.rpc_budget()?;
+                let room = self.room.as_ref().map(|r| (r.id.to_string(), r.actor));
+                let payload = serde_json::json!({
+                    "name": name,
+                    "player_id": g.player_id,
+                    "actor": room.as_ref().map(|r| r.1),
+                    "room": room.as_ref().map(|r| r.0.clone()),
+                    "body": body,
+                });
+                let (hooks, ctl) = (self.st.webhooks.clone(), self.ctl.clone());
+                tokio::spawn(async move {
+                    let out = hooks.rpc(g.project, payload).await;
+                    let _ = ctl.try_send(ServerMsg::RpcResult {
+                        id,
+                        ok: out.ok,
+                        status: out.status,
+                        body: out.body,
+                        error: out.error,
+                    });
+                });
                 Ok(())
             }
             ClientMsg::Ping { ts } => {
@@ -1070,6 +1118,20 @@ impl Session {
     }
 
     /// `stats` / `find_friends` fan out across the fleet: one per second per session.
+    fn rpc_budget(&mut self) -> Result<()> {
+        let now = Instant::now();
+        let refill = now.duration_since(self.rpc_at).as_secs_f32() * RPC_RATE;
+        self.rpc_tokens = (self.rpc_tokens + refill).min(RPC_BURST);
+        self.rpc_at = now;
+        if self.rpc_tokens < 1.0 {
+            return Err(NetError::Conflict(
+                "rpc_rate: at most 5 calls per second per session".into(),
+            ));
+        }
+        self.rpc_tokens -= 1.0;
+        Ok(())
+    }
+
     fn lookup_budget(&mut self) -> Result<()> {
         let now = Instant::now();
         if self

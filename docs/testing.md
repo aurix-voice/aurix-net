@@ -191,6 +191,7 @@ not exercised across hosts (needs UDP 7000/7443 open end to end).
 | placement | rooms created through A land on A (least-loaded node of the *requester's* region, ties keep the room local); a node in another region never receives them unless the client asks for that region |
 | relay across the WAN | 6 rooms × 2 bots via A: 2900 events, 0.17 % loss (last tick cut by the run end), p50 180 ms = tunnel RTT |
 | drain (SIGTERM on A) | 4 rooms checkpointed to Redis and marked `orphaned` in 4 ms; clients get `left{reason:"rehost"}` |
+| matchmaking across hosts | two tickets filed through different nodes (`aurix-net match` via A and via B) matched into the same room within 2 s (Redis-backed queue, one leader) |
 | adoption on B | rejoin by name through B adopts the orphaned rows (`adopted orphaned room … restored="none"` for relay); both bots of a pair end up in the **same** room on B, events flow again (p50 1.4 ms locally) |
 
 Bug found and fixed by this run — **adoption race split a room in two.** Two players rejoining

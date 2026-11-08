@@ -515,6 +515,21 @@ impl Client {
     pub async fn find_friends(&self, players: Vec<String>) -> Result<()> {
         self.send(ClientMsg::FindFriends { players }).await
     }
+    /// Call the game's backend through the node (the project's `rpc` webhook); the answer
+    /// arrives as `Event::Control(ServerMsg::RpcResult { id, .. })`. Body ≤ 8 KiB, 5 per second.
+    pub async fn rpc(
+        &self,
+        id: u32,
+        name: impl Into<String>,
+        body: serde_json::Value,
+    ) -> Result<()> {
+        self.send(ClientMsg::Rpc {
+            id,
+            name: name.into(),
+            body,
+        })
+        .await
+    }
 
     /// Sync rooms: steer area-of-interest — extra viewpoints (camera, scope target) and entities
     /// forced into view (team mates, objectives). Entity ids as in deltas.
