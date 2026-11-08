@@ -31,6 +31,13 @@ int main() {
         for (auto e = sb.poll(); e.kind != Sync::Kind::None; e = sb.poll())
             if (e.owner == actorA && e.kind != Sync::Kind::Despawn && sb.vector(e.entity, tr, pos, last) == 3) updates++;
     }
+    // Let the last writes land (one server tick plus the WS hop) before judging `last`.
+    for (int i = 0; i < 20; i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        a.poll(); b.poll(); sb.advance(0.016);
+        for (auto e = sb.poll(); e.kind != Sync::Kind::None; e = sb.poll())
+            if (e.owner == actorA && e.kind != Sync::Kind::Despawn && sb.vector(e.entity, tr, pos, last) == 3) updates++;
+    }
     int own = 0; uint64_t id; int owner;
     for (int i = 0; sa.entityAt(i, id, owner); i++) if (owner == actorA) own++;
     bool ok = sb.serverTick() > 30 && sb.gaps() == 0 && updates >= 20 && std::fabs(last[0] - x) < 3 && std::fabs(last[1] - 1) < 0.02 && std::fabs(last[2] + 2) < 0.02 && own == 1

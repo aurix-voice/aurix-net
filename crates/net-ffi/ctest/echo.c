@@ -1,3 +1,4 @@
+#define _DEFAULT_SOURCE 1 /* usleep under -std=c11 */
 #include "../include/aurix_net.h"
 #include <stdio.h>
 #include <stdlib.h>
