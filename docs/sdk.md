@@ -29,6 +29,10 @@ session, both fan out across the fleet):
   the JSON answers (`Json.Str/Num/Obj` helpers read them).
 - Rust: `client.stats().await?` / `client.find_friends(vec![...]).await?`; the answers arrive as
   `Event::Control(ServerMsg::Stats { .. })` / `ServerMsg::Friends { .. }`.
+- One-shot room list and WebRPC: Web `await client.rooms("map = 'dust'")` / `await client.rpc("inventory.get", {slot: 3})`
+  → `{ok, status, body, error?}`; Unity `RoomsAsync(expr)` / `RpcAsync(name, bodyJson)`; Rust
+  `client.rpc(id, name, body)` with the answer as `ServerMsg::RpcResult { id, .. }`. `rpc` reaches the
+  project's webhook subscribed to `rpc` (docs/api.md → Webhooks); the client never sees its URL.
 
 A room's lobby is its room prop `lobby` (always visible in listings); rooms without one form the default
 lobby `""`. See docs/modes.md.
