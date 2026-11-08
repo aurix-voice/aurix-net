@@ -4,6 +4,7 @@ use net_api::lockstep::LockstepRoom;
 use net_api::mmfilter::Filter;
 use net_api::sync::SyncRoom;
 use net_common::ActorId;
+use net_rooms::protocol::ClientMsg;
 fn rng(seed: u64) -> impl FnMut() -> u64 {
     let mut s = seed | 1;
     move || {
@@ -104,5 +105,42 @@ fn filter_parse_survives_garbage() {
             let _ = f.matches(&serde_json::Map::new());
         }
         let _ = Filter::parse(&String::from_utf8_lossy(&garbage(&mut r, 40)));
+    }
+}
+
+#[test]
+fn control_plane_json_survives_garbage() {
+    let mut r = rng(31);
+    let valid = [
+        r#"{"t":"auth","grant":"abc"}"#,
+        r#"{"t":"create","name":"arena","mode":"sync","max_players":8,"props":{"lobby":"ranked","tick_hz":30},"lobby_props":["lobby"]}"#,
+        r#"{"t":"join","name":"arena","player_props":{"skin":1}}"#,
+        r#"{"t":"find_friends","players":["ann","bob"]}"#,
+        r#"{"t":"stats"}"#,
+        r#"{"t":"set_player_props","props":{"ready":true},"expected":{"ready":false}}"#,
+        r#"{"t":"ping","ts":1}"#,
+    ];
+    let alphabet: &[u8] = b"{}[]:,\"tauthcreatejoinpropsnamemode0123456789.-eE nulltruefalse";
+    for i in 0..20_000usize {
+        let v = valid[i % valid.len()].as_bytes();
+        let _ = serde_json::from_slice::<ClientMsg>(&mutate(&mut r, v));
+        let n = (r() as usize) % 100;
+        let t: Vec<u8> = (0..n)
+            .map(|_| alphabet[(r() as usize) % alphabet.len()])
+            .collect();
+        let _ = serde_json::from_slice::<ClientMsg>(&t);
+        let _ = serde_json::from_slice::<ClientMsg>(&garbage(&mut r, 60));
+    }
+    let deep = format!(
+        "{{\"t\":\"create\",\"props\":{{\"a\":{}1{}}}}}",
+        "[".repeat(2000),
+        "]".repeat(2000)
+    );
+    assert!(
+        serde_json::from_str::<ClientMsg>(&deep).is_err(),
+        "nesting beyond serde's recursion limit is rejected, not a stack overflow"
+    );
+    for m in valid {
+        serde_json::from_str::<ClientMsg>(m).unwrap_or_else(|e| panic!("{m}: {e}"));
     }
 }

@@ -693,9 +693,7 @@ impl Session {
         if self.st.is_draining() {
             return Err(NetError::Conflict("node_draining".into()));
         }
-        if name.is_empty() || name.len() > 64 {
-            return Err(NetError::Invalid("room name must be 1..=64 chars".into()));
-        }
+        crate::rest::validate_room_create(&name, &lobby_props)?;
         let mut lockstep = if mode == RoomMode::Lockstep {
             let hz = props.get("tick_hz").and_then(|v| v.as_u64()).unwrap_or(60) as u16;
             let seed = std::time::SystemTime::now()

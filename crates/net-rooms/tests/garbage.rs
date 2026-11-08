@@ -49,7 +49,11 @@ fn event_frame_roundtrip_then_mutations() {
             code: i as u8,
             target: EventTarget::Others,
             cache: CacheOp::None,
-            group: if i.is_multiple_of(3) { Some(i as u16) } else { None },
+            group: if i.is_multiple_of(3) {
+                Some(i as u16)
+            } else {
+                None
+            },
             from: ActorId((i % 7) as u16),
             payload: Bytes::from(garbage(&mut r, 40)),
         };

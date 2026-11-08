@@ -987,6 +987,7 @@ async fn create_room(
         )
         .into());
     }
+    validate_room_create(&req.name, &req.lobby_props)?;
     let project = ProjectId::from_uuid(key.project_id);
     if st.host.by_name(project, &req.name).is_some() {
         return Err(NetError::Conflict("room name already in use".into()).into());
@@ -2574,6 +2575,31 @@ async fn close_room_anywhere(st: &Shared, project: ProjectId, id: Uuid) {
         }
     }
     close_room(st, project, room).await;
+}
+
+/// Room name and `lobby_props` keys as accepted by both the control plane and REST.
+pub(crate) fn validate_room_create(
+    name: &str,
+    lobby_props: &[String],
+) -> std::result::Result<(), NetError> {
+    let n = name.chars().count();
+    if !(1..=64).contains(&n) || name.chars().any(char::is_control) {
+        return Err(NetError::Invalid(
+            "room name must be 1..=64 chars without control characters".into(),
+        ));
+    }
+    if lobby_props.len() > 32 {
+        return Err(NetError::Invalid("at most 32 lobby_props".into()));
+    }
+    if lobby_props
+        .iter()
+        .any(|k| k.is_empty() || k.chars().count() > 64 || k.chars().any(char::is_control))
+    {
+        return Err(NetError::Invalid(
+            "lobby_props keys must be 1..=64 chars without control characters".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn valid_player_id(p: &str) -> bool {

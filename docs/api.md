@@ -237,6 +237,9 @@ CLI: `aurix-net modules | module-put <name> <file> | module-delete <name>`.
 | WebSocket connects per IP | 60/min | 429 |
 | Concurrent sessions/data connections per IP | 64 | 429 / connection refused |
 | Failed `auth` per IP | 20/min | `rate_limited`, connection closed |
+| Room name | 1..=64 chars, no control characters | `invalid` |
+| `lobby_props` per room | ≤32 keys, each 1..=64 chars | `invalid` |
+| Control message (post-auth) | 68 KiB; 8 KiB before `auth` | connection closed |
 | Write calls per API key (grants, rooms, tickets, keys, webhooks, modules) | 20/s | 429 `rate_limited` |
 | Pre-auth control message | 8 KiB, 10 s to authenticate | connection closed |
 | Request body | 64 KiB (module upload 8 MiB) | 413 |
