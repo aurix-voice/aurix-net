@@ -21,6 +21,10 @@ void AurixNetSync::_bind_methods() {
     ClassDB::bind_method(D_METHOD("write_field", "field", "value"), &AurixNetSync::write_field);
     ClassDB::bind_method(D_METHOD("end_write"), &AurixNetSync::end_write);
     ClassDB::bind_method(D_METHOD("send_writes", "client"), &AurixNetSync::send_writes);
+    ClassDB::bind_method(D_METHOD("write_entity", "client", "entity"), &AurixNetSync::write_entity);
+    ClassDB::bind_method(D_METHOD("spawn_entity", "client"), &AurixNetSync::spawn_entity);
+    ClassDB::bind_method(D_METHOD("despawn_entity", "client", "entity"), &AurixNetSync::despawn_entity);
+    ClassDB::bind_method(D_METHOD("transfer_entity", "client", "entity", "to_actor"), &AurixNetSync::transfer_entity);
     ClassDB::bind_method(D_METHOD("get_last_error"), &AurixNetSync::get_last_error);
     ADD_SIGNAL(MethodInfo("spawn", PropertyInfo(Variant::INT, "entity"), PropertyInfo(Variant::INT, "owner")));
     ADD_SIGNAL(MethodInfo("change", PropertyInfo(Variant::INT, "entity"), PropertyInfo(Variant::INT, "owner")));
@@ -127,6 +131,24 @@ bool AurixNetSync::end_write() {
 int AurixNetSync::send_writes(AurixNetClient *client) {
     if (!sync_ || !client) return -1;
     return (int)sync_->sendWrites(client->raw());
+}
+
+// Owner-authoritative ops on entities this actor owns (queued begin_write/end_write feed write/spawn).
+int AurixNetSync::write_entity(AurixNetClient *client, int64_t entity) {
+    if (!sync_ || !client) return -1;
+    return (int)sync_->writeEntity(client->raw(), (uint64_t)entity);
+}
+int AurixNetSync::spawn_entity(AurixNetClient *client) {
+    if (!sync_ || !client) return -1;
+    return (int)sync_->spawn(client->raw());
+}
+int AurixNetSync::despawn_entity(AurixNetClient *client, int64_t entity) {
+    if (!sync_ || !client) return -1;
+    return (int)sync_->despawn(client->raw(), (uint64_t)entity);
+}
+int AurixNetSync::transfer_entity(AurixNetClient *client, int64_t entity, int to_actor) {
+    if (!sync_ || !client) return -1;
+    return (int)sync_->transfer(client->raw(), (uint64_t)entity, to_actor);
 }
 
 } // namespace godot

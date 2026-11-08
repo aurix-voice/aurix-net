@@ -37,6 +37,10 @@ public:
     bool write_field(const String &field, const Variant &value);
     bool end_write();
     int send_writes(AurixNetClient *client);
+    int write_entity(AurixNetClient *client, int64_t entity);
+    int spawn_entity(AurixNetClient *client);
+    int despawn_entity(AurixNetClient *client, int64_t entity);
+    int transfer_entity(AurixNetClient *client, int64_t entity, int to_actor);
     String get_last_error() const { return last_error_; }
 };
 

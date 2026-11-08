@@ -84,6 +84,7 @@ float mine[3] = {x, y, z};
 world.begin(tr).write(pos, mine, 3).end().sendWrites(c);   // owner-authoritative rooms
 world.begin(tr).write(pos, mine, 3).end().spawn(c);        // a second entity you own; despawn/transfer/writeEntity likewise
 // world.sendInput(c, bytes, n) for rooms with server-side `logic`
+// Web: session.spawn(writes) / writeEntity(id, writes) / despawn(id) / transfer(id, actor); C#: SyncWorld.EncodeOps(SyncOp[...])
 ```
 
 Godot: `AurixNetSync` (RefCounted) — `setup(schema)`, feed the client's `data` signal to
