@@ -110,6 +110,7 @@ pub struct NodeRow {
     pub draining: bool,
     pub started_at: DateTime<Utc>,
     pub last_heartbeat: DateTime<Utc>,
+    pub heartbeat_secs: i32,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]

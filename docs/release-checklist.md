@@ -34,6 +34,9 @@ Each step points at the document that explains it; nothing here is optional unle
 
 1. Read the release notes for config changes; nodes of one deployment run the same minor version.
 2. Build + scan the image; `--migrate-only` with the new image while the old nodes keep serving.
+   Exception, once: upgrading across migration `0012` (adds `nodes.heartbeat_secs`) — restart the old nodes
+   right after migrating; their node-registry queries used `SELECT *` and fail with
+   `cached plan must not change result type` until reconnect. From 0012 on these queries name their columns.
 3. Rolling restart one node at a time, waiting for `/healthz` 200 before the next
    ([Upgrades](deployment.md#upgrades)); rooms are checkpointed and adopted by the other nodes,
    players reconnect by room name.

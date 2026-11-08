@@ -91,6 +91,9 @@ void Update() { c.Poll(); }  void LateUpdate() { c.Flush(); }
 
 ## Checks
 
+`BuildCheck~/managed-tests` (`dotnet run`): offline checks of the managed core; the sim/nav checks load
+`target/release/libnet_sim_wasm.so` (`cargo build --release -p net-sim-wasm`) and are skipped when it is absent.
+
 `BuildCheck~/managed-live`: .NET console test of the managed core against a local node
 (`NET_API_KEY=… dotnet run -c Release`): relay reliable/unreliable/fragmented events, sync deltas,
 a custom-schema owner room (vec3/quat/string/u8 decode, acks with 0 gaps) and a lockstep room

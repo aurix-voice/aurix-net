@@ -296,7 +296,11 @@ static class Program
 
     static int Main()
     {
-        SimTests();
+        try { SimTests(); }
+        catch (DllNotFoundException)
+        {
+            Console.WriteLine("skip sim/nav checks: libnet_sim_wasm not built (cargo build --release -p net-sim-wasm)");
+        }
         BotsTests();
         PredictorTests();
         TickTimerTests();

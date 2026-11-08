@@ -18,6 +18,10 @@ Step-by-step order for go-live and every release: [release-checklist.md](release
 
 ## Configuration
 
+`server.heartbeat_secs` (default 30) is stored with the node's row; peers declare a node dead after it
+misses three of *its own* heartbeats, so nodes with different intervals can share a fleet (a 2 s dev node
+next to a 30 s one). Unknown `NET__<SECTION>__…` variables are reported with a startup warning.
+
 `server.public_host` is also what the other nodes use to reach this one for operator calls
 (`GET /v1/operator/nodes/:id/stats`, drains): it must resolve and route *inside* the cluster, not only from
 the internet. With the compose file this means a real hostname per node (or the service name on a
@@ -85,6 +89,10 @@ migration lock, so two nodes starting together do not race. For a controlled rol
 new image once with `--migrate-only` (connects, migrates, exits 0 — no Redis needed) before
 replacing nodes; the old version keeps running against the migrated schema until it is swapped.
 There is no down migration: restore from backup to roll a schema change back.
+
+All row queries name their columns (no `SELECT *`), so a migration that adds a column does not break
+the previous release's prepared statements (`cached plan must not change result type`). The one
+exception is upgrading across `0012` from an older build: restart those nodes right after migrating.
 
 ## Secrets and rotation
 

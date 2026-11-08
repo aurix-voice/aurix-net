@@ -3,15 +3,20 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { Sim, BodyKind } from "../dist/sim.js";
 
+import { existsSync } from "node:fs";
+
+// Built by `cargo build --release --target wasm32-unknown-unknown -p net-sim-wasm` (CI does this in the
+// `rust` job); a fresh checkout without it skips these tests instead of failing on ENOENT.
 const WASM = new URL("../../../target/wasm32-unknown-unknown/release/net_sim_wasm.wasm", import.meta.url);
+const skip = existsSync(WASM) ? false : "net_sim_wasm.wasm not built: cargo build --release --target wasm32-unknown-unknown -p net-sim-wasm";
 const GOLDEN = 0x58d9870ba45952b5n;
 
-test("sim wasm: golden hash matches native Rust", async () => {
+test("sim wasm: golden hash matches native Rust", { skip }, async () => {
   const sim = await Sim.load(await readFile(WASM));
   assert.equal(sim.goldenHash(), GOLDEN);
 });
 
-test("sim wasm: ball lands, snapshot round-trips, two worlds agree", async () => {
+test("sim wasm: ball lands, snapshot round-trips, two worlds agree", { skip }, async () => {
   const sim = await Sim.load(await readFile(WASM));
   const build = () => {
     const w = sim.world();
@@ -41,7 +46,7 @@ test("sim wasm: ball lands, snapshot round-trips, two worlds agree", async () =>
   b.w.free();
 });
 
-test("sim wasm: navigation golden hash and crowd walk", async () => {
+test("sim wasm: navigation golden hash and crowd walk", { skip }, async () => {
   const sim = await Sim.load(await readFile(WASM));
   assert.equal(sim.navGoldenHash(), 0x746c5a608abe2f26n);
   const w = sim.world({ x: 0, y: 0 }, 60);
@@ -58,7 +63,7 @@ test("sim wasm: navigation golden hash and crowd walk", async () => {
   w.free();
 });
 
-test("sim wasm: joints golden hash, contact events and circle cast", async () => {
+test("sim wasm: joints golden hash, contact events and circle cast", { skip }, async () => {
   const sim = await Sim.load(await readFile(WASM));
   assert.equal(sim.jointGoldenHash(), 0x4bcc781a484ceeedn);
   const w = sim.world({ x: 0, y: -10 }, 60);
@@ -75,7 +80,7 @@ test("sim wasm: joints golden hash, contact events and circle cast", async () =>
   w.free();
 });
 
-test("sim wasm: 3D golden hash, resting sphere, snapshot and raycast", async () => {
+test("sim wasm: 3D golden hash, resting sphere, snapshot and raycast", { skip }, async () => {
   const sim = await Sim.load(await readFile(WASM));
   assert.equal(sim.golden3Hash(), 0x0a9c7e6fc4fa43bfn);
   const w = sim.world3();
@@ -95,7 +100,7 @@ test("sim wasm: 3D golden hash, resting sphere, snapshot and raycast", async () 
   w.free();
 });
 
-test("sim wasm: 3D joints golden hash, hinge door and walking character", async () => {
+test("sim wasm: 3D joints golden hash, hinge door and walking character", { skip }, async () => {
   const sim = await Sim.load(await readFile(WASM));
   assert.equal(sim.joint3GoldenHash(), 0x5db56af63cceee85n);
   const w = sim.world3();
@@ -118,7 +123,7 @@ test("sim wasm: 3D joints golden hash, hinge door and walking character", async 
   w.free();
 });
 
-test("sim wasm: 3D convex hulls golden hash, pyramid rests, sphere cast", async () => {
+test("sim wasm: 3D convex hulls golden hash, pyramid rests, sphere cast", { skip }, async () => {
   const sim = await Sim.load(await readFile(WASM));
   assert.equal(sim.hull3GoldenHash(), 0x29ab0385d38dc53fn);
   const w = sim.world3();

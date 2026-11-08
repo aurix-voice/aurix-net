@@ -12,7 +12,8 @@ client.flush();                                        // once per frame
 Control over WebSocket, data over the WebSocket tunnel with the same channels/acks as the native
 transport (WebTransport datagrams are the next step). `sendData(Channel.Unreliable, bytes)` for
 sync inputs / lockstep frames; raw frames arrive on `"data"`. Build: `npm i && npm run build`,
-test against a local node: `NET_API_KEY=an_... npm test`.
+test against a local node: `NET_API_KEY=an_... npm test` (the `sim wasm` tests need
+`cargo build --release --target wasm32-unknown-unknown -p net-sim-wasm` first and are skipped without it).
 
 ## Sync rooms
 

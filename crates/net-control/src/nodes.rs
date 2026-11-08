@@ -46,20 +46,18 @@ pub const ORPHAN_TTL_SECS: i64 = 600;
 pub struct NodeRegistry {
     pool: DbPool,
     cache: RwLock<Vec<NodeInfo>>,
-    stale_secs: i64,
 }
 
 impl NodeRegistry {
-    pub fn new(pool: DbPool, heartbeat_secs: u64) -> Arc<Self> {
+    pub fn new(pool: DbPool) -> Arc<Self> {
         Arc::new(Self {
             pool,
             cache: RwLock::new(Vec::new()),
-            stale_secs: (heartbeat_secs * 3) as i64,
         })
     }
 
     pub async fn refresh(&self) -> Result<()> {
-        let rows = queries::list_live_nodes(&self.pool, self.stale_secs).await?;
+        let rows = queries::list_live_nodes(&self.pool).await?;
         *self.cache.write() = rows.into_iter().map(NodeInfo::from).collect();
         Ok(())
     }
@@ -108,9 +106,9 @@ impl NodeRegistry {
             .ok_or_else(|| NetError::NotFound(format!("no live node in region {region}")))
     }
 
-    /// Removes nodes whose heartbeat is stale and closes their rooms. Returns removed ids.
+    /// Removes nodes that missed three of their own heartbeats and closes their rooms. Returns removed ids.
     pub async fn reap_stale(&self) -> Result<Vec<NodeId>> {
-        let live: Vec<Uuid> = queries::list_live_nodes(&self.pool, self.stale_secs)
+        let live: Vec<Uuid> = queries::list_live_nodes(&self.pool)
             .await?
             .into_iter()
             .map(|r| r.id)
@@ -172,7 +170,6 @@ mod tests {
         NodeRegistry {
             pool: sqlx_lazy_pool(),
             cache: RwLock::new(nodes),
-            stale_secs: 90,
         }
     }
 

@@ -77,6 +77,9 @@ async fn main() -> anyhow::Result<()> {
     for w in &startup_warnings {
         warn!("production check: {w}");
     }
+    for k in NetConfig::unknown_env_keys() {
+        warn!(var = %k, "unknown NET__ section in environment, ignored (sections: server, transport, database, redis, auth, limits, retention)");
+    }
     info!(version = env!("CARGO_PKG_VERSION"), region = %cfg.server.region, "starting aurix-net node");
 
     let pool = net_db::create_pool(&cfg.database).await?;
@@ -133,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
         .map(|a| a.port());
     info!(addr = %cfg.transport.quic_addr, fingerprint = %identity.fingerprint_sha256, "quic data plane listening");
 
-    let registry = NodeRegistry::new(pool.clone(), cfg.server.heartbeat_secs);
+    let registry = NodeRegistry::new(pool.clone());
     let http_url = format!(
         "http://{}:{}",
         cfg.server.public_host,
@@ -341,6 +344,7 @@ async fn heartbeat(st: &Arc<AppState>, http_url: &str, draining: bool) -> anyhow
             players,
             load_factor: load,
             draining,
+            heartbeat_secs: st.cfg.server.heartbeat_secs.clamp(1, i32::MAX as u64) as i32,
         },
     )
     .await?;

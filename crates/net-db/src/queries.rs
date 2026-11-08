@@ -19,7 +19,7 @@ pub async fn create_project(pool: &DbPool, name: &str, plan: &str) -> Result<Pro
 }
 
 pub async fn get_project(pool: &DbPool, id: Uuid) -> Result<ProjectRow> {
-    sqlx::query_as::<_, ProjectRow>("SELECT * FROM projects WHERE id = $1")
+    sqlx::query_as::<_, ProjectRow>("SELECT id, name, plan, limits, created_at, disabled_at, deleted_at FROM projects WHERE id = $1")
         .bind(id)
         .fetch_one(pool)
         .await
@@ -28,7 +28,7 @@ pub async fn get_project(pool: &DbPool, id: Uuid) -> Result<ProjectRow> {
 
 pub async fn list_projects(pool: &DbPool) -> Result<Vec<ProjectRow>> {
     sqlx::query_as::<_, ProjectRow>(
-        "SELECT * FROM projects WHERE deleted_at IS NULL ORDER BY created_at",
+        "SELECT id, name, plan, limits, created_at, disabled_at, deleted_at FROM projects WHERE deleted_at IS NULL ORDER BY created_at",
     )
     .fetch_all(pool)
     .await
@@ -153,7 +153,7 @@ pub async fn touch_api_key(pool: &DbPool, id: Uuid) -> Result<()> {
 
 pub async fn list_api_keys(pool: &DbPool, project_id: Uuid) -> Result<Vec<ApiKeyRow>> {
     sqlx::query_as::<_, ApiKeyRow>(
-        "SELECT * FROM api_keys WHERE project_id = $1 ORDER BY created_at",
+        "SELECT id, project_id, key_hash, prefix, name, scopes, created_at, last_used_at, revoked_at, expires_at, allowed_cidrs FROM api_keys WHERE project_id = $1 ORDER BY created_at",
     )
     .bind(project_id)
     .fetch_all(pool)
@@ -175,9 +175,9 @@ pub async fn revoke_api_key(pool: &DbPool, project_id: Uuid, id: Uuid) -> Result
 
 pub async fn list_regions(pool: &DbPool, enabled_only: bool) -> Result<Vec<RegionRow>> {
     let q = if enabled_only {
-        "SELECT * FROM regions WHERE enabled ORDER BY id"
+        "SELECT id, display_name, dns_label, enabled FROM regions WHERE enabled ORDER BY id"
     } else {
-        "SELECT * FROM regions ORDER BY id"
+        "SELECT id, display_name, dns_label, enabled FROM regions ORDER BY id"
     };
     sqlx::query_as::<_, RegionRow>(q)
         .fetch_all(pool)
@@ -215,15 +215,17 @@ pub struct NodeHeartbeat {
     pub players: i32,
     pub load_factor: f32,
     pub draining: bool,
+    pub heartbeat_secs: i32,
 }
 
 pub async fn upsert_node(pool: &DbPool, n: &NodeHeartbeat) -> Result<()> {
     sqlx::query(
-        "INSERT INTO nodes (id, region, public_host, quic_port, http_url, cert_sha256, version, rooms, players, load_factor, draining, last_heartbeat)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
+        "INSERT INTO nodes (id, region, public_host, quic_port, http_url, cert_sha256, version, rooms, players, load_factor, draining, heartbeat_secs, last_heartbeat)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
          ON CONFLICT (id) DO UPDATE SET region = EXCLUDED.region, public_host = EXCLUDED.public_host, quic_port = EXCLUDED.quic_port,
             http_url = EXCLUDED.http_url, cert_sha256 = EXCLUDED.cert_sha256, version = EXCLUDED.version, rooms = EXCLUDED.rooms,
-            players = EXCLUDED.players, load_factor = EXCLUDED.load_factor, draining = EXCLUDED.draining, last_heartbeat = now()",
+            players = EXCLUDED.players, load_factor = EXCLUDED.load_factor, draining = EXCLUDED.draining,
+            heartbeat_secs = EXCLUDED.heartbeat_secs, last_heartbeat = now()",
     )
     .bind(n.id)
     .bind(&n.region)
@@ -236,18 +238,22 @@ pub async fn upsert_node(pool: &DbPool, n: &NodeHeartbeat) -> Result<()> {
     .bind(n.players)
     .bind(n.load_factor)
     .bind(n.draining)
+    .bind(n.heartbeat_secs)
     .execute(pool)
     .await
     .map_err(db_err)?;
     Ok(())
 }
 
-/// Nodes with a heartbeat within `stale_secs`.
-pub async fn list_live_nodes(pool: &DbPool, stale_secs: i64) -> Result<Vec<NodeRow>> {
+// Node queries name their columns: `SELECT *` through sqlx's prepared-statement cache fails with
+// "cached plan must not change result type" on every connection after a migration adds a column,
+// which is exactly what a rolling upgrade does under the previous release.
+/// Nodes that have not missed three of *their own* heartbeats (`heartbeat_secs` is per row, so a
+/// node with a fast heartbeat never declares a slower, healthy peer dead).
+pub async fn list_live_nodes(pool: &DbPool) -> Result<Vec<NodeRow>> {
     sqlx::query_as::<_, NodeRow>(
-        "SELECT * FROM nodes WHERE last_heartbeat > now() - make_interval(secs => $1) ORDER BY region, load_factor",
+        "SELECT id, region, public_host, quic_port, http_url, cert_sha256, version, rooms, players, load_factor, draining, started_at, last_heartbeat, heartbeat_secs FROM nodes WHERE last_heartbeat > now() - make_interval(secs => 3 * heartbeat_secs) ORDER BY region, load_factor",
     )
-    .bind(stale_secs as f64)
     .fetch_all(pool)
     .await
     .map_err(db_err)
@@ -265,7 +271,7 @@ pub async fn set_node_draining(pool: &DbPool, id: Uuid, draining: bool) -> Resul
 }
 
 pub async fn get_node(pool: &DbPool, id: Uuid) -> Result<Option<NodeRow>> {
-    sqlx::query_as::<_, NodeRow>("SELECT * FROM nodes WHERE id = $1")
+    sqlx::query_as::<_, NodeRow>("SELECT id, region, public_host, quic_port, http_url, cert_sha256, version, rooms, players, load_factor, draining, started_at, last_heartbeat, heartbeat_secs FROM nodes WHERE id = $1")
         .bind(id)
         .fetch_optional(pool)
         .await
@@ -273,7 +279,7 @@ pub async fn get_node(pool: &DbPool, id: Uuid) -> Result<Option<NodeRow>> {
 }
 
 pub async fn list_all_nodes(pool: &DbPool) -> Result<Vec<NodeRow>> {
-    sqlx::query_as::<_, NodeRow>("SELECT * FROM nodes ORDER BY region, load_factor")
+    sqlx::query_as::<_, NodeRow>("SELECT id, region, public_host, quic_port, http_url, cert_sha256, version, rooms, players, load_factor, draining, started_at, last_heartbeat, heartbeat_secs FROM nodes ORDER BY region, load_factor")
         .fetch_all(pool)
         .await
         .map_err(db_err)
@@ -329,7 +335,7 @@ pub async fn insert_room(pool: &DbPool, r: &NewRoom) -> Result<RoomRow> {
 }
 
 pub async fn get_room(pool: &DbPool, id: Uuid) -> Result<RoomRow> {
-    sqlx::query_as::<_, RoomRow>("SELECT * FROM rooms WHERE id = $1")
+    sqlx::query_as::<_, RoomRow>("SELECT id, project_id, node_id, region, name, mode, state, max_players, visible, open, schema_hash, props, lobby_props, created_at, closed_at FROM rooms WHERE id = $1")
         .bind(id)
         .fetch_one(pool)
         .await
@@ -342,7 +348,7 @@ pub async fn find_open_room(
     name: &str,
 ) -> Result<Option<RoomRow>> {
     sqlx::query_as::<_, RoomRow>(
-        "SELECT * FROM rooms WHERE project_id = $1 AND name = $2 AND state IN ('open', 'orphaned') ORDER BY state LIMIT 1",
+        "SELECT id, project_id, node_id, region, name, mode, state, max_players, visible, open, schema_hash, props, lobby_props, created_at, closed_at FROM rooms WHERE project_id = $1 AND name = $2 AND state IN ('open', 'orphaned') ORDER BY state LIMIT 1",
     )
     .bind(project_id)
     .bind(name)
@@ -353,7 +359,7 @@ pub async fn find_open_room(
 
 pub async fn list_open_rooms(pool: &DbPool, project_id: Uuid, limit: i64) -> Result<Vec<RoomRow>> {
     sqlx::query_as::<_, RoomRow>(
-        "SELECT * FROM rooms WHERE project_id = $1 AND state = 'open' ORDER BY created_at DESC LIMIT $2",
+        "SELECT id, project_id, node_id, region, name, mode, state, max_players, visible, open, schema_hash, props, lobby_props, created_at, closed_at FROM rooms WHERE project_id = $1 AND state = 'open' ORDER BY created_at DESC LIMIT $2",
     )
     .bind(project_id)
     .bind(limit)
@@ -534,7 +540,7 @@ pub async fn insert_webhook(
 
 pub async fn list_webhooks(pool: &DbPool, project_id: Uuid) -> Result<Vec<WebhookRow>> {
     sqlx::query_as::<_, WebhookRow>(
-        "SELECT * FROM webhooks WHERE project_id = $1 AND enabled ORDER BY created_at",
+        "SELECT id, project_id, url, secret, events, enabled, created_at, previous_secret, previous_secret_expires_at FROM webhooks WHERE project_id = $1 AND enabled ORDER BY created_at",
     )
     .bind(project_id)
     .fetch_all(pool)
@@ -582,7 +588,7 @@ pub async fn get_game_module(
     name: &str,
 ) -> Result<Option<GameModuleRow>> {
     sqlx::query_as::<_, GameModuleRow>(
-        "SELECT * FROM game_modules WHERE project_id = $1 AND name = $2",
+        "SELECT project_id, name, hash, wasm, size, created_at, updated_at FROM game_modules WHERE project_id = $1 AND name = $2",
     )
     .bind(project_id)
     .bind(name)
@@ -720,7 +726,7 @@ pub async fn rooms_created_between(
 
 /// Every project including soft-deleted ones (billing must still see them).
 pub async fn list_projects_all(pool: &DbPool) -> Result<Vec<ProjectRow>> {
-    sqlx::query_as::<_, ProjectRow>("SELECT * FROM projects ORDER BY created_at")
+    sqlx::query_as::<_, ProjectRow>("SELECT id, name, plan, limits, created_at, disabled_at, deleted_at FROM projects ORDER BY created_at")
         .fetch_all(pool)
         .await
         .map_err(db_err)
@@ -802,7 +808,7 @@ pub async fn list_webhook_deliveries(
     limit: i64,
 ) -> Result<Vec<WebhookDeliveryRow>> {
     sqlx::query_as::<_, WebhookDeliveryRow>(
-        "SELECT * FROM webhook_deliveries WHERE project_id = $1 AND webhook_id = $2 \
+        "SELECT id, webhook_id, project_id, event, ok, status, attempts, latency_ms, error, created_at FROM webhook_deliveries WHERE project_id = $1 AND webhook_id = $2 \
          ORDER BY created_at DESC LIMIT $3",
     )
     .bind(project_id)
@@ -814,7 +820,7 @@ pub async fn list_webhook_deliveries(
 }
 
 pub async fn get_webhook(pool: &DbPool, project_id: Uuid, id: Uuid) -> Result<Option<WebhookRow>> {
-    sqlx::query_as::<_, WebhookRow>("SELECT * FROM webhooks WHERE project_id = $1 AND id = $2")
+    sqlx::query_as::<_, WebhookRow>("SELECT id, project_id, url, secret, events, enabled, created_at, previous_secret, previous_secret_expires_at FROM webhooks WHERE project_id = $1 AND id = $2")
         .bind(project_id)
         .bind(id)
         .fetch_optional(pool)
@@ -871,14 +877,14 @@ pub async fn insert_operator_webhook(
 }
 
 pub async fn list_operator_webhooks(pool: &DbPool) -> Result<Vec<OperatorWebhookRow>> {
-    sqlx::query_as::<_, OperatorWebhookRow>("SELECT * FROM operator_webhooks ORDER BY created_at")
+    sqlx::query_as::<_, OperatorWebhookRow>("SELECT id, url, secret, events, created_by, created_at FROM operator_webhooks ORDER BY created_at")
         .fetch_all(pool)
         .await
         .map_err(db_err)
 }
 
 pub async fn get_operator_webhook(pool: &DbPool, id: Uuid) -> Result<Option<OperatorWebhookRow>> {
-    sqlx::query_as::<_, OperatorWebhookRow>("SELECT * FROM operator_webhooks WHERE id = $1")
+    sqlx::query_as::<_, OperatorWebhookRow>("SELECT id, url, secret, events, created_by, created_at FROM operator_webhooks WHERE id = $1")
         .bind(id)
         .fetch_optional(pool)
         .await
@@ -932,7 +938,7 @@ pub async fn list_operator_webhook_deliveries(
     limit: i64,
 ) -> Result<Vec<OperatorWebhookDeliveryRow>> {
     sqlx::query_as::<_, OperatorWebhookDeliveryRow>(
-        "SELECT * FROM operator_webhook_deliveries WHERE webhook_id = $1 ORDER BY created_at DESC LIMIT $2",
+        "SELECT id, webhook_id, event, ok, status, attempts, latency_ms, error, created_at FROM operator_webhook_deliveries WHERE webhook_id = $1 ORDER BY created_at DESC LIMIT $2",
     )
     .bind(webhook_id)
     .bind(limit.clamp(1, 500))
@@ -1004,7 +1010,7 @@ pub async fn delete_ban(pool: &DbPool, project_id: Uuid, player_id: &str) -> Res
 
 pub async fn list_bans(pool: &DbPool, project_id: Uuid) -> Result<Vec<BanRow>> {
     sqlx::query_as::<_, BanRow>(
-        "SELECT * FROM bans WHERE project_id = $1 AND (expires_at IS NULL OR expires_at > now()) \
+        "SELECT project_id, player_id, reason, created_by, expires_at, created_at FROM bans WHERE project_id = $1 AND (expires_at IS NULL OR expires_at > now()) \
          ORDER BY created_at DESC LIMIT 1000",
     )
     .bind(project_id)
@@ -1016,7 +1022,7 @@ pub async fn list_bans(pool: &DbPool, project_id: Uuid) -> Result<Vec<BanRow>> {
 /// Active ban for this player, if any (expired rows are ignored and reaped lazily).
 pub async fn get_ban(pool: &DbPool, project_id: Uuid, player_id: &str) -> Result<Option<BanRow>> {
     sqlx::query_as::<_, BanRow>(
-        "SELECT * FROM bans WHERE project_id = $1 AND player_id = $2 AND (expires_at IS NULL OR expires_at > now())",
+        "SELECT project_id, player_id, reason, created_by, expires_at, created_at FROM bans WHERE project_id = $1 AND player_id = $2 AND (expires_at IS NULL OR expires_at > now())",
     )
     .bind(project_id)
     .bind(player_id)
@@ -1082,7 +1088,7 @@ pub async fn list_audit_for_target(
     limit: i64,
 ) -> Result<Vec<AuditRow>> {
     sqlx::query_as::<_, AuditRow>(
-        "SELECT * FROM audit WHERE project_id = $1 AND target = $2 ORDER BY id DESC LIMIT $3",
+        "SELECT id, project_id, actor, action, target, details, created_at FROM audit WHERE project_id = $1 AND target = $2 ORDER BY id DESC LIMIT $3",
     )
     .bind(project)
     .bind(target)
@@ -1117,7 +1123,7 @@ pub async fn insert_operator_token(
 }
 
 pub async fn list_operator_tokens(pool: &DbPool) -> Result<Vec<OperatorTokenRow>> {
-    sqlx::query_as::<_, OperatorTokenRow>("SELECT * FROM operator_tokens ORDER BY created_at DESC")
+    sqlx::query_as::<_, OperatorTokenRow>("SELECT id, name, token_hash, prefix, created_by, created_at, expires_at, revoked_at, last_used_at, allowed_cidrs, last_used_ip FROM operator_tokens ORDER BY created_at DESC")
         .fetch_all(pool)
         .await
         .map_err(db_err)

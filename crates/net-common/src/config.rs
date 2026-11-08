@@ -233,6 +233,30 @@ webhook_deliveries_days = 7
 
 impl NetConfig {
     /// Defaults, then optional TOML file, then `NET__SECTION__KEY` env vars.
+    /// `NET__<SECTION>__<KEY>` variables whose section is not a config section — a typo such as
+    /// `NET__DB__URL` would otherwise be ignored silently while the node keeps its defaults.
+    pub fn unknown_env_keys() -> Vec<String> {
+        const SECTIONS: [&str; 7] = [
+            "server",
+            "transport",
+            "database",
+            "redis",
+            "auth",
+            "limits",
+            "retention",
+        ];
+        let mut v: Vec<String> = std::env::vars_os()
+            .filter_map(|(k, _)| k.into_string().ok())
+            .filter(|k| k.starts_with("NET__"))
+            .filter(|k| {
+                let section = k[5..].split("__").next().unwrap_or("").to_ascii_lowercase();
+                !SECTIONS.contains(&section.as_str())
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
     pub fn load(path: Option<&str>) -> Result<Self> {
         let mut b = config::Config::builder()
             .add_source(config::File::from_str(DEFAULTS, config::FileFormat::Toml));
