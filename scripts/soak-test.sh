@@ -10,10 +10,10 @@ TOK="${NET_OPERATOR_TOKEN:-dev-admin}"; DURATION="${DURATION:-3600}"; BATCH="${B
 BIN="${LOADTEST:-$(dirname "$0")/../target/release/aurix-net-loadtest}"
 OUT="${OUT:-/tmp/soak-$(date +%Y%m%d-%H%M%S).csv}"
 auth=(-H "Authorization: Bearer $TOK")
-ids=$(curl -sf "${auth[@]}" "$A/v1/operator/nodes" | python3 -c 'import sys,json; print(" ".join(n["id"] for n in json.load(sys.stdin)["nodes"]))')
 echo "t,node,rss_mb,rooms,players,tick_avg_ms,tick_p99_ms,tick_overruns" > "$OUT"
 sample() {
-  for id in $ids; do
+  # re-list every time: nodes may (re)start during the run
+  for id in $(curl -sf "${auth[@]}" "$A/v1/operator/nodes" | python3 -c 'import sys,json; print(" ".join(n["id"] for n in json.load(sys.stdin)["nodes"]))'); do
     curl -sf "${auth[@]}" "$A/v1/operator/nodes/$id/stats" | python3 -c '
 import sys,json,time; s=json.load(sys.stdin)
 print(",".join(str(x) for x in [int(time.time()),s["node_id"][-12:],s.get("rss_mb"),s.get("rooms"),s.get("players"),s.get("sync_tick_avg_ms"),s.get("sync_tick_p99_ms"),s.get("tick_overruns")]))' >> "$OUT" || true
@@ -29,7 +29,8 @@ sample
     "$BIN" --http "$B" --operator-token "$TOK" --rooms 1 --players 4 --rate 30 --mode lockstep --tick-hz 30 --late-join-secs 30 --duration-secs "$BATCH" >/dev/null 2>&1 &
     # referee: lockstep room whose `logic` module (LOCKSTEP_PROPS, e.g. physics-arena) the node simulates itself
     if [ -n "${LOCKSTEP_PROPS:-}" ]; then
-        "$BIN" --http "$B" --operator-token "$TOK" --rooms 1 --players 4 --rate 30 --mode lockstep --tick-hz 30 --late-join-secs 30 --props-json "$LOCKSTEP_PROPS" --duration-secs "$BATCH" >/dev/null 2>&1 &
+        # the module lives in WEB_KEY's project, so the bots must join as that project (a throwaway project has no modules)
+        "$BIN" --http "$B" --operator-token "$TOK" ${WEB_KEY:+--api-key "$WEB_KEY"} --rooms 1 --players 4 --rate 30 --mode lockstep --tick-hz 30 --late-join-secs 30 --props-json "$LOCKSTEP_PROPS" --duration-secs "$BATCH" >/dev/null 2>&1 &
         if [ -n "${WEB_KEY:-}" ]; then
             (cd "$(dirname "$0")/../sdk/web" && NET_HTTP="$B" NET_API_KEY="$WEB_KEY" NET_LOGIC="${NET_LOGIC:-physics-arena}" NET_LOGIC_PROPS="$LOCKSTEP_PROPS" node --test test/referee-live.test.mjs >/dev/null 2>&1) &
         fi

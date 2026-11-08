@@ -1272,7 +1272,15 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                     .into_iter()
                     .map(|(tick, actor)| {
                         let strikes = ls.strike(actor);
-                        (tick, actor, strikes, ls.on_late_join())
+                        // Catch-up (checkpoint + journal tail) only until the actor is untrusted:
+                        // a client that keeps lying about its hash must not make the node
+                        // re-send the whole state every few ticks.
+                        let resync = if strikes <= crate::lockstep::UNTRUSTED_AFTER {
+                            ls.on_late_join()
+                        } else {
+                            Vec::new()
+                        };
+                        (tick, actor, strikes, resync)
                     })
                     .collect();
                 let actors: Vec<ActorId> = ls.actors.keys().copied().collect();

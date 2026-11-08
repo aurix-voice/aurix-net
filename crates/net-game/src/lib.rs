@@ -79,6 +79,9 @@ impl GameEngine {
         let mut cfg = Config::new();
         cfg.consume_fuel(true);
         cfg.cranelift_opt_level(OptLevel::Speed);
+        // One compile thread: a module is compiled once per node, and a parallel compile burst
+        // leaves tens of MB of allocator high-water mark on every worker thread.
+        cfg.parallel_compilation(false);
         let engine = Engine::new(&cfg).expect("wasmtime engine");
         Self {
             engine,

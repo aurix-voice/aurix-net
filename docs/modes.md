@@ -136,7 +136,10 @@ compared must follow the same rule: an actor's avatar spawns at the first tick i
 bundle, state is a `net-sim` frame, hash = `hash_bytes(frame.snapshot())` every 10 ticks.
 On a desync the node stores its own state at that tick as the reference dump (actor `0` in
 `GET /v1/rooms/:id/desyncs`) next to the desynced client's, so nobody has to trust the master;
-room details report `referee: true` while the node hosts such a room.
+room details report `referee: true` while the node hosts such a room. A desynced client is sent a
+catch-up (checkpoint + journal tail) for its first three strikes; from the fourth it is `untrusted`
+and no longer resynced, so a client lying about its hash cannot make the node re-send the state
+every few ticks.
 
 `crates/net-sim-guest` is the reference module for this: `physics-arena`, avatars as fixed-point
 circles in a walled `net-sim-physics` world (input = i8 move_x, i8 move_z), built with

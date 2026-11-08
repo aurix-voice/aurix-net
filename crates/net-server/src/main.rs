@@ -13,6 +13,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info, warn};
 
+/// glibc malloc keeps per-thread arenas at their high-water mark (RSS kept climbing by tens of MB
+/// per batch of referee desyncs with nothing leaked); mimalloc returns freed pages to the OS.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Parser)]
 #[command(name = "aurix-net-server", version, about = "Aurix Net node")]
 struct Cli {
