@@ -118,7 +118,7 @@ and wasm32 (CI matrix) — the same vectors shipped to the C# and TS ports.
   golden hash `0x5db56af63cceee85` native == wasm32. Convex hulls (SAT faces + edge crosses, face clipping, hull pairs with every
   primitive, Cyrus–Beck raycast) and sphere sweeps (`sphere_cast`) are in, exposed as
   `sim3_convex_*`/`sim3_add_convex`/`sim3_spherecast` with Web/Unity wrappers; golden hash
-  `0x29ab0385d38dc53f` native == wasm32. Capsule/box sweeps are not implemented.
+  `0xd656fc8f55999cf8` native == wasm32 (the hash also covers capsule and box sweeps, `shape_cast` over the solver's own contact generators: `capsule_cast`/`box_cast`, ABI `sim3_capsulecast`/`sim3_boxcast`).
 - Bot kit: `net-sim-bots` — data-driven behavior trees (Sequence/Selector/Parallel, Condition/
   Action by id via the `Brain` trait, Inverter/Succeeder/Repeat/Cooldown/Timeout/Wait, blackboard
   Compare/Set), hierarchical state machines (parent transitions, on_enter/on_exit, initial

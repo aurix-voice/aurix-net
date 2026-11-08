@@ -767,8 +767,95 @@ pub extern "C" fn sim3_spherecast(
     .unwrap_or(0)
 }
 
+fn store_ray3(hit: Option<net_sim_physics3d::RayHit>) -> u32 {
+    match hit {
+        Some(hit) => {
+            LAST_RAY3.with(|r| {
+                *r.borrow_mut() = [
+                    hit.fraction.0,
+                    hit.point.x.0,
+                    hit.point.y.0,
+                    hit.point.z.0,
+                    hit.normal.x.0,
+                    hit.normal.y.0,
+                    hit.normal.z.0,
+                ];
+            });
+            hit.body.0 + 1
+        }
+        None => 0,
+    }
+}
+
+/// Capsule sweep (segment along the capsule's y axis rotated by the quaternion); result fields as
+/// `sim3_ray_get`. Returns body id + 1 or 0.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn sim3_capsulecast(
+    h: u32,
+    x: i64,
+    y: i64,
+    z: i64,
+    qx: i64,
+    qy: i64,
+    qz: i64,
+    qw: i64,
+    half_len: i64,
+    radius: i64,
+    dx: i64,
+    dy: i64,
+    dz: i64,
+    mask: u32,
+) -> u32 {
+    with3(h, |s| {
+        store_ray3(s.world.capsule_cast(
+            v3(x, y, z),
+            FxQuat::new(Fx(qx), Fx(qy), Fx(qz), Fx(qw)),
+            Fx(half_len),
+            Fx(radius),
+            v3(dx, dy, dz),
+            mask,
+        ))
+    })
+    .unwrap_or(0)
+}
+
+/// Box sweep (half extents in body space, rotated by the quaternion); result fields as
+/// `sim3_ray_get`. Returns body id + 1 or 0.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn sim3_boxcast(
+    h: u32,
+    x: i64,
+    y: i64,
+    z: i64,
+    qx: i64,
+    qy: i64,
+    qz: i64,
+    qw: i64,
+    hx: i64,
+    hy: i64,
+    hz: i64,
+    dx: i64,
+    dy: i64,
+    dz: i64,
+    mask: u32,
+) -> u32 {
+    with3(h, |s| {
+        store_ray3(s.world.box_cast(
+            v3(x, y, z),
+            FxQuat::new(Fx(qx), Fx(qy), Fx(qz), Fx(qw)),
+            v3(hx, hy, hz),
+            v3(dx, dy, dz),
+            mask,
+        ))
+    })
+    .unwrap_or(0)
+}
+
 /// Convex reference scenario: three pyramids dropped in a column, a box sliding off a static
-/// wedge, a sphere rolling onto a pyramid, plus a sphere sweep mixed into the hash; 300 ticks.
+/// wedge, a sphere rolling onto a pyramid, plus sphere, capsule and box sweeps mixed into the hash;
+/// 300 ticks.
 #[no_mangle]
 pub extern "C" fn sim3_hull_golden_hash() -> u64 {
     let h = sim3_world_new(0, Fx::from_int(-10).0, 0, 60);
@@ -847,6 +934,54 @@ pub extern "C" fn sim3_hull_golden_hash() -> u64 {
     {
         for i in 0..7 {
             x ^= (sim3_ray_get(i) as u64).rotate_left(i * 7);
+        }
+    }
+    // capsule and box sweeps through the same scene (r40: were unimplemented)
+    let tilt = FxQuat::from_axis_angle(
+        FxVec3::new(Fx::ZERO, Fx::ZERO, Fx::ONE),
+        Fx::HALF_PI * Fx::HALF,
+    );
+    if sim3_capsulecast(
+        h,
+        Fx::from_int(-8).0,
+        Fx::from_int(2).0,
+        0,
+        tilt.x.0,
+        tilt.y.0,
+        tilt.z.0,
+        tilt.w.0,
+        one,
+        q,
+        Fx::from_int(30).0,
+        0,
+        0,
+        u32::MAX,
+    ) != 0
+    {
+        for i in 0..7 {
+            x ^= (sim3_ray_get(i) as u64).rotate_left(i * 5 + 1);
+        }
+    }
+    if sim3_boxcast(
+        h,
+        0,
+        Fx::from_int(12).0,
+        0,
+        0,
+        0,
+        0,
+        one,
+        half,
+        half,
+        half,
+        0,
+        Fx::from_int(-20).0,
+        0,
+        u32::MAX,
+    ) != 0
+    {
+        for i in 0..7 {
+            x ^= (sim3_ray_get(i) as u64).rotate_left(i * 3 + 2);
         }
     }
     sim3_world_free(h);

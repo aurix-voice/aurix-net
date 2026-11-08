@@ -895,74 +895,7 @@ impl World {
 
     fn collide(&self, ia: BodyId, ib: BodyId) -> Option<Manifold> {
         let (a, b) = (&self.bodies[&ia], &self.bodies[&ib]);
-        let points: Vec<(FxVec3, FxVec3, Fx)> = match (&a.shape, &b.shape) {
-            (Shape::Sphere { .. }, Shape::Sphere { .. }) => {
-                sphere_sphere(a.position, a.radius(), b.position, b.radius())
-                    .into_iter()
-                    .collect()
-            }
-            (Shape::Sphere { .. }, Shape::Capsule { .. }) => {
-                let (p, q) = b.segment();
-                let c = closest_on_segment(a.position, p, q);
-                sphere_sphere(a.position, a.radius(), c, b.radius())
-                    .into_iter()
-                    .collect()
-            }
-            (Shape::Capsule { .. }, Shape::Sphere { .. }) => {
-                let (p, q) = a.segment();
-                let c = closest_on_segment(b.position, p, q);
-                sphere_sphere(c, a.radius(), b.position, b.radius())
-                    .into_iter()
-                    .collect()
-            }
-            (Shape::Capsule { .. }, Shape::Capsule { .. }) => {
-                let (p1, q1) = a.segment();
-                let (p2, q2) = b.segment();
-                let (c1, c2) = closest_segments(p1, q1, p2, q2);
-                sphere_sphere(c1, a.radius(), c2, b.radius())
-                    .into_iter()
-                    .collect()
-            }
-            (Shape::Sphere { .. }, Shape::Box { half }) => {
-                sphere_box(a.position, a.radius(), b, *half)
-                    .into_iter()
-                    .collect()
-            }
-            (Shape::Box { half }, Shape::Sphere { .. }) => {
-                sphere_box(b.position, b.radius(), a, *half)
-                    .into_iter()
-                    .map(|(p, n, d)| (p, neg(n), d))
-                    .collect()
-            }
-            (Shape::Capsule { .. }, Shape::Box { half }) => {
-                capsule_box(a, b, *half).into_iter().collect()
-            }
-            (Shape::Box { half }, Shape::Capsule { .. }) => capsule_box(b, a, *half)
-                .into_iter()
-                .map(|(p, n, d)| (p, neg(n), d))
-                .collect(),
-            (Shape::Box { half: ha }, Shape::Box { half: hb }) => box_box(a, *ha, b, *hb),
-            (Shape::Sphere { .. }, Shape::Convex { .. }) => {
-                sphere_hull(a.position, a.radius(), &hull_view(b))
-                    .into_iter()
-                    .collect()
-            }
-            (Shape::Convex { .. }, Shape::Sphere { .. }) => {
-                sphere_hull(b.position, b.radius(), &hull_view(a))
-                    .into_iter()
-                    .map(|(p, n, d)| (p, neg(n), d))
-                    .collect()
-            }
-            (Shape::Capsule { .. }, Shape::Convex { .. }) => capsule_hull(a, &hull_view(b)),
-            (Shape::Convex { .. }, Shape::Capsule { .. }) => capsule_hull(b, &hull_view(a))
-                .into_iter()
-                .map(|(p, n, d)| (p, neg(n), d))
-                .collect(),
-            (
-                Shape::Box { .. } | Shape::Convex { .. },
-                Shape::Box { .. } | Shape::Convex { .. },
-            ) => hull_hull(&hull_view(a), &hull_view(b)),
-        };
+        let points = contact_points(a, b);
         if points.is_empty() {
             return None;
         }
@@ -1029,6 +962,108 @@ impl World {
             }
         }
         best
+    }
+
+    /// Sweep any shape (capsule, box, convex hull, sphere) placed at `position` with `rotation`
+    /// along `from + dir * t`, t in 0..=1, using the same contact generators as the solver; first
+    /// touching body with the deepest contact point and the surface normal. Deterministic sampled
+    /// advance + bisection like `sphere_cast`.
+    pub fn shape_cast(
+        &self,
+        shape: Shape,
+        position: FxVec3,
+        rotation: FxQuat,
+        dir: FxVec3,
+        mask: u32,
+    ) -> Option<RayHit> {
+        let len = dir.length();
+        if len.0 == 0 {
+            return None;
+        }
+        let extent = match &shape {
+            Shape::Sphere { radius } | Shape::Capsule { radius, .. } => *radius,
+            Shape::Box { half } => half.x.min(half.y).min(half.z),
+            Shape::Convex { verts, .. } => {
+                verts.iter().map(|v| v.length()).fold(Fx::ZERO, Fx::max) * Fx::HALF
+            }
+        };
+        let steps = (((len / extent.max(Fx::from_ratio(1, 100))).0 >> 31) + 1).clamp(1, 256) as i32;
+        let mut probe = Body::new(BodyKind::Kinematic, shape, position);
+        probe.rotation = rotation.normalized();
+        let touching = |probe: &mut Body, t: Fx, b: &Body| {
+            probe.position = position + dir.scale(t);
+            contact_points(probe, b)
+        };
+        let mut best: Option<RayHit> = None;
+        for (id, b) in &self.bodies {
+            if b.layer & mask == 0 || !touching(&mut probe, Fx::ZERO, b).is_empty() {
+                continue;
+            }
+            let mut lo = Fx::ZERO;
+            let mut hi: Option<Fx> = None;
+            for i in 1..=steps {
+                let t = Fx::from_int(i) / Fx::from_int(steps);
+                if !touching(&mut probe, t, b).is_empty() {
+                    hi = Some(t);
+                    break;
+                }
+                lo = t;
+            }
+            let Some(mut hi) = hi else { continue };
+            for _ in 0..16 {
+                let mid = (lo + hi) * Fx::HALF;
+                if !touching(&mut probe, mid, b).is_empty() {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            if best.is_none_or(|h| lo < h.fraction) {
+                let pts = touching(&mut probe, hi, b);
+                let (point, n, _) =
+                    pts.iter()
+                        .copied()
+                        .fold(pts[0], |acc, p| if p.2 > acc.2 { p } else { acc });
+                best = Some(RayHit {
+                    body: *id,
+                    point,
+                    normal: neg(n),
+                    fraction: lo,
+                });
+            }
+        }
+        best
+    }
+
+    /// Capsule sweep (`shape_cast` with `Shape::Capsule`).
+    pub fn capsule_cast(
+        &self,
+        from: FxVec3,
+        rotation: FxQuat,
+        half_len: Fx,
+        radius: Fx,
+        dir: FxVec3,
+        mask: u32,
+    ) -> Option<RayHit> {
+        self.shape_cast(
+            Shape::Capsule { half_len, radius },
+            from,
+            rotation,
+            dir,
+            mask,
+        )
+    }
+
+    /// Box sweep (`shape_cast` with `Shape::Box`).
+    pub fn box_cast(
+        &self,
+        from: FxVec3,
+        rotation: FxQuat,
+        half: FxVec3,
+        dir: FxVec3,
+        mask: u32,
+    ) -> Option<RayHit> {
+        self.shape_cast(Shape::Box { half }, from, rotation, dir, mask)
     }
 
     /// Closest hit along `from + dir * t`, t in 0..=1.
@@ -1598,6 +1633,73 @@ fn box_box(a: &Body, ha: FxVec3, b: &Body, hb: FxVec3) -> Vec<(FxVec3, FxVec3, F
 }
 
 /// Contact of a probe sphere against any body: (point on body, normal sphere→body, depth).
+/// Contact points of `a` against `b`: (point, normal from a to b, depth); empty when apart.
+fn contact_points(a: &Body, b: &Body) -> Vec<(FxVec3, FxVec3, Fx)> {
+    match (&a.shape, &b.shape) {
+        (Shape::Sphere { .. }, Shape::Sphere { .. }) => {
+            sphere_sphere(a.position, a.radius(), b.position, b.radius())
+                .into_iter()
+                .collect()
+        }
+        (Shape::Sphere { .. }, Shape::Capsule { .. }) => {
+            let (p, q) = b.segment();
+            let c = closest_on_segment(a.position, p, q);
+            sphere_sphere(a.position, a.radius(), c, b.radius())
+                .into_iter()
+                .collect()
+        }
+        (Shape::Capsule { .. }, Shape::Sphere { .. }) => {
+            let (p, q) = a.segment();
+            let c = closest_on_segment(b.position, p, q);
+            sphere_sphere(c, a.radius(), b.position, b.radius())
+                .into_iter()
+                .collect()
+        }
+        (Shape::Capsule { .. }, Shape::Capsule { .. }) => {
+            let (p1, q1) = a.segment();
+            let (p2, q2) = b.segment();
+            let (c1, c2) = closest_segments(p1, q1, p2, q2);
+            sphere_sphere(c1, a.radius(), c2, b.radius())
+                .into_iter()
+                .collect()
+        }
+        (Shape::Sphere { .. }, Shape::Box { half }) => sphere_box(a.position, a.radius(), b, *half)
+            .into_iter()
+            .collect(),
+        (Shape::Box { half }, Shape::Sphere { .. }) => sphere_box(b.position, b.radius(), a, *half)
+            .into_iter()
+            .map(|(p, n, d)| (p, neg(n), d))
+            .collect(),
+        (Shape::Capsule { .. }, Shape::Box { half }) => {
+            capsule_box(a, b, *half).into_iter().collect()
+        }
+        (Shape::Box { half }, Shape::Capsule { .. }) => capsule_box(b, a, *half)
+            .into_iter()
+            .map(|(p, n, d)| (p, neg(n), d))
+            .collect(),
+        (Shape::Box { half: ha }, Shape::Box { half: hb }) => box_box(a, *ha, b, *hb),
+        (Shape::Sphere { .. }, Shape::Convex { .. }) => {
+            sphere_hull(a.position, a.radius(), &hull_view(b))
+                .into_iter()
+                .collect()
+        }
+        (Shape::Convex { .. }, Shape::Sphere { .. }) => {
+            sphere_hull(b.position, b.radius(), &hull_view(a))
+                .into_iter()
+                .map(|(p, n, d)| (p, neg(n), d))
+                .collect()
+        }
+        (Shape::Capsule { .. }, Shape::Convex { .. }) => capsule_hull(a, &hull_view(b)),
+        (Shape::Convex { .. }, Shape::Capsule { .. }) => capsule_hull(b, &hull_view(a))
+            .into_iter()
+            .map(|(p, n, d)| (p, neg(n), d))
+            .collect(),
+        (Shape::Box { .. } | Shape::Convex { .. }, Shape::Box { .. } | Shape::Convex { .. }) => {
+            hull_hull(&hull_view(a), &hull_view(b))
+        }
+    }
+}
+
 fn sphere_vs(c: FxVec3, r: Fx, b: &Body) -> Option<(FxVec3, FxVec3, Fx)> {
     match &b.shape {
         Shape::Sphere { .. } => sphere_sphere(c, r, b.position, b.radius()),
@@ -2484,6 +2586,120 @@ mod tests {
                 vec![3, 0, 4],
             ],
         }
+    }
+
+    #[test]
+    fn capsule_and_box_sweeps_stop_on_the_surface() {
+        let build = || {
+            let mut w = World::new(WorldConfig::default());
+            // floor at y = 0 (top face), a unit sphere at x = 6 (ids 1 and 2)
+            w.add(Body::new(
+                BodyKind::Static,
+                Shape::Box {
+                    half: FxVec3::new(Fx::from_int(10), Fx::ONE, Fx::from_int(10)),
+                },
+                FxVec3::new(Fx::ZERO, -Fx::ONE, Fx::ZERO),
+            ));
+            w.add(Body::new(
+                BodyKind::Static,
+                Shape::Sphere { radius: Fx::ONE },
+                FxVec3::new(Fx::from_int(6), Fx::from_int(3), Fx::ZERO),
+            ));
+            w
+        };
+        let (a, b) = (build(), build());
+        let down = FxVec3::new(Fx::ZERO, Fx::from_int(-10), Fx::ZERO);
+        // upright capsule (half 1 + radius 0.5) from y = 5: bottom at y = 3.5 → touches floor after 3.5
+        let hit = a
+            .capsule_cast(
+                FxVec3::new(Fx::ZERO, Fx::from_int(5), Fx::ZERO),
+                FxQuat::IDENTITY,
+                Fx::ONE,
+                Fx::HALF,
+                down,
+                u32::MAX,
+            )
+            .unwrap();
+        assert_eq!(hit.body, BodyId(1));
+        assert!(
+            (hit.fraction.to_f64() - 0.35).abs() < 2e-3,
+            "{}",
+            hit.fraction.to_f64()
+        );
+        assert!(hit.normal.y.to_f64() > 0.99 && hit.point.y.to_f64().abs() < 0.02);
+        // unit box from y = 5: bottom at y = 4 → fraction 0.4
+        let hit = a
+            .box_cast(
+                FxVec3::new(Fx::ZERO, Fx::from_int(5), Fx::ZERO),
+                FxQuat::IDENTITY,
+                FxVec3::new(Fx::ONE, Fx::ONE, Fx::ONE),
+                down,
+                u32::MAX,
+            )
+            .unwrap();
+        assert_eq!(hit.body, BodyId(1));
+        assert!(
+            (hit.fraction.to_f64() - 0.4).abs() < 2e-3,
+            "{}",
+            hit.fraction.to_f64()
+        );
+        // box swept sideways at the sphere: faces at x = ±1 → gap 6 - 1 - 1 = 4 of 10
+        let hit = a
+            .box_cast(
+                FxVec3::new(Fx::ZERO, Fx::from_int(3), Fx::ZERO),
+                FxQuat::IDENTITY,
+                FxVec3::new(Fx::ONE, Fx::ONE, Fx::ONE),
+                FxVec3::new(Fx::from_int(10), Fx::ZERO, Fx::ZERO),
+                u32::MAX,
+            )
+            .unwrap();
+        assert_eq!(hit.body, BodyId(2));
+        assert!(
+            (hit.fraction.to_f64() - 0.4).abs() < 2e-3,
+            "{}",
+            hit.fraction.to_f64()
+        );
+        assert!(hit.normal.x.to_f64() < -0.99);
+        // nothing on the way → None; deterministic across worlds
+        assert!(a
+            .box_cast(
+                FxVec3::new(Fx::ZERO, Fx::from_int(30), Fx::ZERO),
+                FxQuat::IDENTITY,
+                FxVec3::new(Fx::ONE, Fx::ONE, Fx::ONE),
+                FxVec3::new(Fx::from_int(10), Fx::ZERO, Fx::ZERO),
+                u32::MAX
+            )
+            .is_none());
+        let h1 = a
+            .capsule_cast(
+                FxVec3::new(Fx::from_int(3), Fx::from_int(4), Fx::ONE),
+                FxQuat::from_axis_angle(
+                    FxVec3::new(Fx::ZERO, Fx::ZERO, Fx::ONE),
+                    Fx::HALF_PI * Fx::HALF,
+                ),
+                Fx::ONE,
+                Fx::HALF,
+                FxVec3::new(Fx::from_int(5), Fx::from_int(-6), Fx::ZERO),
+                u32::MAX,
+            )
+            .unwrap();
+        let h2 = b
+            .capsule_cast(
+                FxVec3::new(Fx::from_int(3), Fx::from_int(4), Fx::ONE),
+                FxQuat::from_axis_angle(
+                    FxVec3::new(Fx::ZERO, Fx::ZERO, Fx::ONE),
+                    Fx::HALF_PI * Fx::HALF,
+                ),
+                Fx::ONE,
+                Fx::HALF,
+                FxVec3::new(Fx::from_int(5), Fx::from_int(-6), Fx::ZERO),
+                u32::MAX,
+            )
+            .unwrap();
+        assert_eq!(
+            (h1.body, h1.fraction, h1.point, h1.normal),
+            (h2.body, h2.fraction, h2.point, h2.normal)
+        );
     }
 
     #[test]

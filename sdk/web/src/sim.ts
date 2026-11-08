@@ -113,6 +113,8 @@ interface SimExports {
   sim3_convex_face_end(h: number): number;
   sim3_add_convex(h: number, k: number, x: bigint, y: bigint, z: bigint, density: bigint): number;
   sim3_spherecast(h: number, x: bigint, y: bigint, z: bigint, dx: bigint, dy: bigint, dz: bigint, radius: bigint, mask: number): number;
+  sim3_capsulecast(h: number, x: bigint, y: bigint, z: bigint, qx: bigint, qy: bigint, qz: bigint, qw: bigint, halfLen: bigint, radius: bigint, dx: bigint, dy: bigint, dz: bigint, mask: number): number;
+  sim3_boxcast(h: number, x: bigint, y: bigint, z: bigint, qx: bigint, qy: bigint, qz: bigint, qw: bigint, hx: bigint, hy: bigint, hz: bigint, dx: bigint, dy: bigint, dz: bigint, mask: number): number;
   sim3_hull_golden_hash(): bigint;
 }
 
@@ -148,27 +150,27 @@ export class Sim {
 
   /** Reference scenario hash; must equal the native Rust value (`0x58d9870ba45952b5`). */
   goldenHash(): bigint {
-    return this.e.sim_golden_hash();
+    return BigInt.asUintN(64, this.e.sim_golden_hash());
   }
   /** Navigation reference scenario hash; must equal the native value (`0x746c5a608abe2f26`). */
   navGoldenHash(): bigint {
-    return this.e.sim_nav_golden_hash();
+    return BigInt.asUintN(64, this.e.sim_nav_golden_hash());
   }
   /** Joint reference scenario hash; must equal the native value (`0x4bcc781a484ceeed`). */
   jointGoldenHash(): bigint {
-    return this.e.sim_joint_golden_hash();
+    return BigInt.asUintN(64, this.e.sim_joint_golden_hash());
   }
   /** 3D reference scenario hash; must equal the native value (`0x0a9c7e6fc4fa43bf`). */
   golden3Hash(): bigint {
-    return this.e.sim3_golden_hash();
+    return BigInt.asUintN(64, this.e.sim3_golden_hash());
   }
   /** 3D joints/character reference scenario hash (`0x5db56af63cceee85`). */
   joint3GoldenHash(): bigint {
-    return this.e.sim3_joint_golden_hash();
+    return BigInt.asUintN(64, this.e.sim3_joint_golden_hash());
   }
-  /** 3D convex hull reference scenario hash (`0x29ab0385d38dc53f`). */
+  /** 3D convex hull reference scenario hash (`0xd656fc8f55999cf8`). */
   hull3GoldenHash(): bigint {
-    return this.e.sim3_hull_golden_hash();
+    return BigInt.asUintN(64, this.e.sim3_hull_golden_hash());
   }
   /** Create a 3D world (gravity in m/s², tick rate). */
   world3(gravity: { x: number; y: number; z: number } = { x: 0, y: -10, z: 0 }, tickHz = 60): Sim3World {
@@ -529,6 +531,21 @@ export class Sim3World {
   /** Sweep a sphere along `dir`; `fraction` is where the centre stops, `point`/`normal` lie on the hit surface. */
   sphereCast(from: Vec3, dir: Vec3, radius: number, mask = 0xffffffff): Ray3Hit | null {
     const id = this.e.sim3_spherecast(this.handle, fx(from.x), fx(from.y), fx(from.z), fx(dir.x), fx(dir.y), fx(dir.z), fx(radius), mask);
+    if (id === 0) return null;
+    const g = (i: number) => num(this.e.sim3_ray_get(i));
+    return { body: id - 1, fraction: g(0), point: { x: g(1), y: g(2), z: g(3) }, normal: { x: g(4), y: g(5), z: g(6) } };
+  }
+  /** Sweep a capsule (segment along its local y, rotated by `rot`) along `dir`; same result shape as `sphereCast`. */
+  capsuleCast(from: Vec3, rot: Quat, halfLen: number, radius: number, dir: Vec3, mask = 0xffffffff): Ray3Hit | null {
+    const id = this.e.sim3_capsulecast(this.handle, fx(from.x), fx(from.y), fx(from.z), fx(rot.x), fx(rot.y), fx(rot.z), fx(rot.w), fx(halfLen), fx(radius), fx(dir.x), fx(dir.y), fx(dir.z), mask);
+    return this.rayResult(id);
+  }
+  /** Sweep a box (`half` extents, rotated by `rot`) along `dir`; same result shape as `sphereCast`. */
+  boxCast(from: Vec3, rot: Quat, half: Vec3, dir: Vec3, mask = 0xffffffff): Ray3Hit | null {
+    const id = this.e.sim3_boxcast(this.handle, fx(from.x), fx(from.y), fx(from.z), fx(rot.x), fx(rot.y), fx(rot.z), fx(rot.w), fx(half.x), fx(half.y), fx(half.z), fx(dir.x), fx(dir.y), fx(dir.z), mask);
+    return this.rayResult(id);
+  }
+  private rayResult(id: number): Ray3Hit | null {
     if (id === 0) return null;
     const g = (i: number) => num(this.e.sim3_ray_get(i));
     return { body: id - 1, fraction: g(0), point: { x: g(1), y: g(2), z: g(3) }, normal: { x: g(4), y: g(5), z: g(6) } };

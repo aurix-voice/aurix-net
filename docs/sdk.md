@@ -242,7 +242,7 @@ author vertices around the centre of mass; mass is exact volume, inertia the bou
 collide with spheres, capsules, boxes and each other via SAT over face normals and edge crosses with
 reference-face clipping. `sphereCast(from, dir, radius)` / `SphereCast` sweeps a sphere and reports
 the first body, the centre's stop fraction and the surface point/normal. Reference hash
-`sim3_hull_golden_hash()` = `0x29ab0385d38dc53f` on native and wasm32.
+`sim3_hull_golden_hash()` = `0xd656fc8f55999cf8` on native and wasm32. `capsuleCast(from, rot, halfLen, radius, dir)` / `boxCast(from, rot, half, dir)` (Unity `CapsuleCast`/`BoxCast`, C ABI `sim3_capsulecast`/`sim3_boxcast`) sweep a rotated capsule (local axis Y) or box the same way and return the same hit shape.
 
 ### aurix-sim from C / C++ / Godot
 

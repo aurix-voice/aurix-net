@@ -64,6 +64,8 @@ namespace Aurix.Net.Sim
         [DllImport(Lib)] public static extern uint sim3_convex_face_end(uint h);
         [DllImport(Lib)] public static extern uint sim3_add_convex(uint h, uint k, long x, long y, long z, long density);
         [DllImport(Lib)] public static extern uint sim3_spherecast(uint h, long x, long y, long z, long dx, long dy, long dz, long radius, uint mask);
+        [DllImport(Lib)] public static extern uint sim3_capsulecast(uint h, long x, long y, long z, long qx, long qy, long qz, long qw, long halfLen, long r, long dx, long dy, long dz, uint mask);
+        [DllImport(Lib)] public static extern uint sim3_boxcast(uint h, long x, long y, long z, long qx, long qy, long qz, long qw, long hx, long hy, long hz, long dx, long dy, long dz, uint mask);
         [DllImport(Lib)] public static extern ulong sim3_hull_golden_hash();
     }
 
@@ -80,7 +82,7 @@ namespace Aurix.Net.Sim
         public static ulong GoldenHash() => Sim3Native.sim3_golden_hash();
         /// 3D joints/character reference scenario hash; equals 0x5db56af63cceee85 on every platform.
         public static ulong JointGoldenHash() => Sim3Native.sim3_joint_golden_hash();
-        /// 3D convex hull reference scenario hash; equals 0x29ab0385d38dc53f on every platform.
+        /// 3D convex hull reference scenario hash; equals 0xd656fc8f55999cf8 on every platform.
         public static ulong HullGoldenHash() => Sim3Native.sim3_hull_golden_hash();
 
         public void Step() => Sim3Native.sim3_step(Handle);
@@ -197,6 +199,26 @@ namespace Aurix.Net.Sim
         public bool SphereCast(Vec3 from, Vec3 dir, double radius, out Ray3Hit hit, uint mask = uint.MaxValue)
         {
             uint id = Sim3Native.sim3_spherecast(Handle, Fx.From(from.X), Fx.From(from.Y), Fx.From(from.Z), Fx.From(dir.X), Fx.From(dir.Y), Fx.From(dir.Z), Fx.From(radius), mask);
+            hit = default;
+            if (id == 0) return false;
+            double G(uint i) => Fx.To(Sim3Native.sim3_ray_get(i));
+            hit = new Ray3Hit { Body = id - 1, Fraction = G(0), Point = new Vec3(G(1), G(2), G(3)), Normal = new Vec3(G(4), G(5), G(6)) };
+            return true;
+        }
+        /// Sweep a capsule (segment along its local Y, rotated by rot) along dir; same result as SphereCast.
+        public bool CapsuleCast(Vec3 from, Quat rot, double halfLen, double radius, Vec3 dir, out Ray3Hit hit, uint mask = uint.MaxValue)
+        {
+            uint id = Sim3Native.sim3_capsulecast(Handle, Fx.From(from.X), Fx.From(from.Y), Fx.From(from.Z), Fx.From(rot.X), Fx.From(rot.Y), Fx.From(rot.Z), Fx.From(rot.W), Fx.From(halfLen), Fx.From(radius), Fx.From(dir.X), Fx.From(dir.Y), Fx.From(dir.Z), mask);
+            return RayResult(id, out hit);
+        }
+        /// Sweep a box (half extents, rotated by rot) along dir; same result as SphereCast.
+        public bool BoxCast(Vec3 from, Quat rot, Vec3 half, Vec3 dir, out Ray3Hit hit, uint mask = uint.MaxValue)
+        {
+            uint id = Sim3Native.sim3_boxcast(Handle, Fx.From(from.X), Fx.From(from.Y), Fx.From(from.Z), Fx.From(rot.X), Fx.From(rot.Y), Fx.From(rot.Z), Fx.From(rot.W), Fx.From(half.X), Fx.From(half.Y), Fx.From(half.Z), Fx.From(dir.X), Fx.From(dir.Y), Fx.From(dir.Z), mask);
+            return RayResult(id, out hit);
+        }
+        static bool RayResult(uint id, out Ray3Hit hit)
+        {
             hit = default;
             if (id == 0) return false;
             double G(uint i) => Fx.To(Sim3Native.sim3_ray_get(i));

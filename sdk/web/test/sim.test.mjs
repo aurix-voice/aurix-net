@@ -125,7 +125,7 @@ test("sim wasm: 3D joints golden hash, hinge door and walking character", { skip
 
 test("sim wasm: 3D convex hulls golden hash, pyramid rests, sphere cast", { skip }, async () => {
   const sim = await Sim.load(await readFile(WASM));
-  assert.equal(sim.hull3GoldenHash(), 0x29ab0385d38dc53fn);
+  assert.equal(sim.hull3GoldenHash(), 0xd656fc8f55999cf8n);
   const w = sim.world3();
   w.addBox(BodyKind.Static, { x: 0, y: -0.5, z: 0 }, { x: 20, y: 0.5, z: 20 });
   const verts = [{ x: -0.5, y: -0.25, z: -0.5 }, { x: 0.5, y: -0.25, z: -0.5 }, { x: 0.5, y: -0.25, z: 0.5 }, { x: -0.5, y: -0.25, z: 0.5 }, { x: 0, y: 0.75, z: 0 }];
@@ -136,6 +136,12 @@ test("sim wasm: 3D convex hulls golden hash, pyramid rests, sphere cast", { skip
   assert.ok(Math.abs(p.y - 0.25) < 0.06, `pyramid ${JSON.stringify(p)}`);
   const hit = w.sphereCast({ x: 0, y: 5, z: 0 }, { x: 0, y: -10, z: 0 }, 0.5);
   assert.ok(hit && hit.body === pyr && Math.abs(hit.point.y - 1.0) < 0.05 && hit.normal.y > 0.5, JSON.stringify(hit));
+  const q = { x: 0, y: 0, z: 0, w: 1 };
+  const bh = w.boxCast({ x: 0, y: 5, z: 0 }, q, { x: 0.5, y: 0.5, z: 0.5 }, { x: 0, y: -10, z: 0 });
+  assert.ok(bh && bh.body === pyr && Math.abs(bh.point.y - 1.0) < 0.05 && Math.abs(bh.fraction - 0.35) < 0.01, `box cast ${JSON.stringify(bh)}`);
+  const ch = w.capsuleCast({ x: 0, y: 5, z: 0 }, q, 0.5, 0.25, { x: 0, y: -10, z: 0 });
+  assert.ok(ch && ch.body === pyr && Math.abs(ch.point.y - 1.0) < 0.05 && Math.abs(ch.fraction - 0.325) < 0.01, `capsule cast ${JSON.stringify(ch)}`);
+  assert.equal(w.boxCast({ x: 0, y: 5, z: 0 }, q, { x: 0.5, y: 0.5, z: 0.5 }, { x: 10, y: 0, z: 0 }), null);
   assert.throws(() => w.addConvex(BodyKind.Static, { x: 0, y: 0, z: 0 }, verts.slice(0, 3), faces));
   w.free();
 });

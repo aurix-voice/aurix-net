@@ -253,7 +253,13 @@ uint32_t sim3_add_convex(uint32_t h, uint32_t k, int64_t x, int64_t y, int64_t z
 /* Sphere sweep; result fields as `sim3_ray_get`. Returns body id + 1 or 0. */
 uint32_t sim3_spherecast(uint32_t h, int64_t x, int64_t y, int64_t z, int64_t dx, int64_t dy, int64_t dz, int64_t radius, uint32_t mask);
 
-/* Convex reference scenario: three pyramids dropped in a column, a box sliding off a static wedge, a sphere rolling onto a pyramid, plus a sphere sweep mixed into the hash; 300 ticks. */
+/* Capsule sweep (segment along the capsule's y axis rotated by the quaternion); result fields as `sim3_ray_get`. Returns body id + 1 or 0. */
+uint32_t sim3_capsulecast(uint32_t h, int64_t x, int64_t y, int64_t z, int64_t qx, int64_t qy, int64_t qz, int64_t qw, int64_t half_len, int64_t radius, int64_t dx, int64_t dy, int64_t dz, uint32_t mask);
+
+/* Box sweep (half extents in body space, rotated by the quaternion); result fields as `sim3_ray_get`. Returns body id + 1 or 0. */
+uint32_t sim3_boxcast(uint32_t h, int64_t x, int64_t y, int64_t z, int64_t qx, int64_t qy, int64_t qz, int64_t qw, int64_t hx, int64_t hy, int64_t hz, int64_t dx, int64_t dy, int64_t dz, uint32_t mask);
+
+/* Convex reference scenario: three pyramids dropped in a column, a box sliding off a static wedge, a sphere rolling onto a pyramid, plus sphere, capsule and box sweeps mixed into the hash; 300 ticks. */
 uint64_t sim3_hull_golden_hash(void);
 
 /* 3D joint/character reference scenario: ball pendulum, rope, limited hinge door, motor wheel and a capsule character walking over a step into a wall; 300 ticks. Equal on native and wasm32. */

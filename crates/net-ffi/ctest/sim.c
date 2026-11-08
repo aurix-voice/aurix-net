@@ -18,7 +18,7 @@ int main(void) {
     CHECK(sim_nav_golden_hash() == 0x746c5a608abe2f26ULL, "nav golden %#" PRIx64, sim_nav_golden_hash());
     CHECK(sim3_golden_hash() == 0x0a9c7e6fc4fa43bfULL, "3D physics golden %#" PRIx64, sim3_golden_hash());
     CHECK(sim3_joint_golden_hash() == 0x5db56af63cceee85ULL, "3D joints golden %#" PRIx64, sim3_joint_golden_hash());
-    CHECK(sim3_hull_golden_hash() == 0x29ab0385d38dc53fULL, "3D hulls golden %#" PRIx64, sim3_hull_golden_hash());
+    CHECK(sim3_hull_golden_hash() == 0xd656fc8f55999cf8ULL, "3D hulls golden %#" PRIx64, sim3_hull_golden_hash());
 
     uint32_t w = sim_world_new(0, FX(-10), 60);
     sim_add_box(w, 0, 0, FX(-0.5), FX(20), FX(0.5), AURIX_FX_ONE);
@@ -38,6 +38,12 @@ int main(void) {
     uint32_t hit = sim3_spherecast(w3, FX(0), FX(5), FX(0), FX(0), FX(-10), FX(0), FX(0.25), 0xffffffffu);
     double py = aurix_fx_to_double(sim3_ray_get(2));
     CHECK(hit == s + 1 && fabs(py - 1.0) < 0.05, "3D sphere cast hits the sphere top (y=%.3f)", py);
+    uint32_t bhit = sim3_boxcast(w3, FX(0), FX(5), FX(0), FX(0), FX(0), FX(0), AURIX_FX_ONE, FX(0.25), FX(0.25), FX(0.25), FX(0), FX(-10), FX(0), 0xffffffffu);
+    double by = aurix_fx_to_double(sim3_ray_get(2));
+    CHECK(bhit == s + 1 && fabs(by - 1.0) < 0.05, "3D box cast hits the sphere top (y=%.3f)", by);
+    uint32_t chit = sim3_capsulecast(w3, FX(0), FX(5), FX(0), FX(0), FX(0), FX(0), AURIX_FX_ONE, FX(0.5), FX(0.25), FX(0), FX(-10), FX(0), 0xffffffffu);
+    double cy = aurix_fx_to_double(sim3_ray_get(2));
+    CHECK(chit == s + 1 && fabs(cy - 1.0) < 0.05, "3D capsule cast hits the sphere top (y=%.3f)", cy);
     sim3_world_free(w3);
     CHECK(h1 != 0, "hash is non-zero");
     printf(fails ? "%d FAILED\n" : "all sim C ABI checks passed\n", fails);
