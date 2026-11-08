@@ -1,8 +1,15 @@
 # Aurix Net for Godot 4 (GDExtension)
 
 Build: `git clone -b 4.2 https://github.com/godotengine/godot-cpp` here, `cargo build --release -p net-ffi`
-in the repo root, then `scons target=template_debug`. Copy `bin/` + `aurix_net.gdextension` to
+in the repo root, then `scons target=template_debug` (`SConstruct` builds godot-cpp with exceptions on:
+`aurix_net.hpp` reports errors by throwing, the wrappers catch them). Copy `bin/` + `aurix_net.gdextension` to
 `addons/aurix_net/` together with `libaurix_net.so` / `aurix_net.dll`.
+
+Smoke test without the editor: `check~/` is a minimal project (classes load, sync schema parses, two relay
+clients exchange an event against a local node). `cp -r bin ../../target/release/libaurix_net.so
+check~/addons/aurix_net/bin/`, then `GRANT_A=... GRANT_B=... godot --headless --path check~` (grants from
+`POST /v1/grants`; without them only the offline part runs). Godot discovers `.gdextension` files when the
+project is opened in the editor; headless, `check~/.godot/extension_list.cfg` lists it by hand.
 
 ```gdscript
 var net := AurixNetClient.new(); add_child(net)   # polls in _process

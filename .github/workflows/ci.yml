@@ -39,6 +39,11 @@ jobs:
           cargo build --release --target wasm32-unknown-unknown -p net-sim-guest
           cargo build --release -p net-sim-wasm
           cargo run -p net-sim-wasm --example golden_check
+      - name: Godot 4 GDExtension builds against godot-cpp 4.2
+        run: |
+          pip3 install --user scons
+          git clone -q --depth 1 -b 4.2 https://github.com/godotengine/godot-cpp sdk/godot/godot-cpp
+          (cd sdk/godot && ~/.local/bin/scons target=template_debug -j"$(nproc)" >/dev/null && ls -la bin)
       - name: aurix-sim C ABI (libaurix_net + ctest/sim.c, header up to date)
         run: |
           cargo build --release -p net-ffi

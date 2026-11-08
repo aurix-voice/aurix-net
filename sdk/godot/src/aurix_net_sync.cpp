@@ -1,7 +1,7 @@
 #include "aurix_net_sync.h"
 #include <godot_cpp/core/class_db.hpp>
 
-using namespace godot;
+namespace godot {
 
 static std::string to_std(const String &s) { return std::string(s.utf8().get_data()); }
 
@@ -27,16 +27,16 @@ void AurixNetSync::_bind_methods() {
     ADD_SIGNAL(MethodInfo("despawn", PropertyInfo(Variant::INT, "entity")));
 }
 
-#define AURIX_TRY(expr, fail) try { expr; } catch (const std::exception &e) { last_error_ = e.what(); return fail; }
+#define AURIX_TRY(fail, ...) try { __VA_ARGS__; } catch (const std::exception &e) { last_error_ = e.what(); return fail; }
 
 bool AurixNetSync::setup(const String &schema, int tick_hz, int interpolation_ticks) {
-    AURIX_TRY(sync_ = std::make_unique<aurix::net::Sync>(to_std(schema), tick_hz, interpolation_ticks); return true, false);
+    AURIX_TRY(false, sync_ = std::make_unique<aurix::net::Sync>(to_std(schema), tick_hz, interpolation_ticks); return true);
 }
 
 bool AurixNetSync::receive(AurixNetClient *client, const PackedByteArray &payload) {
     if (!sync_ || !client) return false;
     bool delta = false;
-    AURIX_TRY(delta = sync_->receive(client->raw(), payload.ptr(), payload.size()), false);
+    AURIX_TRY(false, delta = sync_->receive(client->raw(), payload.ptr(), payload.size()));
     if (!delta) return false;
     for (auto e = sync_->poll(); e.kind != aurix::net::Sync::Kind::None; e = sync_->poll()) {
         switch (e.kind) {
@@ -96,13 +96,13 @@ bool AurixNetSync::begin_write(const String &component) {
     if (!sync_) return false;
     int c = sync_->component(to_std(component).c_str());
     if (c < 0) { last_error_ = "unknown component " + component; return false; }
-    AURIX_TRY(sync_->begin(c); current_ = c; return true, false);
+    AURIX_TRY(false, sync_->begin(c); current_ = c; return true);
 }
 
 bool AurixNetSync::write_field(const String &field, const Variant &value) {
     if (!sync_) return false;
     // the component under construction is the last begin(); resolve the field through it
-    AURIX_TRY({
+    AURIX_TRY(false, {
         int c = current_;
         int f = sync_->field(c, to_std(field).c_str());
         if (f < 0) { last_error_ = "unknown field " + field; return false; }
@@ -115,15 +115,18 @@ bool AurixNetSync::write_field(const String &field, const Variant &value) {
             default: sync_->write(f, (double)value); break;
         }
         return true;
-    }, false);
+    });
+    return false;
 }
 
 bool AurixNetSync::end_write() {
     if (!sync_) return false;
-    AURIX_TRY(sync_->end(); return true, false);
+    AURIX_TRY(false, sync_->end(); return true);
 }
 
 int AurixNetSync::send_writes(AurixNetClient *client) {
     if (!sync_ || !client) return -1;
     return (int)sync_->sendWrites(client->raw());
 }
+
+} // namespace godot

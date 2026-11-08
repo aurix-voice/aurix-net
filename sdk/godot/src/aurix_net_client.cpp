@@ -1,7 +1,7 @@
 #include "aurix_net_client.h"
 #include <godot_cpp/core/class_db.hpp>
 
-using namespace godot;
+namespace godot {
 
 static std::string to_std(const String &s) { return std::string(s.utf8().get_data()); }
 static PackedByteArray to_pba(const uint8_t *d, size_t n) { PackedByteArray p; p.resize(n); if (n) memcpy(p.ptrw(), d, n); return p; }
@@ -68,3 +68,5 @@ int AurixNetClient::poll(int max_events) { return client_.connected() ? client_.
 void AurixNetClient::leave() { client_.leave(); }
 void AurixNetClient::disconnect_from() { client_.destroy(); }
 void AurixNetClient::_process(double) { poll(); }
+
+} // namespace godot

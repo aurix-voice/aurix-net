@@ -4,7 +4,7 @@
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
 
-using namespace godot;
+namespace godot {
 
 static void init(ModuleInitializationLevel level) {
     if (level != MODULE_INITIALIZATION_LEVEL_SCENE) return;
@@ -20,3 +20,5 @@ extern "C" GDExtensionBool GDE_EXPORT aurix_net_library_init(GDExtensionInterfac
     init_obj.set_minimum_library_initialization_level(MODULE_INITIALIZATION_LEVEL_SCENE);
     return init_obj.init();
 }
+
+} // namespace godot

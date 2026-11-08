@@ -1,0 +1,17 @@
+[configuration]
+entry_symbol = "aurix_net_library_init"
+compatibility_minimum = "4.2"
+
+[libraries]
+linux.debug.x86_64 = "res://addons/aurix_net/bin/libaurixnet_godot.linux.template_debug.x86_64.so"
+linux.release.x86_64 = "res://addons/aurix_net/bin/libaurixnet_godot.linux.template_release.x86_64.so"
+windows.debug.x86_64 = "res://addons/aurix_net/bin/aurixnet_godot.windows.template_debug.x86_64.dll"
+windows.release.x86_64 = "res://addons/aurix_net/bin/aurixnet_godot.windows.template_release.x86_64.dll"
+macos.debug = "res://addons/aurix_net/bin/libaurixnet_godot.macos.template_debug.framework"
+macos.release = "res://addons/aurix_net/bin/libaurixnet_godot.macos.template_release.framework"
+
+[dependencies]
+linux.debug.x86_64 = { "res://addons/aurix_net/bin/libaurix_net.so" : "" }
+linux.release.x86_64 = { "res://addons/aurix_net/bin/libaurix_net.so" : "" }
+windows.debug.x86_64 = { "res://addons/aurix_net/bin/aurix_net.dll" : "" }
+windows.release.x86_64 = { "res://addons/aurix_net/bin/aurix_net.dll" : "" }

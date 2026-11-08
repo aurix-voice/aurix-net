@@ -7,3 +7,10 @@
 sdk/unity/BuildCheck~/*/bin/
 sdk/unity/BuildCheck~/*/obj/
 *.cdx.json
+
+# Godot GDExtension build
+sdk/godot/godot-cpp/
+sdk/godot/bin/
+sdk/godot/.sconsign.dblite
+sdk/godot/src/*.os
+sdk/godot/check~/addons/aurix_net/bin/*.so
