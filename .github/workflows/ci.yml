@@ -133,7 +133,7 @@ jobs:
       - run: npm test
       - run: npm run build
       - uses: actions/download-artifact@v4
-        with: { name: sim-and-server, path: ../target }
+        with: { name: sim-and-server, path: target }  # relative to the workspace, not to working-directory
       - name: start a node for the live e2e suite
         run: |
           chmod +x ../target/debug/aurix-net-server
