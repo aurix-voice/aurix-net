@@ -13,7 +13,9 @@ Each step points at the document that explains it; nothing here is optional unle
    `8090/tcp` (`deploy/Caddyfile.example`); `7000/udp` + `7443/udp` straight to the nodes with
    their own certificate; proxy ranges in `server.trusted_proxies`; `/metrics` behind
    `METRICS_TOKEN` ([Network](deployment.md#network)).
-3. **Image** — build `aurix-net:<tag>` from the tagged commit (`docker build .`), scan it
+3. **Image** — tag the commit whose `CHANGELOG.md` has the entry and whose version fields match
+   (`Cargo.toml` workspace, `sdk/web`, `sdk/unity`, `dashboard` package.json); build
+   `aurix-net:<tag>` from it (`docker build .`), scan it
    (`trivy image aurix-net:<tag>`; CI fails on CRITICAL with a fix), keep the `sbom` artifact
    of that CI run with the release.
 4. **Compose** — copy `deploy/docker-compose.prod.yml`, set `PUBLIC_HOST` per node and
