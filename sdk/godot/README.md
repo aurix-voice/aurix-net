@@ -6,8 +6,9 @@ in the repo root, then `scons target=template_debug` (`SConstruct` builds godot-
 `addons/aurix_net/` together with `libaurix_net.so` / `aurix_net.dll`.
 
 Smoke test without the editor: `check~/` is a minimal project (classes load, sync schema parses, two relay
-clients exchange an event against a local node). `cp -r bin ../../target/release/libaurix_net.so
-check~/addons/aurix_net/bin/`, then `GRANT_A=... GRANT_B=... godot --headless --path check~` (grants from
+clients exchange an event, then two more replicate a `Transform` through `AurixNetSync` with 0 gaps).
+`cp -r bin ../../target/release/libaurix_net.so check~/addons/aurix_net/bin/`, then
+`GRANT_A=... GRANT_B=... GRANT_C=... GRANT_D=... godot --headless --path check~` (grants from
 `POST /v1/grants`; without them only the offline part runs). Godot discovers `.gdextension` files when the
 project is opened in the editor; headless, `check~/.godot/extension_list.cfg` lists it by hand.
 
