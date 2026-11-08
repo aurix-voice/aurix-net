@@ -10,7 +10,8 @@ Sign in with the node's operator token (`auth.admin_token`, whole fleet) or a pr
 against `/v1/me` on load.
 
 ```sh
-npm ci
+npm ci            # Node >= 22.12 (package.json engines, enforced by .npmrc engine-strict): older Node
+                  # skips rolldown's optional native binding and `npm run build` dies with "Cannot find native binding"
 NET_API_URL=http://127.0.0.1:8090 npm run dev                  # http://127.0.0.1:5174
 npm run check && npm run lint && npm test && npm run build
 AURIX_NET_E2E_TOKEN=… npm run e2e                               # Playwright against a live node
