@@ -234,6 +234,27 @@ impl Session {
                 self.grant = Some(g);
                 Ok(())
             }
+            ClientMsg::GetRooms { expr, limit } => {
+                let g = self.grant()?.clone();
+                let filter = match expr.as_deref().map(str::trim) {
+                    None | Some("") => None,
+                    Some(e) => Some(
+                        crate::mmfilter::Filter::parse(e)
+                            .map_err(|e| NetError::Invalid(format!("expr: {e}")))?,
+                    ),
+                };
+                self.lookup_budget()?;
+                let limit = usize::from(limit.unwrap_or(100).clamp(1, 500));
+                let rooms = self
+                    .lobby_rooms(g.project)
+                    .await
+                    .into_iter()
+                    .filter(|r| filter.as_ref().is_none_or(|f| f.matches(&r.props)))
+                    .take(limit)
+                    .collect();
+                let _ = self.ctl.try_send(ServerMsg::Rooms { rooms });
+                Ok(())
+            }
             ClientMsg::Rpc { id, name, body } => {
                 let g = self.grant()?.clone();
                 let name_ok = !name.is_empty()
@@ -1139,7 +1160,7 @@ impl Session {
             .is_some_and(|t| now.duration_since(t) < Duration::from_secs(1))
         {
             return Err(NetError::Conflict(
-                "lookup_rate: one stats/find_friends per second".into(),
+                "lookup_rate: one stats/find_friends/get_rooms per second".into(),
             ));
         }
         self.last_lookup = Some(now);

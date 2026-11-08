@@ -11,6 +11,8 @@ export * from "./lockstep.js";
 export type RoomMode = "relay" | "sync" | "lockstep";
 /** `stats` answer: live rooms/players of the project, grouped by the room prop `lobby` ("" = default lobby). */
 export interface Stats { rooms: number; players: number; lobbies: { lobby: string; rooms: number; players: number }[] }
+/** `get_rooms` / lobby entry. */
+export interface RoomSummary { id: string; name: string; mode: string; players: number; max_players: number; open: boolean; props: Record<string, unknown> }
 /** `rpc` answer: `ok` = your endpoint answered 2xx; `body` is its JSON (null when empty); `error` explains a failed call. */
 export interface RpcResult { ok: boolean; status?: number; body: unknown; error?: string }
 /** `find_friends` answer: online = authenticated somewhere in the fleet or holding a room slot. */
@@ -190,6 +192,12 @@ export class Client {
     this.send({ t: "find_friends", players });
     const m = await this.waitFor((m) => m.t === "friends", (m) => m.t === "error");
     return m.friends;
+  }
+  /** One-shot room list (SQL-lobby style): open, visible rooms with a free slot, optionally filtered by a SQL-like `expr` on lobby props (`map = 'dust' AND rank_min <= 1400`); one per second. */
+  async rooms(expr?: string, limit?: number): Promise<RoomSummary[]> {
+    this.send({ t: "get_rooms", expr, limit });
+    const m = await this.waitFor((m) => m.t === "rooms", (m) => m.t === "error");
+    return m.rooms;
   }
   /** Call your backend through the node (WebRPC): the project's webhook subscribed to `rpc` is POSTed `{name, player_id, actor?, room?, body}` and its JSON answer comes back. Body ≤ 8 KiB, 5 calls/s. */
   async rpc(name: string, body: unknown = null): Promise<RpcResult> {

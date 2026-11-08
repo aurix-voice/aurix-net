@@ -152,6 +152,15 @@ pub enum ClientMsg {
     /// Call into the game's backend through the node (WebRPC): the project's webhook
     /// subscribed to `rpc` is POSTed `{name, player_id, actor?, room?, body}` and its JSON
     /// answer comes back as `rpc_result{id}`. Body ≤ 8 KiB, 5 calls per second per session.
+    /// One-shot room list (SQL-lobby style): open, visible rooms with a free
+    /// slot, optionally filtered by a SQL-like condition on lobby props, newest first, ≤ `limit`
+    /// (default 100). For a live view subscribe with `lobby`.
+    GetRooms {
+        #[serde(default)]
+        expr: Option<String>,
+        #[serde(default)]
+        limit: Option<u16>,
+    },
     Rpc {
         id: u32,
         name: String,
@@ -323,6 +332,10 @@ pub enum ServerMsg {
     },
     /// Answer to `rpc{id}`: `ok` = the endpoint answered 2xx; `body` is its JSON (null when
     /// empty); `error` explains a failed call (no endpoint, timeout, non-JSON, too large).
+    /// Answer to `get_rooms`.
+    Rooms {
+        rooms: Vec<RoomSummary>,
+    },
     RpcResult {
         id: u32,
         ok: bool,

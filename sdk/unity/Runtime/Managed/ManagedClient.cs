@@ -214,6 +214,13 @@ namespace Aurix.Net.Managed
             return await WaitForAsync("friends", timeoutMs);
         }
 
+        /// <summary>One-shot room list (JSON {rooms:[{id,name,mode,players,max_players,open,props}]}), optionally filtered by a SQL-like expr on lobby props; one per second.</summary>
+        public async Task<string> RoomsAsync(string expr = null, int limit = 100, int timeoutMs = 10000)
+        {
+            await SendControlAsync("{\"t\":\"get_rooms\",\"expr\":" + (expr == null ? "null" : Json.Str(expr)) + ",\"limit\":" + limit + "}");
+            return await WaitForAsync("rooms", timeoutMs);
+        }
+
         int _rpcSeq;
         /// <summary>Call your backend through the node (WebRPC): the project's webhook subscribed to "rpc" is POSTed {name, player_id, actor?, room?, body}; returns the raw rpc_result JSON {id, ok, status?, body, error?}. bodyJson is a JSON literal (≤ 8 KiB); 5 calls/s.</summary>
         public async Task<string> RpcAsync(string name, string bodyJson = "null", int timeoutMs = 10000)

@@ -8,6 +8,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 ## [Unreleased]
 
 ### Added
+- `get_rooms{expr?, limit?}`: one-shot filtered room list on the control channel (SQL-lobby
+  style filter); Web `client.rooms()`, C# `RoomsAsync`.
 - WebRPC: `rpc{id, name, body}` on the control channel calls the project's webhook subscribed to
   `rpc` (signed POST, 5 s, ≤ 16 KiB answer) and returns `rpc_result`; Web `client.rpc()`, C#
   `RpcAsync`, Rust `Client::rpc`. 5 calls/s per session, body ≤ 8 KiB.
