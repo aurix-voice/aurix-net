@@ -7,6 +7,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 
 ## [Unreleased]
 
+### Added
+- Sync (owner-authoritative rooms): clients can `spawn`/`write`/`despawn`/`transfer` entities they
+  own (op list input, ≤ 32 spawned per actor); a leaving actor's entities are despawned. Web
+  `SyncClient.spawn/despawn/transfer/writeEntity`, C# `SyncWorld.EncodeOps`/`SyncOp`, C ABI
+  `aurix_net_sync_send_op` (C++ `Sync::spawn/despawn/transfer/writeEntity`).
+
 ### Fixed
 - Re-hosting: two players rejoining the same orphaned room through one node at the same time could
   end up in two rooms of the same name (the row was mistaken for a crash leftover while the

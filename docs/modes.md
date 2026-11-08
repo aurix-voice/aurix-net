@@ -68,9 +68,14 @@ compensation. Simulation events reach clients on the reliable channel. Every 5 s
 checkpointed to Redis for re-hosting.
 
 Without a `schema` the room runs the built-in arena logic (one avatar per actor, input =
-`i8 move_x, i8 move_z, u8 buttons`). With a `schema` the room is owner-authoritative: each
-actor owns one entity and its input is a list of full component writes that the server
-applies and replicates. Server-side game logic in a WASM sandbox is the next step.
+`i8 move_x, i8 move_z, u8 buttons`). With a `schema` and no `logic` the room is
+owner-authoritative: each actor owns its avatar entity and its input is a list of full component
+writes that the server applies and replicates. An input starting with `0xFF` is instead a list
+of ops on entities the actor owns — `write` (any owned entity), `spawn` (a new owned entity,
+at most 32 per actor, with initial writes), `despawn`, `transfer` (hand ownership to another
+actor in the room; the new owner shows up in the next delta) — so a client can own several
+objects (projectiles, pickups, vehicles) and pass them around; a leaving actor's entities are
+despawned. With `logic`, the WASM module decides what inputs mean (below).
 
 Deltas go over `UnreliableSequenced`; the client acks every delta (`0x13`: last tick + 32-bit
 history, `net_replication::AckTracker`). A delta the client never got has its entities forgotten

@@ -82,6 +82,7 @@ for (auto e = world.poll(); e.kind != aurix::net::Sync::Kind::None; e = world.po
 }
 float mine[3] = {x, y, z};
 world.begin(tr).write(pos, mine, 3).end().sendWrites(c);   // owner-authoritative rooms
+world.begin(tr).write(pos, mine, 3).end().spawn(c);        // a second entity you own; despawn/transfer/writeEntity likewise
 // world.sendInput(c, bytes, n) for rooms with server-side `logic`
 ```
 

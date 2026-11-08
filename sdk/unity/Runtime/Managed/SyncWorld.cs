@@ -12,6 +12,18 @@ namespace Aurix.Net.Managed
         public ComponentValue Get(ComponentDef c) => c != null && Components.TryGetValue(c.Id, out var v) ? v : null;
     }
 
+    /// <summary>One owner-authoritative op for <see cref="SyncWorld.EncodeOps"/>.</summary>
+    public struct SyncOp
+    {
+        public const byte Write = 0, Spawn = 1, Despawn = 2, Transfer = 3;
+        public byte Op; public ulong Entity; public ushort To; public IList<(ComponentDef, ComponentValue)> Writes;
+        public static SyncOp WriteEntity(ulong entity, IList<(ComponentDef, ComponentValue)> writes) => new SyncOp { Op = Write, Entity = entity, Writes = writes };
+        public static SyncOp SpawnEntity(IList<(ComponentDef, ComponentValue)> writes = null) => new SyncOp { Op = Spawn, Writes = writes };
+        public static SyncOp DespawnEntity(ulong entity) => new SyncOp { Op = Despawn, Entity = entity };
+        /// <summary>Hands an entity you own to another actor in the room.</summary>
+        public static SyncOp TransferEntity(ulong entity, ushort to) => new SyncOp { Op = Transfer, Entity = entity, To = to };
+    }
+
     public sealed class SyncWorld
     {
         public const byte KindInput = 0x10, KindDelta = 0x11, KindResync = 0x12, KindAck = 0x13;
@@ -79,6 +91,23 @@ namespace Aurix.Net.Managed
         {
             var w = new BitWriter(); w.WriteBits((ulong)writes.Count, 8); int cb = Schema.ComponentIdBits;
             foreach (var (c, v) in writes) { w.WriteBits(c.Id, cb); v.EncodeFull(c, w); }
+            return w.Finish();
+        }
+
+        /// <summary>Owner-authoritative ops: write/spawn/despawn/transfer entities you own (at most 32 spawned per actor).</summary>
+        public byte[] EncodeOps(IList<SyncOp> ops)
+        {
+            var w = new BitWriter(); w.WriteBits(0xff, 8); w.WriteBits((ulong)ops.Count, 8); int cb = Schema.ComponentIdBits;
+            foreach (var op in ops)
+            {
+                w.WriteBits(op.Op, 8);
+                if (op.Op != SyncOp.Spawn) w.WriteBits(op.Entity, 48);
+                if (op.Op == SyncOp.Transfer) { w.WriteBits(op.To, 16); continue; }
+                if (op.Op == SyncOp.Despawn) continue;
+                var ws = op.Writes ?? Array.Empty<(ComponentDef, ComponentValue)>();
+                w.WriteBits((ulong)ws.Count, 8);
+                foreach (var (c, v) in ws) { w.WriteBits(c.Id, cb); v.EncodeFull(c, w); }
+            }
             return w.Finish();
         }
     }

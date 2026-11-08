@@ -98,6 +98,7 @@ int32_t aurix_net_sync_write_vector(const AurixNetSync *s, int32_t field, const 
 int32_t aurix_net_sync_write_bytes(const AurixNetSync *s, int32_t field, const uint8_t *p, size_t n);
 int32_t aurix_net_sync_write_end(const AurixNetSync *s);
 int64_t aurix_net_sync_send_writes(const AurixNetSync *s, AurixNetClient *h);           /* queued writes as this tick's input (owner-authoritative rooms); stamped tick or -1 */
+int64_t aurix_net_sync_send_op(const AurixNetSync *s, AurixNetClient *h, int32_t op, uint64_t entity, int32_t to); /* 0 write entity (queued writes), 1 spawn (queued writes = initial state), 2 despawn, 3 transfer to actor; own entities only */
 
 #ifdef __cplusplus
 }

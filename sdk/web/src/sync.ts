@@ -1,6 +1,12 @@
 // Sync rooms for the browser: schema IDL, MSB-first bit codec, delta decoding, acks, owner inputs and
 // an interpolation buffer — a port of the managed C# core (mirrors net-wire::{bits,schema,value}).
 
+export type SyncOp =
+  | { op: "write"; entity: number; writes: Array<[ComponentDef, ComponentValue]> }
+  | { op: "spawn"; writes: Array<[ComponentDef, ComponentValue]> }
+  | { op: "despawn"; entity: number }
+  | { op: "transfer"; entity: number; to: number };
+
 export const KIND_INPUT = 0x10, KIND_DELTA = 0x11, KIND_RESYNC = 0x12, KIND_ACK = 0x13;
 
 export class SyncError extends Error {}
@@ -255,6 +261,20 @@ export class SyncWorld {
     for (const [c, v] of writes) { w.writeBits(c.id, cb); v.encodeFull(c, w); }
     return w.finish();
   }
+  /** Owner-authoritative ops: write/spawn/despawn/transfer entities you own (see docs/modes.md). */
+  encodeOps(ops: SyncOp[]): Uint8Array {
+    const w = new BitWriter(); w.writeBits(0xff, 8); w.writeBits(ops.length, 8); const cb = this.schema.componentIdBits;
+    const writes = (ws: Array<[ComponentDef, ComponentValue]>) => { w.writeBits(ws.length, 8); for (const [c, v] of ws) { w.writeBits(c.id, cb); v.encodeFull(c, w); } };
+    for (const op of ops) {
+      switch (op.op) {
+        case "write": w.writeBits(0, 8); w.writeBits(op.entity, 48); writes(op.writes); break;
+        case "spawn": w.writeBits(1, 8); writes(op.writes); break;
+        case "despawn": w.writeBits(2, 8); w.writeBits(op.entity, 48); break;
+        case "transfer": w.writeBits(3, 8); w.writeBits(op.entity, 48); w.writeBits(op.to, 16); break;
+      }
+    }
+    return w.finish();
+  }
 }
 
 // ---------------- interpolation ----------------
@@ -308,4 +328,11 @@ export class SyncSession {
   }
   /** Owner-authoritative writes of your avatar's components (rooms without `logic`). */
   sendWrites(writes: Array<[ComponentDef, ComponentValue]>): number { return this.sendInput(this.world.encodeWrites(writes)); }
+  /** Owner-authoritative ops on entities you own: at most 32 spawned per actor, owner is in every delta. */
+  sendOps(ops: SyncOp[]): number { return this.sendInput(this.world.encodeOps(ops)); }
+  spawn(writes: Array<[ComponentDef, ComponentValue]> = []): number { return this.sendOps([{ op: "spawn", writes }]); }
+  despawn(entity: number): number { return this.sendOps([{ op: "despawn", entity }]); }
+  /** Hands an entity you own to another actor in the room (Fusion: RequestStateAuthority, but owner-initiated). */
+  transfer(entity: number, to: number): number { return this.sendOps([{ op: "transfer", entity, to }]); }
+  writeEntity(entity: number, writes: Array<[ComponentDef, ComponentValue]>): number { return this.sendOps([{ op: "write", entity, writes }]); }
 }

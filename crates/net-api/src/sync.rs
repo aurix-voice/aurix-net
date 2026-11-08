@@ -138,40 +138,127 @@ impl GameLogic for ArenaLogic {
     }
 }
 
-/// Owner-authoritative: every actor gets one entity; its input is a list of full component
-/// writes (`u16 cid, encode_full`) which the server applies verbatim and replicates. For
-/// games that bring their own schema but keep simulation on the clients.
+/// Owner-authoritative: every actor gets one entity (its avatar) and may spawn more. The input
+/// body is either the plain form — `u8 n, n × (cid, encode_full)` applied to the avatar — or,
+/// when the first byte is `OPS_MARKER`, a list of ops: `u8 n_ops`, each `u8 op` followed by
+/// `OP_WRITE: u48 entity, u8 n, writes` · `OP_SPAWN: u8 n, writes` (new entity owned by the
+/// actor, at most `MAX_OWNED` per actor) · `OP_DESPAWN: u48 entity` · `OP_TRANSFER: u48 entity,
+/// u16 actor` (hand ownership to another joined actor). Only the owner may write, despawn or
+/// transfer an entity; the first invalid op ends the input. A leaving actor's entities are
+/// despawned. For games that bring their own schema but keep simulation on the clients.
 pub struct OwnerLogic;
+pub const OPS_MARKER: u8 = 0xFF;
+pub const OP_WRITE: u8 = 0;
+pub const OP_SPAWN: u8 = 1;
+pub const OP_DESPAWN: u8 = 2;
+pub const OP_TRANSFER: u8 = 3;
+pub const MAX_OWNED: usize = 32;
+
+fn owns(frame: &mut Frame, id: EntityId, actor: ActorId) -> bool {
+    frame.entity_mut(id).is_some_and(|e| e.owner == Some(actor))
+}
+
+/// `u8 n, n × (cid, encode_full)` applied to `e`; false on a malformed list.
+fn read_writes(frame: &mut Frame, e: EntityId, r: &mut BitReader) -> bool {
+    let cid_bits = frame.schema.component_id_bits();
+    let Ok(n) = r.read_bits(8) else {
+        return false;
+    };
+    for _ in 0..n {
+        let Ok(cid) = r.read_bits(cid_bits) else {
+            return false;
+        };
+        let Some(c) = frame.schema.by_id(cid as u16).cloned() else {
+            return false;
+        };
+        let Ok(v) = ComponentValue::decode_full(&c, r) else {
+            return false;
+        };
+        if let Some(ent) = frame.entity_mut(e) {
+            ent.components.insert(c.id, v);
+        }
+    }
+    true
+}
 
 impl GameLogic for OwnerLogic {
     fn on_join(&mut self, frame: &mut Frame, actor: ActorId) -> Option<EntityId> {
         frame.spawn(Some(actor)).ok()
     }
-    fn on_leave(&mut self, frame: &mut Frame, _actor: ActorId, avatar: Option<EntityId>) {
-        if let Some(e) = avatar {
+    fn on_leave(&mut self, frame: &mut Frame, actor: ActorId, _avatar: Option<EntityId>) {
+        let owned: Vec<EntityId> = frame
+            .entities()
+            .filter(|e| e.owner == Some(actor))
+            .map(|e| e.id)
+            .collect();
+        for e in owned {
             let _ = frame.despawn(e);
         }
     }
     fn step(&mut self, frame: &mut Frame, inputs: &[(ActorId, Option<EntityId>, Vec<u8>, bool)]) {
-        let cid_bits = frame.schema.component_id_bits();
-        for (_, avatar, data, fresh) in inputs {
-            let (Some(e), true) = (avatar, *fresh) else {
+        for (actor, avatar, data, fresh) in inputs {
+            if !*fresh {
+                continue;
+            }
+            let mut r = BitReader::new(data);
+            if data.first() != Some(&OPS_MARKER) {
+                if let Some(e) = avatar {
+                    read_writes(frame, *e, &mut r);
+                }
+                continue;
+            }
+            let _ = r.read_bits(8);
+            let Ok(n_ops) = r.read_bits(8) else {
                 continue;
             };
-            let mut r = BitReader::new(data);
-            let Ok(n) = r.read_bits(8) else { continue };
-            for _ in 0..n {
-                let Ok(cid) = r.read_bits(cid_bits) else {
+            for _ in 0..n_ops {
+                let Ok(op) = r.read_bits(8) else {
                     break;
                 };
-                let Some(c) = frame.schema.by_id(cid as u16).cloned() else {
-                    break;
+                let ok = match op as u8 {
+                    OP_WRITE => {
+                        let Ok(id) = r.read_bits(48) else {
+                            break;
+                        };
+                        let id = EntityId::from_u64(id);
+                        owns(frame, id, *actor) && read_writes(frame, id, &mut r)
+                    }
+                    OP_SPAWN => {
+                        let owned = frame.entities().filter(|e| e.owner == Some(*actor)).count();
+                        if owned >= MAX_OWNED {
+                            break;
+                        }
+                        match frame.spawn(Some(*actor)) {
+                            Ok(id) => read_writes(frame, id, &mut r),
+                            Err(_) => break,
+                        }
+                    }
+                    OP_DESPAWN => {
+                        let Ok(id) = r.read_bits(48) else {
+                            break;
+                        };
+                        let id = EntityId::from_u64(id);
+                        owns(frame, id, *actor) && Some(id) != *avatar && frame.despawn(id).is_ok()
+                    }
+                    OP_TRANSFER => {
+                        let (Ok(id), Ok(to)) = (r.read_bits(48), r.read_bits(16)) else {
+                            break;
+                        };
+                        let (id, to) = (EntityId::from_u64(id), ActorId(to as _));
+                        let joined = frame.entities().any(|e| e.owner == Some(to));
+                        if owns(frame, id, *actor) && joined {
+                            if let Some(e) = frame.entity_mut(id) {
+                                e.owner = Some(to);
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
                 };
-                let Ok(v) = ComponentValue::decode_full(&c, &mut r) else {
+                if !ok {
                     break;
-                };
-                if let Some(ent) = frame.entity_mut(*e) {
-                    ent.components.insert(c.id, v);
                 }
             }
         }
@@ -180,7 +267,6 @@ impl GameLogic for OwnerLogic {
         Vec::new()
     }
 }
-
 pub struct SyncRoom {
     pub frame: Frame,
     pub rep: Replicator,
@@ -695,6 +781,105 @@ mod tests {
             })
         );
         assert!(SyncRoom::new(Some("component {"), 30, 1).is_err());
+    }
+
+    #[test]
+    fn owner_ops_spawn_write_transfer_despawn_and_leave() {
+        let src = "component Pose {\n x: f32 @range(-100, 100, 0.1)\n}";
+        let mut room = SyncRoom::new(Some(src), 30, 1).unwrap();
+        let (a, b) = (ActorId(1), ActorId(2));
+        room.on_join(a);
+        room.on_join(b);
+        let c = room.frame.schema.component("Pose").unwrap().clone();
+        let cb = room.frame.schema.component_id_bits();
+        let pose = |x: f32| ComponentValue {
+            fields: vec![Value::F32(x)],
+        };
+        let send = |room: &mut SyncRoom, actor: ActorId, w: net_wire::BitWriter| {
+            let t = room.frame.tick;
+            room.handle(actor, SyncRoom::encode_input(t, &[w.finish()]));
+            room.tick();
+        };
+        let mut w = net_wire::BitWriter::new();
+        w.write_bits(OPS_MARKER as u64, 8);
+        w.write_bits(1, 8);
+        w.write_bits(OP_SPAWN as u64, 8);
+        w.write_bits(1, 8);
+        w.write_bits(c.id as u64, cb);
+        pose(7.0).encode_full(&c, &mut w).unwrap();
+        send(&mut room, a, w);
+        let spawned = room
+            .frame
+            .entities()
+            .find(|e| e.owner == Some(a) && Some(e.id) != room.avatars[&a])
+            .unwrap()
+            .id;
+        assert_eq!(room.frame.get(spawned, "Pose"), Some(&pose(7.0)));
+
+        // b does not own it: the write is ignored
+        let mut w = net_wire::BitWriter::new();
+        w.write_bits(OPS_MARKER as u64, 8);
+        w.write_bits(1, 8);
+        w.write_bits(OP_WRITE as u64, 8);
+        w.write_bits(spawned.to_u64(), 48);
+        w.write_bits(1, 8);
+        w.write_bits(c.id as u64, cb);
+        pose(9.0).encode_full(&c, &mut w).unwrap();
+        send(&mut room, b, w);
+        assert_eq!(room.frame.get(spawned, "Pose"), Some(&pose(7.0)));
+
+        // a hands it to b; b writes and despawns it
+        let mut w = net_wire::BitWriter::new();
+        w.write_bits(OPS_MARKER as u64, 8);
+        w.write_bits(1, 8);
+        w.write_bits(OP_TRANSFER as u64, 8);
+        w.write_bits(spawned.to_u64(), 48);
+        w.write_bits(2, 16);
+        send(&mut room, a, w);
+        assert_eq!(room.frame.entity_mut(spawned).unwrap().owner, Some(b));
+        let mut w = net_wire::BitWriter::new();
+        w.write_bits(OPS_MARKER as u64, 8);
+        w.write_bits(2, 8);
+        w.write_bits(OP_WRITE as u64, 8);
+        w.write_bits(spawned.to_u64(), 48);
+        w.write_bits(1, 8);
+        w.write_bits(c.id as u64, cb);
+        pose(9.0).encode_full(&c, &mut w).unwrap();
+        w.write_bits(OP_DESPAWN as u64, 8);
+        w.write_bits(spawned.to_u64(), 48);
+        send(&mut room, b, w);
+        assert!(room.frame.entity_mut(spawned).is_none());
+
+        // transfer to an actor that is not in the room is refused; avatars cannot be despawned
+        let av = room.avatars[&a].unwrap();
+        let mut w = net_wire::BitWriter::new();
+        w.write_bits(OPS_MARKER as u64, 8);
+        w.write_bits(2, 8);
+        w.write_bits(OP_TRANSFER as u64, 8);
+        w.write_bits(av.to_u64(), 48);
+        w.write_bits(77, 16);
+        w.write_bits(OP_DESPAWN as u64, 8);
+        w.write_bits(av.to_u64(), 48);
+        send(&mut room, a, w);
+        assert_eq!(room.frame.entity_mut(av).unwrap().owner, Some(a));
+
+        // the cap holds and leaving despawns everything the actor owns
+        for _ in 0..MAX_OWNED + 2 {
+            let mut w = net_wire::BitWriter::new();
+            w.write_bits(OPS_MARKER as u64, 8);
+            w.write_bits(1, 8);
+            w.write_bits(OP_SPAWN as u64, 8);
+            w.write_bits(0, 8);
+            send(&mut room, a, w);
+        }
+        let owned = room.frame.entities().filter(|e| e.owner == Some(a)).count();
+        assert_eq!(owned, MAX_OWNED);
+        room.on_leave(a);
+        assert_eq!(
+            room.frame.entities().filter(|e| e.owner == Some(a)).count(),
+            0
+        );
+        assert_eq!(room.frame.entities().count(), 1);
     }
 
     #[test]

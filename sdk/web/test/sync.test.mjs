@@ -80,3 +80,12 @@ test("interpolation buffer lerps between samples and snaps on teleport", () => {
   b.push(14, [100, 0, 0]);
   assert.deepEqual(b.sample(10), [100, 0, 0]);
 });
+
+test("owner ops encode as the node parses them (0xFF marker, u48 entity, u16 actor)", () => {
+  const s = Schema.parse(SCHEMA); const w = new SyncWorld(s); const tr = s.byName("Transform");
+  const writes = [[tr, new ComponentValue([[1, 2, 3], [0, 0, 0, 1]])]];
+  assert.equal(hex(w.encodeOps([{ op: "despawn", entity: 5 }])), "ff0102000000000005");
+  assert.equal(hex(w.encodeOps([{ op: "transfer", entity: 7 * 2 ** 32 + 1, to: 3 }])), "ff01030007000000010003");
+  assert.equal(hex(w.encodeOps([{ op: "spawn", writes }])), "ff0101" + hex(w.encodeWrites(writes)));
+  assert.equal(hex(w.encodeOps([{ op: "write", entity: 2, writes }])), "ff0100000000000002" + hex(w.encodeWrites(writes)));
+});

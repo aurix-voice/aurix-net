@@ -581,8 +581,24 @@ pub unsafe extern "C" fn aurix_net_sync_write_end(s: *const AurixNetSync) -> i32
     }
 }
 
-/// Sends the queued component writes as this tick's input (owner-authoritative rooms: the node applies
-/// them to your avatar and replicates). Returns the stamped tick or -1.
+/// Queued writes as `u8 n, n × (cid, encode_full)`; -1 (with error) on a bad write.
+fn encode_queued_writes(st: &mut State, w: &mut BitWriter) -> i32 {
+    let writes = std::mem::take(&mut st.writes);
+    let cid_bits = st.frame.schema.component_id_bits();
+    w.write_bits(writes.len().min(255) as u64, 8);
+    for (cid, v) in writes.iter().take(255) {
+        let Some(c) = st.frame.schema.by_id(*cid) else {
+            return -1;
+        };
+        w.write_bits(u64::from(*cid), cid_bits);
+        if let Err(e) = v.encode_full(c, w) {
+            set_error(format!("writes: {e}"));
+            return -1;
+        }
+    }
+    0
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_sync_send_writes(
     s: *const AurixNetSync,
@@ -590,19 +606,47 @@ pub unsafe extern "C" fn aurix_net_sync_send_writes(
 ) -> i64 {
     let Some(s) = s.as_ref() else { return -1 };
     let mut st = s.inner.lock();
-    let writes = std::mem::take(&mut st.writes);
-    let cid_bits = st.frame.schema.component_id_bits();
     let mut w = BitWriter::new();
-    w.write_bits(writes.len().min(255) as u64, 8);
-    for (cid, v) in writes.iter().take(255) {
-        let Some(c) = st.frame.schema.by_id(*cid) else {
-            return -1;
-        };
-        w.write_bits(u64::from(*cid), cid_bits);
-        if let Err(e) = v.encode_full(c, &mut w) {
-            set_error(format!("writes: {e}"));
-            return -1;
+    if encode_queued_writes(&mut st, &mut w) != 0 {
+        return -1;
+    }
+    let body = w.finish();
+    send_input_inner(&mut st, h, body)
+}
+
+/// One owner-authoritative op as this tick's input (rooms with a schema and no `logic`):
+/// `op` 0 = write `entity` with the queued writes, 1 = spawn a new entity you own (queued
+/// writes are its initial state; at most 32 per actor), 2 = despawn `entity`, 3 = hand `entity`
+/// to actor `to`. Only entities you own; the node ignores anything else.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_sync_send_op(
+    s: *const AurixNetSync,
+    h: *mut AurixNetClient,
+    op: i32,
+    entity: u64,
+    to: i32,
+) -> i64 {
+    let Some(s) = s.as_ref() else { return -1 };
+    if !(0..=3).contains(&op) {
+        set_error("send_op: op must be 0..=3");
+        return -1;
+    }
+    let mut st = s.inner.lock();
+    let mut w = BitWriter::new();
+    w.write_bits(0xFF, 8);
+    w.write_bits(1, 8);
+    w.write_bits(op as u64, 8);
+    if op != 1 {
+        w.write_bits(entity, 48);
+    }
+    match op {
+        0 | 1 => {
+            if encode_queued_writes(&mut st, &mut w) != 0 {
+                return -1;
+            }
         }
+        3 => w.write_bits(to.clamp(0, 0xFFFF) as u64, 16),
+        _ => {}
     }
     let body = w.finish();
     send_input_inner(&mut st, h, body)
