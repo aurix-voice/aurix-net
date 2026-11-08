@@ -83,6 +83,35 @@ only sqlx "slow acquire" warnings, node healthy afterwards.
 All limits at defaults (`[limits]`): these runs are the regression bar for "limits never cut legitimate
 players"; a 128-player join burst from one IP must stay at failed=0.
 
+## Capacity per core (node pinned to 2 cores, bots on the other 6)
+
+`scripts/capacity.sh` runs one load step after another against a node pinned with `taskset -c 0,1`
+and reports the node's busy cores (from `/proc/<pid>/stat`), RSS and tick stats per step. Per-IP
+limits were raised for the run (`NET__LIMITS__HTTP_RPS_PER_IP`, `WS_CONNECTS_PER_MIN_PER_IP`,
+`MAX_SESSIONS_PER_IP`): with the defaults a bot swarm from **one** IP is cut at ~270 players by
+`http_rps_per_ip = 200` / `ws_connects_per_min_per_ip = 600` (HTTP 429 on the join burst) — that
+is the brute-force guard doing its job, real players arrive from many addresses. 30 s per step,
+64-byte events, QUIC data path, 8 players per room.
+
+| mode | rooms × players | node cores busy | RSS | delivery |
+|---|---|---|---|---|
+| relay @ 20 ev/s/player | 40 × 8 (320) | 0.37 | 60 MB | loss 0.1 %, p50 1.7 ms, p99 3.5 ms |
+| relay | 80 × 8 (640) | 0.70 | 84 MB | loss 0.4 %, p99 3.7 ms |
+| relay | 160 × 8 (1280, ≈180 k deliveries/s) | 1.19 | 136 MB | loss 1.0 %, p99 4.6 ms |
+| relay | 320 × 8 (2560) | 1.73 | 229 MB | **saturated**: loss 20 %, p99 10.5 ms |
+| relay | 20 × 32 (640, ≈400 k deliveries/s) | 1.58 | 143 MB | loss 2.0 %, p99 6.0 ms |
+| sync @ 60 Hz, 20 inputs/s | 40 × 8 (320) | 0.58 | 74 MB | 75.5 deltas/player/s, 0 client gaps |
+| sync | 80 × 8 (640) | 1.00 | 98 MB | 74.2 deltas/player/s, lost deltas 0.13 % (acked, repaired) |
+| sync | 160 × 8 (1280) | 1.70 | 156 MB | 70.3 deltas/player/s, lost 0.24 %, tick p99 0.2 ms, 0 overruns |
+| lockstep @ 60 Hz | 40 × 8 (320) | 0.32 | 121 MB | 0 failed joins, 75.5 frames/player/s |
+| lockstep | 80 × 8 (640) | 0.57 | 172 MB | 74.1 frames/player/s |
+| lockstep | 160 × 8 (1280) | 1.00 | 259 MB | 71.9 frames/player/s, 0 overruns |
+
+Rule of thumb from this machine (release build, no TLS termination in front): one core carries
+≈ 1 000 relay players at 20 ev/s in 8-player rooms (fan-out bound: ≈ 150 k deliveries/s/core),
+≈ 750 sync players at 60 Hz, or ≈ 1 250 lockstep players at 60 Hz; RSS ≈ 70–200 KB per player.
+Memory, not CPU, is what grows with lockstep (journals + checkpoints per room).
+
 ## Soak (1 h, release build, two nodes, bots churning every 5 min)
 
 `scripts/soak-test.sh` runs relay (2 rooms × 8 players @ 20 ev/s, WS tunnel) and sync (1 room × 8 @ 20 Hz)
