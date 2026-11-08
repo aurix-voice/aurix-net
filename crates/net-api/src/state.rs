@@ -29,6 +29,9 @@ pub struct AppState {
     pub guards: crate::ratelimit::Guards,
     /// Set on SIGTERM/Ctrl-C: joins are refused, `/healthz` answers 503, rooms are handed off.
     pub draining: std::sync::atomic::AtomicBool,
+    /// Rooms this node is adopting right now (DB row already points here, room not hosted yet):
+    /// concurrent joins wait instead of treating the row as a crash leftover.
+    pub adopting: parking_lot::Mutex<std::collections::HashSet<uuid::Uuid>>,
 }
 
 impl AppState {

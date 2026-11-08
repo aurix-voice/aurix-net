@@ -272,7 +272,20 @@ impl Session {
                 let g = self.grant()?.clone();
                 self.ensure_not_in_room()?;
                 self.check_room_scope(&g, &name)?;
-                let h = self.find_room(g.project, &name).await?;
+                let h = {
+                    let mut attempt = 0;
+                    loop {
+                        match self.find_room(g.project, &name).await {
+                            Err(NetError::Conflict(ref m))
+                                if m == "room_pending" && attempt < 200 =>
+                            {
+                                attempt += 1;
+                                tokio::time::sleep(Duration::from_millis(10)).await;
+                            }
+                            r => break r?,
+                        }
+                    }
+                };
                 if let Some(c) = schema_hash.as_deref() {
                     let hr = h.lock();
                     if let Some(sy) = hr.sync.as_ref() {
@@ -315,7 +328,7 @@ impl Session {
                             break h;
                         }
                         Err(NetError::NotFound(_)) => {}
-                        Err(NetError::Conflict(ref m)) if m == "room_pending" && attempt < 30 => {
+                        Err(NetError::Conflict(ref m)) if m == "room_pending" && attempt < 200 => {
                             attempt += 1;
                             tokio::time::sleep(Duration::from_millis(10)).await;
                             continue;
@@ -655,6 +668,10 @@ impl Session {
                 match node {
                     Some(n) if n.id != self.st.node_id => {
                         Err(NetError::Conflict(format!("room_elsewhere:{}", n.http_url)))
+                    }
+                    // Adoption in progress on another session of this node.
+                    _ if self.st.adopting.lock().contains(&row.id) => {
+                        Err(NetError::Conflict("room_pending".into()))
                     }
                     // Row exists for this node but the room is not hosted yet: creation in
                     // progress on another session, or a row left over from a crash.
@@ -1562,6 +1579,16 @@ pub async fn adopt_room(
     if st.host.len() >= st.cfg.limits.max_rooms_per_node as usize {
         return Err(NetError::QuotaExceeded("node is full".into()));
     }
+    struct Adopting<'a>(&'a Shared, uuid::Uuid);
+    impl Drop for Adopting<'_> {
+        fn drop(&mut self) {
+            self.0.adopting.lock().remove(&self.1);
+        }
+    }
+    if !st.adopting.lock().insert(row.id) {
+        return Err(NetError::Conflict("room_pending".into()));
+    }
+    let _adopting = Adopting(st, row.id);
     if !queries::adopt_room(&st.pool, row.id, st.node_id.0, st.region.as_str()).await? {
         return Err(NetError::Conflict("room_pending".into()));
     }

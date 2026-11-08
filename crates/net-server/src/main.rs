@@ -168,6 +168,7 @@ async fn main() -> anyhow::Result<()> {
         started: std::time::Instant::now(),
         guards: net_api::ratelimit::Guards::new(&cfg.limits, &cfg.server.trusted_proxies),
         draining: std::sync::atomic::AtomicBool::new(false),
+        adopting: Default::default(),
         pool: pool.clone(),
         redis: redis.clone(),
         registry: registry.clone(),

@@ -176,6 +176,39 @@ log lines. One stand-specific finding: `GET /v1/operator/nodes/:id/stats` is pro
 its `server.public_host`, so with the compose placeholders (`node-b.net.example.com`) it returns 500 until
 `PUBLIC_HOST` resolves inside the cluster — documented in deployment.md.
 
+## Multi-host — two machines, shared Postgres/Redis
+
+Setup: node A on a separate 8-vCPU Debian 13 box (Postgres 16 + Redis 7 in Docker next to it),
+node B on an Ubuntu 22.04 machine in another network, both pointed at A's Postgres/Redis
+(`server.public_host` set to a hostname the *other* machine resolves, `heartbeat_secs=3`).
+The remote firewall admitted TCP only, so the data path ran over the WebSocket tunnel
+(`transport.ws_tunnel=true`, clients with `--tunnel`); the QUIC/WebTransport data planes were
+not exercised across hosts (needs UDP 7000/7443 open end to end).
+
+| check | result |
+|---|---|
+| registry | both nodes list each other with their own `public_host`, region, heartbeat (`GET /v1/operator/nodes` from either side) |
+| placement | rooms created through A land on A (least-loaded node of the *requester's* region, ties keep the room local); a node in another region never receives them unless the client asks for that region |
+| relay across the WAN | 6 rooms × 2 bots via A: 2900 events, 0.17 % loss (last tick cut by the run end), p50 180 ms = tunnel RTT |
+| drain (SIGTERM on A) | 4 rooms checkpointed to Redis and marked `orphaned` in 4 ms; clients get `left{reason:"rehost"}` |
+| adoption on B | rejoin by name through B adopts the orphaned rows (`adopted orphaned room … restored="none"` for relay); both bots of a pair end up in the **same** room on B, events flow again (p50 1.4 ms locally) |
+
+Bug found and fixed by this run — **adoption race split a room in two.** Two players rejoining
+the same orphaned room concurrently through one node: the first `UPDATE rooms SET node_id = me`
+succeeded, then spent a few hundred milliseconds (checkpoint read, project lookup, room build —
+long on a WAN Redis) before the room was hosted. The second player's lookup saw a row pointing
+at this node with no hosted room; the only such case known so far was "creation in progress or a
+crash leftover", decided by `created_at < 10 s`. An adopted room is older than that, so the row
+was closed and a *new* room with the same name was created: each player sat alone in their own
+`lt-4-0`, 100 % of their events had no receiver, and the DB row of the room actually hosted was
+marked closed. The node now keeps an in-memory set of rooms it is adopting; a concurrent lookup
+answers `room_pending` and the join/join_or_create paths retry for up to 2 s (was 300 ms, join
+had no retry at all). Re-run: 2 rooms × 2 bots rehosted A → B, one room per name, 4/4 joined,
+events delivered from the moment the second player arrived.
+
+Still needing real infrastructure: UDP data planes across hosts, more than two regions, and
+load beyond one node per machine (the capacity table above is single-host).
+
 ## Robustness of attacker-facing decoders (`tests/garbage.rs` in each crate)
 
 Every decoder that takes bytes from a peer is fed 20 000 random/mutated inputs per test (a seeded

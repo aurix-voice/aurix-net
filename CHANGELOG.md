@@ -7,6 +7,17 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 
 ## [Unreleased]
 
+### Fixed
+- Re-hosting: two players rejoining the same orphaned room through one node at the same time could
+  end up in two rooms of the same name (the row was mistaken for a crash leftover while the
+  adoption was still in flight). The node now tracks in-flight adoptions, concurrent joins get
+  `room_pending` and retry for up to 2 s; `join` retries too. Found on a two-host run
+  ([docs/testing.md](docs/testing.md), Multi-host).
+
+### CI
+- Docker job loads the built images into the daemon before the Trivy scan; the Godot
+  GDExtension step builds `libaurix_net` first.
+
 
 ## [0.1.0] — first release candidate
 
