@@ -163,6 +163,7 @@ jobs:
         with:
           context: .
           push: false
+          load: true
           tags: aurix-net:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -178,6 +179,7 @@ jobs:
           context: .
           file: dashboard/Dockerfile
           push: false
+          load: true
           tags: aurix-net-console:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
