@@ -1,0 +1,21 @@
+# TLS terminator in front of the nodes (HTTP API + WebSocket control plane). Caddy gets the
+# certificate from Let's Encrypt and proxies WebSocket upgrades as-is. QUIC (7000/udp) and
+# WebTransport (7443/udp) are NOT proxied: they go straight to the node with its own certificate
+# (transport.cert_pem / key_pem) — point the same hostnames' A/AAAA records at the nodes or use a
+# UDP load balancer. Put this proxy's address in server.trusted_proxies so per-IP limits see the
+# real client address from X-Forwarded-For.
+net.example.com {
+	encode zstd gzip
+	reverse_proxy node-a:8090 node-b:8090 {
+		lb_policy round_robin
+		health_uri /healthz
+		health_interval 5s
+		health_status 200     # 503 = draining: taken out of rotation during a rolling upgrade
+		fail_duration 10s
+		header_up X-Forwarded-For {remote_host}
+	}
+}
+
+console.example.com {
+	reverse_proxy console:8080
+}

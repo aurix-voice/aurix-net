@@ -8,7 +8,8 @@
 - Public ports: `server.http_addr` (TCP, control plane + WS tunnel), `transport.quic_addr`
   (UDP), `transport.webtransport_addr` (UDP). Everything else closed.
 - Terminate TLS for the HTTP port at a reverse proxy or load balancer (the node speaks plain
-  HTTP there) and put the proxy's address range into `server.trusted_proxies` so per-IP limits
+  HTTP there; `deploy/Caddyfile.example` is a working two-node Caddy config with health-checked
+  round robin that drops draining nodes) and put the proxy's address range into `server.trusted_proxies` so per-IP limits
   see real client addresses via `X-Forwarded-For`. QUIC/WebTransport use the node's own
   certificate (`transport.cert_pem`/`key_pem`); browsers need a publicly trusted one.
 - Keep `/metrics` off the public interface or set `server.metrics_token`.

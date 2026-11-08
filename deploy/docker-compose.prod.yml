@@ -8,6 +8,8 @@ services:
     build: ..
     restart: unless-stopped
     stop_grace_period: 30s
+    ulimits: { nofile: { soft: 65536, hard: 65536 } }   # one fd per connection
+    logging: { driver: json-file, options: { max-size: "50m", max-file: "5" } }
     environment:
       NET__SERVER__ENVIRONMENT: production
       NET__SERVER__HTTP_ADDR: 0.0.0.0:8090
@@ -26,6 +28,8 @@ services:
     image: aurix-net:latest
     restart: unless-stopped
     stop_grace_period: 30s
+    ulimits: { nofile: { soft: 65536, hard: 65536 } }   # one fd per connection
+    logging: { driver: json-file, options: { max-size: "50m", max-file: "5" } }
     environment:
       NET__SERVER__ENVIRONMENT: production
       NET__SERVER__HTTP_ADDR: 0.0.0.0:8090
