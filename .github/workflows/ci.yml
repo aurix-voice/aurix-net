@@ -168,9 +168,9 @@ jobs:
       # Image scan of what ships (distroless base + node binary): CRITICAL with a fix fails the job,
       # HIGH is reported (the base image lags Debian security updates by days, e.g. libssl3 which the
       # node — rustls — never loads).
-      - uses: aquasecurity/trivy-action@0.28.0
+      - uses: aquasecurity/trivy-action@0.35.0
         with: { image-ref: aurix-net:ci, scanners: vuln, severity: HIGH,CRITICAL, ignore-unfixed: true, exit-code: "0" }
-      - uses: aquasecurity/trivy-action@0.28.0
+      - uses: aquasecurity/trivy-action@0.35.0
         with: { image-ref: aurix-net:ci, scanners: vuln, severity: CRITICAL, ignore-unfixed: true, exit-code: "1" }
       - uses: docker/build-push-action@v6
         with:
