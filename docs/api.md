@@ -99,13 +99,15 @@ JSON messages, `"t"` is the type (snake_case). Client → server: `auth{grant}`,
 `set_player_props{props, expected?}`, `event{code, data(base64), target, reliable, cache, group}`,
 `set_groups{join, leave}`, `cache_slice{op, index?}` (relay event-cache slices), `set_view{viewpoints, interest}` (sync AOI: extra viewpoints, forced entities),
 `set_master{actor}`, `kick{actor, reason}`, `lobby{subscribe}`,
+`stats` (live rooms/players per lobby), `find_friends{players}` (presence of ≤ 64 players; `stats`/`find_friends` at most once per second per session),
 `ping{ts}`.
 
 Server → client: `hello{session, version, region}`, `authed{player_id, name}`,
 `joined{room, name, mode, actor, master, max_players, props, players, data, cached, schema_hash?, tick_hz?}`,
 `left{reason}`, `player_joined{player}`, `player_left{actor, reason}`, `room_props`,
 `player_props`, `event{code, from, data}` (control fallback), `master_changed{actor}`,
-`lobby_rooms{rooms}`, `lobby_update{room, removed}`, `pong{ts, server_ms}`,
+`lobby_rooms{rooms}`, `lobby_update{room, removed}`, `stats{rooms, players, lobbies[{lobby, rooms, players}]}`,
+`friends{friends[{player, online, room?{id, name, mode, node}}]}`, `pong{ts, server_ms}`,
 `error{code, message}`, `desync{tick, actor}`.
 
 `joined.data` = `{host, port, cert_sha256, ticket(base64), ws_tunnel, webtransport_url?}`: connect QUIC

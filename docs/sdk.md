@@ -18,6 +18,21 @@ sync/lockstep frames), `closed`. Grants always come from the developer's backend
 
 When a node shuts down (deploy) it hands its rooms to another node and sends `left{reason:"rehost"}`. Clients rejoin the same room with the same grant: Rust `client.rejoin(&[fallback_urls])`, Web `client.rejoin(fallbackUrls)` (or listen to the `rehost` event), C# `ManagedClient.RejoinAsync(fallbacks)`; Unity `NetRunner` does it automatically (`FallbackUrls`). Actor ids are preserved by player id.
 
+## Lobby statistics and presence
+
+lobby statistics and find-friends, one control round-trip each (at most one per second per
+session, both fan out across the fleet):
+
+- Web: `await client.lobbyStats()` → `{rooms, players, lobbies: [{lobby, rooms, players}]}`;
+  `await client.findFriends(["ann", "bob"])` → `[{player, online, room?: {id, name, mode, node}}]`.
+- Unity (managed): `await client.StatsAsync()` / `await client.FindFriendsAsync(new[]{"ann","bob"})` return
+  the JSON answers (`Json.Str/Num/Obj` helpers read them).
+- Rust: `client.stats().await?` / `client.find_friends(vec![...]).await?`; the answers arrive as
+  `Event::Control(ServerMsg::Stats { .. })` / `ServerMsg::Friends { .. }`.
+
+A room's lobby is its room prop `lobby` (always visible in listings); rooms without one form the default
+lobby `""`. See docs/modes.md.
+
 ## Lockstep rooms from Rust, C++ and Godot
 
 `net_client::lockstep::LockstepClient` is the same core the C# and Web SDKs use, as pure logic: feed

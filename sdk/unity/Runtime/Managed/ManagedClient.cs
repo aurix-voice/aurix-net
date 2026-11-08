@@ -198,6 +198,22 @@ namespace Aurix.Net.Managed
 
         public Task LeaveAsync() => SendControlAsync("{\"t\":\"leave\"}");
         /// <summary>Sync rooms: steer area-of-interest — extra viewpoints (camera, scope target) and entities forced into view (team mates, objectives). Entity ids as in deltas.</summary>
+        /// <summary>Project-wide live rooms/players grouped by the room prop "lobby" (JSON: {rooms, players, lobbies:[{lobby, rooms, players}]}); one per second.</summary>
+        public async Task<string> StatsAsync(int timeoutMs = 10000)
+        {
+            await SendControlAsync("{\"t\":\"stats\"}");
+            return await WaitForAsync("stats", timeoutMs);
+        }
+
+        /// <summary>Presence of up to 64 players across the fleet (JSON: {friends:[{player, online, room?:{id,name,mode,node}}]}); one per second.</summary>
+        public async Task<string> FindFriendsAsync(string[] players, int timeoutMs = 10000)
+        {
+            var ids = new System.Text.StringBuilder();
+            foreach (var p in players ?? Array.Empty<string>()) { if (ids.Length > 0) ids.Append(','); ids.Append(Json.Str(p)); }
+            await SendControlAsync("{\"t\":\"find_friends\",\"players\":[" + ids + "]}");
+            return await WaitForAsync("friends", timeoutMs);
+        }
+
         public Task SetViewAsync(ulong[] viewpoints = null, ulong[] interest = null) =>
             SendControlAsync("{\"t\":\"set_view\",\"viewpoints\":[" + string.Join(",", viewpoints ?? Array.Empty<ulong>()) + "],\"interest\":[" + string.Join(",", interest ?? Array.Empty<ulong>()) + "]}");
 

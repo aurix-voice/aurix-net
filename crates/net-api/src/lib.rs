@@ -9,6 +9,7 @@ pub mod matchmaking;
 pub mod metering;
 pub mod metrics;
 pub mod mmfilter;
+pub mod presence;
 pub mod ratelimit;
 pub mod rest;
 pub mod state;

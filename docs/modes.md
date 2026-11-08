@@ -38,6 +38,16 @@ Rate limits: a room takes `max_events_per_sec_per_room` events (default 2000) an
 `max_events_per_sec_per_player` (default 60, burst of 2 s worth); over the limit the event is
 dropped with `rate_limited`. Both are project quotas (`/v1/operator/projects/:id/limits`).
 
+### Lobby statistics and presence
+
+`stats` answers with the project's live rooms and players and the same counts per lobby, where a room's
+lobby is its room prop `lobby` (always part of the lobby listing; rooms without it form the default lobby
+`""`) — lobby statistics without subscribing to the room list. `find_friends{players}` (≤ 64 ids)
+answers with `online` (an authenticated control session or a room slot on any node of the fleet) and the
+room/node each player is in — find friends. Both fan out across the fleet, so a session may
+send at most one per second. Player ids are whatever your grants carry: a friends list itself stays in
+your backend.
+
 ## sync
 
 Create with `mode: "sync"` and optional props:

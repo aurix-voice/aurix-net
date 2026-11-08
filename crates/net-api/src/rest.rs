@@ -113,6 +113,7 @@ pub fn router(st: Shared) -> Router {
             get(op_player_lookup),
         )
         .route("/v1/internal/players/:player_id", get(internal_find_player))
+        .route("/v1/internal/presence", get(internal_presence))
         .route("/v1/internal/stats", get(internal_stats))
         .route("/v1/operator/nodes/:id/stats", get(op_node_stats))
         .route(
@@ -1239,7 +1240,34 @@ async fn internal_find_player(
     ))
 }
 
-fn pct(s: &str) -> String {
+#[derive(Deserialize)]
+struct PresenceQuery {
+    project: Uuid,
+    /// Player ids separated by `\n` (never part of a valid id).
+    #[serde(default)]
+    ids: String,
+}
+
+/// Node-to-node: presence and room slots of players on this node (`find_friends` fans out to every node).
+async fn internal_presence(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Query(q): Query<PresenceQuery>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h).await?;
+    let ids: Vec<String> = q
+        .ids
+        .split('\n')
+        .filter(|s| !s.is_empty())
+        .take(crate::presence::MAX_FRIENDS)
+        .map(str::to_string)
+        .collect();
+    Ok(Json(json!({
+        "players": crate::presence::local_friends(&st, ProjectId::from_uuid(q.project), &ids)
+    })))
+}
+
+pub(crate) fn pct(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
@@ -1451,7 +1479,7 @@ async fn internal_project_notice(
     Ok(Json(json!({"rooms": rooms, "players": players})))
 }
 
-async fn internal_get(st: &Shared, http_url: &str, path: &str) -> Result<Value> {
+pub(crate) async fn internal_get(st: &Shared, http_url: &str, path: &str) -> Result<Value> {
     if st.cfg.auth.admin_token.is_empty() {
         return Err(NetError::Internal(
             "admin_token unset; cannot query hosting node".into(),
@@ -2548,7 +2576,7 @@ async fn close_room_anywhere(st: &Shared, project: ProjectId, id: Uuid) {
     close_room(st, project, room).await;
 }
 
-fn valid_player_id(p: &str) -> bool {
+pub(crate) fn valid_player_id(p: &str) -> bool {
     let n = p.chars().count();
     (1..=128).contains(&n) && !p.chars().any(char::is_control)
 }

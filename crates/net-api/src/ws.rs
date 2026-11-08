@@ -73,6 +73,8 @@ struct Session {
     data: Option<Arc<DataSession>>,
     lobby: Option<ProjectId>,
     ip: std::net::IpAddr,
+    /// Last `stats` / `find_friends` (fleet fan-out): at most one per second.
+    last_lookup: Option<Instant>,
 }
 
 async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
@@ -109,6 +111,7 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
         data: None,
         lobby: None,
         ip,
+        last_lookup: None,
     };
     let _ = sess.ctl.try_send(ServerMsg::Hello {
         session: sess.id.to_string(),
@@ -215,6 +218,10 @@ impl Session {
                     player_id: g.player_id.clone(),
                     name: g.name.clone(),
                 });
+                if let Some(old) = &self.grant {
+                    self.st.host.presence_leave(old.project, &old.player_id);
+                }
+                self.st.host.presence_enter(g.project, &g.player_id);
                 self.grant = Some(g);
                 Ok(())
             }
@@ -555,6 +562,37 @@ impl Session {
                     }
                 }
                 self.publish_current().await;
+                Ok(())
+            }
+            ClientMsg::Stats => {
+                let g = self.grant()?.clone();
+                self.lookup_budget()?;
+                let rooms: Vec<RoomSummary> = match self.st.redis.list_rooms(g.project).await {
+                    Ok(live) => live.into_iter().map(live_to_summary).collect(),
+                    Err(_) => self.st.host.listed(g.project),
+                };
+                let (rooms, players, lobbies) = crate::presence::lobby_stats(&rooms);
+                let _ = self.ctl.try_send(ServerMsg::Stats {
+                    rooms,
+                    players,
+                    lobbies,
+                });
+                Ok(())
+            }
+            ClientMsg::FindFriends { players } => {
+                let g = self.grant()?.clone();
+                if players.len() > crate::presence::MAX_FRIENDS {
+                    return Err(NetError::Invalid(format!(
+                        "find_friends: at most {} players",
+                        crate::presence::MAX_FRIENDS
+                    )));
+                }
+                if players.iter().any(|p| !crate::rest::valid_player_id(p)) {
+                    return Err(NetError::Invalid("find_friends: invalid player id".into()));
+                }
+                self.lookup_budget()?;
+                let friends = crate::presence::find_friends(&self.st, g.project, &players).await;
+                let _ = self.ctl.try_send(ServerMsg::Friends { friends });
                 Ok(())
             }
             ClientMsg::Lobby { subscribe } => {
@@ -1016,9 +1054,27 @@ impl Session {
         }
     }
 
+    /// `stats` / `find_friends` fan out across the fleet: one per second per session.
+    fn lookup_budget(&mut self) -> Result<()> {
+        let now = Instant::now();
+        if self
+            .last_lookup
+            .is_some_and(|t| now.duration_since(t) < Duration::from_secs(1))
+        {
+            return Err(NetError::Conflict(
+                "lookup_rate: one stats/find_friends per second".into(),
+            ));
+        }
+        self.last_lookup = Some(now);
+        Ok(())
+    }
+
     async fn cleanup(&mut self) {
         if let Some(p) = self.lobby.take() {
             self.st.host.unsubscribe_lobby(p, &self.ctl);
+        }
+        if let Some(g) = &self.grant {
+            self.st.host.presence_leave(g.project, &g.player_id);
         }
         self.leave(true).await;
     }

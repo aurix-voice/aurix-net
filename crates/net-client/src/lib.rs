@@ -504,6 +504,18 @@ impl Client {
         self.send(ClientMsg::Leave).await
     }
 
+    /// Ask for project-wide room/player counts per lobby; the answer arrives as
+    /// `Event::Control(ServerMsg::Stats { .. })`. At most one `stats`/`find_friends` per second.
+    pub async fn stats(&self) -> Result<()> {
+        self.send(ClientMsg::Stats).await
+    }
+
+    /// Ask where up to 64 players are (online, room) across the fleet; the answer arrives as
+    /// `Event::Control(ServerMsg::Friends { .. })`.
+    pub async fn find_friends(&self, players: Vec<String>) -> Result<()> {
+        self.send(ClientMsg::FindFriends { players }).await
+    }
+
     /// Sync rooms: steer area-of-interest — extra viewpoints (camera, scope target) and entities
     /// forced into view (team mates, objectives). Entity ids as in deltas.
     pub async fn set_view(&mut self, viewpoints: Vec<u64>, interest: Vec<u64>) -> Result<()> {

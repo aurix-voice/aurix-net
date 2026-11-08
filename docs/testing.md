@@ -115,6 +115,7 @@ Host RSS climbs with the first batches (room churn, dump storage) and stays flat
 overruns; desync dumps for every batch were listed and downloadable through `/v1/rooms/:id/desyncs`.
 
 - `NET_HTTP=… NET_API_KEY=… node --test sdk/web/test/referee-live.test.mjs` — lockstep referee: a lying client is flagged by the node's own hash, the node state is stored as desync dump actor 0, room detail reports `referee: true` (upload `crates/net-game/examples/arena.wat` as module `arena` with an admin key first).
+- `NET_HTTP=<node A> NET_HTTP_B=<node B> NET_API_KEY=… node --test sdk/web/test/presence-live.test.mjs` — `find_friends` across two nodes (friend in a room on B with room/node, friend only connected on B → online without room, stranger → offline, duplicates collapsed, second request within a second → `lookup_rate`), `stats` with the `ranked` lobby counted, and the idle friend going offline after disconnect.
 
 ## Soak 3 — sim referee in lockstep rooms (1 h, release, two nodes)
 

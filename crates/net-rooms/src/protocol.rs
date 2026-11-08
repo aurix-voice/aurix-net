@@ -143,6 +143,12 @@ pub enum ClientMsg {
     Lobby {
         subscribe: bool,
     },
+    /// Project-wide live room/player counts grouped by the room prop `lobby`.
+    Stats,
+    /// Presence of up to 64 players of this project across the fleet (online, current room).
+    FindFriends {
+        players: Vec<String>,
+    },
     Ping {
         #[serde(default)]
         ts: u64,
@@ -182,6 +188,31 @@ pub struct DataEndpoint {
     /// `https://host:port/` of the node's WebTransport endpoint (browsers), if enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webtransport_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LobbyStats {
+    /// Value of the room prop `lobby` (`""` for rooms without one).
+    pub lobby: String,
+    pub rooms: u32,
+    pub players: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FriendRoom {
+    pub id: String,
+    pub name: String,
+    pub mode: RoomMode,
+    pub node: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FriendInfo {
+    pub player: String,
+    /// Has an authenticated control session or a live room slot somewhere in the fleet.
+    pub online: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room: Option<FriendRoom>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -272,6 +303,14 @@ pub enum ServerMsg {
     LobbyUpdate {
         room: RoomSummary,
         removed: bool,
+    },
+    Stats {
+        rooms: u32,
+        players: u32,
+        lobbies: Vec<LobbyStats>,
+    },
+    Friends {
+        friends: Vec<FriendInfo>,
     },
     Pong {
         ts: u64,

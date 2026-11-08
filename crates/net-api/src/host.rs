@@ -143,6 +143,8 @@ pub struct RoomHost {
     by_name: DashMap<(ProjectId, String), RoomId>,
     /// Lobby subscribers per project on this node.
     lobby: DashMap<ProjectId, Vec<mpsc::Sender<ServerMsg>>>,
+    /// Authenticated control sessions per (project, player) — presence for `find_friends`.
+    presence: DashMap<(ProjectId, String), u32>,
 }
 
 impl RoomHost {
@@ -286,6 +288,34 @@ impl RoomHost {
                 (g.project == project && g.room.is_listed()).then(|| g.room.summary())
             })
             .collect()
+    }
+
+    pub fn presence_enter(&self, project: ProjectId, player: &str) {
+        *self
+            .presence
+            .entry((project, player.to_string()))
+            .or_default() += 1;
+    }
+
+    pub fn presence_leave(&self, project: ProjectId, player: &str) {
+        let key = (project, player.to_string());
+        let gone = match self.presence.get_mut(&key) {
+            Some(mut n) => {
+                *n = n.saturating_sub(1);
+                *n == 0
+            }
+            None => false,
+        };
+        if gone {
+            self.presence.remove_if(&key, |_, n| *n == 0);
+        }
+    }
+
+    /// Whether `player` has an authenticated control session on this node right now.
+    pub fn is_online(&self, project: ProjectId, player: &str) -> bool {
+        self.presence
+            .get(&(project, player.to_string()))
+            .is_some_and(|n| *n > 0)
     }
 
     pub fn subscribe_lobby(&self, project: ProjectId, tx: mpsc::Sender<ServerMsg>) {

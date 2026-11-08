@@ -255,7 +255,7 @@ impl Room {
             .cfg
             .props
             .iter()
-            .filter(|(k, _)| self.cfg.lobby_props.iter().any(|l| l == *k))
+            .filter(|(k, _)| k.as_str() == "lobby" || self.cfg.lobby_props.iter().any(|l| l == *k))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         RoomSummary {

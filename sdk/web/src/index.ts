@@ -9,6 +9,10 @@ export * from "./sync.js";
 export * from "./lockstep.js";
 
 export type RoomMode = "relay" | "sync" | "lockstep";
+/** `stats` answer: live rooms/players of the project, grouped by the room prop `lobby` ("" = default lobby). */
+export interface Stats { rooms: number; players: number; lobbies: { lobby: string; rooms: number; players: number }[] }
+/** `find_friends` answer: online = authenticated somewhere in the fleet or holding a room slot. */
+export interface Friend { player: string; online: boolean; room?: { id: string; name: string; mode: RoomMode; node: string } }
 export interface Joined { room: string; name: string; mode: RoomMode; actor: number; master: number; tick_hz?: number; schema_hash?: string; data: { host: string; port: number; cert_sha256: string; ticket: string; ws_tunnel: boolean; webtransport_url?: string } }
 
 /** Data path: WebTransport datagrams when the browser and the node support it, else the WS tunnel. */
@@ -173,6 +177,18 @@ export class Client {
 
   leave() { this.send({ t: "leave" }); }
   /** Sync rooms: steer area-of-interest — extra viewpoints (camera, scope target) and entities forced into view (team mates, objectives). Entity ids as in deltas. */
+  /** Project-wide room/player counts per lobby (lobby statistics); at most one per second. */
+  async lobbyStats(): Promise<Stats> {
+    this.send({ t: "stats" });
+    const m = await this.waitFor((m) => m.t === "stats", (m) => m.t === "error");
+    return { rooms: m.rooms, players: m.players, lobbies: m.lobbies };
+  }
+  /** Presence of up to 64 players (find friends): online and the room they are in, fleet-wide. */
+  async findFriends(players: string[]): Promise<Friend[]> {
+    this.send({ t: "find_friends", players });
+    const m = await this.waitFor((m) => m.t === "friends", (m) => m.t === "error");
+    return m.friends;
+  }
   setView(viewpoints: (number | bigint)[] = [], interest: (number | bigint)[] = []) {
     this.send({ t: "set_view", viewpoints: viewpoints.map(Number), interest: interest.map(Number) });
   }
