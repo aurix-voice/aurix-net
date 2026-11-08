@@ -116,6 +116,42 @@ overruns; desync dumps for every batch were listed and downloadable through `/v1
 
 - `NET_HTTP=… NET_API_KEY=… node --test sdk/web/test/referee-live.test.mjs` — lockstep referee: a lying client is flagged by the node's own hash, the node state is stored as desync dump actor 0, room detail reports `referee: true` (upload `crates/net-game/examples/arena.wat` as module `arena` with an admin key first).
 
+## Soak 3 — sim referee in lockstep rooms (1 h, release, two nodes)
+
+`WEB_KEY=<key of the project that owns module physics-arena> DURATION=3600 LOCKSTEP_PROPS='{"schema":"…","logic":"physics-arena","position":"Transform.0"}' ./scripts/soak-test.sh`:
+the soak 2 pools plus, per 5-minute batch, a second lockstep room (4 bots, late joiner) whose room logic is
+the `net-sim-guest` module — the node runs the fixed-point physics itself over confirmed inputs
+(`referee: true`) — and the web `referee-live` test (a client lying about its hash every 10 ticks).
+
+**Run 1 (glibc malloc, before the fix) found a real problem**: the host node's RSS stepped up on every
+batch, 14 → 189 MB after the first and 264 MB after an hour (p99 tick 0.5 ms, 9 rooms / 34 players max),
+while the idle node stayed flat. heaptrack on a node fed six lying-client rounds showed 40 MB peak heap and
+140 KB leaked: the memory was freed, glibc just kept its per-thread arenas at their high-water mark. The
+bursts came from two places — every desync of the liar made the node build and send a full catch-up
+(checkpoint + journal tail), and the first instantiation of a module ran Cranelift on all cores. Fixes:
+catch-up only up to `UNTRUSTED_AFTER` strikes, the node binary uses mimalloc, modules compile on one
+thread. Reproduce the churn with `sdk/web/test/referee-churn.mjs` (`LIE=1`): before, +3…20 MB per round
+and never released; after, a fresh node goes 30 → 100 MB on the first referee room (compile) and then
+oscillates 68–76 MB across six lying rounds.
+
+**Run 2 (fixed build, nodes restarted):**
+
+| node | samples | RSS start → end (max) MB | tick p99 max | overruns | rooms / players max |
+|---|---|---|---|---|---|
+| host (d2eb03) | 62 | 31 → 113 (124) | 0.5 ms | 0 | 9 / 37 |
+| idle (f2bb50) | 62 | 31 → 44 (46) | — | 0 | 0 / 0 |
+
+Host RSS is no longer a staircase: 31 MB at start (mimalloc baseline is ~15 MB above glibc), 84–88 MB
+through the first four batches, one burst to 118 MB in batch five that mimalloc gave back to 100 MB within
+four minutes, and 100–113 MB for the rest of the hour (124 MB peak during the last batch's late join). The
+node flagged 276 desyncs from the lying clients (`net_lockstep_desyncs_total`), every referee room reported
+`referee: true` and stored its own state as dump actor 0, no tick overruns.
+
+Memory probe before the run (fresh release node, `aurix-net-loadtest --mode lockstep --props-json … --rooms 4
+--players 4` repeated 15×, 60 referee rooms created and reaped, no desyncs): RSS 14 MB → 54 MB after the
+first instantiation → 64 MB after 60 rooms, flat for the last five rounds and unchanged after all rooms were
+reaped; 12 plain lockstep rooms afterwards added 0 MB — the referee rooms themselves do not leak.
+
 ## CI (`.github/workflows/ci.yml`)
 
 | job | what runs |
