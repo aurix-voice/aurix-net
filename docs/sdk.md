@@ -6,7 +6,7 @@
 | C ABI | `crates/net-ffi` (`libaurix_net`, `include/aurix_net.h`) | via Rust client | verified (`ctest/echo.c`) |
 | C ABI, aurix-sim | `libaurix_net` also exports `sim_*`/`sim3_*` (`include/aurix_sim.h`, copies in `sdk/cpp`, `sdk/godot/src`) | native | verified (`ctest/sim.c`: six golden hashes) |
 | C++ (header-only) | `sdk/cpp/aurix_net.hpp` | via C ABI: relay, sync (`aurix::net::Sync`), lockstep | verified (`echo_test.cpp`, `sync_test.cpp`) |
-| Unity (UPM) | `sdk/unity` | pure C# (WebSocket control + tunnel), optional P/Invoke QUIC | managed core live-tested with dotnet; `NetRunner`/`NetView`/`NetTransform`/`[Sync]`/`[Rpc]`, `LockstepClient` + editor window written, real editor build pending |
+| Unity (UPM) | `sdk/unity` | pure C# (WebSocket control + tunnel), optional P/Invoke QUIC | managed core live-tested with dotnet; `NetRunner`/`NetView`/`NetTransform`/`[Sync]`/`[Rpc]`, `LockstepClient` + editor window written, real editor build pending; `NetRigidbody`/`NetAnimator`/`TickTimer`/`ISpawned`/`IDespawned` compile-checked (BuildCheck), editor run pending a license |
 | Godot 4 GDExtension | `sdk/godot` | C++ wrapper over C ABI | written, needs godot-cpp build check |
 | Web (`@aurix/net`) | `sdk/web` | WS control + WS tunnel (WebTransport next) | verified (`npm test`) |
 

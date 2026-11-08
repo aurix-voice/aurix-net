@@ -47,20 +47,33 @@ namespace Aurix.Net.Unity
         /// <summary>Called on remote copies after [Sync] fields were updated from a delta.</summary>
         protected virtual void OnSynced(uint tick) { }
 
+        /// <summary>Owner side, before [Sync] fields are collected: copy engine state into them.</summary>
+        protected virtual void OnBeforeSend() { }
+        /// <summary>Schema-driven behaviours: fill <paramref name="v"/> yourself and return true to skip [Sync] fields.</summary>
+        protected virtual bool CollectCustom(ComponentValue v) => false;
+        /// <summary>Schema-driven behaviours: read <paramref name="v"/> yourself and return true to skip [Sync] fields.</summary>
+        protected virtual bool ApplyCustom(ComponentValue v) => false;
+
         internal void ApplyFromEntity(NetEntity e, uint tick)
         {
-            if (NetComponent == null || _fields == null) return;
+            if (NetComponent == null) return;
             var v = e.Get(NetComponent); if (v == null) return;
-            for (int i = 0; i < _fields.Length; i++) _fields[i].SetValue(this, FromValue(v.Fields[_slots[i]], NetComponent.Fields[_slots[i]].Type, _fields[i].FieldType));
+            if (!ApplyCustom(v) && _fields != null)
+                for (int i = 0; i < _fields.Length; i++) _fields[i].SetValue(this, FromValue(v.Fields[_slots[i]], NetComponent.Fields[_slots[i]].Type, _fields[i].FieldType));
             OnSynced(tick);
         }
 
         /// <summary>Owner side: the component value to send this tick, or null when nothing changed.</summary>
         internal (ComponentDef, ComponentValue)? CollectWrite(bool force)
         {
-            if (NetComponent == null || _fields == null || _fields.Length == 0) return null;
+            if (NetComponent == null) return null;
+            OnBeforeSend();
             var v = _lastSent?.Clone() ?? ComponentValue.Zero(NetComponent);
-            for (int i = 0; i < _fields.Length; i++) v.Fields[_slots[i]] = ToValue(_fields[i].GetValue(this), NetComponent.Fields[_slots[i]].Type);
+            if (!CollectCustom(v))
+            {
+                if (_fields == null || _fields.Length == 0) return null;
+                for (int i = 0; i < _fields.Length; i++) v.Fields[_slots[i]] = ToValue(_fields[i].GetValue(this), NetComponent.Fields[_slots[i]].Type);
+            }
             bool changed = force || _lastSent == null; if (!changed) for (int i = 0; i < v.Fields.Length && !changed; i++) changed = !v.Fields[i].Equals(_lastSent.Fields[i]);
             if (!changed) return null;
             _lastSent = v; return (NetComponent, v);

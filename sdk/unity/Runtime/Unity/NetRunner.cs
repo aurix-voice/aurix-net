@@ -141,8 +141,17 @@ namespace Aurix.Net.Unity
         {
             var prefab = PickPrefab(e); if (prefab == null) return;
             var view = Instantiate(prefab); view.name = prefab.name + "#" + e.Id;
-            Views[e.Id] = view; view.Bind(this, e); OnSpawned?.Invoke(view);
+            Views[e.Id] = view; view.Bind(this, e);
+            _spawned.Clear(); view.GetComponentsInChildren(true, _spawned); foreach (var s in _spawned) s.Spawned(view);
+            OnSpawned?.Invoke(view);
         }
+        readonly List<ISpawned> _spawned = new List<ISpawned>(); readonly List<IDespawned> _despawned = new List<IDespawned>();
+
+        /// <summary>Timer expiring <paramref name="seconds"/> of server ticks from now (same on every peer).</summary>
+        public TickTimer TimerFromSeconds(float seconds) => TickTimer.CreateFromSeconds(ServerTick, seconds, Settings.TickHz);
+        public TickTimer TimerFromTicks(uint ticks) => TickTimer.CreateFromTicks(ServerTick, ticks);
+        public bool Expired(TickTimer t) => t.Expired(ServerTick);
+        public float RemainingSeconds(TickTimer t) => t.RemainingSeconds(ServerTick, Settings.TickHz);
         void Change(NetEntity e)
         {
             if (!Views.TryGetValue(e.Id, out var v)) { Spawn(e); return; }
@@ -153,7 +162,9 @@ namespace Aurix.Net.Unity
         void Despawn(NetEntity e)
         {
             if (!Views.TryGetValue(e.Id, out var v)) return;
-            Views.Remove(e.Id); OnDespawned?.Invoke(v); Destroy(v.gameObject);
+            Views.Remove(e.Id);
+            _despawned.Clear(); v.GetComponentsInChildren(true, _despawned); foreach (var d in _despawned) d.Despawned(v);
+            OnDespawned?.Invoke(v); Destroy(v.gameObject);
         }
         NetView PickPrefab(NetEntity e)
         {

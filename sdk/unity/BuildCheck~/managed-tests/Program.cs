@@ -18,6 +18,17 @@ static class Program
     static int Step(int x, byte[] input) { int v = input != null && input.Length > 0 ? (sbyte)input[0] : 0; return Math.Min(10, x + v); }
     static byte[] In(int v) => new[] { (byte)(sbyte)v };
 
+    static void TickTimerTests()
+    {
+        var t = TickTimer.CreateFromSeconds(100, 0.5f, 60);
+        Check(t.IsRunning && t.End == 130 && !t.Expired(100) && t.IsActive(129) && t.RemainingTicks(110) == 20, "0.5 s at 60 Hz = 30 ticks");
+        Check(t.Expired(130) && t.Expired(500) && !t.IsActive(130) && t.RemainingTicks(130) == 0, "expired at End and stays expired");
+        Check(System.Math.Abs(t.Normalized(115) - 0.5f) < 1e-6 && t.Normalized(999) == 1f, "normalized progress");
+        Check(!TickTimer.None.IsRunning && !TickTimer.None.Expired(10) && TickTimer.None.Normalized(10) == 1f, "None never runs or expires");
+        Check(TickTimer.CreateFromTicks(5, 0).End == 6, "zero ticks still expires one tick later");
+        Check(System.Math.Abs(t.RemainingSeconds(100, 60) - 0.5f) < 1e-6, "remaining seconds");
+    }
+
     static void PredictorTests()
     {
         var p = new Predictor<int>(0, Step);
@@ -288,6 +299,7 @@ static class Program
         SimTests();
         BotsTests();
         PredictorTests();
+        TickTimerTests();
         LockstepTests();
         RollbackTests();
         CodecVectors();
