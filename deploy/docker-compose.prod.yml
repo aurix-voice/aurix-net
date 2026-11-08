@@ -9,6 +9,10 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     ulimits: { nofile: { soft: 65536, hard: 65536 } }   # one fd per connection
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     logging: { driver: json-file, options: { max-size: "50m", max-file: "5" } }
     environment:
       NET__SERVER__ENVIRONMENT: production
@@ -29,6 +33,10 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     ulimits: { nofile: { soft: 65536, hard: 65536 } }   # one fd per connection
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     logging: { driver: json-file, options: { max-size: "50m", max-file: "5" } }
     environment:
       NET__SERVER__ENVIRONMENT: production
@@ -51,6 +59,8 @@ services:
     image: aurix-net-console:latest
     build: ../dashboard
     restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     environment:
       # Point at your LB / VIP in production: with a single node here the console 502s while it upgrades.
       NET_API_URL: http://node-a:8090

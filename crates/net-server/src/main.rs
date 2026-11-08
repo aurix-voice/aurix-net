@@ -26,12 +26,41 @@ struct Cli {
     config: Option<String>,
     #[arg(long)]
     migrate_only: bool,
+    /// Probe this node's own `/healthz` and exit 0 on 200 — the container HEALTHCHECK for images
+    /// without a shell or curl (distroless).
+    #[arg(long)]
+    healthcheck: bool,
+}
+
+fn healthcheck(cfg: &NetConfig) -> bool {
+    use std::io::{Read, Write};
+    let mut addr = cfg.server.http_addr;
+    if addr.ip().is_unspecified() {
+        addr.set_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    }
+    let timeout = std::time::Duration::from_secs(2);
+    let Ok(mut s) = std::net::TcpStream::connect_timeout(&addr, timeout) else {
+        return false;
+    };
+    let _ = s.set_read_timeout(Some(timeout));
+    let _ = s.set_write_timeout(Some(timeout));
+    if s.write_all(b"GET /healthz HTTP/1.0\r\nHost: localhost\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut buf = [0u8; 64];
+    let n = s.read(&mut buf).unwrap_or(0);
+    buf[..n].starts_with(b"HTTP/1.1 200") || buf[..n].starts_with(b"HTTP/1.0 200")
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let cfg = NetConfig::load(cli.config.as_deref())?;
+    if cli.healthcheck {
+        std::process::exit(if healthcheck(&cfg) { 0 } else { 1 });
+    }
     let startup_warnings = cfg.production_warnings();
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "info,quinn=warn,sqlx=warn".into());

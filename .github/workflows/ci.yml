@@ -64,9 +64,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
-        with: { tool: "cargo-audit,cargo-deny" }
+        with: { tool: "cargo-audit,cargo-deny,cargo-cyclonedx" }
       - run: cargo audit
       - run: cargo deny check
+      # CycloneDX SBOM of the node binary (what actually ships in the image).
+      - run: cargo cyclonedx -f json --describe binaries --manifest-path crates/net-server/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with: { name: sbom, path: crates/net-server/aurix-net-server_bin.cdx.json, retention-days: 90 }
 
   sdk-web:
     runs-on: ubuntu-latest
@@ -156,6 +160,13 @@ jobs:
           tags: aurix-net:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # Image scan of what ships (distroless base + node binary): CRITICAL with a fix fails the job,
+      # HIGH is reported (the base image lags Debian security updates by days, e.g. libssl3 which the
+      # node — rustls — never loads).
+      - uses: aquasecurity/trivy-action@0.28.0
+        with: { image-ref: aurix-net:ci, scanners: vuln, severity: HIGH,CRITICAL, ignore-unfixed: true, exit-code: "0" }
+      - uses: aquasecurity/trivy-action@0.28.0
+        with: { image-ref: aurix-net:ci, scanners: vuln, severity: CRITICAL, ignore-unfixed: true, exit-code: "1" }
       - uses: docker/build-push-action@v6
         with:
           context: .

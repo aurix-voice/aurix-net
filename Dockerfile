@@ -5,13 +5,11 @@ WORKDIR /src
 COPY . .
 RUN cargo build --release -p net-server --locked
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --home /var/lib/aurix-net --create-home aurix
+# Distroless runtime: glibc + CA roots only, no shell, no package manager (bookworm-slim carried
+# ~46 unfixed HIGH CVEs in util-linux/curl that the node never uses). Runs as uid 65532 (nonroot).
+FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=build /src/target/release/aurix-net-server /usr/local/bin/aurix-net-server
-USER aurix
-WORKDIR /var/lib/aurix-net
+WORKDIR /
 # HTTP/WS control plane, QUIC and WebTransport datagrams.
 EXPOSE 8090/tcp 7000/udp 7443/udp
 # Containers are reached through published ports, so the control plane must bind all interfaces
@@ -21,5 +19,5 @@ ENV NET__SERVER__HTTP_ADDR=0.0.0.0:8090
 # and NET__SECTION__KEY environment overrides (e.g. NET__AUTH__GRANT_SECRET).
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8090/healthz || exit 1
+    CMD ["/usr/local/bin/aurix-net-server", "--healthcheck"]
 ENTRYPOINT ["/usr/local/bin/aurix-net-server"]

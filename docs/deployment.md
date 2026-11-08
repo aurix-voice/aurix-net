@@ -107,7 +107,10 @@ treat it like the database itself.
 
 ## Docker
 
-`Dockerfile` builds a release node image: Debian slim, runs as uid 10001 (`aurix`), `STOPSIGNAL SIGTERM`
+`Dockerfile` builds a release node image on `gcr.io/distroless/cc-debian12:nonroot` (glibc + CA roots,
+no shell/package manager; the previous bookworm-slim base carried ~46 unfixed HIGH CVEs in packages the node
+never used), runs as uid 65532, `HEALTHCHECK` is the binary itself (`aurix-net-server --healthcheck` probes
+its own `/healthz`), `STOPSIGNAL SIGTERM`
 (the node drains and hands rooms off; give it `stop_grace_period: 30s`), container healthcheck on
 `/healthz` (503 while draining, so orchestrators stop routing to it). Ports: 8090/tcp (HTTP/WS),
 7000/udp (QUIC), 7443/udp (WebTransport). Configure with `NET__SECTION__KEY` env vars
@@ -119,6 +122,8 @@ defaults to 127.0.0.1 for dev runs; inside a container that leaves the published
 in-container healthcheck still passes — found when bringing the reference compose up). The console's
 `NET_API_URL` should point at your load balancer / VIP, not one node, or the console returns 502
 while that node is being upgraded.
+CI publishes a CycloneDX SBOM of the node binary (`sbom` artifact, `cargo cyclonedx`) and runs `cargo audit` /
+`cargo deny`; scan the built image with Trivy/Grype before promoting it (`trivy image aurix-net:<tag>`).
 
 Postgres over TLS: `database.url = "postgres://user:pw@host/aurix_net?sslmode=verify-full&sslrootcert=/etc/aurix-net/pg-ca.pem"`
 (`require` for a public CA; the node fails at start on a certificate it cannot verify, it never falls back

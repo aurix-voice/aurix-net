@@ -6,3 +6,4 @@
 # .NET build output of the SDK compile checks
 sdk/unity/BuildCheck~/*/bin/
 sdk/unity/BuildCheck~/*/obj/
+*.cdx.json
