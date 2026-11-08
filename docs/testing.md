@@ -154,6 +154,28 @@ Memory probe before the run (fresh release node, `aurix-net-loadtest --mode lock
 first instantiation → 64 MB after 60 rooms, flat for the last five rounds and unchanged after all rooms were
 reaped; 12 plain lockstep rooms afterwards added 0 MB — the referee rooms themselves do not leak.
 
+## Soak 4 — production image on the compose stack (10 min, distroless, read-only rootfs)
+
+Same pools as soak 3 (`BATCH=120 DURATION=600`, module `physics-arena` uploaded to the stack with
+`PUT /v1/modules/physics-arena`) against `deploy/docker-compose.prod.yml` as shipped: two nodes from the
+distroless image (uid 65532, `read_only`, `tmpfs /tmp`, `cap_drop: [ALL]`, `no-new-privileges`, nofile
+65536), Postgres and Redis on the internal network, console behind Caddy. Point of the run: the hardened
+container must not change anything — no writes to the rootfs, no capability the node silently needs, the
+built-in `--healthcheck` must keep the container healthy under load.
+
+| node | samples | RSS start → end (max) MB | tick p99 max | overruns | rooms / players max |
+|---|---|---|---|---|---|
+| host (node-b) | 22 | 29 → 118 (173) | 0.5 ms | 0 | 15 / 37 |
+| idle (node-a) | 22 | 31 → 35 (35) | — | 0 | 0 / 0 |
+
+Host RSS: 173 MB on the first sample (first instantiation of the module + the first batch of all pools
+starting at once), then 82–93 MB for eight minutes and 101 → 118 MB in the last batch's late join — the
+same shape as soak 3 run 2 on bare metal, so mimalloc behaves identically in the container. 207 desyncs
+flagged (`net_lockstep_desyncs_total`), Docker health `healthy` throughout, 0 restarts, no OOM, no error
+log lines. One stand-specific finding: `GET /v1/operator/nodes/:id/stats` is proxied to the other node via
+its `server.public_host`, so with the compose placeholders (`node-b.net.example.com`) it returns 500 until
+`PUBLIC_HOST` resolves inside the cluster — documented in deployment.md.
+
 ## Robustness of attacker-facing decoders (`tests/garbage.rs` in each crate)
 
 Every decoder that takes bytes from a peer is fed 20 000 random/mutated inputs per test (a seeded

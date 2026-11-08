@@ -18,6 +18,11 @@ Step-by-step order for go-live and every release: [release-checklist.md](release
 
 ## Configuration
 
+`server.public_host` is also what the other nodes use to reach this one for operator calls
+(`GET /v1/operator/nodes/:id/stats`, drains): it must resolve and route *inside* the cluster, not only from
+the internet. With the compose file this means a real hostname per node (or the service name on a
+single-host stack), not the `node-a.net.example.com` placeholders.
+
 ```toml
 [server]
 environment = "production"      # enables the secret checks below
