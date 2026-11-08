@@ -25,3 +25,18 @@ The C++ header exposes the same as `onNotice` / `onRehost` callbacks.
 crowd, `sim3_*` convex hulls and casts). Call it from your GDExtension code the same way the client
 header is used; values are raw Q32.32 (`aurix_fx_from_double`), handles/ids match the Web and Unity
 wrappers, and `sim_golden_hash()` etc. let you assert the build is bit-identical to the other SDKs.
+
+## Sync rooms
+
+```gdscript
+var client := AurixNetClient.new(); add_child(client)
+var world := AurixNetSync.new()
+world.setup(SCHEMA)                       # same IDL text as the room's `schema` prop
+client.data.connect(func(_ch, _tick, payload): world.receive(client, payload))
+world.spawn.connect(func(entity, owner): print("spawned ", entity, " of ", owner))
+world.change.connect(func(entity, _owner): var p: Vector3 = world.get_field(entity, "Transform", "pos"))
+func _process(dt):
+    world.advance(dt)                     # render tick, 2 ticks behind the server
+    world.begin_write("Transform"); world.write_field("pos", position); world.end_write(); world.send_writes(client)
+```
+`send_input(client, bytes)` is the raw input for rooms with server-side `logic`.

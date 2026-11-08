@@ -73,6 +73,32 @@ int64_t aurix_net_lockstep_get(AurixNetLockstep *ls, int32_t key);
 int32_t aurix_net_lockstep_set(AurixNetLockstep *ls, int32_t key, int64_t value);
 uint64_t aurix_net_lockstep_fnv1a(const uint8_t *data, size_t len);
 
+/* ---- sync rooms (client-side replicated world; feed it every data payload of a sync room) ---- */
+typedef struct AurixNetSync AurixNetSync;
+enum { AURIX_NET_SYNC_NONE = 0, AURIX_NET_SYNC_SPAWN = 1, AURIX_NET_SYNC_CHANGE = 2, AURIX_NET_SYNC_DESPAWN = 3 };
+typedef struct AurixNetSyncEvent { int32_t kind; uint64_t entity; int32_t owner; /* -1 = server-owned */ } AurixNetSyncEvent;
+AurixNetSync *aurix_net_sync_new(const char *schema);                                   /* NULL + last_error on a bad schema */
+void aurix_net_sync_destroy(AurixNetSync *s);
+int32_t aurix_net_sync_receive(const AurixNetSync *s, const uint8_t *data, size_t len, uint8_t *ack9); /* 1 = delta applied, ack9 filled (send it unreliable); 0 = not a delta; -1 = error */
+int32_t aurix_net_sync_poll(const AurixNetSync *s, AurixNetSyncEvent *out);           /* 1 = spawn/change/despawn filled */
+uint32_t aurix_net_sync_server_tick(const AurixNetSync *s);
+uint64_t aurix_net_sync_gaps(const AurixNetSync *s);
+int32_t aurix_net_sync_entity_count(const AurixNetSync *s);
+int32_t aurix_net_sync_entity_at(const AurixNetSync *s, int32_t index, uint64_t *id, int32_t *owner); /* 1 = filled */
+int32_t aurix_net_sync_component(const AurixNetSync *s, const char *name);              /* component id or -1 */
+int32_t aurix_net_sync_field(const AurixNetSync *s, int32_t component, const char *name); /* field index or -1 */
+int32_t aurix_net_sync_has(const AurixNetSync *s, uint64_t entity, int32_t component);
+int32_t aurix_net_sync_get_number(const AurixNetSync *s, uint64_t entity, int32_t component, int32_t field, double *out); /* bool/int/uint/f32/quantized; 1 = filled */
+int32_t aurix_net_sync_get_vector(const AurixNetSync *s, uint64_t entity, int32_t component, int32_t field, float *out4); /* 2 vec2, 3 vec3, 4 quat xyzw, 1 scalar, 0 missing */
+int32_t aurix_net_sync_get_bytes(const AurixNetSync *s, uint64_t entity, int32_t component, int32_t field, uint8_t *buf, size_t cap); /* string/bytes: full length (buf may be NULL), -1 missing */
+int64_t aurix_net_sync_send_input(const AurixNetSync *s, AurixNetClient *h, const uint8_t *data, size_t len); /* raw input for server logic; stamped tick or -1 */
+int32_t aurix_net_sync_write_begin(const AurixNetSync *s, int32_t component);           /* full component write, fields start at zero */
+int32_t aurix_net_sync_write_number(const AurixNetSync *s, int32_t field, double v);
+int32_t aurix_net_sync_write_vector(const AurixNetSync *s, int32_t field, const float *v, int32_t n); /* n = 2/3/4 */
+int32_t aurix_net_sync_write_bytes(const AurixNetSync *s, int32_t field, const uint8_t *p, size_t n);
+int32_t aurix_net_sync_write_end(const AurixNetSync *s);
+int64_t aurix_net_sync_send_writes(const AurixNetSync *s, AurixNetClient *h);           /* queued writes as this tick's input (owner-authoritative rooms); stamped tick or -1 */
+
 #ifdef __cplusplus
 }
 #endif

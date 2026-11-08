@@ -429,14 +429,23 @@ impl Replicator {
     /// Applies a delta to a client-side frame. Unknown entities are created; components are
     /// decoded against the client's current value (its baseline).
     pub fn apply(frame: &mut Frame, buf: &[u8]) -> Result<Tick, ApplyError> {
+        Self::apply_report(frame, buf).map(|r| r.tick)
+    }
+
+    /// `apply` that also tells which entities the delta touched (for spawn/change/despawn callbacks).
+    pub fn apply_report(frame: &mut Frame, buf: &[u8]) -> Result<ApplyReport, ApplyError> {
+        let mut report = ApplyReport::default();
         let mut r = BitReader::new(buf);
         let rd = |r: &mut BitReader, n: u32| r.read_bits(n).map_err(|_| ApplyError::Truncated);
         let tick = Tick(rd(&mut r, 32)? as u32);
-        let _baseline = rd(&mut r, 32)?;
+        report.tick = tick;
+        report.baseline = rd(&mut r, 32)? as u32;
         let nd = rd(&mut r, 16)? as usize;
         for _ in 0..nd {
             let id = EntityId::from_u64(rd(&mut r, 48)?);
-            let _ = frame.despawn(id);
+            if frame.despawn(id).is_ok() {
+                report.despawned.push(id);
+            }
         }
         let n = rd(&mut r, 16)? as usize;
         let cid_bits = frame.schema.component_id_bits();
@@ -447,6 +456,11 @@ impl Replicator {
             } else {
                 None
             };
+            if frame.entity(id).is_none() {
+                report.spawned.push(id);
+            } else {
+                report.changed.push(id);
+            }
             frame.ensure_entity(id, owner);
             let nc = rd(&mut r, 8)? as usize;
             for _ in 0..nc {
@@ -478,8 +492,21 @@ impl Replicator {
             }
         }
         frame.tick = tick;
-        Ok(tick)
+        Ok(report)
     }
+}
+
+/// What a delta did to the client frame (`Replicator::apply_report`).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ApplyReport {
+    pub tick: Tick,
+    /// Server's `baseline_tick` header (0 = full state).
+    pub baseline: u32,
+    pub despawned: Vec<EntityId>,
+    /// Entities the client had not seen before this delta.
+    pub spawned: Vec<EntityId>,
+    /// Entities the client already knew that this delta touched.
+    pub changed: Vec<EntityId>,
 }
 
 /// Reads `(tick, baseline_tick)` from a delta payload (without the kind byte).

@@ -193,4 +193,77 @@ private:
     AurixNetLockstep* ls_;
 };
 
+/// Sync room helper (mirrors the Web `SyncSession`): feed every Data payload to receive() — it applies
+/// the delta and sends the ack — then poll() spawn/change/despawn, read fields by name, and send raw
+/// inputs (rooms with `logic`) or owner-authoritative component writes. renderTick() lags the server by
+/// `interpolationTicks` for smoothing remote entities.
+class Sync {
+public:
+    enum class Kind { None = 0, Spawn = 1, Change = 2, Despawn = 3 };
+    struct Event { Kind kind; uint64_t entity; int owner; };
+
+    explicit Sync(const std::string& schema, int tickHz = 60, int interpolationTicks = 2)
+        : s_(aurix_net_sync_new(schema.c_str())), tickHz_(tickHz), interp_(interpolationTicks) {
+        if (!s_) throw Error(lastError());
+    }
+    ~Sync() { aurix_net_sync_destroy(s_); }
+    Sync(const Sync&) = delete; Sync& operator=(const Sync&) = delete;
+
+    /// True when the payload was a delta: it is applied, the ack goes out through `c`, events wait in poll().
+    bool receive(Client& c, const uint8_t* d, size_t n) {
+        uint8_t ack[9];
+        int r = aurix_net_sync_receive(s_, d, n, ack);
+        if (r < 0) throw Error(lastError());
+        if (r != 1) return false;
+        c.sendData(Channel::Unreliable, ack, sizeof ack);
+        double lag = double(serverTick()) - interp_;
+        if (lag > renderTick_) renderTick_ = lag;
+        gotDelta_ = true;
+        return true;
+    }
+    Event poll() {
+        AurixNetSyncEvent e{}; Event out{Kind::None, 0, -1};
+        if (aurix_net_sync_poll(s_, &e) == 1) { out.kind = Kind(e.kind); out.entity = e.entity; out.owner = e.owner; }
+        return out;
+    }
+    uint32_t serverTick() const { return aurix_net_sync_server_tick(s_); }
+    uint64_t gaps() const { return aurix_net_sync_gaps(s_); }
+    /// Call once per frame; returns the render tick (fractional, `interpolationTicks` behind the server).
+    double advance(double dtSeconds) { if (gotDelta_) renderTick_ += dtSeconds * tickHz_; return renderTick_; }
+    double renderTick() const { return renderTick_; }
+
+    int entityCount() const { return aurix_net_sync_entity_count(s_); }
+    bool entityAt(int index, uint64_t& id, int& owner) const {
+        int32_t o = -1; int r = aurix_net_sync_entity_at(s_, index, &id, &o); owner = o; return r == 1;
+    }
+    int component(const char* name) const { return aurix_net_sync_component(s_, name); }
+    int field(int component, const char* name) const { return aurix_net_sync_field(s_, component, name); }
+    bool has(uint64_t entity, int component) const { return aurix_net_sync_has(s_, entity, component) == 1; }
+    bool number(uint64_t entity, int component, int field, double& out) const { return aurix_net_sync_get_number(s_, entity, component, field, &out) == 1; }
+    /// Fills out[0..n) and returns n (2 vec2, 3 vec3, 4 quat x,y,z,w, 1 scalar), 0 when missing.
+    int vector(uint64_t entity, int component, int field, float out[4]) const { return aurix_net_sync_get_vector(s_, entity, component, field, out); }
+    std::string text(uint64_t entity, int component, int field) const {
+        int n = aurix_net_sync_get_bytes(s_, entity, component, field, nullptr, 0);
+        if (n <= 0) return {};
+        std::string s(size_t(n), '\0');
+        aurix_net_sync_get_bytes(s_, entity, component, field, reinterpret_cast<uint8_t*>(&s[0]), s.size());
+        return s;
+    }
+
+    /// Raw input for server-side logic; returns the stamped tick (resent with the next two inputs).
+    int64_t sendInput(Client& c, const uint8_t* d, size_t n) { return aurix_net_sync_send_input(s_, c.handle(), d, n); }
+    /// Owner-authoritative writes: begin(component).write(field, …)….end(), then sendWrites().
+    Sync& begin(int component) { check(aurix_net_sync_write_begin(s_, component)); return *this; }
+    Sync& write(int field, double v) { check(aurix_net_sync_write_number(s_, field, v)); return *this; }
+    Sync& write(int field, const float* v, int n) { check(aurix_net_sync_write_vector(s_, field, v, n)); return *this; }
+    Sync& write(int field, const std::string& s) { check(aurix_net_sync_write_bytes(s_, field, reinterpret_cast<const uint8_t*>(s.data()), s.size())); return *this; }
+    Sync& write(int field, const uint8_t* p, size_t n) { check(aurix_net_sync_write_bytes(s_, field, p, n)); return *this; }
+    Sync& end() { check(aurix_net_sync_write_end(s_)); return *this; }
+    int64_t sendWrites(Client& c) { return aurix_net_sync_send_writes(s_, c.handle()); }
+
+private:
+    static void check(int r) { if (r != 0) throw Error(lastError()); }
+    AurixNetSync* s_; int tickHz_; double interp_; double renderTick_ = 0; bool gotDelta_ = false;
+};
+
 } // namespace aurix::net

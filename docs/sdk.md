@@ -5,7 +5,7 @@
 | Rust | `crates/net-client` | QUIC + WS tunnel | verified (`examples/relay_echo`) |
 | C ABI | `crates/net-ffi` (`libaurix_net`, `include/aurix_net.h`) | via Rust client | verified (`ctest/echo.c`) |
 | C ABI, aurix-sim | `libaurix_net` also exports `sim_*`/`sim3_*` (`include/aurix_sim.h`, copies in `sdk/cpp`, `sdk/godot/src`) | native | verified (`ctest/sim.c`: six golden hashes) |
-| C++ (header-only) | `sdk/cpp/aurix_net.hpp` | via C ABI | verified (`echo_test.cpp`) |
+| C++ (header-only) | `sdk/cpp/aurix_net.hpp` | via C ABI: relay, sync (`aurix::net::Sync`), lockstep | verified (`echo_test.cpp`, `sync_test.cpp`) |
 | Unity (UPM) | `sdk/unity` | pure C# (WebSocket control + tunnel), optional P/Invoke QUIC | managed core live-tested with dotnet; `NetRunner`/`NetView`/`NetTransform`/`[Sync]`/`[Rpc]`, `LockstepClient` + editor window written, real editor build pending |
 | Godot 4 GDExtension | `sdk/godot` | C++ wrapper over C ABI | written, needs godot-cpp build check |
 | Web (`@aurix/net`) | `sdk/web` | WS control + WS tunnel (WebTransport next) | verified (`npm test`) |
@@ -62,6 +62,34 @@ for (auto e = ls.poll(); e.kind != aurix::net::Lockstep::Kind::None; e = ls.poll
   }
 }
 ```
+
+## Sync rooms from C++ and Godot
+
+`aurix_net_sync_*` (in `aurix_net.h`) is the client side of a sync room as pure logic: a replicated
+world (`net_sim::Frame` + the same delta decoder the node uses), acks, redundant input frames and
+owner-authoritative component writes. `aurix::net::Sync` wraps it:
+
+```cpp
+aurix::net::Client c; c.connect(http, grant);
+c.joinOrCreate("arena", aurix::net::Mode::Sync, 8, "{\"schema\":" + aurix::net::Client::quote(SCHEMA) + "}");
+aurix::net::Sync world(SCHEMA, 60, 2);
+int tr = world.component("Transform"), pos = world.field(tr, "pos");
+c.onData = [&](auto, auto, const uint8_t* d, size_t n) { world.receive(c, d, n); }; // applies + acks
+// per frame:
+c.poll(); world.advance(dt);
+for (auto e = world.poll(); e.kind != aurix::net::Sync::Kind::None; e = world.poll()) {
+    float p[4]; if (world.vector(e.entity, tr, pos, p) == 3) { /* spawn/change/despawn of e.entity */ }
+}
+float mine[3] = {x, y, z};
+world.begin(tr).write(pos, mine, 3).end().sendWrites(c);   // owner-authoritative rooms
+// world.sendInput(c, bytes, n) for rooms with server-side `logic`
+```
+
+Godot: `AurixNetSync` (RefCounted) — `setup(schema)`, feed the client's `data` signal to
+`receive(client, payload)`, listen to `spawn(entity, owner)` / `change` / `despawn`, read
+`get_field(entity, "Transform", "pos")` as Vector3/Quaternion/float/String, write with
+`begin_write("Transform")`, `write_field("pos", Vector3(...))`, `end_write()`, `send_writes(client)`.
+`sdk/cpp/sync_test.cpp` is the live check (two clients, writes replicate, no gaps).
 
 ## Predict/rollback on lockstep (zero-lag local input)
 

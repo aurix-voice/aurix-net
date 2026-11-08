@@ -43,6 +43,8 @@ jobs:
         run: |
           cargo build --release -p net-ffi
           python3 tools/gen_sim_header.py && git diff --exit-code -- crates/net-ffi/include sdk/cpp/aurix_sim.h sdk/godot/src/aurix_sim.h
+          cmp crates/net-ffi/include/aurix_net.h sdk/cpp/aurix_net.h && cmp crates/net-ffi/include/aurix_net.h sdk/godot/src/aurix_net.h && cmp sdk/cpp/aurix_net.hpp sdk/godot/src/aurix_net.hpp
+          g++ -std=c++17 -fsyntax-only sdk/cpp/sync_test.cpp -Isdk/cpp && g++ -std=c++17 -fsyntax-only sdk/cpp/echo_test.cpp -Isdk/cpp
           gcc -std=c11 -Wall -Wextra -Werror crates/net-ffi/ctest/sim.c -Ltarget/release -laurix_net -lm -Wl,-rpath,$PWD/target/release -o /tmp/sim_ctest
           /tmp/sim_ctest
       - name: artifacts for the SDK and console jobs

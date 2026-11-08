@@ -8,6 +8,9 @@
 /// linked so the `#[no_mangle]` symbols end up in the cdylib/staticlib.
 pub use net_sim_wasm;
 
+/// `aurix_net_sync_*`: client-side replicated world for sync rooms.
+pub mod sync;
+
 use bytes::Bytes;
 use net_client::protocol::{ClientMsg, ServerMsg};
 use net_client::{Client, Event, EventTarget, Options};

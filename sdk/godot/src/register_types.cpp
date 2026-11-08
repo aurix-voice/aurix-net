@@ -1,4 +1,5 @@
 #include "aurix_net_client.h"
+#include "aurix_net_sync.h"
 #include <gdextension_interface.h>
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
@@ -8,6 +9,7 @@ using namespace godot;
 static void init(ModuleInitializationLevel level) {
     if (level != MODULE_INITIALIZATION_LEVEL_SCENE) return;
     ClassDB::register_class<AurixNetClient>();
+    ClassDB::register_class<AurixNetSync>();
 }
 static void uninit(ModuleInitializationLevel) {}
 

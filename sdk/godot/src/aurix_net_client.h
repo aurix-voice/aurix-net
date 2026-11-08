@@ -34,6 +34,7 @@ public:
     bool is_connected_to() const { return client_.connected(); }
     String get_joined_json() const { return String::utf8(client_.joinedJson().c_str()); }
     String get_last_error() const { return last_error_; }
+    aurix::net::Client &raw() { return client_; }
 
     void _process(double delta) override;
 };

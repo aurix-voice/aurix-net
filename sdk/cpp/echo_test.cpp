@@ -7,7 +7,7 @@
 using namespace aurix::net;
 int main() {
     const char* key = std::getenv("NET_API_KEY"); if (!key) { std::fprintf(stderr, "NET_API_KEY missing\n"); return 2; }
-    std::string http = "http://127.0.0.1:8090";
+    const char* env = std::getenv("NET_HTTP"); std::string http = env ? env : "http://127.0.0.1:8090";
     Client a, b; a.connect(http, Client::issueGrant(http, key, "cpp-a", "A")); b.connect(http, Client::issueGrant(http, key, "cpp-b", "B"), true);
     std::string room = "cpp-echo-" + std::to_string(getpid());
     a.joinOrCreate(room, Mode::Relay, 4); b.joinOrCreate(room, Mode::Relay, 4);
