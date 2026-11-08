@@ -1,5 +1,7 @@
 # Deploying a node (production checklist)
 
+Step-by-step order for go-live and every release: [release-checklist.md](release-checklist.md).
+
 ## Network
 
 - Postgres and Redis on a private network only, with authentication (`DATABASE_URL`
