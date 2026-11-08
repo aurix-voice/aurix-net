@@ -260,6 +260,11 @@ public:
     Sync& write(int field, const uint8_t* p, size_t n) { check(aurix_net_sync_write_bytes(s_, field, p, n)); return *this; }
     Sync& end() { check(aurix_net_sync_write_end(s_)); return *this; }
     int64_t sendWrites(Client& c) { return aurix_net_sync_send_writes(s_, c.handle()); }
+    /// Owner-authoritative ops on entities you own (queued writes feed write/spawn): Fusion-style Spawn/Despawn/authority hand-off.
+    int64_t writeEntity(Client& c, uint64_t entity) { return aurix_net_sync_send_op(s_, c.handle(), 0, entity, 0); }
+    int64_t spawn(Client& c) { return aurix_net_sync_send_op(s_, c.handle(), 1, 0, 0); }
+    int64_t despawn(Client& c, uint64_t entity) { return aurix_net_sync_send_op(s_, c.handle(), 2, entity, 0); }
+    int64_t transfer(Client& c, uint64_t entity, int toActor) { return aurix_net_sync_send_op(s_, c.handle(), 3, entity, toActor); }
 
 private:
     static void check(int r) { if (r != 0) throw Error(lastError()); }
