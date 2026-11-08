@@ -71,7 +71,7 @@ fast (5 s pool acquire timeout) instead of hanging, heartbeats and metering resu
 rooms that emptied meanwhile still close after `player_ttl` + `empty_ttl`. Verified: sync 8/8 players,
 only sqlx "slow acquire" warnings, node healthy afterwards.
 
-## Capacity reference (one 8-core dev box, bots and nodes sharing CPU, release build)
+## Capacity reference (one 8-core machine, bots and nodes sharing CPU, release build)
 
 | Scenario | Result |
 |---|---|
