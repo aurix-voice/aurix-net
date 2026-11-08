@@ -165,8 +165,14 @@ impl Frame {
     }
 
     /// Client side: makes sure `id` exists exactly as the server numbered it.
-    pub fn ensure_entity(&mut self, id: EntityId, owner: Option<ActorId>) {
+    /// Creates (or re-owns) an entity with a server-chosen id — delta/checkpoint application.
+    /// Ids beyond `cfg.max_entities` are rejected instead of growing the slot table (a crafted
+    /// id must not make a peer allocate gigabytes).
+    pub fn ensure_entity(&mut self, id: EntityId, owner: Option<ActorId>) -> Result<(), SimError> {
         let i = id.index as usize;
+        if id.index >= self.cfg.max_entities {
+            return Err(SimError::Full(self.cfg.max_entities));
+        }
         if i >= self.slots.len() {
             self.slots.resize(i + 1, None);
             self.generations.resize(i + 1, 0);
@@ -184,6 +190,7 @@ impl Frame {
                 self.free.retain(|f| *f != id.index);
             }
         }
+        Ok(())
     }
 
     pub fn entity(&self, id: EntityId) -> Option<&Entity> {
@@ -378,6 +385,12 @@ impl Frame {
         let rng = r.read_bits(64).map_err(err)?;
         let nslots = r.read_bits(32).map_err(err)? as usize;
         let nents = r.read_bits(32).map_err(err)? as usize;
+        if nslots > self.cfg.max_entities as usize || nents > nslots {
+            return Err(SimError::Codec(format!(
+                "snapshot claims {nslots} slots / {nents} entities (limit {})",
+                self.cfg.max_entities
+            )));
+        }
         let cid_bits = self.schema.component_id_bits();
         let mut slots: Vec<Option<Entity>> = vec![None; nslots];
         for _ in 0..nents {
@@ -441,6 +454,25 @@ pub fn vec3_of(v: &ComponentValue, field: usize) -> Option<[f32; 3]> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn crafted_ids_and_snapshots_do_not_allocate() {
+        let schema = net_wire::schema::Schema::parse("component T {\n  hp: u8\n}\n").unwrap();
+        let mut f = super::Frame::new(schema, super::FrameConfig::default(), 1);
+        let huge = super::EntityId {
+            index: u32::MAX - 1,
+            generation: 0,
+        };
+        assert!(f.ensure_entity(huge, None).is_err());
+        assert_eq!(f.entity_count(), 0);
+        let mut w = net_wire::bits::BitWriter::new();
+        w.write_bits(0, 32);
+        w.write_bits(1, 64);
+        w.write_bits(u64::from(u32::MAX), 32);
+        w.write_bits(0, 32);
+        assert!(f.restore(&w.finish()).is_err());
+        assert_eq!(f.entity_count(), 0);
+    }
+
     use super::*;
 
     fn schema() -> Schema {

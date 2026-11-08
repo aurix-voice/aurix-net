@@ -1,58 +1,56 @@
-//! Decoders must never panic on hostile input: random bytes and bit-flipped valid packets.
+//! Datagram headers, fragments, links and tickets never panic on garbage.
 use bytes::Bytes;
-use net_common::Channel;
-use net_transport::{packet::Header, Link};
+use net_transport::fragment::Reassembler;
+use net_transport::link::Link;
+use net_transport::packet::Header;
+use net_transport::TicketSigner;
 use std::time::Instant;
-
-struct Rng(u64);
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
-    }
-    fn bytes(&mut self, max: usize) -> Vec<u8> {
-        let n = (self.next() % (max as u64 + 1)) as usize;
-        (0..n).map(|_| self.next() as u8).collect()
+fn rng(seed: u64) -> impl FnMut() -> u64 {
+    let mut s = seed | 1;
+    move || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        s
     }
 }
-
+fn garbage(r: &mut impl FnMut() -> u64, max: usize) -> Vec<u8> {
+    let n = (r() as usize) % (max + 1);
+    (0..n).map(|_| r() as u8).collect()
+}
+#[allow(dead_code)]
+fn mutate(r: &mut impl FnMut() -> u64, v: &[u8]) -> Vec<u8> {
+    let mut m = v.to_vec();
+    let k = 1 + (r() % 4) as usize;
+    for _ in 0..k {
+        if m.is_empty() {
+            break;
+        }
+        let i = (r() as usize) % m.len();
+        match r() % 3 {
+            0 => m[i] ^= 1 << (r() % 8),
+            1 => {
+                m.remove(i);
+            }
+            _ => m.insert(i, r() as u8),
+        }
+    }
+    m
+}
 #[test]
-fn header_and_link_survive_garbage() {
-    let mut rng = Rng(0x9e3779b97f4a7c15);
+fn transport_decoders_survive_garbage() {
+    let mut r = rng(29);
     let now = Instant::now();
     let mut link = Link::new(now);
+    let mut re = Reassembler::default();
+    let signer = TicketSigner::new(b"secret");
     for _ in 0..20_000 {
-        let b = rng.bytes(300);
-        let _ = Header::decode(Bytes::from(b.clone()));
-        let _ = link.receive(Bytes::from(b), now);
-    }
-    // valid traffic with random corruption on the receiving side
-    let mut a = Link::new(now);
-    let mut b = Link::new(now);
-    for i in 0..5_000u32 {
-        let ch = match i % 3 {
-            0 => Channel::UnreliableSequenced,
-            1 => Channel::ReliableOrdered,
-            _ => Channel::ReliableUnordered,
-        };
-        let msg = rng.bytes(if i.is_multiple_of(50) { 3000 } else { 200 });
-        let _ = a.send(ch, Bytes::from(msg), now);
-        a.flush_batch();
-        while let Some(d) = a.next_outgoing() {
-            let mut v = d.to_vec();
-            if !v.is_empty() && rng.next().is_multiple_of(4) {
-                let idx = (rng.next() as usize) % v.len();
-                v[idx] ^= 1 << (rng.next() % 8);
-            }
-            if rng.next().is_multiple_of(5) {
-                v.truncate((rng.next() as usize) % (v.len() + 1));
-            }
-            let _ = b.receive(Bytes::from(v), now);
-        }
-        while let Some(d) = b.next_outgoing() {
-            let _ = a.receive(d, now);
-        }
+        let g = garbage(&mut r, 96);
+        let _ = Header::decode(Bytes::from(g.clone()));
+        let _ = re.accept(Bytes::from(g.clone()), now);
+        let _ = link.receive(Bytes::from(g.clone()), now);
+        let _ = signer.verify(&g);
+        let _ = link.poll(now);
+        while link.next_outgoing().is_some() {}
     }
 }

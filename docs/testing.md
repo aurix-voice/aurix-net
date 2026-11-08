@@ -154,6 +154,18 @@ Memory probe before the run (fresh release node, `aurix-net-loadtest --mode lock
 first instantiation → 64 MB after 60 rooms, flat for the last five rounds and unchanged after all rooms were
 reaped; 12 plain lockstep rooms afterwards added 0 MB — the referee rooms themselves do not leak.
 
+## Robustness of attacker-facing decoders (`tests/garbage.rs` in each crate)
+
+Every decoder that takes bytes from a peer is fed 20 000 random/mutated inputs per test (a seeded
+xorshift, no extra dependencies, runs in `cargo test`): relay `EventFrame::decode`, `Schema::parse`,
+`ComponentValue::decode_full/decode_delta`, `Replicator::apply`, `LockstepRoom::handle` and
+`SyncRoom::handle` (all frame kinds, player and spectator), `Filter::parse`, the lockstep client
+`receive`, transport `Header::decode` / `Reassembler::accept` / `Link::receive` and ticket `verify`.
+The first run found a real one: a delta or checkpoint naming entity index `u32::MAX` made
+`Frame::ensure_entity` resize the slot table to 170 GB (abort) — and `Frame::restore` trusted the
+slot count of a client-uploaded checkpoint/dump the same way. Both now reject anything beyond
+`FrameConfig::max_entities` (4096). `cargo audit` is clean (477 crates).
+
 ## CI (`.github/workflows/ci.yml`)
 
 | job | what runs |

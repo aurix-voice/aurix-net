@@ -461,7 +461,9 @@ impl Replicator {
             } else {
                 report.changed.push(id);
             }
-            frame.ensure_entity(id, owner);
+            frame
+                .ensure_entity(id, owner)
+                .map_err(|e| ApplyError::Codec(e.to_string()))?;
             let nc = rd(&mut r, 8)? as usize;
             for _ in 0..nc {
                 let cid = rd(&mut r, cid_bits)? as u16;

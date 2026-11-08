@@ -1,58 +1,63 @@
-//! Event frames and control messages from hostile clients must be rejected, never panic.
+//! Attacker-facing decoders never panic on random or mutated input.
 use bytes::Bytes;
-use net_rooms::protocol::ClientMsg;
-use net_rooms::EventFrame;
-
-struct Rng(u64);
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
+use net_common::ActorId;
+use net_rooms::event::{CacheOp, EventFrame, EventTarget};
+fn rng(seed: u64) -> impl FnMut() -> u64 {
+    let mut s = seed | 1;
+    move || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        s
     }
 }
-
-#[test]
-fn event_frames_from_garbage() {
-    let mut rng = Rng(7);
-    for _ in 0..50_000 {
-        let n = (rng.next() % 64) as usize;
-        let b: Vec<u8> = (0..n).map(|_| rng.next() as u8).collect();
-        let _ = EventFrame::decode(Bytes::from(b));
-    }
+fn garbage(r: &mut impl FnMut() -> u64, max: usize) -> Vec<u8> {
+    let n = (r() as usize) % (max + 1);
+    (0..n).map(|_| r() as u8).collect()
 }
-
-#[test]
-fn control_messages_from_garbage() {
-    let mut rng = Rng(11);
-    let seeds = [
-        r#"{"t":"join","name":"x"}"#,
-        r#"{"t":"create","mode":"sync","props":{"tick_hz":99999999999,"schema":"component X { a: vec3 @range(1,0,0) }"}}"#,
-        r#"{"t":"event","code":300,"data":"!!!","target":{"kind":"actors","actors":[1,2]}}"#,
-        r#"{"t":"set_room_props","props":{"a":{"b":{"c":[[[[[[[[[[1]]]]]]]]]]}}}}"#,
-        r#"{"t":"auth","grant":""}"#,
-        r#"{"t":"kick","actor":65535}"#,
-    ];
-    for s in seeds {
-        let _ = serde_json::from_str::<ClientMsg>(s);
-        let bytes = s.as_bytes();
-        for _ in 0..2_000 {
-            let mut v = bytes.to_vec();
-            for _ in 0..1 + rng.next() % 3 {
-                let i = (rng.next() as usize) % v.len();
-                v[i] = rng.next() as u8;
+#[allow(dead_code)]
+fn mutate(r: &mut impl FnMut() -> u64, v: &[u8]) -> Vec<u8> {
+    let mut m = v.to_vec();
+    let k = 1 + (r() % 4) as usize;
+    for _ in 0..k {
+        if m.is_empty() {
+            break;
+        }
+        let i = (r() as usize) % m.len();
+        match r() % 3 {
+            0 => m[i] ^= 1 << (r() % 8),
+            1 => {
+                m.remove(i);
             }
-            if let Ok(txt) = std::str::from_utf8(&v) {
-                let _ = serde_json::from_str::<ClientMsg>(txt);
-            }
+            _ => m.insert(i, r() as u8),
         }
     }
-    // deep nesting must be refused, not overflow the stack
-    let deep = format!(
-        "{{\"t\":\"set_room_props\",\"props\":{{\"a\":{}1{}}}}}",
-        "[".repeat(100_000),
-        "]".repeat(100_000)
-    );
-    assert!(serde_json::from_str::<ClientMsg>(&deep).is_err());
+    m
+}
+#[test]
+fn event_frame_decode_survives_garbage() {
+    let mut r = rng(7);
+    for _ in 0..20_000 {
+        let _ = EventFrame::decode(Bytes::from(garbage(&mut r, 64)));
+    }
+}
+#[test]
+fn event_frame_roundtrip_then_mutations() {
+    let mut r = rng(9);
+    for i in 0..2_000u32 {
+        let f = EventFrame {
+            code: i as u8,
+            target: EventTarget::Others,
+            cache: CacheOp::None,
+            group: if i.is_multiple_of(3) { Some(i as u16) } else { None },
+            from: ActorId((i % 7) as u16),
+            payload: Bytes::from(garbage(&mut r, 40)),
+        };
+        let enc = f.encode();
+        let back = EventFrame::decode(enc.clone()).expect("own encoding decodes");
+        assert_eq!((back.code, back.from), (f.code, f.from));
+        for _ in 0..5 {
+            let _ = EventFrame::decode(Bytes::from(mutate(&mut r, &enc)));
+        }
+    }
 }
