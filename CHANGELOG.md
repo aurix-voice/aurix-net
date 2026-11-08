@@ -26,6 +26,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   ([docs/testing.md](docs/testing.md), Multi-host).
 
 ### CI
+- `release.yml`: tag-driven release (version/CHANGELOG check, server bundles for linux
+  x86_64/aarch64, SDK archives, SBOM, multi-arch GHCR images, GitHub Release with checksums).
+  `soak.yml`: nightly 10-minute two-node soak with RSS/overrun verdict and the CSV attached.
 - Docker job loads the built images into the daemon before the Trivy scan; the Godot
   GDExtension step builds `libaurix_net` first.
 

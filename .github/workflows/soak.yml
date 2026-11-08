@@ -1,0 +1,74 @@
+# Nightly soak: two release nodes on one runner (shared Postgres/Redis), relay + sync + lockstep bots
+# churning for 10 minutes, node RSS / tick p99 / overruns sampled every minute (scripts/soak-test.sh).
+# Fails on any tick overrun or on a node that keeps growing after the warm-up; the CSV is attached.
+name: soak
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      duration: { description: "seconds", default: "600" }
+
+env:
+  CARGO_TERM_COLOR: always
+  NET__DATABASE__URL: postgres://aurix:aurix@127.0.0.1:5432/aurix_net
+  NET__REDIS__URL: redis://127.0.0.1:6379/
+  NET__AUTH__ADMIN_TOKEN: soak-operator-token
+  NET__AUTH__GRANT_SECRET: soak-grant-secret-soak-grant-secret-soak
+  NET__SERVER__ENVIRONMENT: development
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: aurix, POSTGRES_PASSWORD: aurix, POSTGRES_DB: aurix_net }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U aurix" --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p net-server -p net-loadtest
+      - name: two nodes
+        run: |
+          export NET__AUTH__ADMIN_TOKEN NET__SERVER__HEARTBEAT_SECS=3
+          scripts/two-nodes.sh start
+      - name: soak
+        run: |
+          HTTP_A=http://127.0.0.1:8090 HTTP_B=http://127.0.0.1:8091 NET_OPERATOR_TOKEN="$NET__AUTH__ADMIN_TOKEN" \
+            DURATION="${{ github.event.inputs.duration || 600 }}" BATCH=120 OUT=soak.csv scripts/soak-test.sh
+      - name: verdict
+        run: |
+          python3 - <<'PY'
+          import csv, sys
+          rows = list(csv.DictReader(open("soak.csv")))
+          assert rows, "no samples"
+          bad = []
+          for node in sorted({r["node"] for r in rows}):
+              rs = [r for r in rows if r["node"] == node]
+              rss = [float(r["rss_mb"]) for r in rs if r["rss_mb"] not in ("", "None")]
+              ov = [int(float(r["tick_overruns"])) for r in rs if r["tick_overruns"] not in ("", "None")]
+              p99 = [float(r["tick_p99_ms"]) for r in rs if r["tick_p99_ms"] not in ("", "None")]
+              overruns = (ov[-1] - ov[0]) if ov else 0
+              print(f"node {node}: samples={len(rs)} rss first/last/max={rss[0]:.0f}/{rss[-1]:.0f}/{max(rss):.0f} MB tick p99 max={max(p99) if p99 else 0:.2f} ms overruns={overruns}")
+              if overruns:
+                  bad.append(node)
+              # after the warm-up (first 3 samples) RSS must not keep climbing: last ≤ 1.5 × the 4th sample
+              if len(rss) > 4 and rss[-1] > rss[3] * 1.5 + 20:
+                  bad.append(f"{node} rss {rss[3]:.0f} → {rss[-1]:.0f} MB")
+          if bad:
+              sys.exit(f"soak failed: {bad}")
+          PY
+      - name: node logs
+        if: always()
+        run: tail -n 100 /tmp/aurix-net-A.log /tmp/aurix-net-B.log || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: soak-csv, path: soak.csv, retention-days: 30 }

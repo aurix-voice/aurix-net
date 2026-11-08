@@ -1,0 +1,171 @@
+# Tag-driven release: `git tag v0.1.0 && git push --tags` (the tag must match the version fields and
+# have a CHANGELOG entry — docs/release-checklist.md). Produces: server bundles (node, CLI, loadtest,
+# libaurix_net + C headers) for linux x86_64/aarch64, the aurix-sim wasm, the Web npm tarball, the
+# Unity/Godot/C++ SDK archives, SBOM, SHA-256 sums, GHCR images `ghcr.io/<org>/aurix-net:<tag>` and
+# `aurix-net-console:<tag>`, and a GitHub Release with everything attached.
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag: { description: "existing tag to (re)build", required: true }
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ env.TAG }}" }
+      - name: tag == version fields, CHANGELOG has the entry
+        run: |
+          v="${TAG#v}"
+          grep -q "^version = \"$v\"" Cargo.toml || { echo "Cargo.toml workspace version != $v"; exit 1; }
+          grep -q "\"version\": \"$v\"" sdk/web/package.json || { echo "sdk/web version != $v"; exit 1; }
+          grep -q "\"version\": \"$v\"" sdk/unity/package.json || { echo "sdk/unity version != $v"; exit 1; }
+          grep -q "\"version\": \"$v\"" dashboard/package.json || { echo "dashboard version != $v"; exit 1; }
+          grep -q "^## \[$v\]" CHANGELOG.md || { echo "CHANGELOG.md has no ## [$v] entry"; exit 1; }
+
+  server:
+    needs: check-version
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, arch: x86_64 }
+          - { os: ubuntu-24.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ env.TAG }}" }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p net-server -p net-cli -p net-loadtest -p net-ffi
+      - name: bundle
+        run: |
+          d="aurix-net-${TAG}-linux-${{ matrix.arch }}"
+          mkdir -p "$d/bin" "$d/lib" "$d/include"
+          cp target/release/aurix-net-server target/release/aurix-net target/release/aurix-net-loadtest "$d/bin/"
+          cp target/release/libaurix_net.so "$d/lib/"
+          cp crates/net-ffi/include/aurix_net.h crates/net-ffi/include/aurix_sim.h sdk/cpp/aurix_net.hpp "$d/include/"
+          cp LICENSE* README.md CHANGELOG.md "$d/" 2>/dev/null || true
+          cp -r deploy "$d/deploy"
+          tar czf "$d.tar.gz" "$d"
+      - uses: actions/upload-artifact@v4
+        with: { name: "server-${{ matrix.arch }}", path: "aurix-net-*.tar.gz", if-no-files-found: error }
+
+  sdk:
+    needs: check-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ env.TAG }}" }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: cargo build --release --target wasm32-unknown-unknown -p net-sim-wasm
+      - name: web package
+        working-directory: sdk/web
+        run: |
+          npm ci && npm run build && npm test
+          npm pack --pack-destination ..
+      - name: sdk archives
+        run: |
+          cp target/wasm32-unknown-unknown/release/net_sim_wasm.wasm "aurix-sim-${TAG}.wasm"
+          (cd sdk && zip -qr "../aurix-net-unity-${TAG}.zip" unity -x 'unity/BuildCheck~/*' -x '*/bin/*' -x '*/obj/*')
+          (cd sdk && zip -qr "../aurix-net-godot-${TAG}.zip" godot -x 'godot/godot-cpp/*' -x 'godot/bin/*' -x 'godot/check~/*' -x '*.os' -x '*.o')
+          (cd sdk && zip -qr "../aurix-net-cpp-${TAG}.zip" cpp)
+          cp crates/net-ffi/include/aurix_sim.h .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk
+          if-no-files-found: error
+          path: |
+            sdk/aurix-net-*.tgz
+            aurix-sim-*.wasm
+            aurix-net-unity-*.zip
+            aurix-net-godot-*.zip
+            aurix-net-cpp-*.zip
+
+  sbom:
+    needs: check-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ env.TAG }}" }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with: { tool: "cargo-audit,cargo-deny,cargo-cyclonedx" }
+      - run: cargo audit
+      - run: cargo deny check
+      - run: cargo cyclonedx -f json --describe binaries --manifest-path crates/net-server/Cargo.toml
+      - run: mv crates/net-server/aurix-net-server_bin.cdx.json "aurix-net-server-${TAG}.cdx.json"
+      - uses: actions/upload-artifact@v4
+        with: { name: sbom, path: "aurix-net-server-*.cdx.json", if-no-files-found: error }
+
+  images:
+    needs: check-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ env.TAG }}" }
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - name: image names
+        run: echo "REPO=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REPO }}/aurix-net:${{ env.TAG }},${{ env.REPO }}/aurix-net:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: dashboard/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REPO }}/aurix-net-console:${{ env.TAG }},${{ env.REPO }}/aurix-net-console:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # The published node image must be free of CRITICAL vulnerabilities with a fix (same gate as CI).
+      - uses: aquasecurity/trivy-action@0.35.0
+        with: { image-ref: "${{ env.REPO }}/aurix-net:${{ env.TAG }}", scanners: vuln, severity: CRITICAL, ignore-unfixed: true, exit-code: "1" }
+
+  release:
+    needs: [server, sdk, sbom, images]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ env.TAG }}" }
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - name: checksums + release notes
+        run: |
+          (cd dist && sha256sum * > "SHA256SUMS-${TAG}.txt")
+          v="${TAG#v}"
+          awk -v v="$v" '/^## \[/{p = index($0, "## [" v "]") == 1} p' CHANGELOG.md > notes.md
+          printf '\n---\nImages: `ghcr.io/%s/aurix-net:%s`, `ghcr.io/%s/aurix-net-console:%s` (linux/amd64, linux/arm64). SBOM and SHA-256 sums attached.\n' \
+            "${GITHUB_REPOSITORY_OWNER,,}" "$TAG" "${GITHUB_REPOSITORY_OWNER,,}" "$TAG" >> notes.md
+          ls -la dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Aurix Net ${{ env.TAG }}
+          body_path: notes.md
+          files: dist/*
+          fail_on_unmatched_files: true

@@ -17,7 +17,11 @@ Each step points at the document that explains it; nothing here is optional unle
    (`Cargo.toml` workspace, `sdk/web`, `sdk/unity`, `dashboard` package.json); build
    `aurix-net:<tag>` from it (`docker build .`), scan it
    (`trivy image aurix-net:<tag>`; CI fails on CRITICAL with a fix), keep the `sbom` artifact
-   of that CI run with the release.
+   of that CI run with the release. Pushing the tag runs `.github/workflows/release.yml`, which
+   checks the version fields against the tag, builds the linux x86_64/aarch64 server bundles
+   (node, CLI, loadtest, `libaurix_net` + headers), the Web npm tarball, the Unity/Godot/C++
+   archives, the SBOM, multi-arch `ghcr.io/<org>/aurix-net:<tag>` and `aurix-net-console:<tag>`
+   images (CRITICAL-with-fix gate) and attaches everything with SHA-256 sums to a GitHub Release.
 4. **Compose** — copy `deploy/docker-compose.prod.yml`, set `PUBLIC_HOST` per node and
    `REGION`, point the console's `NET_API_URL` at the load balancer, keep `read_only`,
    `cap_drop`, `no-new-privileges`, `nofile`, log rotation and `stop_grace_period: 30s`.

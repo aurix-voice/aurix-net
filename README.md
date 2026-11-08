@@ -53,3 +53,9 @@ Clients open a WebSocket (`/ws`) for control (JSON), authenticate with a grant i
 ## Licence
 
 Server crates AGPL-3.0-only; `net-common` and `net-transport` Apache-2.0 so clients and SDKs can embed them.
+
+## License
+
+[AGPL-3.0-only](LICENSE): run it, change it, self-host it; if you offer a modified node as a
+service, publish the changes. SDKs you embed in a game talk to the node over the network and are
+not affected by the AGPL's network clause the way the server is — see the file for the terms.

@@ -224,6 +224,11 @@ slot count of a client-uploaded checkpoint/dump the same way. Both now reject an
 
 ## CI (`.github/workflows/ci.yml`)
 
+Two more workflows live next to it: `release.yml` (tag-driven: version/CHANGELOG check, server
+bundles for linux x86_64/aarch64, SDK archives, SBOM, multi-arch GHCR images, GitHub Release with
+SHA-256 sums) and `soak.yml` (nightly 10-minute two-node soak on a runner — relay + sync +
+lockstep bots, RSS/overrun verdict, CSV attached).
+
 | job | what runs |
 |---|---|
 | `rust` | fmt, clippy `-D warnings`, workspace tests, migrations on a fresh Postgres, `net-sim-wasm` wasm32 + native builds and `golden_check` (all six golden hashes native == wasm32), `libaurix_net` + `ctest/sim.c` (C ABI golden check) and the header generator diff; uploads the `.wasm`, `libnet_sim_wasm.so` and the debug `aurix-net-server` for the jobs below |
