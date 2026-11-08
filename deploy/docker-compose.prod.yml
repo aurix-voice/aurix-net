@@ -10,6 +10,7 @@ services:
     stop_grace_period: 30s
     environment:
       NET__SERVER__ENVIRONMENT: production
+      NET__SERVER__HTTP_ADDR: 0.0.0.0:8090
       NET__SERVER__REGION: ${REGION:-eu}
       NET__SERVER__PUBLIC_HOST: node-a.net.example.com
       NET__AUTH__GRANT_SECRET: ${GRANT_SECRET}
@@ -25,6 +26,7 @@ services:
     stop_grace_period: 30s
     environment:
       NET__SERVER__ENVIRONMENT: production
+      NET__SERVER__HTTP_ADDR: 0.0.0.0:8090
       NET__SERVER__REGION: ${REGION:-eu}
       NET__SERVER__PUBLIC_HOST: node-b.net.example.com
       NET__AUTH__GRANT_SECRET: ${GRANT_SECRET}
@@ -42,6 +44,7 @@ services:
     build: ../dashboard
     restart: unless-stopped
     environment:
+      # Point at your LB / VIP in production: with a single node here the console 502s while it upgrades.
       NET_API_URL: http://node-a:8090
     ports: ["8080:8080/tcp"]
     depends_on: [node-a]

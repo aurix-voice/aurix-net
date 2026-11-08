@@ -56,6 +56,32 @@ failures/min per IP, 20 writes/s per API key, 2000 events/s per room, 60 per pla
 Nodes of one deployment should run the same minor version; the room checkpoint format is
 versioned in JSON and tolerates added fields.
 
+Rolling upgrade, one node at a time (verified on the reference compose: `stop` returned in
+0.4 s, the node logged `shutdown: rooms handed off rooms=1`, the room was listed from the other
+node immediately and the first node served `/healthz` 200 again 6 s after `start`):
+
+```sh
+docker compose pull            # or build the new image
+docker compose up -d --no-deps node-a   # SIGTERM → drain → rooms orphaned in Redis → exit 0
+curl -fs http://node-a:8090/healthz     # wait for 200
+docker compose up -d --no-deps node-b
+```
+
+Players of the drained node get `left{reason:"rehost"}` and rejoin by room name on any node;
+the room's state comes from the checkpoint. Keep ≥ 2 nodes per region or a deploy ends matches.
+
+## Backups
+
+Postgres holds everything durable (projects, keys, room history, usage, audit, modules);
+Redis holds live state (room index, checkpoints of orphaned rooms, rate-limit windows) and is
+`appendonly yes` in the reference compose, so a Redis restart alone loses nothing.
+`scripts/backup.sh [out-dir]` takes a consistent `pg_dump` (single transaction, plain SQL,
+gzip) plus a point-in-time Redis RDB (`BGSAVE`, waits for `LASTSAVE` to move) and writes a
+manifest with sizes and SHA-256; restore steps are in the script header. Run it from cron on
+the compose host (`COMPOSE="docker compose -f deploy/docker-compose.prod.yml --env-file .env"`)
+and ship the directory off-host; the dump contains API-key hashes and webhook secrets, so
+treat it like the database itself.
+
 ## Docker
 
 `Dockerfile` builds a release node image: Debian slim, runs as uid 10001 (`aurix`), `STOPSIGNAL SIGTERM`
@@ -65,7 +91,11 @@ versioned in JSON and tolerates added fields.
 (`NET__AUTH__GRANT_SECRET`, `NET__AUTH__ADMIN_TOKEN`, `NET__DATABASE__URL`, `NET__REDIS__URL`,
 `NET__SERVER__PUBLIC_HOST`, ...) or mount a TOML and pass `--config /etc/aurix-net/net.toml` (needed
 for list values such as `trusted_proxies` / `allowed_origins`). `deploy/docker-compose.prod.yml` is a
-two-node reference layout.
+two-node reference layout. The image sets `NET__SERVER__HTTP_ADDR=0.0.0.0:8090` (the bare binary
+defaults to 127.0.0.1 for dev runs; inside a container that leaves the published port dead while the
+in-container healthcheck still passes — found when bringing the reference compose up). The console's
+`NET_API_URL` should point at your load balancer / VIP, not one node, or the console returns 502
+while that node is being upgraded.
 
 Postgres over TLS: `database.url = "postgres://user:pw@host/aurix_net?sslmode=verify-full&sslrootcert=/etc/aurix-net/pg-ca.pem"`
 (`require` for a public CA; the node fails at start on a certificate it cannot verify, it never falls back

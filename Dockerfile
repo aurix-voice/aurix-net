@@ -14,6 +14,9 @@ USER aurix
 WORKDIR /var/lib/aurix-net
 # HTTP/WS control plane, QUIC and WebTransport datagrams.
 EXPOSE 8090/tcp 7000/udp 7443/udp
+# Containers are reached through published ports, so the control plane must bind all interfaces
+# (the binary defaults to 127.0.0.1:8090 for bare-metal dev runs).
+ENV NET__SERVER__HTTP_ADDR=0.0.0.0:8090
 # Configuration: built-in defaults, optionally `--config /etc/aurix-net/net.toml` (mount it),
 # and NET__SECTION__KEY environment overrides (e.g. NET__AUTH__GRANT_SECRET).
 STOPSIGNAL SIGTERM
