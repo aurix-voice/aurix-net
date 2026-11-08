@@ -227,7 +227,8 @@ slot count of a client-uploaded checkpoint/dump the same way. Both now reject an
 Two more workflows live next to it: `release.yml` (tag-driven: version/CHANGELOG check, server
 bundles for linux x86_64/aarch64, SDK archives, SBOM, multi-arch GHCR images, GitHub Release with
 SHA-256 sums) and `soak.yml` (nightly 10-minute two-node soak on a runner — relay + sync +
-lockstep bots, RSS/overrun verdict, CSV attached).
+lockstep bots, RSS/overrun verdict, CSV attached). First run on a GitHub-hosted runner (2 vCPU,
+5 min, batch every 2 min): node RSS 40 → 49 MB and 41 → 45 MB, tick p99 ≤ 0.2 ms, 0 overruns.
 
 | job | what runs |
 |---|---|
