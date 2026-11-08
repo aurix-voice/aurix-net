@@ -24,8 +24,8 @@ next to a 30 s one). Unknown `NET__<SECTION>__…` variables are reported with a
 
 `server.public_host` is also what the other nodes use to reach this one for operator calls
 (`GET /v1/operator/nodes/:id/stats`, drains): it must resolve and route *inside* the cluster, not only from
-the internet. With the compose file this means a real hostname per node (or the service name on a
-single-host stack), not the `node-a.net.example.com` placeholders.
+the internet. The compose file defaults to the service names (`node-a`, `node-b`), which is right for a
+single-host stack; across hosts set `NODE_A_PUBLIC_HOST`/`NODE_B_PUBLIC_HOST` in `.env` to real hostnames.
 
 ```toml
 [server]

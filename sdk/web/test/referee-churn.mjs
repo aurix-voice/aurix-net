@@ -8,7 +8,8 @@ if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
 const http = process.env.NET_HTTP, key = process.env.NET_API_KEY;
 const hdr = { authorization: `Bearer ${key}`, "content-type": "application/json" };
 const LIE = process.env.LIE === "1", REST = process.env.REST === "1", N = +(process.env.PLAYERS ?? 2), SECS = +(process.env.SECS ?? 5);
-async function grant(p) { const r = await fetch(`${http}/v1/grants`, { method: "POST", headers: hdr, body: JSON.stringify({ player_id: p, name: p, scopes: ["join", "create"] }) }); const j = await r.json(); return j.grant ?? j.token; }
+async function grant(p) { const r = await fetch(`${http}/v1/grants`, { method: "POST", headers: hdr, body: JSON.stringify({ player_id: p, name: p, scopes: ["join", "create"] }) }); if (!r.ok) throw new Error(`grant failed: ${r.status} ${await r.text()} (is NET_API_KEY from this node's project?)`);
+  const j = await r.json(); return j.grant ?? j.token; }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const room = `probe-${process.pid}`; const peers = [];
 for (let i = 0; i < N; i++) {

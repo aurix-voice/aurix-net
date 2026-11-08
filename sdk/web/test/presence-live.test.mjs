@@ -6,12 +6,13 @@ if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
 
 // Two nodes of one fleet: a friend in a room on B, a friend only connected on B, a stranger nowhere;
 // the asking client sits on A. NET_HTTP_B defaults to NET_HTTP (single node still passes).
-const httpA = process.env.NET_HTTP ?? "http://127.0.0.1:8098";
+const httpA = process.env.NET_HTTP ?? "http://127.0.0.1:8090";
 const httpB = process.env.NET_HTTP_B ?? httpA;
 const key = process.env.NET_API_KEY;
 const hdr = { authorization: `Bearer ${key}`, "content-type": "application/json" };
 async function grant(http, player) {
   const r = await fetch(`${http}/v1/grants`, { method: "POST", headers: hdr, body: JSON.stringify({ player_id: player, name: player, scopes: ["join", "create"] }) });
+  if (!r.ok) throw new Error(`grant failed: ${r.status} ${await r.text()} (is NET_API_KEY from this node's project?)`);
   const j = await r.json(); return j.grant ?? j.token;
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

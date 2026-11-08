@@ -12,16 +12,23 @@ const key = process.env.NET_API_KEY;
 const hdr = { authorization: `Bearer ${key}`, "content-type": "application/json" };
 async function grant(player) {
   const r = await fetch(`${http}/v1/grants`, { method: "POST", headers: hdr, body: JSON.stringify({ player_id: player, name: player, scopes: ["join", "create"] }) });
+  if (!r.ok) throw new Error(`grant failed: ${r.status} ${await r.text()} (is NET_API_KEY from this node's project?)`);
   const j = await r.json(); return j.grant ?? j.token;
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-test("lockstep referee: the node's own state is the reference dump (actor 0)", { skip: !key }, async () => {
+const logic = process.env.NET_LOGIC ?? "arena";
+// The module has to be uploaded to the key's project first (`PUT /v1/modules/:name`, docs/modes.md); skip, don't fail, otherwise.
+const hasModule = key
+  ? await fetch(`${http}/v1/modules`, { headers: hdr }).then((r) => (r.ok ? r.json() : { modules: [] })).then((j) => (j.modules ?? []).some((m) => m.name === logic))
+  : false;
+
+test("lockstep referee: the node's own state is the reference dump (actor 0)", { skip: !key ? true : !hasModule ? `game module '${logic}' not uploaded to this project` : false }, async () => {
   const room = `web-ref-${process.pid}`;
   const peers = [];
   for (const name of ["rf-a", "rf-b"]) {
     const c = await Client.connect(http, await grant(name));
-    const joined = await c.joinOrCreate(room, "lockstep", 4, { tick_hz: 30, logic: process.env.NET_LOGIC ?? "arena", ...JSON.parse(process.env.NET_LOGIC_PROPS ?? "{}") });
+    const joined = await c.joinOrCreate(room, "lockstep", 4, { tick_hz: 30, logic, ...JSON.parse(process.env.NET_LOGIC_PROPS ?? "{}") });
     const ls = new LockstepClient((ch, p) => c.sendData(ch, p));
     const p = { name, c, joined, ls, ticks: 0, dumpsAsked: [], liar: name === "rf-b" };
     // honest clients do not run the sim here, so only the liar reports (a wrong) hash

@@ -10,6 +10,7 @@ const key = process.env.NET_API_KEY;
 
 async function grant(player) {
   const r = await fetch(`${http}/v1/grants`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ player_id: player, name: player }) });
+  if (!r.ok) throw new Error(`grant failed: ${r.status} ${await r.text()} (is NET_API_KEY from this node's project?)`);
   return (await r.json()).grant;
 }
 

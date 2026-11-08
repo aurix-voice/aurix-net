@@ -8,6 +8,7 @@ const A = "http://127.0.0.1:8090", B = "http://127.0.0.1:8091", key = process.en
 if (!key) { console.log("rehost: NET_API_KEY not set, skipping live check"); process.exit(0); }
 async function grant(http, player) {
   const r = await fetch(`${http}/v1/grants`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ player_id: player, name: player }) });
+  if (!r.ok) throw new Error(`grant failed: ${r.status} ${await r.text()} (is NET_API_KEY from this node's project?)`);
   return (await r.json()).grant;
 }
 const room = process.argv[2] ?? `web-rehost-${process.pid}`;

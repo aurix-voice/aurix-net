@@ -10,6 +10,7 @@ const key = process.env.NET_API_KEY;
 const SCHEMA = "component Transform {\n  pos: vec3 @range(-4096, 4096, 0.01)\n  rot: quat\n}\n";
 async function grant(player) {
   const r = await fetch(`${http}/v1/grants`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ player_id: player, name: player, scopes: ["join", "create"] }) });
+  if (!r.ok) throw new Error(`grant failed: ${r.status} ${await r.text()} (is NET_API_KEY from this node's project?)`);
   const j = await r.json(); return j.grant ?? j.token;
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

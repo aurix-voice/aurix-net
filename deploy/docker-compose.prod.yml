@@ -1,6 +1,7 @@
 # Reference production layout for one region: two nodes behind your TLS terminator / load
 # balancer, Postgres and Redis on the internal network only. Secrets come from the environment
-# (`.env`), never from this file. Replace the example hostnames before use. List values
+# (`.env`), never from this file. Set NODE_A_PUBLIC_HOST/NODE_B_PUBLIC_HOST in `.env` when the nodes
+# run on different hosts. List values
 # (trusted_proxies, allowed_origins) go in a mounted net.toml passed as `command: [--config, ...]`.
 services:
   node-a:
@@ -18,7 +19,9 @@ services:
       NET__SERVER__ENVIRONMENT: production
       NET__SERVER__HTTP_ADDR: 0.0.0.0:8090
       NET__SERVER__REGION: ${REGION:-eu}
-      NET__SERVER__PUBLIC_HOST: node-a.net.example.com
+      # Must resolve from the other nodes too (operator forwarding, drains): the service name works on
+      # one host; on several hosts set a real per-node hostname in .env.
+      NET__SERVER__PUBLIC_HOST: ${NODE_A_PUBLIC_HOST:-node-a}
       NET__AUTH__GRANT_SECRET: ${GRANT_SECRET}
       # During a secret rotation (docs/deployment.md → Secrets and rotation):
       # NET__AUTH__GRANT_SECRET_PREVIOUS: ${GRANT_SECRET_PREVIOUS}
@@ -42,7 +45,7 @@ services:
       NET__SERVER__ENVIRONMENT: production
       NET__SERVER__HTTP_ADDR: 0.0.0.0:8090
       NET__SERVER__REGION: ${REGION:-eu}
-      NET__SERVER__PUBLIC_HOST: node-b.net.example.com
+      NET__SERVER__PUBLIC_HOST: ${NODE_B_PUBLIC_HOST:-node-b}
       NET__AUTH__GRANT_SECRET: ${GRANT_SECRET}
       # During a secret rotation (docs/deployment.md → Secrets and rotation):
       # NET__AUTH__GRANT_SECRET_PREVIOUS: ${GRANT_SECRET_PREVIOUS}
