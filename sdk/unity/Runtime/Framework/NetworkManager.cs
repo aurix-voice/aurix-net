@@ -35,7 +35,7 @@ namespace Aurix.Net.Unity.Framework
     [DefaultExecutionOrder(-100)]
     public sealed class NetworkManager : MonoBehaviour
     {
-        enum Msg : byte { Hello = 1, Welcome, PlayerJoined, PlayerLeft, Spawn, Despawn, Owner, Sync, Rpc, ViewTick, ServerTick, StaticRpc }
+        enum Msg : byte { Hello = 1, Welcome, PlayerJoined, PlayerLeft, Spawn, Despawn, Owner, Sync, Rpc, ViewTick, ServerTick, StaticRpc, Ping, Pong }
         const byte Version = 1;
 
         [Header("Aurix Net")]
@@ -96,6 +96,9 @@ namespace Aurix.Net.Unity.Framework
         public uint tick { get; private set; }
         /// <summary>Newest server tick seen (clients); equals <see cref="tick"/> on the server.</summary>
         public uint serverTick { get; private set; }
+        /// <summary>Ping/jitter/throughput of this manager's connection (per-player ping on the server).</summary>
+        public readonly NetworkStatistics statistics = new NetworkStatistics();
+        readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
         public BridgeState serverState => _server?.State ?? BridgeState.Stopped;
         public BridgeState clientState => _client?.State ?? BridgeState.Stopped;
         public string lastError => _server?.LastError ?? _client?.LastError;
@@ -375,6 +378,10 @@ namespace Aurix.Net.Unity.Framework
         /// <summary>Drives the network: pumps the link, runs ticks and flushes outgoing frames. Called from Update.</summary>
         public void NetworkUpdate(float dt)
         {
+            bool connected = (isClient && _client != null && _client.State == BridgeState.Started) || (isServer && _server != null);
+            statistics.SetConnected(connected);
+            if (statistics.Update(dt) && isClient && !isServer && _client != null && _client.State == BridgeState.Started)
+                Send(-1, Msg.Ping, w => { w.WriteBits((uint)_clock.ElapsedMilliseconds, 32); w.WriteBits((ulong)Math.Min(65535, Math.Max(0, statistics.ping)), 16); });
             _server?.Pump(); _client?.Pump();
             if (isOffline) { _server?.Flush(); _client?.Flush(); return; }
             _accum += dt; float step = 1f / Math.Max(1, tickRate);
@@ -528,6 +535,7 @@ namespace Aurix.Net.Unity.Framework
             var w = new BitWriter(); write(w); var body = w.Finish();
             var buf = actor < 0 ? _toServer : (_toClient.TryGetValue(actor, out var l) ? l : (_toClient[actor] = new List<byte>()));
             buf.Add((byte)kind); buf.Add((byte)(body.Length >> 8)); buf.Add((byte)body.Length); buf.AddRange(body);
+            statistics.CountOut(body.Length + 3);
         }
 
         void Broadcast(Msg kind, Action<BitWriter> write, int except = -1)
@@ -566,6 +574,7 @@ namespace Aurix.Net.Unity.Framework
 
         void HandleFrame(ArraySegment<byte> d, PlayerID from, bool asServer)
         {
+            statistics.CountIn(d.Count);
             int pos = d.Offset, end = d.Offset + d.Count; var a = d.Array;
             while (pos + 3 <= end)
             {
@@ -590,6 +599,7 @@ namespace Aurix.Net.Unity.Framework
                         StaticRpcs.Invoke(sr, new BitReader(bytes), new RpcInfo(from, true));
                         return;
                     }
+                    case Msg.Ping: { uint t = (uint)r.ReadBits(32); int reported = (int)r.ReadBits(16); statistics.SetPlayerPing(from, reported); Send(from.id, Msg.Pong, w => w.WriteBits(t, 32)); return; }
                     case Msg.ViewTick: { uint vt = (uint)r.ReadBits(32); if (vt <= serverTick) _viewTicks[from] = vt; return; }
                     case Msg.Hello: if (r.ReadBits(8) == Version && _players.Contains(from)) SendWelcome(from); else Debug.LogWarning($"[AurixNet] hello from {from} with another protocol version"); return;
                     case Msg.Sync: { var (id, b, m) = ReadModuleRef(r); r.ReadBits(32); var bytes = r.ReadBytes((int)r.ReadUInt(16)); if (id == null || !m.ownerAuth || id.owner != from) return; m.lastReceivedTick = tick; bool accepted = m.ReadDeltaFromOwner(new BitReader(bytes)); m.ClearDirty();
@@ -625,6 +635,7 @@ namespace Aurix.Net.Unity.Framework
                     StaticRpcs.Invoke(sr, new BitReader(bytes), new RpcInfo(sender, false));
                     return;
                 }
+                case Msg.Pong: { uint t = (uint)r.ReadBits(32); statistics.RecordRtt((uint)_clock.ElapsedMilliseconds - t); return; }
                 case Msg.ServerTick: { uint st = (uint)r.ReadBits(32); if (st > serverTick) serverTick = st; return; }
                 case Msg.PlayerJoined: { var p = new PlayerID((ushort)r.ReadBits(16)); if (!_players.Contains(p)) _players.Add(p); onPlayerJoined?.Invoke(p); return; }
                 case Msg.PlayerLeft: { var p = new PlayerID((ushort)r.ReadBits(16)); _players.Remove(p); onPlayerLeft?.Invoke(p); return; }

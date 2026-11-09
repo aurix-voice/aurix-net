@@ -369,6 +369,19 @@ static class Program
             hostX.Stop(); cX.Stop(); cX2.Stop(); await Pump(300, hostX, cX, cX2);
         }
 
+        // NetworkStatistics: client ping/jitter estimate, server per-player ping, throughput counters
+        {
+            var hostT = Make("hostT"); var cT = Make("cT"); hostT.roomName = cT.roomName = room + "-stats";
+            hostT.StartHost(); await Until(() => hostT.isServer, 8000, hostT);
+            cT.StartClient(); await Until(() => hostT.players.Count == 2, 8000, hostT, cT);
+            await Until(() => cT.statistics.hasPingEstimate && hostT.statistics.PingOf(cT.localPlayer.Value) >= 0, 4000, hostT, cT);
+            await Pump(1100, hostT, cT);
+            Check(cT.statistics.hasPingEstimate && cT.statistics.ping >= 0 && cT.statistics.ping < 500, $"client ping estimate {cT.statistics.ping} ms (jitter {cT.statistics.jitter})");
+            Check(hostT.statistics.PingOf(cT.localPlayer.Value) >= 0, $"server knows the client's ping ({hostT.statistics.PingOf(cT.localPlayer.Value)} ms)");
+            Check(cT.statistics.upload > 0 && cT.statistics.download > 0 && cT.statistics.totalBytesIn > 0 && !cT.statistics.isConnectionStalled, $"throughput counters tick (up {cT.statistics.upload:0} B/s, down {cT.statistics.download:0} B/s)");
+            hostT.Stop(); cT.Stop(); await Pump(300, hostT, cT);
+        }
+
         // static RPCs: no NetworkIdentity, routed via NetworkManager.main (host) / the client manager
         {
             // NetworkManager.main is whichever manager started last in this process; make the client "main" to send, then the host to receive
