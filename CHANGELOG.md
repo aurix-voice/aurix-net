@@ -51,6 +51,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   buttons in play mode), `NetworkIdentity` inspector (stable `sceneId` auto-assigned for scene
   objects from scene + hierarchy path, runtime owner/observers), menu "Aurix Net/Assign scene ids".
   Written against the public UnityEditor API but not yet run in an editor.
+- `ValidatedSyncVar<T>`: owner-authoritative value the server checks with `validate(current, proposed)`;
+  rejected writes are reverted on the owner (`onRejected`) and never reach observers. Any module can now
+  veto owner deltas via `NetworkModule.ReadDeltaFromOwner`.
+- `SyncBigData`: chunked replication of large byte payloads (progress + completion events, whole payload to
+  late joiners).
 - `NetworkBones`: replicates local pose of SkinnedMeshRenderer bones + extra bones (per-bone change mask,
   quantised, smoothed on remotes) for ragdolls/procedural animation.
 - `NetworkAudioSource`: volume/pitch/loop/mute/spatial settings as sync vars, Play/Stop/Pause/UnPause/PlayOneShot

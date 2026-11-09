@@ -403,6 +403,7 @@ namespace Aurix.Net.Unity.Framework
                     for (int mi = 0; mi < b.modules.Length; mi++)
                     {
                         var m = b.modules[mi];
+                        if (m.isController) m.OnBeforeSend();
                         if (!m.isDirty || !m.isController || now < m.nextSendTime) continue;
                         m.nextSendTime = now + m.sendIntervalInSeconds;
                         var body = new BitWriter(); m.WriteDelta(body); m.ClearDirty();
@@ -591,7 +592,8 @@ namespace Aurix.Net.Unity.Framework
                     }
                     case Msg.ViewTick: { uint vt = (uint)r.ReadBits(32); if (vt <= serverTick) _viewTicks[from] = vt; return; }
                     case Msg.Hello: if (r.ReadBits(8) == Version && _players.Contains(from)) SendWelcome(from); else Debug.LogWarning($"[AurixNet] hello from {from} with another protocol version"); return;
-                    case Msg.Sync: { var (id, b, m) = ReadModuleRef(r); r.ReadBits(32); var bytes = r.ReadBytes((int)r.ReadUInt(16)); if (id == null || !m.ownerAuth || id.owner != from) return; m.lastReceivedTick = tick; m.ReadDelta(new BitReader(bytes)); m.ClearDirty();
+                    case Msg.Sync: { var (id, b, m) = ReadModuleRef(r); r.ReadBits(32); var bytes = r.ReadBytes((int)r.ReadUInt(16)); if (id == null || !m.ownerAuth || id.owner != from) return; m.lastReceivedTick = tick; bool accepted = m.ReadDeltaFromOwner(new BitReader(bytes)); m.ClearDirty();
+                        if (!accepted) { var cw = new BitWriter(); m.WriteDelta(cw); var cb = cw.Finish(); Send(from.id, Msg.Sync, w => { w.WriteBits(id.objectId, 32); w.WriteBits((ulong)b.componentIndex, 8); w.WriteBits((ulong)m.index, 8); w.WriteBits(tick, 32); w.WriteUInt((ulong)cb.Length, 16); w.WriteBytes(cb); }); return; }
                         void Write(BitWriter w) { w.WriteBits(id.objectId, 32); w.WriteBits((ulong)b.componentIndex, 8); w.WriteBits((ulong)m.index, 8); w.WriteBits(tick, 32); w.WriteUInt((ulong)bytes.Length, 16); w.WriteBytes(bytes); }
                         if (!m.ownerOnly && !m.serverOnly) foreach (var p in id.observers) if (p != from) Send(p.id, Msg.Sync, Write); return; }
                     case Msg.Rpc:

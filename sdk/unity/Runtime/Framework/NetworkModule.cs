@@ -40,6 +40,10 @@ namespace Aurix.Net.Unity.Framework
 
         internal void Bind(NetworkBehaviour b, int idx) { behaviour = b; index = idx; }
         internal void ClearDirty() { isDirty = false; }
+        /// <summary>Server side: an owner-authoritative delta arrived. Return false to reject it; the server then sends its own state back to the owner and nothing to observers.</summary>
+        public virtual bool ReadDeltaFromOwner(BitReader r) { ReadDelta(r); return true; }
+        /// <summary>Called by the manager each tick before the dirty check (controller side).</summary>
+        public virtual void OnBeforeSend() { }
 
         public void SetDirty()
         {

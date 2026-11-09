@@ -92,19 +92,21 @@ class Plain { public int hp = 5; public string title { get; set; } = "start"; pu
 class Reflected : NetworkIdentity { public Plain plain = new Plain(); public NetworkReflection refl; public Reflected() { refl = new NetworkReflection { trackedBehaviour = plain, trackedFields = { "hp", "title", "pos" }, trackedMethods = { new ReflectedMethod("Heal", ReflectionRpcType.Server), new ReflectedMethod("Whisper", ReflectionRpcType.Target) } }; behaviours.Add(refl); } }
 class Rig : NetworkIdentity { public Transform[] b = { new Transform(), new Transform(), new Transform() }; public NetworkBones bones; public Rig() { bones = new NetworkBones { extraBones = b, sendRate = 30, smoothing = 0 }; behaviours.Add(bones); } }
 class Speaker : NetworkIdentity { public AudioSource src = new AudioSource(); public NetworkAudioSource audio; public Speaker() { audio = new NetworkAudioSource { audioSource = src, clips = { new AudioClip { name = "a" }, new AudioClip { name = "b" } } }; behaviours.Add(audio); } }
+class Racer : NetworkBehaviour { public ValidatedSyncVar<int> speed = new ValidatedSyncVar<int>(1, 0f, (cur, proposed) => proposed <= 10); public SyncBigData blob = new SyncBigData(false, 4096); }
+class RacerIdentity : NetworkIdentity { public Racer racer = new Racer(); public RacerIdentity() { behaviours.Add(racer); } }
 class Mover : NetworkIdentity { public NetworkTransform nt = new NetworkTransform { syncParent = true }; public Mover() { behaviours.Add(nt); } }
 
 class TestFactory : INetworkObjectFactory
 {
     public readonly List<TestIdentity> alive = new List<TestIdentity>();
     public readonly List<NetworkIdentity> all = new List<NetworkIdentity>();
-    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 7) { var rg = new Rig(); all.Add(rg); return rg; } if (prefabId == 8) { var sp = new Speaker(); all.Add(sp); return sp; } if (prefabId == 6) { var rf = new Reflected(); all.Add(rf); return rf; } if (prefabId == 4) { var ph = new Phases(); all.Add(ph); return ph; } if (prefabId == 5) { var lb = new LodBox(); all.Add(lb); return lb; } if (prefabId == 3) { var tg = new Target(); all.Add(tg); return tg; } if (prefabId == 2) { var pw = new PawnIdentity(); all.Add(pw); return pw; } if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
+    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 9) { var rc = new RacerIdentity(); all.Add(rc); return rc; } if (prefabId == 7) { var rg = new Rig(); all.Add(rg); return rg; } if (prefabId == 8) { var sp = new Speaker(); all.Add(sp); return sp; } if (prefabId == 6) { var rf = new Reflected(); all.Add(rf); return rf; } if (prefabId == 4) { var ph = new Phases(); all.Add(ph); return ph; } if (prefabId == 5) { var lb = new LodBox(); all.Add(lb); return lb; } if (prefabId == 3) { var tg = new Target(); all.Add(tg); return tg; } if (prefabId == 2) { var pw = new PawnIdentity(); all.Add(pw); return pw; } if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
     public void Destroy(NetworkIdentity id) { all.Remove(id); if (id is TestIdentity t) alive.Remove(t); }
 }
 
 static class Program
 {
-    const int PH = 4, LB = 5, RF = 6, RG = 7, SP = 8;
+    const int PH = 4, LB = 5, RF = 6, RG = 7, SP = 8, RC = 9;
     static async Task<string> Grant(HttpClient h, string key, string pid)
     {
         var req = new HttpRequestMessage(HttpMethod.Post, "http://127.0.0.1:8090/v1/grants");
@@ -341,6 +343,30 @@ static class Program
             spk.audio.Stop(); await Until(() => !spkC.src.isPlaying, 3000, hostB, cB);
             Check(!spkC.src.isPlaying && !spkC.audio.isPlaying, "Stop replicated");
             hostB.Stop(); cB.Stop(); await Pump(300, hostB, cB);
+        }
+
+        // ValidatedSyncVar (server vetoes owner writes) + SyncBigData (chunked 40 KB payload, late joiner gets it whole)
+        {
+            var hostX = Make("hostX"); var cX = Make("cX"); var cX2 = Make("cX2"); hostX.roomName = cX.roomName = cX2.roomName = room + "-val";
+            hostX.StartHost(); await Until(() => hostX.isServer, 8000, hostX);
+            cX.StartClient(); await Until(() => hostX.players.Count == 2, 8000, hostX, cX);
+            var rc = (RacerIdentity)hostX.Spawn(RC, cX.localPlayer);
+            await Until(() => cX.TryGetIdentity(rc.objectId, out _), 5000, hostX, cX);
+            cX.TryGetIdentity(rc.objectId, out var rcC1); var rcC = (RacerIdentity)rcC1;
+            int rejected = 0; rcC.racer.speed.onRejected += _ => rejected++;
+            rcC.racer.speed.value = 5; await Until(() => rc.racer.speed.value == 5, 3000, hostX, cX);
+            Check(rc.racer.speed.value == 5 && rejected == 0, "owner proposal within limits accepted by the server");
+            rcC.racer.speed.value = 50; await Until(() => rejected == 1, 3000, hostX, cX); await Pump(200, hostX, cX);
+            Check(rc.racer.speed.value == 5 && rcC.racer.speed.value == 5 && rejected == 1, $"out-of-range proposal rejected and owner reverted (owner sees {rcC.racer.speed.value})");
+            var payload = new byte[40_000]; new Random(7).NextBytes(payload);
+            byte[] got = null; var progress = new List<float>(); rcC.racer.blob.onCompleted += d => got = d; rcC.racer.blob.onProgress += pr => progress.Add(pr);
+            rc.racer.blob.Set(payload);
+            await Until(() => got != null, 5000, hostX, cX);
+            Check(got != null && got.Length == payload.Length && got.AsSpan().SequenceEqual(payload) && progress.Count >= 3 && progress[0] < 1f, $"40 KB streamed in chunks ({progress.Count} progress events), bytes identical");
+            cX2.StartClient(); await Until(() => cX2.TryGetIdentity(rc.objectId, out _), 8000, hostX, cX, cX2); await Pump(300, hostX, cX, cX2);
+            cX2.TryGetIdentity(rc.objectId, out var rcC2x); var rcC2 = (RacerIdentity)rcC2x;
+            Check(rcC2.racer.blob.data.Length == payload.Length && rcC2.racer.blob.data.AsSpan().SequenceEqual(payload) && rcC2.racer.speed.value == 5, "late joiner receives the whole payload and the validated value");
+            hostX.Stop(); cX.Stop(); cX2.Stop(); await Pump(300, hostX, cX, cX2);
         }
 
         // static RPCs: no NetworkIdentity, routed via NetworkManager.main (host) / the client manager
