@@ -51,6 +51,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   buttons in play mode), `NetworkIdentity` inspector (stable `sceneId` auto-assigned for scene
   objects from scene + hierarchy path, runtime owner/observers), menu "Aurix Net/Assign scene ids".
   Written against the public UnityEditor API but not yet run in an editor.
+- Sync modules: `SyncHashSet<T>`, `SyncQueue<T>`, `SyncArray<T>` (changed slots only), `SyncEvent<T>`
+  (fire-and-forget payload, not replayed to late joiners) and `SyncTimer` (server-tick countdown,
+  `remaining`/`finished`/`Poll()`), same authority/full/delta rules as `SyncList`.
 - Quick match: `NetworkManager.StartAuto()` joins a random open room matching `matchFilterJson` /
   `matchExpr` as a client, or hosts a fresh room with `roomPropsJson` when none exists
   (`RelayBridge.StartAuto()`; the same settings are available to the transport adapters).

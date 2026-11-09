@@ -23,6 +23,12 @@ struct Loadout : INetSerializable
 
 class Player : NetworkBehaviour
 {
+    public SyncHashSet<string> tags = new SyncHashSet<string>();
+    public SyncQueue<int> queue = new SyncQueue<int>();
+    public SyncArray<int> slots = new SyncArray<int>(4);
+    public SyncEvent<int> boom = new SyncEvent<int>();
+    public SyncTimer timer = new SyncTimer();
+    public int boomsSeen;
     public SyncVar<int> health = new SyncVar<int>(100);
     public SyncVar<string> nick = new SyncVar<string>("");
     public SyncVar<Vector3> pos = new SyncVar<Vector3>(default, 0f, ownerAuth: true);
@@ -188,6 +194,25 @@ static class Program
         Check(mvH.nt.sync.buffer.Count >= 2 && mvH.nt.sync.buffer[mvH.nt.sync.buffer.Count - 1].tick > mvH.nt.sync.buffer[0].tick, "samples stamped with increasing server ticks");
         mvC.nt.Teleport(new Vector3(100, 0, 0), Quaternion.identity); await PumpMover(400);
         Check(Math.Abs(mvH.nt.transform.position.x - 100) < 0.01f, $"teleport snaps on remote (x={mvH.nt.transform.position.x:0.##})");
+
+        // extra sync modules: hash set, queue, array, event, timer (server → client, plus late join)
+        {
+            var hostX = Make("hostX"); var cX = Make("cX"); var roomX = room + "-mods"; hostX.roomName = cX.roomName = roomX;
+            hostX.StartHost(); await Until(() => hostX.isServer, 8000, hostX);
+            var px = (TestIdentity)hostX.Spawn(0);
+            px.player.tags.Add("vip"); px.player.tags.Add("beta"); px.player.queue.Enqueue(1); px.player.queue.Enqueue(2); px.player.queue.Enqueue(3); px.player.slots[2] = 42; px.player.timer.Start(0.4f);
+            cX.StartClient(); await Until(() => cX.TryGetIdentity(px.objectId, out _), 8000, hostX, cX);
+            var pc = ((TestIdentity)(cX.TryGetIdentity(px.objectId, out var pxi) ? pxi : null)).player;
+            pc.boom.onInvoked += v => pc.boomsSeen += v;
+            await Pump(300, hostX, cX);
+            Check(pc.tags.Contains("vip") && pc.tags.Count == 2 && pc.queue.Count == 3 && pc.queue.Peek() == 1 && pc.slots[2] == 42 && pc.timer.isRunning, $"late joiner gets full hash set/queue/array/timer state (timer remaining {pc.timer.remaining:0.00}s)");
+            px.player.tags.Remove("beta"); px.player.queue.Dequeue(); px.player.slots[0] = 7; px.player.boom.Invoke(5); px.player.boom.Invoke(6);
+            await Pump(400, hostX, cX);
+            Check(!pc.tags.Contains("beta") && pc.tags.Count == 1 && pc.queue.Count == 2 && pc.queue.Peek() == 2 && pc.slots[0] == 7 && pc.slots[2] == 42 && pc.boomsSeen == 11, $"deltas: remove/dequeue/slot/event replicated (booms {pc.boomsSeen})");
+            await Pump(400, hostX, cX);
+            Check(pc.timer.finished && px.player.timer.finished, "SyncTimer finished on both sides from the server tick");
+            hostX.Stop(); cX.Stop(); await Pump(300, hostX, cX);
+        }
 
         // Quick match: StartAuto hosts when nothing matches, the next StartAuto joins that room as a client
         {
