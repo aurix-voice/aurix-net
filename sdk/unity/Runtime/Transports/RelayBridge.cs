@@ -29,6 +29,10 @@ namespace Aurix.Net.Transports
         public int TimeoutMs = 10000;
         /// <summary>Keep the link when the master changes: raise OnPromoted / OnHostChanged instead of dropping.</summary>
         public bool AllowHostMigration;
+        /// <summary>StartAuto: join_random filter (room props that must match exactly, JSON object) and SQL-like lobby expression.</summary>
+        public string MatchFilterJson, MatchExpr;
+        /// <summary>Props the room is created with when hosting (JSON object); StartAuto matches them against MatchFilterJson.</summary>
+        public string PropsJson;
     }
 
     public sealed class RelayBridge : IDisposable
@@ -66,8 +70,10 @@ namespace Aurix.Net.Transports
 
         public void StartHost() => Start(true);
         public void StartClient() => Start(false);
+        /// <summary>Quick match: join a random open room matching MatchFilterJson/MatchExpr as a client, or host a fresh one (random name, PropsJson) when none exists. Check IsHost once Started.</summary>
+        public void StartAuto() => Start(false, true);
 
-        async void Start(bool host)
+        async void Start(bool host, bool auto = false)
         {
             if (State != BridgeState.Stopped) return;
             IsHost = host; LastError = null;
@@ -87,7 +93,17 @@ namespace Aurix.Net.Transports
                     if (!started) { early.Add(f); return; }
                     Dispatch(f, host);
                 };
-                if (host) await c.JoinOrCreateAsync(Settings.RoomName, "relay", Settings.MaxPlayers);
+                if (auto)
+                {
+                    try { await c.JoinRandomAsync(Settings.MatchFilterJson, Settings.MatchExpr); }
+                    catch (NetException e) when (e.Message.Contains("no matching room"))
+                    {
+                        Settings.RoomName = "m-" + Guid.NewGuid().ToString("N").Substring(0, 10);
+                        host = IsHost = true;
+                        await c.JoinOrCreateAsync(Settings.RoomName, "relay", Settings.MaxPlayers, Settings.PropsJson);
+                    }
+                }
+                else if (host) await c.JoinOrCreateAsync(Settings.RoomName, "relay", Settings.MaxPlayers, Settings.PropsJson);
                 else await c.JoinAsync(Settings.RoomName);
                 MasterActor = (int)Json.Num(c.JoinedJson, "master");
                 if (host && MasterActor != c.Actor) { c.Dispose(); throw new NetException("room already has a host (master actor " + MasterActor + ")"); }

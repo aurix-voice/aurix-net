@@ -189,6 +189,18 @@ static class Program
         mvC.nt.Teleport(new Vector3(100, 0, 0), Quaternion.identity); await PumpMover(400);
         Check(Math.Abs(mvH.nt.transform.position.x - 100) < 0.01f, $"teleport snaps on remote (x={mvH.nt.transform.position.x:0.##})");
 
+        // Quick match: StartAuto hosts when nothing matches, the next StartAuto joins that room as a client
+        {
+            var qa = Make("qa"); var qb = Make("qb"); var tag = "{\"m\":\"" + room + "-q\"}";
+            qa.matchFilterJson = qb.matchFilterJson = tag; qa.roomPropsJson = qb.roomPropsJson = tag;
+            qa.StartAuto(); await Until(() => qa.isServer, 8000, qa);
+            qb.StartAuto(); await Until(() => qb.isClient && qb.players.Count == 2 && qa.players.Count == 2, 8000, qa, qb);
+            Check(qa.isHost && !qb.isServer && qb.serverPlayer == qa.localPlayer, $"StartAuto: first became host, second joined as client (server player {qb.serverPlayer})");
+            var q = (TestIdentity)qa.Spawn(0, qb.localPlayer); await Until(() => qb.identities.Any(i => i.isOwner), 5000, qa, qb);
+            Check(qb.identities.Any(i => i.isOwner), "quick-matched client receives spawns");
+            qa.Stop(); qb.Stop(); await Pump(300, qa, qb);
+        }
+
         // Host migration: host leaves → the node promotes a client; it becomes server with the world it holds, the other client re-attaches
         {
             var hostM = Make("hostM"); var a = Make("aM"); var b = Make("bM"); var roomM = room + "-mig"; hostM.roomName = a.roomName = b.roomName = roomM;

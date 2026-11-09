@@ -58,6 +58,8 @@ namespace Aurix.Net.Unity.Framework
         [Tooltip("When the host leaves, the room's new master takes over as server with the world it holds; clients re-attach.")]
         public bool allowHostMigration = true;
         public event Action onPromotedToHost, onHostChanged;
+        [Tooltip("StartAuto: room props to match exactly (JSON object), SQL-like lobby expression, and the props a hosted room is created with.")]
+        public string matchFilterJson, matchExpr, roomPropsJson;
 
         public INetworkObjectFactory factory = new PrefabFactory();
         /// <summary>Server: who sees what. Empty = everyone sees everything. All rules must agree (AND).</summary>
@@ -132,7 +134,7 @@ namespace Aurix.Net.Unity.Framework
 
         RelayBridge NewBridge() => new RelayBridge(new RelayBridgeSettings
         {
-            HttpUrl = httpUrl, Grant = grant, GrantProvider = GrantProvider, RoomName = roomName, MaxPlayers = maxPlayers, EventCode = eventCode, AllowHostMigration = allowHostMigration
+            HttpUrl = httpUrl, Grant = grant, GrantProvider = GrantProvider, RoomName = roomName, MaxPlayers = maxPlayers, EventCode = eventCode, AllowHostMigration = allowHostMigration, MatchFilterJson = matchFilterJson, MatchExpr = matchExpr, PropsJson = roomPropsJson
         });
 
         // ---- lifecycle ----
@@ -144,20 +146,50 @@ namespace Aurix.Net.Unity.Framework
             if (_server != null || _client != null) return;
             NetSerializer.ResolveIdentity = Resolve;
             var b = _server = NewBridge();
+            b.OnState += s => { if (s == BridgeState.Started) ServerStarted(b, withLocalPlayer); onServerState?.Invoke(s); };
+            WireServer(b);
+            b.OnDisconnected += why => { if (why != BridgeLeave.Local) onError?.Invoke(b.LastError); Teardown(); };
+            b.StartHost();
+        }
+
+        /// <summary>Quick match: joins a random open room (matchFilterJson / matchExpr) as a client, or hosts a fresh one with roomPropsJson when none exists.</summary>
+        public void StartAuto()
+        {
+            if (_server != null || _client != null) return;
+            NetSerializer.ResolveIdentity = Resolve;
+            var b = NewBridge(); bool wired = false;
             b.OnState += s =>
             {
-                if (s == BridgeState.Started)
+                if (s == BridgeState.Started && !wired)
                 {
-                    isServer = true; isClient = withLocalPlayer; localPlayer = serverPlayer = new PlayerID((ushort)b.LocalActor); if (withLocalPlayer) _players.Add(localPlayer.Value);
-                    foreach (var so in _sceneObjects.Values) SpawnExisting(so, -1, null);
+                    wired = true;
+                    if (b.IsHost) { _server = b; WireServer(b); ServerStarted(b, true); }
+                    else { _client = b; WireClient(b); ClientStarted(b); }
                 }
-                onServerState?.Invoke(s);
+                if (b.IsHost) onServerState?.Invoke(s); else onClientState?.Invoke(s);
             };
+            b.OnDisconnected += why => { if (why != BridgeLeave.Local) onError?.Invoke(b.LastError); Teardown(); };
+            b.StartAuto();
+        }
+
+        void ServerStarted(RelayBridge b, bool withLocalPlayer)
+        {
+            isServer = true; isClient = withLocalPlayer; localPlayer = serverPlayer = new PlayerID((ushort)b.LocalActor); if (withLocalPlayer) _players.Add(localPlayer.Value);
+            foreach (var a in b.Peers) { var p = new PlayerID((ushort)a); if (!_players.Contains(p)) _players.Add(p); }
+            foreach (var so in _sceneObjects.Values) SpawnExisting(so, -1, null);
+        }
+
+        void WireServer(RelayBridge b)
+        {
             b.OnPeerJoined += a => { var p = new PlayerID((ushort)a); _players.Add(p); Broadcast(Msg.PlayerJoined, w => w.WriteBits(p.id, 16), except: a); onPlayerJoined?.Invoke(p); };
             b.OnPeerLeft += (a, why) => { var p = new PlayerID((ushort)a); _players.Remove(p); HandlePlayerLeft(p); Broadcast(Msg.PlayerLeft, w => w.WriteBits(p.id, 16)); onPlayerLeft?.Invoke(p); };
             b.OnData += (from, d, _) => HandleFrame(d, new PlayerID((ushort)from), true);
-            b.OnDisconnected += why => { if (why != BridgeLeave.Local) onError?.Invoke(b.LastError); Teardown(); };
-            b.StartHost();
+        }
+
+        void ClientStarted(RelayBridge b)
+        {
+            isClient = true; localPlayer = new PlayerID((ushort)b.LocalActor); serverPlayer = new PlayerID((ushort)b.MasterActor);
+            Send(-1, Msg.Hello, w => w.WriteBits(Version, 8));   // our data path is up: ask for the world
         }
 
         public void StartClient()
@@ -165,17 +197,15 @@ namespace Aurix.Net.Unity.Framework
             if (_server != null || _client != null) return;
             NetSerializer.ResolveIdentity = Resolve;
             var b = _client = NewBridge();
-            b.OnState += s =>
-            {
-                if (s == BridgeState.Started)
-                {
-                    isClient = true; localPlayer = new PlayerID((ushort)b.LocalActor); serverPlayer = new PlayerID((ushort)b.MasterActor);
-                    Send(-1, Msg.Hello, w => w.WriteBits(Version, 8));   // our data path is up: ask for the world
-                }
-                onClientState?.Invoke(s);
-            };
-            b.OnData += (from, d, _) => HandleFrame(d, new PlayerID((ushort)from), isServer);
+            b.OnState += s => { if (s == BridgeState.Started) ClientStarted(b); onClientState?.Invoke(s); };
+            WireClient(b);
             b.OnDisconnected += why => { if (why != BridgeLeave.Local) onError?.Invoke(b.LastError); Teardown(); };
+            b.StartClient();
+        }
+
+        void WireClient(RelayBridge b)
+        {
+            b.OnData += (from, d, _) => HandleFrame(d, new PlayerID((ushort)from), isServer);
             b.OnHostChanged += m => { serverPlayer = new PlayerID((ushort)m); Send(-1, Msg.Hello, w => w.WriteBits(Version, 8)); onHostChanged?.Invoke(); };
             b.OnPromoted += () =>
             {
@@ -189,7 +219,6 @@ namespace Aurix.Net.Unity.Framework
                 foreach (var id in _ids.Values) foreach (var bh in id.behaviours) foreach (var m in bh.modules) m.ClearDirty();
                 onPromotedToHost?.Invoke();
             };
-            b.StartClient();
         }
 
         public void Stop()
