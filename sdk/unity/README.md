@@ -127,6 +127,15 @@ not own) use `Rpc(nameof(CmdHit), 10)` / `RpcTo(player, …)`. Interest manageme
 
 Check without Unity: `cd BuildCheck~/framework-check && NET_API_KEY=an_… dotnet run -c Release`.
 
+More of the framework, all covered by `BuildCheck~/framework-check` against a live node: generic RPCs (`Show<T>(T v)`),
+static RPCs on any class, `compression:`/`deltaPack:` RPC options, `StateMachine`/`StateNode<T>`, `NetworkLOD`
+(distance send-rate tiers), `NetworkReflection` (sync members / call methods of any component by name), `NetworkBones`,
+`NetworkAudioSource`, `NetworkTransform.adaptiveSync` + `syncParent`, `ValidatedSyncVar<T>` (server vetoes owner
+writes), `SyncInput<T>`, `SyncBigData`/`SyncTexture`/`SyncFile`, `NetworkManager.statistics` (ping, jitter, throughput,
+stall events; Window ▸ Aurix Net ▸ Network Statistics in the Editor) and `IAsyncNetworkObjectFactory` /
+`AddressablesPrefabFactory` for prefabs that load on demand. The full feature-by-feature table against PurrNet is in
+
+
 ## PurrNet, Mirror and FishNet transports
 
 Already on [PurrNet](https://github.com/PurrNet/PurrNet), [Mirror](https://github.com/MirrorNetworking/Mirror)
