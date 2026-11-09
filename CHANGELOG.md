@@ -51,6 +51,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   buttons in play mode), `NetworkIdentity` inspector (stable `sceneId` auto-assigned for scene
   objects from scene + hierarchy path, runtime owner/observers), menu "Aurix Net/Assign scene ids".
   Written against the public UnityEditor API but not yet run in an editor.
+- Addressables: `AddressablesPrefabFactory` (compiled when `com.unity.addressables` is present) and the general
+  `IAsyncNetworkObjectFactory`: a spawn whose prefab is still loading stays pending on the client together with
+  every later message for that object (sync, ownership, RPCs, despawn), then applies in order once loaded.
+- Editor: Window ▸ Aurix Net ▸ Network Statistics shows live ping/jitter/throughput/per-player pings
+  (written against the public UnityEditor API, not yet run in an Editor).
 - Generic RPCs: `[ObserversRpc] void Show<T>(T v)` and friends work; the weaver inserts a prologue that sends the
   call with its type arguments, the receiver closes the method (`MakeGenericMethod`) and deserialises with the
   closed parameter types. Needs the woven assembly (type arguments come from the prologue).

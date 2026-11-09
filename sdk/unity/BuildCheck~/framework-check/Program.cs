@@ -108,6 +108,14 @@ class Generic : NetworkBehaviour
 }
 class GenericIdentity : NetworkIdentity { public Generic g = new Generic(); public GenericIdentity() { behaviours.Add(g); } }
 class PackerIdentity : NetworkIdentity { public Packer packer = new Packer(); public PackerIdentity() { behaviours.Add(packer); } }
+class DelayedFactory : IAsyncNetworkObjectFactory
+{
+    public INetworkObjectFactory inner; public int delayPumps = 20; readonly List<(int left, int pid, Action<NetworkIdentity> ready)> _pending = new List<(int, int, Action<NetworkIdentity>)>();
+    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) => inner.Instantiate(m, prefabId);
+    public void Destroy(NetworkIdentity id) => inner.Destroy(id);
+    public void InstantiateAsync(NetworkManager m, int prefabId, Action<NetworkIdentity> ready) => _pending.Add((delayPumps, prefabId, ready));
+    public void Pump(NetworkManager m) { for (int i = _pending.Count - 1; i >= 0; i--) { var p = _pending[i]; if (--p.left <= 0) { _pending.RemoveAt(i); p.ready(inner.Instantiate(m, p.pid)); } else _pending[i] = p; } }
+}
 class Mover : NetworkIdentity { public NetworkTransform nt = new NetworkTransform { syncParent = true }; public Mover() { behaviours.Add(nt); } }
 
 class TestFactory : INetworkObjectFactory
@@ -429,6 +437,23 @@ static class Program
             await Until(() => gi.g.pushed.Count == 2, 3000, hostG, cG);
             Check(gi.g.pushed.Count == 2 && gi.g.pushed[0] == cG.localPlayer + ":3.5" && gi.g.pushed[1] == cG.localPlayer + ":from client" && giC.g.pushed.Count == 0, $"generic ServerRpc with RpcInfo reached the server ({string.Join(" | ", gi.g.pushed)})");
             hostG.Stop(); cG.Stop(); await Pump(300, hostG, cG);
+        }
+
+        // async factory (Addressables-style): spawn + messages for a not-yet-loaded prefab stay pending, then apply in order
+        {
+            var hostA = Make("hostA"); var cA = Make("cA"); hostA.roomName = cA.roomName = room + "-async";
+            var delayed = new DelayedFactory { inner = cA.factory, delayPumps = 25 }; cA.factory = delayed;
+            hostA.StartHost(); await Until(() => hostA.isServer, 8000, hostA);
+            cA.StartClient(); await Until(() => hostA.players.Count == 2, 8000, hostA, cA);
+            var obj = (TestIdentity)hostA.Spawn(0); obj.player.health.value = 77;
+            for (int i = 0; i < 12; i++) { hostA.NetworkUpdate(0.01f); cA.NetworkUpdate(0.01f); await Task.Delay(15); }
+            obj.player.health.value = 55; hostA.SetOwnership(obj, cA.localPlayer);
+            for (int i = 0; i < 12; i++) { hostA.NetworkUpdate(0.01f); cA.NetworkUpdate(0.01f); await Task.Delay(15); }
+            Check(cA.pendingSpawnCount == 1 && !cA.TryGetIdentity(obj.objectId, out _), "spawn is pending while the prefab loads; later messages are queued");
+            for (int i = 0; i < 40 && !cA.TryGetIdentity(obj.objectId, out _); i++) { hostA.NetworkUpdate(0.01f); cA.NetworkUpdate(0.01f); delayed.Pump(cA); await Task.Delay(15); }
+            cA.TryGetIdentity(obj.objectId, out var objC1); var objC = objC1 as TestIdentity;
+            Check(objC != null && cA.pendingSpawnCount == 0 && objC.player.health.value == 55 && objC.isOwner, $"after load: spawned, queued Sync and Owner applied (health {objC?.player.health.value}, owner {objC?.isOwner})");
+            hostA.Stop(); cA.Stop(); await Pump(300, hostA, cA);
         }
 
         // static RPCs: no NetworkIdentity, routed via NetworkManager.main (host) / the client manager

@@ -18,6 +18,16 @@ namespace Aurix.Net.Unity.Framework
         void Destroy(NetworkIdentity identity);
     }
 
+    /// <summary>
+    /// Factory whose prefabs may need loading first (Addressables, asset bundles). The manager keeps the spawn and every
+    /// message for that object pending until <c>ready</c> is called, then applies them in order.
+    /// </summary>
+    public interface IAsyncNetworkObjectFactory : INetworkObjectFactory
+    {
+        /// <summary>Instantiate when the prefab is available; call <paramref name="ready"/> on the main thread (may be synchronous).</summary>
+        void InstantiateAsync(NetworkManager manager, int prefabId, Action<NetworkIdentity> ready);
+    }
+
     /// <summary>Default factory: Object.Instantiate of <see cref="NetworkManager.networkPrefabs"/>[prefabId].</summary>
     public sealed class PrefabFactory : INetworkObjectFactory
     {
@@ -126,6 +136,8 @@ namespace Aurix.Net.Unity.Framework
         sealed class Buffered { public uint obj; public byte comp, method; public PlayerID? target; public bool excludeOwner; public byte[] body; }
         readonly List<Buffered> _buffered = new List<Buffered>();
         readonly RpcCodec _codec = new RpcCodec();
+        readonly Dictionary<uint, List<(Msg kind, byte[] body)>> _pendingSpawns = new Dictionary<uint, List<(Msg, byte[])>>();
+        public int pendingSpawnCount => _pendingSpawns.Count;
         static ulong RpcKey(NetworkIdentity id, NetworkBehaviour b, RpcMethod r) => ((ulong)id.objectId << 16) | ((ulong)b.componentIndex << 8) | r.index;
         static ulong RpcKey(uint obj, byte comp, byte method) => ((ulong)obj << 16) | ((ulong)comp << 8) | method;
 
@@ -257,7 +269,7 @@ namespace Aurix.Net.Unity.Framework
         void Teardown()
         {
             foreach (var id in _ids.Values.ToArray()) { id.ClearObservers(); id.MarkDespawned(); onDespawned?.Invoke(id); if (id.sceneId == 0) factory.Destroy(id); }
-            _ids.Clear(); _players.Clear(); _buffered.Clear(); _codec.Clear(); _toServer.Clear(); _toClient.Clear();
+            _ids.Clear(); _players.Clear(); _buffered.Clear(); _codec.Clear(); _pendingSpawns.Clear(); _toServer.Clear(); _toClient.Clear();
             isServer = false; isClient = false; localPlayer = null; serverPlayer = null; tick = 0; _nextId = 1;
             _server = null; _client = null;
         }
@@ -587,7 +599,11 @@ namespace Aurix.Net.Unity.Framework
                 var kind = (Msg)a[pos]; int len = (a[pos + 1] << 8) | a[pos + 2]; pos += 3;
                 if (pos + len > end) { Debug.LogWarning("[AurixNet] truncated frame"); return; }
                 var body = new byte[len]; Array.Copy(a, pos, body, 0, len); pos += len;
-                try { Handle(kind, new BitReader(body), from, asServer); }
+                try
+                {
+                    if (!asServer && _pendingSpawns.Count > 0 && (kind == Msg.Owner || kind == Msg.Sync || kind == Msg.Rpc || kind == Msg.Despawn) && len >= 4 && _pendingSpawns.TryGetValue((uint)new BitReader(body).ReadBits(32), out var q)) { q.Add((kind, body)); continue; }
+                    Handle(kind, new BitReader(body), from, asServer);
+                }
                 catch (Exception e) { Debug.LogWarning($"[AurixNet] {kind} from {from}: {e.Message}"); }
             }
         }
@@ -651,13 +667,28 @@ namespace Aurix.Net.Unity.Framework
                     uint oid = (uint)r.ReadBits(32); uint sid = (uint)r.ReadBits(32); int pid = (int)r.ReadUInt(16); if (pid == 0xffff) pid = -1; var owner = ReadOwner(r);
                     if (_ids.ContainsKey(oid)) return;
                     NetworkIdentity id;
-                    if (sid != 0) { if (!_sceneObjects.TryGetValue(sid, out id)) { Debug.LogWarning($"[AurixNet] unknown scene object {sid}"); return; } }
-                    else id = factory.Instantiate(this, pid);
-                    id.Setup(this, oid, pid, owner); _ids[oid] = id;
-                    int nb = (int)r.ReadUInt(8);
-                    for (int i = 0; i < nb; i++) { int nm = (int)r.ReadUInt(8); for (int j = 0; j < nm; j++) if (i < id.behaviours.Count && j < id.behaviours[i].modules.Length) { var mod = id.behaviours[i].modules[j]; mod.lastReceivedTick = serverTick; mod.ReadFull(r); } }
-                    foreach (var b in id.behaviours) foreach (var m in b.modules) m.ClearDirty();
-                    id.MarkSpawned(false); onSpawned?.Invoke(id);
+                    void Finish(NetworkIdentity ni)
+                    {
+                        ni.Setup(this, oid, pid, owner); _ids[oid] = ni;
+                        int nb = (int)r.ReadUInt(8);
+                        for (int i = 0; i < nb; i++) { int nm = (int)r.ReadUInt(8); for (int j = 0; j < nm; j++) if (i < ni.behaviours.Count && j < ni.behaviours[i].modules.Length) { var mod = ni.behaviours[i].modules[j]; mod.lastReceivedTick = serverTick; mod.ReadFull(r); } }
+                        foreach (var b in ni.behaviours) foreach (var m in b.modules) m.ClearDirty();
+                        ni.MarkSpawned(false); onSpawned?.Invoke(ni);
+                    }
+                    if (sid != 0) { if (!_sceneObjects.TryGetValue(sid, out id)) { Debug.LogWarning($"[AurixNet] unknown scene object {sid}"); return; } Finish(id); return; }
+                    if (factory is IAsyncNetworkObjectFactory af)
+                    {
+                        var queue = new List<(Msg, byte[])>(); _pendingSpawns[oid] = queue;
+                        af.InstantiateAsync(this, pid, ni =>
+                        {
+                            if (!_pendingSpawns.Remove(oid)) { if (ni != null) factory.Destroy(ni); return; }   // stopped meanwhile
+                            if (ni == null) { Debug.LogWarning($"[AurixNet] prefab {pid} failed to load; object {oid} dropped"); return; }
+                            Finish(ni);
+                            foreach (var (k, b) in queue) { try { Handle(k, new BitReader(b), from, false); } catch (Exception e) { Debug.LogWarning($"[AurixNet] deferred {k}: {e.Message}"); } }
+                        });
+                        return;
+                    }
+                    id = factory.Instantiate(this, pid); Finish(id);
                     return;
                 }
                 case Msg.Despawn:

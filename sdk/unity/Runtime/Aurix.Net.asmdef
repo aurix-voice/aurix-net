@@ -9,6 +9,11 @@
       "name": "dev.purrnet.purrnet",
       "expression": "",
       "define": "AURIX_PURRNET"
+    },
+    {
+      "name": "com.unity.addressables",
+      "expression": "",
+      "define": "AURIX_ADDRESSABLES"
     }
   ]
 }
