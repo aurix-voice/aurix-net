@@ -18,6 +18,8 @@ namespace Aurix.Net.Unity.Framework
         public bool ownerAuth { get; protected set; }
         /// <summary>Owner-auth modules only: send to the owner and the server, not to other observers.</summary>
         public bool ownerOnly { get; protected set; }
+        /// <summary>Owner-auth modules only: the server consumes the data and does not relay it to observers (inputs).</summary>
+        public bool serverOnly { get; protected set; }
         public float sendIntervalInSeconds { get; set; }
         internal float nextSendTime;
         public bool isDirty { get; protected set; }

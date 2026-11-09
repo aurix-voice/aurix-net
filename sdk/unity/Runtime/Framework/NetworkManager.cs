@@ -334,6 +334,7 @@ namespace Aurix.Net.Unity.Framework
                         var body = new BitWriter(); m.WriteDelta(body); m.ClearDirty();
                         var bytes = body.Finish();
                         void Write(BitWriter w) { w.WriteBits(id.objectId, 32); w.WriteBits((ulong)b.componentIndex, 8); w.WriteBits((ulong)mi, 8); w.WriteBits(tick, 32); w.WriteUInt((ulong)bytes.Length, 16); w.WriteBytes(bytes); }
+                        if (isServer && m.serverOnly) { m.ClearDirty(); continue; }
                         if (isServer) { if (m.ownerOnly && id.owner.HasValue) { if (id.owner != localPlayer) Send(id.owner.Value.id, Msg.Sync, Write); } else foreach (var p in id.observers) Send(p.id, Msg.Sync, Write); }
                         else Send(-1, Msg.Sync, Write);
                     }
@@ -458,7 +459,7 @@ namespace Aurix.Net.Unity.Framework
                     case Msg.Hello: if (r.ReadBits(8) == Version && _players.Contains(from)) SendWelcome(from); else Debug.LogWarning($"[AurixNet] hello from {from} with another protocol version"); return;
                     case Msg.Sync: { var (id, b, m) = ReadModuleRef(r); r.ReadBits(32); var bytes = r.ReadBytes((int)r.ReadUInt(16)); if (id == null || !m.ownerAuth || id.owner != from) return; m.lastReceivedTick = tick; m.ReadDelta(new BitReader(bytes)); m.ClearDirty();
                         void Write(BitWriter w) { w.WriteBits(id.objectId, 32); w.WriteBits((ulong)b.componentIndex, 8); w.WriteBits((ulong)m.index, 8); w.WriteBits(tick, 32); w.WriteUInt((ulong)bytes.Length, 16); w.WriteBytes(bytes); }
-                        if (!m.ownerOnly) foreach (var p in id.observers) if (p != from) Send(p.id, Msg.Sync, Write); return; }
+                        if (!m.ownerOnly && !m.serverOnly) foreach (var p in id.observers) if (p != from) Send(p.id, Msg.Sync, Write); return; }
                     case Msg.Rpc:
                     {
                         var (id, b, _) = ReadModuleRef(r, module: false); byte mi = (byte)r.ReadBits(8); r.ReadBits(16); var bytes = r.ReadBytes((int)r.ReadUInt(16));

@@ -47,6 +47,26 @@ class Player : NetworkBehaviour
     protected override void OnOwnerChanged(PlayerID? o, PlayerID? n) { log.Add($"owner {o}->{n}"); }
 }
 
+struct MoveInput : INetSerializable { public float dx; public void Write(Aurix.Net.Managed.BitWriter w) => w.WriteF32(dx); public void Read(Aurix.Net.Managed.BitReader r) => dx = r.ReadF32(); }
+struct MoveState : INetSerializable, IEquatable<MoveState>
+{
+    public float x; public int steps;
+    public void Write(Aurix.Net.Managed.BitWriter w) { w.WriteF32(x); w.WriteBits((uint)steps, 32); }
+    public void Read(Aurix.Net.Managed.BitReader r) { x = r.ReadF32(); steps = (int)(uint)r.ReadBits(32); }
+    public bool Equals(MoveState o) => Math.Abs(x - o.x) < 1e-4f && steps == o.steps;
+    public override bool Equals(object o) => o is MoveState m && Equals(m);
+    public override int GetHashCode() => steps;
+}
+class Pawn : PredictedBehaviour<MoveInput, MoveState>
+{
+    public float dx; public float impulse; public int impulsesApplied; public float viewX;
+    protected override void GetInput(ref MoveInput i) => i.dx = dx;
+    protected override void Simulate(MoveInput i, ref MoveState s, float dt) { s.x += i.dx * 10f * dt; s.steps++; }
+    protected override void ServerModifyState(ref MoveState s) { if (impulse != 0) { s.x += impulse; impulse = 0; impulsesApplied++; } }
+    protected override MoveState Interpolate(MoveState a, MoveState b, float t) => new MoveState { x = a.x + (b.x - a.x) * t, steps = b.steps };
+    protected override void UpdateView(MoveState v, MoveState? ver) => viewX = v.x;
+}
+class PawnIdentity : NetworkIdentity { public Pawn pawn = new Pawn(); public PawnIdentity() { behaviours.Add(pawn); } }
 class TestIdentity : NetworkIdentity { public Player player = new Player(); public TestIdentity() { behaviours.Add(player); } }
 class Mover : NetworkIdentity { public NetworkTransform nt = new NetworkTransform(); public Mover() { behaviours.Add(nt); } }
 
@@ -54,7 +74,7 @@ class TestFactory : INetworkObjectFactory
 {
     public readonly List<TestIdentity> alive = new List<TestIdentity>();
     public readonly List<NetworkIdentity> all = new List<NetworkIdentity>();
-    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
+    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 2) { var pw = new PawnIdentity(); all.Add(pw); return pw; } if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
     public void Destroy(NetworkIdentity id) { all.Remove(id); if (id is TestIdentity t) alive.Remove(t); }
 }
 
@@ -168,6 +188,27 @@ static class Program
         Check(mvH.nt.sync.buffer.Count >= 2 && mvH.nt.sync.buffer[mvH.nt.sync.buffer.Count - 1].tick > mvH.nt.sync.buffer[0].tick, "samples stamped with increasing server ticks");
         mvC.nt.Teleport(new Vector3(100, 0, 0), Quaternion.identity); await PumpMover(400);
         Check(Math.Abs(mvH.nt.transform.position.x - 100) < 0.01f, $"teleport snaps on remote (x={mvH.nt.transform.position.x:0.##})");
+
+        // Prediction: owner predicts, server verifies, observer interpolates; a server impulse forces a reconciliation
+        {
+            var hostP = Make("hostP"); var cP = Make("cP"); var oP = Make("oP"); var roomP = room + "-pred"; hostP.roomName = cP.roomName = oP.roomName = roomP;
+            hostP.StartHost(); await Until(() => hostP.isServer, 8000, hostP);
+            cP.StartClient(); oP.StartClient(); await Until(() => cP.players.Count == 3 && oP.players.Count == 3, 8000, hostP, cP, oP);
+            var pawnH = (PawnIdentity)hostP.Spawn(2, cP.localPlayer);
+            await Until(() => cP.TryGetIdentity(pawnH.objectId, out _) && oP.TryGetIdentity(pawnH.objectId, out _), 5000, hostP, cP, oP);
+            var pawnC = (PawnIdentity)(cP.TryGetIdentity(pawnH.objectId, out var pi) ? pi : null); var pawnO = (PawnIdentity)(oP.TryGetIdentity(pawnH.objectId, out var po) ? po : null);
+            async Task PumpP(int ms) { var until = DateTime.UtcNow.AddMilliseconds(ms); while (DateTime.UtcNow < until) { hostP.NetworkUpdate(0.01f); cP.NetworkUpdate(0.01f); oP.NetworkUpdate(0.01f); pawnO.pawn.RenderUpdate(0.01f); await Task.Delay(10); } }
+            await PumpP(300);
+            pawnC.pawn.dx = 1f; await PumpP(120); float early = pawnC.pawn.state.x;
+            Check(early > 0.2f, $"owner predicts immediately (x={early:0.##} after 120 ms)");
+            await PumpP(900); pawnC.pawn.dx = 0f; await PumpP(600);
+            float sx = pawnH.pawn.state.x, cx = pawnC.pawn.state.x;
+            Check(sx > 5f && Math.Abs(sx - cx) < 0.05f, $"server and owner converge after input stops (server x={sx:0.##}, owner x={cx:0.##}, missed inputs={pawnH.pawn.missedInputs}, reconciliations={pawnC.pawn.reconciliations})");
+            Check(Math.Abs(pawnO.pawn.viewX - sx) < 0.05f, $"observer view follows verified state (view x={pawnO.pawn.viewX:0.##})");
+            int before = pawnC.pawn.reconciliations; pawnH.pawn.impulse = 10f; await PumpP(600);
+            Check(pawnH.pawn.impulsesApplied == 1 && pawnC.pawn.reconciliations > before && Math.Abs(pawnC.pawn.state.x - pawnH.pawn.state.x) < 0.05f, $"server impulse → owner reconciles to x={pawnC.pawn.state.x:0.##} (server {pawnH.pawn.state.x:0.##}, reconciliations {pawnC.pawn.reconciliations})");
+            hostP.Stop(); cP.Stop(); oP.Stop(); await Pump(300, hostP, cP, oP);
+        }
 
         // PlayerSpawner: one Mover per player (host included), owned by that player, gone when they leave
         {

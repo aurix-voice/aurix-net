@@ -16,6 +16,7 @@
     <Compile Include="../../Runtime/Transports/*.cs" />
     <Compile Include="../../Runtime/Framework/*.cs" />
     <Compile Include="../../Runtime/Framework/Components/*.cs" />
+    <Compile Include="../../Runtime/Framework/Prediction/*.cs" />
     <Compile Include="../managed-live/Stubs/*.cs" />
   </ItemGroup>
   <!-- weave RPC methods in the built test assembly exactly like Unity's ILPostProcessor would -->

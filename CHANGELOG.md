@@ -37,6 +37,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   follow visibility; owners and the host's player always see their objects.
 - `PlayerSpawner` (one owned player object per joiner, round-robin spawn points) and
   `NetworkManager.autoStart` (Host / Server / Client / headless-server-else-client).
+- Client-side prediction (`Runtime/Framework/Prediction/PredictedBehaviour<INPUT, STATE>`,
+  PurrDiction-style API): the owner samples input per tick, simulates at once, keeps a history and
+  sends inputs redundantly; the server simulates the owner's inputs (repeating late ones), applies
+  `ServerModifyState` hooks and sends verified states; the owner reconciles on mismatch (rewind +
+  replay), observers interpolate (`Interpolate`/`UpdateView`). `serverOnly` modules (inputs) are
+  consumed by the server and not relayed.
 - Unity: transports for third-party netcode over an Aurix relay room — `AurixNetTransport`
   (PurrNet `GenericTransport`/`ITransport`), `AurixNetMirrorTransport` (Mirror `Transport`) and
   `AurixNetFishNetTransport` (FishNet `Transport`) on a shared `RelayBridge`: the host is the room
