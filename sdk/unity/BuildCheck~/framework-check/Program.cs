@@ -169,6 +169,19 @@ static class Program
         mvC.nt.Teleport(new Vector3(100, 0, 0), Quaternion.identity); await PumpMover(400);
         Check(Math.Abs(mvH.nt.transform.position.x - 100) < 0.01f, $"teleport snaps on remote (x={mvH.nt.transform.position.x:0.##})");
 
+        // PlayerSpawner: one Mover per player (host included), owned by that player, gone when they leave
+        {
+            var hostS = Make("hostS"); var cS = Make("cS"); var roomS = room + "-spawner"; hostS.roomName = roomS; cS.roomName = roomS;
+            var spawner = new PlayerSpawner { manager = hostS, prefabId = 1 }; spawner.Attach(hostS);
+            hostS.StartHost(); await Until(() => hostS.isServer && spawner.spawned.Count == 1, 8000, hostS);
+            cS.StartClient(); await Until(() => cS.identities.Count() == 2, 8000, hostS, cS);
+            var mine = cS.identities.FirstOrDefault(i => i.isOwner);
+            Check(spawner.spawned.Count == 2 && mine != null && spawner.spawned[cS.localPlayer.Value].objectId == mine.objectId, "PlayerSpawner spawned one owned object per player (host + client)");
+            cS.Stop(); await Until(() => hostS.identities.Count() == 1, 8000, hostS);
+            Check(spawner.spawned.Count == 1 && hostS.identities.Count() == 1, "PlayerSpawner: object despawned and forgotten when the player left");
+            hostS.Stop(); await Pump(300, hostS);
+        }
+
         // interest management: DistanceRule — c1's avatar at x=100 sees a server object at x=110 but not one at x=500
         {
             var hostV = Make("hostV"); var cV = Make("cV"); var roomV = room + "-vis"; hostV.roomName = roomV; cV.roomName = roomV;

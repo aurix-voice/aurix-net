@@ -35,6 +35,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   (`DistanceRule`, `OwnerOnlyRule`, `AlwaysVisibleRule`, `NoVisibilityRule`, or a per-object rule),
   re-evaluated every `visibilityIntervalTicks`; spawn/despawn, deltas, ObserversRpc and TargetRpc
   follow visibility; owners and the host's player always see their objects.
+- `PlayerSpawner` (one owned player object per joiner, round-robin spawn points) and
+  `NetworkManager.autoStart` (Host / Server / Client / headless-server-else-client).
 - Unity: transports for third-party netcode over an Aurix relay room — `AurixNetTransport`
   (PurrNet `GenericTransport`/`ITransport`), `AurixNetMirrorTransport` (Mirror `Transport`) and
   `AurixNetFishNetTransport` (FishNet `Transport`) on a shared `RelayBridge`: the host is the room

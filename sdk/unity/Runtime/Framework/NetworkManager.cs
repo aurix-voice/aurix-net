@@ -51,6 +51,10 @@ namespace Aurix.Net.Unity.Framework
 
         /// <summary>Async grant source; wins over the inspector field.</summary>
         public Func<Task<string>> GrantProvider;
+        public enum AutoStart { None, Host, Server, Client, HeadlessServerElseClient }
+        [Tooltip("Start a role in Start(): Host, Server (headless), Client, or Server when the build runs without graphics and Client otherwise.")]
+        public AutoStart autoStart = AutoStart.None;
+
         public INetworkObjectFactory factory = new PrefabFactory();
         /// <summary>Server: who sees what. Empty = everyone sees everything. All rules must agree (AND).</summary>
         public readonly List<INetworkVisibilityRule> visibilityRules = new List<INetworkVisibilityRule>();
@@ -102,6 +106,23 @@ namespace Aurix.Net.Unity.Framework
             foreach (var id in UnityEngine.Object.FindObjectsOfType<NetworkIdentity>(true)) RegisterSceneObject(id);
 #endif
         }
+        void Start()
+        {
+            switch (autoStart)
+            {
+                case AutoStart.Host: StartHost(); break;
+                case AutoStart.Server: StartServer(); break;
+                case AutoStart.Client: StartClient(); break;
+                case AutoStart.HeadlessServerElseClient:
+#if UNITY_SERVER
+                    StartServer();
+#else
+                    if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Null) StartServer(); else StartClient();
+#endif
+                    break;
+            }
+        }
+
         void OnDestroy() { Stop(); if (main == this) main = null; }
         void Update() => NetworkUpdate(Time.unscaledDeltaTime);
 

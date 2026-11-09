@@ -119,7 +119,7 @@ public class Player : NetworkBehaviour
 `StartClient()`, `Stop()`; `Spawn(prefab, owner?)`, `Despawn(id)`, `SetOwnership(id, player?)`;
 `players`, `localPlayer`, `identities`, `onPlayerJoined/Left`, `onSpawned/Despawned`. Put a
 `NetworkIdentity` on each prefab root; its `behaviours` list (auto-filled from children) fixes the
-replication order; objects placed in the scene get a non-zero `sceneId` and are bound, not instantiated. Drop-in components: `NetworkTransform`, `NetworkRigidbody`, `NetworkAnimator` (`Runtime/Framework/Components/`). `PlayerID` is the Aurix actor id. Modules and RPC methods are bound by reflection
+replication order; objects placed in the scene get a non-zero `sceneId` and are bound, not instantiated. Drop-in components: `NetworkTransform`, `NetworkRigidbody`, `NetworkAnimator`, `PlayerSpawner` (`Runtime/Framework/Components/`). `PlayerID` is the Aurix actor id. Modules and RPC methods are bound by reflection
 in declaration order, so host and clients must run the same build. RPC methods are rewritten after
 compilation by the weaver in `Editor/CodeGen` (an `ILPostProcessor`, like Mirror/PurrNet/NGO): calling
 `CmdHit(10)` sends the RPC and the body runs where it should; without the weaver (or from code you do
