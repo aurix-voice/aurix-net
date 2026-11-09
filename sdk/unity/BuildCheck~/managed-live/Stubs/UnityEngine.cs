@@ -5,7 +5,7 @@ namespace UnityEngine
 {
     public class Object { public string name; public static T Instantiate<T>(T o) where T : Object => o; public static void Destroy(Object o) { } }
     public class GameObject : Object { }
-    public class Component : Object { public Transform transform = new Transform(); public GameObject gameObject = new GameObject(); public void GetComponentsInChildren<T>(bool inc, List<T> r) { } public T GetComponent<T>() where T : class => null; }
+    public class Component : Object { Transform _t; public Transform transform => _t ??= new Transform(); public GameObject gameObject = new GameObject(); public void GetComponentsInChildren<T>(bool inc, List<T> r) { } public T GetComponent<T>() where T : class => null; }
     public class Rigidbody : Component { public Vector3 position, velocity, angularVelocity; public Quaternion rotation; public bool isKinematic; public void MovePosition(Vector3 p) { position = p; } public void MoveRotation(Quaternion q) { rotation = q; } }
     public class Animator : Component { public float GetFloat(string n) => 0; public void SetFloat(string n, float v) { } public void SetFloat(string n, float v, float damp, float dt) { } public int GetInteger(string n) => 0; public void SetInteger(string n, int v) { } public bool GetBool(string n) => false; public void SetBool(string n, bool v) { } }
     public class RequireComponentAttribute : Attribute { public RequireComponentAttribute(Type t) { } }
@@ -20,6 +20,7 @@ namespace UnityEngine
     public static class Time { public static float unscaledDeltaTime => 0.016f; public static float unscaledTime => 0; }
     public static class Debug { public static void Log(object o) { Console.WriteLine(o); } public static void LogWarning(object o) { Console.WriteLine(o); } public static void LogError(object o) { Console.WriteLine(o); } }
     public class TooltipAttribute : Attribute { public TooltipAttribute(string s) { } }
+    public class HeaderAttribute : Attribute { public HeaderAttribute(string s) { } }
     public class TextAreaAttribute : Attribute { public TextAreaAttribute(int a, int b) { } }
     public class SerializeFieldAttribute : Attribute { }
     public class CreateAssetMenuAttribute : Attribute { public string menuName, fileName; }

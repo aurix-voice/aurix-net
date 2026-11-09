@@ -89,6 +89,33 @@ c.SendEvent(1, Encoding.UTF8.GetBytes("hi"), Target.Others, reliable: true);
 void Update() { c.Poll(); }  void LateUpdate() { c.Flush(); }
 ```
 
+## PurrNet transport
+
+If your game already uses [PurrNet](https://github.com/PurrNet/PurrNet), you can keep its
+`NetworkManager`, `SyncVar`s and RPCs and move the wire to Aurix Net: with the
+`dev.purrnet.purrnet` package in the project the `Aurix.Net` assembly defines `AURIX_PURRNET`
+and `Runtime/PurrNet/AurixNetTransport.cs` compiles. Add the `AurixNetTransport` component next
+to the `NetworkManager`, point the manager's transport at it, and set:
+
+| Field | Meaning |
+|---|---|
+| `httpUrl` | node control-plane URL (`https://…`, or `http://127.0.0.1:8090` locally) |
+| `grant` / `GrantProvider` | grant from your backend (`POST /v1/grants`); `GrantProvider` is an async callback that wins over the field |
+| `roomName`, `maxPlayers` | relay room shared by host and clients |
+| `eventCode` | relay event code reserved for PurrNet frames (default 200; keep other events off it) |
+
+Topology: PurrNet's server (`StartServer`) joins or creates the relay room and must be its master;
+clients (`StartClient`) join the same room and talk only to the master. PurrNet `Connection.connectionId`
+equals the Aurix actor id. `ReliableOrdered`/`ReliableUnordered` ride the reliable relay channel
+(fragmented above the datagram size, `GetMTU` 8192), `Unreliable`/`UnreliableSequenced` the
+unreliable one (MTU = datagram payload). `CloseConnection` kicks the actor; a kicked client sees
+`DisconnectReason.ServerRequest`. Not yet: host migration (on `master_changed` the host stops and
+clients disconnect; reconnect from PurrNet's side), lobby/matchmaking from inside PurrNet (use the
+Aurix REST/WS API or `join_random` through a small wrapper).
+
+Check without Unity: `cd BuildCheck~/purrnet-check && NET_API_KEY=an_… dotnet run -c Release`
+runs host + two clients through the adapter against a local node (compile-only without the key).
+
 ## Checks
 
 `BuildCheck~/managed-tests` (`dotnet run`): offline checks of the managed core; the sim/nav checks load

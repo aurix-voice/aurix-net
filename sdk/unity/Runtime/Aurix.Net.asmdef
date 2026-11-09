@@ -3,5 +3,12 @@
   "rootNamespace": "Aurix.Net",
   "references": [],
   "allowUnsafeCode": true,
-  "autoReferenced": true
+  "autoReferenced": true,
+  "versionDefines": [
+    {
+      "name": "dev.purrnet.purrnet",
+      "expression": "",
+      "define": "AURIX_PURRNET"
+    }
+  ]
 }

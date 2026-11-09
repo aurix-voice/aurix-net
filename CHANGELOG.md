@@ -8,6 +8,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 ## [Unreleased]
 
 ### Added
+- Unity: `AurixNetTransport`, a PurrNet transport (`GenericTransport`/`ITransport`) that runs a
+  PurrNet host and its clients over one Aurix Net relay room — the host is the room master,
+  server→client frames are targeted events, client→server frames go to the master, reliable
+  channels map to the reliable relay channel (fragmented above the datagram size), kicks map
+  to `CloseConnection`. Compiled only when the `dev.purrnet.purrnet` package is present
+  (`AURIX_PURRNET` version define). No host migration yet.
 - `get_rooms{expr?, limit?}`: one-shot filtered room list on the control channel (SQL-lobby
   style filter); Web `client.rooms()`, C# `RoomsAsync`.
 - WebRPC: `rpc{id, name, body}` on the control channel calls the project's webhook subscribed to
