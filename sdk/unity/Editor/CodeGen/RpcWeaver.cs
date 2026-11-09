@@ -94,9 +94,59 @@ namespace Aurix.Net.Weaver
             return ordered;
         }
 
+        /// <summary>
+        /// Generic RPC methods keep their body; a prologue is inserted instead:
+        /// <c>if (__RpcSendGeneric(index, new[] { typeof(T)... }, args)) return; info = __LocalInfo();</c>.
+        /// On receive the runtime invokes the closed method with a re-entrancy guard so the prologue falls through.
+        /// </summary>
+        static void WeaveGenericInPlace(MethodDefinition m, int index, bool wantsInfo)
+        {
+            var type = m.DeclaringType; var module = m.Module;
+            var body = m.Body; var il = body.GetILProcessor(); var first = body.Instructions[0];
+            var send = module.ImportReference(FindMethod(type, "__RpcSendGeneric"));
+            var localInfo = module.ImportReference(FindMethod(type, "__LocalInfoOr"));
+            var getType = module.ImportReference(typeof(Type).GetMethod("GetTypeFromHandle"));
+            var objType = module.TypeSystem.Object; var typeType = module.ImportReference(typeof(Type));
+            int n = wantsInfo ? m.Parameters.Count - 1 : m.Parameters.Count;
+            var ins = new List<Instruction>();
+            ins.Add(il.Create(OpCodes.Ldarg_0));
+            ins.Add(il.Create(OpCodes.Ldc_I4, index));
+            ins.Add(il.Create(OpCodes.Ldc_I4, m.GenericParameters.Count));
+            ins.Add(il.Create(OpCodes.Newarr, typeType));
+            for (int i = 0; i < m.GenericParameters.Count; i++)
+            {
+                ins.Add(il.Create(OpCodes.Dup)); ins.Add(il.Create(OpCodes.Ldc_I4, i));
+                ins.Add(il.Create(OpCodes.Ldtoken, m.GenericParameters[i])); ins.Add(il.Create(OpCodes.Call, getType));
+                ins.Add(il.Create(OpCodes.Stelem_Ref));
+            }
+            ins.Add(il.Create(OpCodes.Ldc_I4, n));
+            ins.Add(il.Create(OpCodes.Newarr, objType));
+            for (int i = 0; i < n; i++)
+            {
+                ins.Add(il.Create(OpCodes.Dup)); ins.Add(il.Create(OpCodes.Ldc_I4, i)); ins.Add(il.Create(OpCodes.Ldarg, m.Parameters[i]));
+                var pt = m.Parameters[i].ParameterType;
+                if (pt.IsValueType || pt.IsGenericParameter) ins.Add(il.Create(OpCodes.Box, pt));
+                ins.Add(il.Create(OpCodes.Stelem_Ref));
+            }
+            ins.Add(il.Create(OpCodes.Callvirt, send));
+            var br = il.Create(OpCodes.Brfalse, first); ins.Add(br);
+            ins.Add(il.Create(OpCodes.Ret));
+            if (wantsInfo)
+            {
+                // fall-through path: info = __LocalInfo(); then the original body
+                var infoParam = m.Parameters[m.Parameters.Count - 1];
+                var ld = il.Create(OpCodes.Ldarg_0); ins.Add(ld); ins.Add(il.Create(OpCodes.Ldarg, infoParam)); ins.Add(il.Create(OpCodes.Call, localInfo)); ins.Add(il.Create(OpCodes.Starg, infoParam));
+                br.Operand = ld;
+            }
+            foreach (var x in ins) il.InsertBefore(first, x);
+            body.InitLocals = true;
+            body.OptimizeMacros();
+        }
+
         static void Weave(MethodDefinition m, int index, bool wantsInfo, Result res)
         {
             var type = m.DeclaringType; var module = m.Module;
+            if (m.HasGenericParameters) { WeaveGenericInPlace(m, index, wantsInfo); return; }
             if (type.Methods.Any(x => x.Name == m.Name + ImplSuffix && x.Parameters.Count == m.Parameters.Count)) return;
 
             // 1. the original method becomes Method__Impl (private, attributes moved off it); a fresh method

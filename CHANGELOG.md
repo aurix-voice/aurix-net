@@ -51,6 +51,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   buttons in play mode), `NetworkIdentity` inspector (stable `sceneId` auto-assigned for scene
   objects from scene + hierarchy path, runtime owner/observers), menu "Aurix Net/Assign scene ids".
   Written against the public UnityEditor API but not yet run in an editor.
+- Generic RPCs: `[ObserversRpc] void Show<T>(T v)` and friends work; the weaver inserts a prologue that sends the
+  call with its type arguments, the receiver closes the method (`MakeGenericMethod`) and deserialises with the
+  closed parameter types. Needs the woven assembly (type arguments come from the prologue).
 - RPC packing: `compression: RpcCompression.Fast|Balanced|Best` deflates argument payloads when it pays off,
   `deltaPack: true` sends only the XOR/RLE difference from the previous call of the same RPC to the same peer
   (first call to a peer always whole). Available on ServerRpc/ObserversRpc/TargetRpc. Strings up to 64 KB.

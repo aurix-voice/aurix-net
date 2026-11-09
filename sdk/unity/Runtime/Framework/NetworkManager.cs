@@ -434,7 +434,7 @@ namespace Aurix.Net.Unity.Framework
         // ---- RPC ----
         /// <summary>Routes an RPC call. Returns true when the call was handled here (sent, buffered or refused)
         /// and the body must NOT run locally; false when the caller should execute the body.</summary>
-        internal bool SendRpc(NetworkBehaviour b, RpcMethod r, PlayerID? target, object[] args)
+        internal bool SendRpc(NetworkBehaviour b, RpcMethod r, PlayerID? target, object[] args, Type[] typeArgs = null)
         {
             if (!b.isSpawned) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: object not spawned"); return true; }
             var id = b.identity;
@@ -445,7 +445,7 @@ namespace Aurix.Net.Unity.Framework
                     var a = (ServerRpcAttribute)r.attr;
                     if (isServer) return false;
                     if (a.requireOwnership && !id.isOwner) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: ServerRpc requires ownership"); return true; }
-                    var bytes = _codec.Encode(RpcKey(id, b, r), -1, a, Pack(b, r, args));
+                    var bytes = _codec.Encode(RpcKey(id, b, r), -1, a, Pack(b, r, args, typeArgs));
                     Send(-1, Msg.Rpc, w => WriteRpc(w, id, b, r, bytes));
                     return !a.runLocally;
                 }
@@ -453,7 +453,7 @@ namespace Aurix.Net.Unity.Framework
                 {
                     var a = (ObserversRpcAttribute)r.attr;
                     if (!isServer) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: ObserversRpc may only be called on the server"); return true; }
-                    var bytes = Pack(b, r, args); var key = RpcKey(id, b, r);
+                    var bytes = Pack(b, r, args, typeArgs); var key = RpcKey(id, b, r);
                     foreach (var p in id.observers) { if (p == localPlayer || (a.excludeOwner && id.owner == p)) continue; var enc = _codec.Encode(key, p.id, a, bytes); Send(p.id, Msg.Rpc, w => WriteRpc(w, id, b, r, enc)); }
                     if (a.bufferLast) Buffer(id, b, r, null, a.excludeOwner, bytes);
                     return !(isClient && a.runLocally && !(a.excludeOwner && id.isOwner));
@@ -463,7 +463,7 @@ namespace Aurix.Net.Unity.Framework
                     var a = (TargetRpcAttribute)r.attr;
                     if (!isServer) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: TargetRpc may only be called on the server"); return true; }
                     if (!target.HasValue) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: TargetRpc needs a target (first parameter PlayerID, or RpcTo)"); return true; }
-                    var bytes = Pack(b, r, args);
+                    var bytes = Pack(b, r, args, typeArgs);
                     if (a.bufferLast) Buffer(id, b, r, target, false, bytes);
                     if (target == localPlayer) return !(isClient && a.runLocally);
                     if (!id.IsObserver(target.Value)) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: {target} does not see this object"); return true; }
@@ -526,7 +526,7 @@ namespace Aurix.Net.Unity.Framework
         static byte[] PackStatic(StaticRpcMethod r, object[] args) { var body = new BitWriter(); StaticRpcs.WriteArgs(body, r, args); return body.Finish(); }
         void WriteStaticRpc(BitWriter w, StaticRpcMethod r, byte[] bytes) { w.WriteBits(r.hash, 32); w.WriteBits(localPlayer?.id ?? 0, 16); w.WriteUInt((ulong)bytes.Length, 16); w.WriteBytes(bytes); }
 
-        static byte[] Pack(NetworkBehaviour b, RpcMethod r, object[] args) { var body = new BitWriter(); b.WriteArgs(body, r, args); return body.Finish(); }
+        static byte[] Pack(NetworkBehaviour b, RpcMethod r, object[] args, Type[] typeArgs = null) { var body = new BitWriter(); b.WriteArgs(body, r, args, typeArgs); return body.Finish(); }
         void WriteRpc(BitWriter w, NetworkIdentity id, NetworkBehaviour b, RpcMethod r, byte[] bytes) { w.WriteBits(id.objectId, 32); w.WriteBits((ulong)b.componentIndex, 8); w.WriteBits(r.index, 8); w.WriteBits(localPlayer.Value.id, 16); w.WriteUInt((ulong)bytes.Length, 16); w.WriteBytes(bytes); }
 
         void Buffer(NetworkIdentity id, NetworkBehaviour b, RpcMethod r, PlayerID? target, bool excludeOwner, byte[] body)

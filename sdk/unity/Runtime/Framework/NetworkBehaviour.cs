@@ -157,6 +157,20 @@ namespace Aurix.Net.Unity.Framework
 
         /// <summary>Woven RPC prologue: the RpcInfo for a locally executed call.</summary>
         protected RpcInfo __LocalInfo() => LocalInfo();
+        /// <summary>Woven prologue of generic RPCs: keeps the RpcInfo delivered by the network, otherwise the local caller's info.</summary>
+        protected RpcInfo __LocalInfoOr(RpcInfo received) => _receivingRpc ? received : LocalInfo();
+
+        [NonSerialized] bool _receivingRpc;
+        /// <summary>Woven prologue of generic RPC methods: routes the call with its type arguments; false when the body should run (local / receiving).</summary>
+        protected bool __RpcSendGeneric(int index, Type[] typeArgs, object[] args)
+        {
+            if (_receivingRpc || index >= rpcs.Length || networkManager == null) return false;
+            var r = rpcs[index];
+            return networkManager.SendRpc(this, r, TargetOf(r, args), args, typeArgs);
+        }
+
+        static string TypeName(Type t) => t.FullName + ", " + t.Assembly.GetName().Name;
+        static Type ResolveType(string name) => Type.GetType(name, false) ?? throw new NetException("generic RPC: unknown type " + name);
 
         RpcInfo LocalInfo() => new RpcInfo(localPlayer ?? default, isServer);
 
@@ -169,18 +183,35 @@ namespace Aurix.Net.Unity.Framework
             throw new NetException($"{GetType().Name}: no RPC method '{name}' (mark it [ServerRpc]/[ObserversRpc]/[TargetRpc])");
         }
 
-        internal void WriteArgs(BitWriter w, RpcMethod r, object[] args)
+        internal void WriteArgs(BitWriter w, RpcMethod r, object[] args, Type[] typeArgs = null)
         {
             if (args.Length != r.paramTypes.Length) throw new NetException($"{GetType().Name}.{r.method.Name}: expected {r.paramTypes.Length} args, got {args.Length}");
-            for (int i = 0; i < args.Length; i++) NetSerializer.Write(w, args[i], r.paramTypes[i]);
+            var types = r.paramTypes;
+            if (r.method.IsGenericMethodDefinition)
+            {
+                if (typeArgs == null || typeArgs.Length != r.method.GetGenericArguments().Length) throw new NetException($"{GetType().Name}.{r.method.Name}: generic RPC needs its type arguments (is the assembly woven?)");
+                w.WriteUInt((ulong)typeArgs.Length, 8); foreach (var t in typeArgs) NetSerializer.WriteString(w, TypeName(t));
+                types = ClosedParamTypes(r.method.MakeGenericMethod(typeArgs), r.wantsInfo);
+            }
+            for (int i = 0; i < args.Length; i++) NetSerializer.Write(w, args[i], types[i]);
         }
+
+        static Type[] ClosedParamTypes(MethodInfo closed, bool wantsInfo) { var ps = closed.GetParameters(); var n = wantsInfo ? ps.Length - 1 : ps.Length; var t = new Type[n]; for (int i = 0; i < n; i++) t[i] = ps[i].ParameterType; return t; }
 
         internal void InvokeRpc(RpcMethod r, BitReader reader, RpcInfo info)
         {
-            var args = new object[r.paramTypes.Length + (r.wantsInfo ? 1 : 0)];
-            for (int i = 0; i < r.paramTypes.Length; i++) args[i] = NetSerializer.Read(reader, r.paramTypes[i]);
+            var target = r.impl ?? r.method; var types = r.paramTypes;
+            if (r.method.IsGenericMethodDefinition)
+            {
+                int n = (int)reader.ReadUInt(8); var targs = new Type[n]; for (int i = 0; i < n; i++) targs[i] = ResolveType(NetSerializer.ReadString(reader));
+                target = target.MakeGenericMethod(targs); types = ClosedParamTypes(target, r.wantsInfo);
+            }
+            var args = new object[types.Length + (r.wantsInfo ? 1 : 0)];
+            for (int i = 0; i < types.Length; i++) args[i] = NetSerializer.Read(reader, types[i]);
             if (r.wantsInfo) args[args.Length - 1] = info;
-            (r.impl ?? r.method).Invoke(this, args);
+            bool guard = r.method.IsGenericMethodDefinition && r.impl == null;
+            if (guard) _receivingRpc = true;
+            try { target.Invoke(this, args); } finally { if (guard) _receivingRpc = false; }
         }
 
         internal void InvokeRpcLocal(RpcMethod r, object[] args, RpcInfo info)

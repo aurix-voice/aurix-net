@@ -100,6 +100,13 @@ class Packer : NetworkBehaviour
     [ObserversRpc(compression: RpcCompression.Fast)] public void Big(string text) => bigs.Add(text);
     [ObserversRpc(deltaPack: true)] public void State(Vector3 pos, int hp, string name) => states.Add((pos, hp, name));
 }
+class Generic : NetworkBehaviour
+{
+    public List<object> seen = new List<object>(); public List<string> pushed = new List<string>();
+    [ObserversRpc] public void Show<T>(T v) => seen.Add(v);
+    [ServerRpc(requireOwnership: false)] public void Push<T>(T v, RpcInfo info = default) => pushed.Add(info.sender + ":" + v);
+}
+class GenericIdentity : NetworkIdentity { public Generic g = new Generic(); public GenericIdentity() { behaviours.Add(g); } }
 class PackerIdentity : NetworkIdentity { public Packer packer = new Packer(); public PackerIdentity() { behaviours.Add(packer); } }
 class Mover : NetworkIdentity { public NetworkTransform nt = new NetworkTransform { syncParent = true }; public Mover() { behaviours.Add(nt); } }
 
@@ -107,13 +114,13 @@ class TestFactory : INetworkObjectFactory
 {
     public readonly List<TestIdentity> alive = new List<TestIdentity>();
     public readonly List<NetworkIdentity> all = new List<NetworkIdentity>();
-    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 10) { var pk = new PackerIdentity(); all.Add(pk); return pk; } if (prefabId == 9) { var rc = new RacerIdentity(); all.Add(rc); return rc; } if (prefabId == 7) { var rg = new Rig(); all.Add(rg); return rg; } if (prefabId == 8) { var sp = new Speaker(); all.Add(sp); return sp; } if (prefabId == 6) { var rf = new Reflected(); all.Add(rf); return rf; } if (prefabId == 4) { var ph = new Phases(); all.Add(ph); return ph; } if (prefabId == 5) { var lb = new LodBox(); all.Add(lb); return lb; } if (prefabId == 3) { var tg = new Target(); all.Add(tg); return tg; } if (prefabId == 2) { var pw = new PawnIdentity(); all.Add(pw); return pw; } if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
+    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 11) { var gi = new GenericIdentity(); all.Add(gi); return gi; } if (prefabId == 10) { var pk = new PackerIdentity(); all.Add(pk); return pk; } if (prefabId == 9) { var rc = new RacerIdentity(); all.Add(rc); return rc; } if (prefabId == 7) { var rg = new Rig(); all.Add(rg); return rg; } if (prefabId == 8) { var sp = new Speaker(); all.Add(sp); return sp; } if (prefabId == 6) { var rf = new Reflected(); all.Add(rf); return rf; } if (prefabId == 4) { var ph = new Phases(); all.Add(ph); return ph; } if (prefabId == 5) { var lb = new LodBox(); all.Add(lb); return lb; } if (prefabId == 3) { var tg = new Target(); all.Add(tg); return tg; } if (prefabId == 2) { var pw = new PawnIdentity(); all.Add(pw); return pw; } if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
     public void Destroy(NetworkIdentity id) { all.Remove(id); if (id is TestIdentity t) alive.Remove(t); }
 }
 
 static class Program
 {
-    const int PH = 4, LB = 5, RF = 6, RG = 7, SP = 8, RC = 9, PK = 10;
+    const int PH = 4, LB = 5, RF = 6, RG = 7, SP = 8, RC = 9, PK = 10, GI = 11;
     static async Task<string> Grant(HttpClient h, string key, string pid)
     {
         var req = new HttpRequestMessage(HttpMethod.Post, "http://127.0.0.1:8090/v1/grants");
@@ -406,6 +413,22 @@ static class Program
             await Until(() => pkC.packer.states.Count == 2, 3000, hostK, cK); used = hostK.statistics.totalBytesOut - before;
             Check(pkC.packer.states[1].Item1.z == 3.5f && pkC.packer.states[1].Item2 == 99 && pkC.packer.states[1].Item3 == longName && used < 300, $"delta-packed ObserversRpc: second call (600-char name unchanged) used {used} bytes, values intact");
             hostK.Stop(); cK.Stop(); await Pump(300, hostK, cK);
+        }
+
+        // generic RPCs: type arguments travel with the call, woven prologue routes it, receiver closes the method
+        {
+            var hostG = Make("hostG"); var cG = Make("cG"); hostG.roomName = cG.roomName = room + "-gen";
+            hostG.StartHost(); await Until(() => hostG.isServer, 8000, hostG);
+            var gi = (GenericIdentity)hostG.Spawn(GI);
+            cG.StartClient(); await Until(() => cG.TryGetIdentity(gi.objectId, out _), 8000, hostG, cG); await Pump(200, hostG, cG);
+            cG.TryGetIdentity(gi.objectId, out var giC1); var giC = (GenericIdentity)giC1;
+            gi.g.Show(42); gi.g.Show("hello"); gi.g.Show(new Vector3(1, 2, 3));
+            await Until(() => giC.g.seen.Count == 3, 3000, hostG, cG);
+            Check(gi.g.seen.Count == 3 && giC.g.seen.Count == 3 && giC.g.seen[0] is int i42 && i42 == 42 && giC.g.seen[1] as string == "hello" && giC.g.seen[2] is Vector3 v3 && v3.z == 3, $"generic ObserversRpc ran locally and on the client with int/string/Vector3 ({string.Join(",", giC.g.seen.Select(x => x.GetType().Name))})");
+            giC.g.Push(3.5f); giC.g.Push("from client");
+            await Until(() => gi.g.pushed.Count == 2, 3000, hostG, cG);
+            Check(gi.g.pushed.Count == 2 && gi.g.pushed[0] == cG.localPlayer + ":3.5" && gi.g.pushed[1] == cG.localPlayer + ":from client" && giC.g.pushed.Count == 0, $"generic ServerRpc with RpcInfo reached the server ({string.Join(" | ", gi.g.pushed)})");
+            hostG.Stop(); cG.Stop(); await Pump(300, hostG, cG);
         }
 
         // static RPCs: no NetworkIdentity, routed via NetworkManager.main (host) / the client manager
