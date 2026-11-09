@@ -55,6 +55,10 @@ namespace Aurix.Net.Unity.Framework
         [Tooltip("Start a role in Start(): Host, Server (headless), Client, or Server when the build runs without graphics and Client otherwise.")]
         public AutoStart autoStart = AutoStart.None;
 
+        [Tooltip("When the host leaves, the room's new master takes over as server with the world it holds; clients re-attach.")]
+        public bool allowHostMigration = true;
+        public event Action onPromotedToHost, onHostChanged;
+
         public INetworkObjectFactory factory = new PrefabFactory();
         /// <summary>Server: who sees what. Empty = everyone sees everything. All rules must agree (AND).</summary>
         public readonly List<INetworkVisibilityRule> visibilityRules = new List<INetworkVisibilityRule>();
@@ -128,7 +132,7 @@ namespace Aurix.Net.Unity.Framework
 
         RelayBridge NewBridge() => new RelayBridge(new RelayBridgeSettings
         {
-            HttpUrl = httpUrl, Grant = grant, GrantProvider = GrantProvider, RoomName = roomName, MaxPlayers = maxPlayers, EventCode = eventCode
+            HttpUrl = httpUrl, Grant = grant, GrantProvider = GrantProvider, RoomName = roomName, MaxPlayers = maxPlayers, EventCode = eventCode, AllowHostMigration = allowHostMigration
         });
 
         // ---- lifecycle ----
@@ -170,8 +174,21 @@ namespace Aurix.Net.Unity.Framework
                 }
                 onClientState?.Invoke(s);
             };
-            b.OnData += (from, d, _) => HandleFrame(d, new PlayerID((ushort)from), false);
+            b.OnData += (from, d, _) => HandleFrame(d, new PlayerID((ushort)from), isServer);
             b.OnDisconnected += why => { if (why != BridgeLeave.Local) onError?.Invoke(b.LastError); Teardown(); };
+            b.OnHostChanged += m => { serverPlayer = new PlayerID((ushort)m); Send(-1, Msg.Hello, w => w.WriteBits(Version, 8)); onHostChanged?.Invoke(); };
+            b.OnPromoted += () =>
+            {
+                // we hold the objects we could see; they become the authoritative world
+                _server = b; _client = null; isServer = true; serverPlayer = localPlayer;
+                b.OnPeerJoined += a => { var p = new PlayerID((ushort)a); if (!_players.Contains(p)) _players.Add(p); Broadcast(Msg.PlayerJoined, w => w.WriteBits(p.id, 16), except: a); onPlayerJoined?.Invoke(p); };
+                b.OnPeerLeft += (a, why) => { var p = new PlayerID((ushort)a); _players.Remove(p); HandlePlayerLeft(p); Broadcast(Msg.PlayerLeft, w => w.WriteBits(p.id, 16)); onPlayerLeft?.Invoke(p); };
+                _players.Clear(); _players.Add(localPlayer.Value); foreach (var a in b.Peers) _players.Add(new PlayerID((ushort)a));
+                uint max = 0; foreach (var id in _ids.Values) { id.ClearObservers(); if (id.objectId > max) max = id.objectId; }
+                _nextId = max + 1; serverTick = tick;
+                foreach (var id in _ids.Values) foreach (var bh in id.behaviours) foreach (var m in bh.modules) m.ClearDirty();
+                onPromotedToHost?.Invoke();
+            };
             b.StartClient();
         }
 

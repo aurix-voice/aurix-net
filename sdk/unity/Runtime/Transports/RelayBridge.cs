@@ -27,6 +27,8 @@ namespace Aurix.Net.Transports
         /// <summary>Relay event code reserved for transport frames; keep other events off it.</summary>
         public byte EventCode = 200;
         public int TimeoutMs = 10000;
+        /// <summary>Keep the link when the master changes: raise OnPromoted / OnHostChanged instead of dropping.</summary>
+        public bool AllowHostMigration;
     }
 
     public sealed class RelayBridge : IDisposable
@@ -48,8 +50,13 @@ namespace Aurix.Net.Transports
         public event Action<BridgeState> OnState;
         /// <summary>Client side: the link to the host ended (after <see cref="State"/> went Stopped).</summary>
         public event Action<BridgeLeave> OnDisconnected;
+        /// <summary>Host migration: this peer became the room master (now the host).</summary>
+        public event Action OnPromoted;
+        /// <summary>Host migration: another peer became the master (clients keep their link).</summary>
+        public event Action<int> OnHostChanged;
 
         readonly List<int> _peers = new List<int>();
+        readonly List<int> _known = new List<int>();
         public IReadOnlyList<int> Peers => _peers;
         public bool HasPeer(int actor) => _peers.Contains(actor);
 
@@ -87,7 +94,7 @@ namespace Aurix.Net.Transports
                 if (!host && MasterActor == c.Actor) { c.Dispose(); throw new NetException("no host in room " + Settings.RoomName); }
                 _client = c;
                 c.OnClosed += r => Fail(BridgeLeave.Lost, r);
-                if (host) foreach (var a in Actors(c.JoinedJson)) if (a != c.Actor) AddPeer(a);
+                foreach (var a in Actors(c.JoinedJson)) { if (a != c.Actor && !_known.Contains(a)) _known.Add(a); if (host && a != c.Actor) AddPeer(a); }
                 Set(BridgeState.Started);
                 started = true;
                 foreach (var e in early) { if (e is string j) OnControl(j); else if (e is EventFrame f) Dispatch(f, host); }
@@ -162,19 +169,24 @@ namespace Aurix.Net.Transports
         {
             switch (Json.Str(j, "t"))
             {
-                case "player_joined": if (IsHost) { var p = Json.Obj(j, "player"); AddPeer((int)Json.Num(p, "actor")); } break;
-                case "player_left": if (IsHost) RemovePeer((int)Json.Num(j, "actor"), Json.Str(j, "reason") == KickReason ? BridgeLeave.Kicked : BridgeLeave.Lost); break;
+                case "player_joined": { var p = Json.Obj(j, "player"); int a = (int)Json.Num(p, "actor"); if (IsHost) AddPeer(a); else if (!_known.Contains(a)) _known.Add(a); break; }
+                case "player_left": { int a = (int)Json.Num(j, "actor"); _known.Remove(a); if (IsHost) RemovePeer(a, Json.Str(j, "reason") == KickReason ? BridgeLeave.Kicked : BridgeLeave.Lost); break; }
                 case "master_changed":
-                    if (IsHost) { if ((int)Json.Num(j, "actor") != LocalActor) Fail(BridgeLeave.HostGone, "lost mastership"); }
-                    else Fail(BridgeLeave.HostGone, "host left the room");
+                {
+                    int m = (int)Json.Num(j, "actor");
+                    if (!Settings.AllowHostMigration) { if (!IsHost || m != LocalActor) Fail(BridgeLeave.HostGone, IsHost ? "lost mastership" : "host left the room"); break; }
+                    MasterActor = m;
+                    if (m == LocalActor && !IsHost) { IsHost = true; _peers.Clear(); foreach (var a in _known) if (a != LocalActor) _peers.Add(a); OnPromoted?.Invoke(); }
+                    else if (m != LocalActor) { if (IsHost) { IsHost = false; _peers.Clear(); } OnHostChanged?.Invoke(m); }
                     break;
+                }
                 case "left":
                     Fail(Json.Str(j, "reason") == KickReason ? BridgeLeave.Kicked : BridgeLeave.Lost, Json.Str(j, "reason"));
                     break;
             }
         }
 
-        void AddPeer(int actor) { if (_peers.Contains(actor)) return; _peers.Add(actor); OnPeerJoined?.Invoke(actor); }
+        void AddPeer(int actor) { if (!_known.Contains(actor)) _known.Add(actor); if (_peers.Contains(actor)) return; _peers.Add(actor); OnPeerJoined?.Invoke(actor); }
         void RemovePeer(int actor, BridgeLeave why) { if (_peers.Remove(actor)) OnPeerLeft?.Invoke(actor, why); }
         void Set(BridgeState s) { State = s; OnState?.Invoke(s); }
 

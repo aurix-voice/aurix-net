@@ -43,6 +43,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   `ServerModifyState` hooks and sends verified states; the owner reconciles on mismatch (rewind +
   replay), observers interpolate (`Interpolate`/`UpdateView`). `serverOnly` modules (inputs) are
   consumed by the server and not relayed.
+- Host migration in the framework (`NetworkManager.allowHostMigration`, on by default): when the
+  host leaves, the room's new master is promoted to server with the objects it holds (same ids,
+  live state), other clients re-attach to it (`RelayBridge.OnPromoted` / `OnHostChanged`).
+  Transport adapters keep the old behaviour (disconnect) unless `AllowHostMigration` is set.
 - Unity: transports for third-party netcode over an Aurix relay room — `AurixNetTransport`
   (PurrNet `GenericTransport`/`ITransport`), `AurixNetMirrorTransport` (Mirror `Transport`) and
   `AurixNetFishNetTransport` (FishNet `Transport`) on a shared `RelayBridge`: the host is the room

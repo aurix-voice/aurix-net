@@ -189,6 +189,23 @@ static class Program
         mvC.nt.Teleport(new Vector3(100, 0, 0), Quaternion.identity); await PumpMover(400);
         Check(Math.Abs(mvH.nt.transform.position.x - 100) < 0.01f, $"teleport snaps on remote (x={mvH.nt.transform.position.x:0.##})");
 
+        // Host migration: host leaves → the node promotes a client; it becomes server with the world it holds, the other client re-attaches
+        {
+            var hostM = Make("hostM"); var a = Make("aM"); var b = Make("bM"); var roomM = room + "-mig"; hostM.roomName = a.roomName = b.roomName = roomM;
+            hostM.StartHost(); await Until(() => hostM.isServer, 8000, hostM);
+            a.StartClient(); b.StartClient(); await Until(() => a.players.Count == 3 && b.players.Count == 3, 8000, hostM, a, b);
+            var objA = (TestIdentity)hostM.Spawn(0, a.localPlayer); objA.player.nick.value = "A"; var objS = (TestIdentity)hostM.Spawn(0); objS.player.nick.value = "S";
+            await Until(() => a.identities.Count() == 2 && b.identities.Count() == 2, 5000, hostM, a, b);
+            hostM.Stop(); await Until(() => a.isServer || b.isServer, 10000, a, b);
+            var srv = a.isServer ? a : b; var cli = a.isServer ? b : a;
+            await Until(() => cli.serverPlayer == srv.localPlayer && cli.players.Count == 2 && srv.players.Count == 2, 8000, a, b);
+            Check(srv.isServer && !cli.isServer && cli.serverPlayer == srv.localPlayer, $"new master promoted to server ({srv.localPlayer}); other client re-attached");
+            Check(srv.identities.Count() == 2 && cli.identities.Count() == 2 && ((TestIdentity)(srv.TryGetIdentity(objS.objectId, out var ss) ? ss : null))?.player.nick.value == "S", "world survived the migration with the same object ids");
+            var fresh = (TestIdentity)srv.Spawn(0); fresh.player.nick.value = "after"; await Until(() => cli.TryGetIdentity(fresh.objectId, out _), 5000, a, b); await Pump(300, a, b);
+            Check(fresh.objectId > objS.objectId && ((TestIdentity)(cli.TryGetIdentity(fresh.objectId, out var fc) ? fc : null))?.player.nick.value == "after", "new host spawns and replicates after migration");
+            a.Stop(); b.Stop(); await Pump(300, a, b);
+        }
+
         // Prediction: owner predicts, server verifies, observer interpolates; a server impulse forces a reconciliation
         {
             var hostP = Make("hostP"); var cP = Make("cP"); var oP = Make("oP"); var roomP = room + "-pred"; hostP.roomName = cP.roomName = oP.roomName = roomP;
