@@ -125,6 +125,9 @@ namespace Aurix.Net.Unity.Framework
         readonly Dictionary<int, List<byte>> _toClient = new Dictionary<int, List<byte>>();
         sealed class Buffered { public uint obj; public byte comp, method; public PlayerID? target; public bool excludeOwner; public byte[] body; }
         readonly List<Buffered> _buffered = new List<Buffered>();
+        readonly RpcCodec _codec = new RpcCodec();
+        static ulong RpcKey(NetworkIdentity id, NetworkBehaviour b, RpcMethod r) => ((ulong)id.objectId << 16) | ((ulong)b.componentIndex << 8) | r.index;
+        static ulong RpcKey(uint obj, byte comp, byte method) => ((ulong)obj << 16) | ((ulong)comp << 8) | method;
 
         void Awake()
         {
@@ -254,7 +257,7 @@ namespace Aurix.Net.Unity.Framework
         void Teardown()
         {
             foreach (var id in _ids.Values.ToArray()) { id.ClearObservers(); id.MarkDespawned(); onDespawned?.Invoke(id); if (id.sceneId == 0) factory.Destroy(id); }
-            _ids.Clear(); _players.Clear(); _buffered.Clear(); _toServer.Clear(); _toClient.Clear();
+            _ids.Clear(); _players.Clear(); _buffered.Clear(); _codec.Clear(); _toServer.Clear(); _toClient.Clear();
             isServer = false; isClient = false; localPlayer = null; serverPlayer = null; tick = 0; _nextId = 1;
             _server = null; _client = null;
         }
@@ -312,6 +315,7 @@ namespace Aurix.Net.Unity.Framework
         void HandlePlayerLeft(PlayerID p)
         {
             _viewTicks.Remove(p);
+            _codec.ForgetPeer(p.id); statistics.RemovePlayer(p);
             foreach (var id in _ids.Values) id.RemoveObserver(p);
             foreach (var id in _ids.Values.Where(i => i.owner == p).ToArray())
             {
@@ -347,7 +351,9 @@ namespace Aurix.Net.Unity.Framework
                 if (b.obj != id.objectId) continue;
                 if (b.target.HasValue && b.target.Value != p) continue;
                 if (b.excludeOwner && id.owner == p) continue;
-                Send(p.id, Msg.Rpc, w => { w.WriteBits(b.obj, 32); w.WriteBits(b.comp, 8); w.WriteBits(b.method, 8); w.WriteBits(serverPlayer.Value.id, 16); w.WriteUInt((ulong)b.body.Length, 16); w.WriteBytes(b.body); });
+                var battr = b.comp < id.behaviours.Count && b.method < id.behaviours[b.comp].rpcs.Length ? id.behaviours[b.comp].rpcs[b.method].attr : null;
+                var benc = battr != null ? _codec.Encode(RpcKey(b.obj, b.comp, b.method), p.id, battr, b.body) : b.body;
+                Send(p.id, Msg.Rpc, w => { w.WriteBits(b.obj, 32); w.WriteBits(b.comp, 8); w.WriteBits(b.method, 8); w.WriteBits(serverPlayer.Value.id, 16); w.WriteUInt((ulong)benc.Length, 16); w.WriteBytes(benc); });
             }
         }
 
@@ -439,7 +445,7 @@ namespace Aurix.Net.Unity.Framework
                     var a = (ServerRpcAttribute)r.attr;
                     if (isServer) return false;
                     if (a.requireOwnership && !id.isOwner) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: ServerRpc requires ownership"); return true; }
-                    var bytes = Pack(b, r, args);
+                    var bytes = _codec.Encode(RpcKey(id, b, r), -1, a, Pack(b, r, args));
                     Send(-1, Msg.Rpc, w => WriteRpc(w, id, b, r, bytes));
                     return !a.runLocally;
                 }
@@ -447,8 +453,8 @@ namespace Aurix.Net.Unity.Framework
                 {
                     var a = (ObserversRpcAttribute)r.attr;
                     if (!isServer) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: ObserversRpc may only be called on the server"); return true; }
-                    var bytes = Pack(b, r, args);
-                    foreach (var p in id.observers) { if (p == localPlayer || (a.excludeOwner && id.owner == p)) continue; Send(p.id, Msg.Rpc, w => WriteRpc(w, id, b, r, bytes)); }
+                    var bytes = Pack(b, r, args); var key = RpcKey(id, b, r);
+                    foreach (var p in id.observers) { if (p == localPlayer || (a.excludeOwner && id.owner == p)) continue; var enc = _codec.Encode(key, p.id, a, bytes); Send(p.id, Msg.Rpc, w => WriteRpc(w, id, b, r, enc)); }
                     if (a.bufferLast) Buffer(id, b, r, null, a.excludeOwner, bytes);
                     return !(isClient && a.runLocally && !(a.excludeOwner && id.isOwner));
                 }
@@ -461,7 +467,7 @@ namespace Aurix.Net.Unity.Framework
                     if (a.bufferLast) Buffer(id, b, r, target, false, bytes);
                     if (target == localPlayer) return !(isClient && a.runLocally);
                     if (!id.IsObserver(target.Value)) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: {target} does not see this object"); return true; }
-                    Send(target.Value.id, Msg.Rpc, w => WriteRpc(w, id, b, r, bytes));
+                    { var enc = _codec.Encode(RpcKey(id, b, r), target.Value.id, a, bytes); Send(target.Value.id, Msg.Rpc, w => WriteRpc(w, id, b, r, enc)); };
                     return true;
                 }
             }
@@ -611,6 +617,7 @@ namespace Aurix.Net.Unity.Framework
                         var (id, b, _) = ReadModuleRef(r, module: false); byte mi = (byte)r.ReadBits(8); r.ReadBits(16); var bytes = r.ReadBytes((int)r.ReadUInt(16));
                         if (id == null || mi >= b.rpcs.Length) return;
                         var rm = b.rpcs[mi]; if (rm.attr.kind != RpcKind.Server) return;
+                        bytes = _codec.Decode(RpcKey(id, b, rm), from.id, rm.attr, bytes);
                         if (((ServerRpcAttribute)rm.attr).requireOwnership && id.owner != from) { Debug.LogWarning($"[AurixNet] {b.GetType().Name}.{rm.method.Name} from non-owner {from}"); return; }
                         b.InvokeRpc(rm, new BitReader(bytes), new RpcInfo(from, true));
                         return;
@@ -666,6 +673,7 @@ namespace Aurix.Net.Unity.Framework
                     var (id, b, _) = ReadModuleRef(r, module: false); byte mi = (byte)r.ReadBits(8); var sender = new PlayerID((ushort)r.ReadBits(16)); var bytes = r.ReadBytes((int)r.ReadUInt(16));
                     if (id == null || mi >= b.rpcs.Length) return;
                     var rm = b.rpcs[mi]; if (rm.attr.kind == RpcKind.Server) return;
+                    bytes = _codec.Decode(RpcKey(id, b, rm), -1, rm.attr, bytes);
                     b.InvokeRpc(rm, new BitReader(bytes), new RpcInfo(sender, false));
                     return;
                 }

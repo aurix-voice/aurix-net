@@ -31,7 +31,7 @@ namespace Aurix.Net.Unity.Framework
 
     public static class NetSerializer
     {
-        public const int MaxString = 4096, MaxBytes = 1 << 20, MaxCount = 1 << 16;
+        public const int MaxString = 65535, MaxBytes = 1 << 20, MaxCount = 1 << 16;
 
         /// <summary>Resolver for NetworkIdentity references; set by the NetworkManager.</summary>
         public static Func<uint, NetworkIdentity> ResolveIdentity;
@@ -149,12 +149,12 @@ namespace Aurix.Net.Unity.Framework
         {
             var b = System.Text.Encoding.UTF8.GetBytes(s ?? "");
             if (b.Length > MaxString) throw new NetException("string too long");
-            w.WriteUInt((ulong)b.Length, 13); w.WriteBytes(b);
+            w.WriteUInt((ulong)b.Length, 16); w.WriteBytes(b);
         }
 
         public static string ReadString(BitReader r)
         {
-            int n = (int)r.ReadUInt(13);
+            int n = (int)r.ReadUInt(16);
             return System.Text.Encoding.UTF8.GetString(r.ReadBytes(n));
         }
 

@@ -18,6 +18,10 @@ namespace Aurix.Net.Unity.Framework
         public abstract RpcKind kind { get; }
         public bool runLocally;
         public bool reliable = true;
+        /// <summary>Deflate the argument payload when it pays off (see <see cref="RpcCodec"/>).</summary>
+        public RpcCompression compression;
+        /// <summary>Send only the difference from the previous call of this RPC to the same peer.</summary>
+        public bool deltaPack;
     }
 
     /// <summary>Client → server. By default only the owner may call it.</summary>
@@ -26,7 +30,7 @@ namespace Aurix.Net.Unity.Framework
     {
         public override RpcKind kind => RpcKind.Server;
         public bool requireOwnership = true;
-        public ServerRpcAttribute(bool requireOwnership = true, bool runLocally = false, bool reliable = true) { this.requireOwnership = requireOwnership; this.runLocally = runLocally; this.reliable = reliable; }
+        public ServerRpcAttribute(bool requireOwnership = true, bool runLocally = false, bool reliable = true, RpcCompression compression = RpcCompression.None, bool deltaPack = false) { this.compression = compression; this.deltaPack = deltaPack; this.requireOwnership = requireOwnership; this.runLocally = runLocally; this.reliable = reliable; }
     }
 
     /// <summary>Server → every observer (late joiners get the last call when bufferLast is set).</summary>
@@ -35,7 +39,7 @@ namespace Aurix.Net.Unity.Framework
     {
         public override RpcKind kind => RpcKind.Observers;
         public bool bufferLast, excludeOwner, excludeSender;
-        public ObserversRpcAttribute(bool runLocally = true, bool bufferLast = false, bool excludeOwner = false, bool reliable = true) { this.runLocally = runLocally; this.bufferLast = bufferLast; this.excludeOwner = excludeOwner; this.reliable = reliable; }
+        public ObserversRpcAttribute(bool runLocally = true, bool bufferLast = false, bool excludeOwner = false, bool reliable = true, RpcCompression compression = RpcCompression.None, bool deltaPack = false) { this.compression = compression; this.deltaPack = deltaPack; this.runLocally = runLocally; this.bufferLast = bufferLast; this.excludeOwner = excludeOwner; this.reliable = reliable; }
     }
 
     /// <summary>Server → one player (RpcTo).</summary>
@@ -44,7 +48,7 @@ namespace Aurix.Net.Unity.Framework
     {
         public override RpcKind kind => RpcKind.Target;
         public bool bufferLast;
-        public TargetRpcAttribute(bool runLocally = true, bool bufferLast = false, bool reliable = true) { this.runLocally = runLocally; this.bufferLast = bufferLast; this.reliable = reliable; }
+        public TargetRpcAttribute(bool runLocally = true, bool bufferLast = false, bool reliable = true, RpcCompression compression = RpcCompression.None, bool deltaPack = false) { this.compression = compression; this.deltaPack = deltaPack; this.runLocally = runLocally; this.bufferLast = bufferLast; this.reliable = reliable; }
     }
 
     /// <summary>Optional last parameter of an RPC method: who sent it.</summary>
