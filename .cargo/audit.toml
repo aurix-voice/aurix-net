@@ -1,4 +1,6 @@
 [advisories]
 # rsa (Marvin attack) is only reachable through sqlx-mysql, which this workspace does not
 # enable or compile; it stays in Cargo.lock because sqlx lists it as an optional dependency.
-ignore = ["RUSTSEC-2023-0071"]
+# libsqlite3-sys (C SQLite CVE-2026-119375) is only reachable through sqlx-sqlite, which this workspace
+# does not enable or compile either (Postgres only); sqlx 0.8 keeps it in Cargo.lock as an optional dependency.
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0459"]
