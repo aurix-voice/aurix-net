@@ -89,32 +89,40 @@ c.SendEvent(1, Encoding.UTF8.GetBytes("hi"), Target.Others, reliable: true);
 void Update() { c.Poll(); }  void LateUpdate() { c.Flush(); }
 ```
 
-## PurrNet transport
+## PurrNet, Mirror and FishNet transports
 
-If your game already uses [PurrNet](https://github.com/PurrNet/PurrNet), you can keep its
-`NetworkManager`, `SyncVar`s and RPCs and move the wire to Aurix Net: with the
-`dev.purrnet.purrnet` package in the project the `Aurix.Net` assembly defines `AURIX_PURRNET`
-and `Runtime/PurrNet/AurixNetTransport.cs` compiles. Add the `AurixNetTransport` component next
-to the `NetworkManager`, point the manager's transport at it, and set:
+Already on [PurrNet](https://github.com/PurrNet/PurrNet), [Mirror](https://github.com/MirrorNetworking/Mirror)
+or [FishNet](https://github.com/FirstGearGames/FishNet)? Keep the framework (its `NetworkManager`,
+SyncVars, RPCs, prediction) and move the wire to Aurix Net: `Runtime/Transports/RelayBridge.cs` runs
+a host and its clients over one relay room, and a thin adapter per framework compiles when that
+framework is in the project:
+
+| Framework | Component | Compiles when |
+|---|---|---|
+| PurrNet | `AurixNetTransport` (`GenericTransport`/`ITransport`), `Runtime/PurrNet/` | package `dev.purrnet.purrnet` present → asmdef version define `AURIX_PURRNET` |
+| Mirror | `AurixNetMirrorTransport` (`Transport`), `Runtime/Mirror/` | Mirror's own `MIRROR` define |
+| FishNet | `AurixNetFishNetTransport` (`Transport`), `Runtime/FishNet/` | FishNet's own `FISHNET` define |
+
+Add the component next to the framework's `NetworkManager`, point the manager's transport at it, and set:
 
 | Field | Meaning |
 |---|---|
 | `httpUrl` | node control-plane URL (`https://…`, or `http://127.0.0.1:8090` locally) |
 | `grant` / `GrantProvider` | grant from your backend (`POST /v1/grants`); `GrantProvider` is an async callback that wins over the field |
-| `roomName`, `maxPlayers` | relay room shared by host and clients |
-| `eventCode` | relay event code reserved for PurrNet frames (default 200; keep other events off it) |
+| `roomName`, `maxPlayers` | relay room shared by host and clients (Mirror `ClientConnect(address)` / FishNet `SetClientAddress` override the room name when non-empty) |
+| `eventCode` | relay event code reserved for transport frames (default 200; keep other events off it) |
 
-Topology: PurrNet's server (`StartServer`) joins or creates the relay room and must be its master;
-clients (`StartClient`) join the same room and talk only to the master. PurrNet `Connection.connectionId`
-equals the Aurix actor id. `ReliableOrdered`/`ReliableUnordered` ride the reliable relay channel
-(fragmented above the datagram size, `GetMTU` 8192), `Unreliable`/`UnreliableSequenced` the
-unreliable one (MTU = datagram payload). `CloseConnection` kicks the actor; a kicked client sees
-`DisconnectReason.ServerRequest`. Not yet: host migration (on `master_changed` the host stops and
-clients disconnect; reconnect from PurrNet's side), lobby/matchmaking from inside PurrNet (use the
-Aurix REST/WS API or `join_random` through a small wrapper).
+Topology: the framework's server joins or creates the relay room and must be its master; clients
+join the same room and talk only to the master. The framework's connection id equals the Aurix
+actor id. Reliable channels ride the reliable relay channel (fragmented above the datagram size,
+MTU 8192), unreliable ones the unreliable channel (MTU = datagram payload). Disconnecting a client
+from the server kicks the actor; the kicked client sees the framework's server-side disconnect.
+Not yet: host migration (on `master_changed` the host stops and clients disconnect; reconnect from
+the framework's side), lobby/matchmaking from inside the framework (use the Aurix REST/WS API or
+`join_random` through a small wrapper).
 
-Check without Unity: `cd BuildCheck~/purrnet-check && NET_API_KEY=an_… dotnet run -c Release`
-runs host + two clients through the adapter against a local node (compile-only without the key).
+Check without Unity: `cd BuildCheck~/transports-check && NET_API_KEY=an_… dotnet run -c Release`
+runs host + two clients through each adapter against a local node (compile-only without the key).
 
 ## Checks
 

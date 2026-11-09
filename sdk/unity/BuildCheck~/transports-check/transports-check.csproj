@@ -6,7 +6,7 @@
     <Nullable>disable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
-    <DefineConstants>$(DefineConstants);AURIX_PURRNET</DefineConstants>
+    <DefineConstants>$(DefineConstants);AURIX_PURRNET;MIRROR;FISHNET</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
@@ -14,7 +14,10 @@
     <Compile Include="../../Runtime/Native.cs" />
     <Compile Include="../../Runtime/Managed/*.cs" />
     <Compile Include="../../Runtime/Unity/*.cs" />
+    <Compile Include="../../Runtime/Transports/*.cs" />
     <Compile Include="../../Runtime/PurrNet/*.cs" />
+    <Compile Include="../../Runtime/Mirror/*.cs" />
+    <Compile Include="../../Runtime/FishNet/*.cs" />
     <Compile Include="../managed-live/Stubs/*.cs" />
     <Compile Include="Stubs/*.cs" />
   </ItemGroup>

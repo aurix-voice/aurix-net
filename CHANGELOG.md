@@ -8,12 +8,15 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 ## [Unreleased]
 
 ### Added
-- Unity: `AurixNetTransport`, a PurrNet transport (`GenericTransport`/`ITransport`) that runs a
-  PurrNet host and its clients over one Aurix Net relay room — the host is the room master,
-  server→client frames are targeted events, client→server frames go to the master, reliable
-  channels map to the reliable relay channel (fragmented above the datagram size), kicks map
-  to `CloseConnection`. Compiled only when the `dev.purrnet.purrnet` package is present
-  (`AURIX_PURRNET` version define). No host migration yet.
+- Unity: transports for third-party netcode over an Aurix relay room — `AurixNetTransport`
+  (PurrNet `GenericTransport`/`ITransport`), `AurixNetMirrorTransport` (Mirror `Transport`) and
+  `AurixNetFishNetTransport` (FishNet `Transport`) on a shared `RelayBridge`: the host is the room
+  master, host→client frames are targeted events, client→host frames go to the master, connection
+  ids are actor ids, reliable channels ride the reliable relay channel (fragmented above the
+  datagram size), kicks map to the framework's disconnect. Compiled only when the framework is
+  present (`AURIX_PURRNET` version define for `dev.purrnet.purrnet`, Mirror's `MIRROR`, FishNet's
+  `FISHNET`). No host migration yet. `BuildCheck~/transports-check` runs host + two clients through
+  each adapter against a local node.
 - `get_rooms{expr?, limit?}`: one-shot filtered room list on the control channel (SQL-lobby
   style filter); Web `client.rooms()`, C# `RoomsAsync`.
 - WebRPC: `rpc{id, name, body}` on the control channel calls the project's webhook subscribed to

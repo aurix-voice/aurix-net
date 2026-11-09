@@ -104,7 +104,7 @@ jobs:
       - run: dotnet build -c Release "sdk/unity/BuildCheck~/managed-live/managed-live.csproj"
       - run: dotnet build -c Release "sdk/unity/BuildCheck~/managed-rehost/managed-rehost.csproj"
       - run: dotnet run -c Release --project "sdk/unity/BuildCheck~/managed-tests/managed-tests.csproj"
-      - run: dotnet run -c Release --project "sdk/unity/BuildCheck~/purrnet-check/purrnet-check.csproj"   # PurrNet transport adapter against interface stubs; live part skips without NET_API_KEY
+      - run: dotnet run -c Release --project "sdk/unity/BuildCheck~/transports-check/transports-check.csproj"   # PurrNet/Mirror/FishNet transports against interface stubs; live part skips without NET_API_KEY
 
   console:
     runs-on: ubuntu-latest

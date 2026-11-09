@@ -16,6 +16,7 @@ namespace PurrNet.Transports
     public readonly struct ByteData
     {
         public readonly byte[] data; public readonly int length; public readonly int offset;
+        public ArraySegment<byte> segment => new ArraySegment<byte>(data, offset, length);
         public ByteData(byte[] data, int offset, int length) { this.data = data; this.offset = offset; this.length = length; }
     }
     public struct Connection : IEquatable<Connection>
