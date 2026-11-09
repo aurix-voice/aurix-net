@@ -89,6 +89,43 @@ c.SendEvent(1, Encoding.UTF8.GetBytes("hi"), Target.Others, reliable: true);
 void Update() { c.Poll(); }  void LateUpdate() { c.Flush(); }
 ```
 
+## Gameplay framework (host-authoritative, PurrNet-style)
+
+`Runtime/Framework/` is a complete netcode layer for games that want a Unity host (or a headless
+Unity server) to own the simulation, with Aurix Net as the relay, lobby and hosting underneath —
+the model PurrNet, Mirror and FishNet users know:
+
+```csharp
+using Aurix.Net.Unity.Framework;
+
+public class Player : NetworkBehaviour
+{
+    public SyncVar<int> health = new SyncVar<int>(100);                        // server writes
+    public SyncVar<Vector3> aim = new SyncVar<Vector3>(default, 0.05f, ownerAuth: true); // owner writes, 20/s
+    public SyncList<int> inventory = new SyncList<int>(ownerAuth: true);
+    public SyncDictionary<string, int> stats = new SyncDictionary<string, int>();
+
+    [ServerRpc] void CmdHit(int dmg, RpcInfo info) { health.value -= dmg; }   // owner → server
+    [ObserversRpc(bufferLast: true)] void RpcShout(string s) { ... }         // server → everyone (late joiners get the last one)
+    [TargetRpc] void RpcWhisper(string s) { ... }                            // server → one player
+
+    void Update() { if (isOwner && Input.GetMouseButtonDown(0)) Rpc(nameof(CmdHit), 10); }
+    protected override void OnSpawned(bool asServer) { health.onChanged += h => bar.value = h; }
+}
+```
+
+`NetworkManager` (one per scene): `httpUrl`, `grant`/`GrantProvider`, `roomName`, `maxPlayers`,
+`tickRate`, `networkPrefabs`; `StartHost()` (server + local player), `StartServer()` (headless),
+`StartClient()`, `Stop()`; `Spawn(prefab, owner?)`, `Despawn(id)`, `SetOwnership(id, player?)`;
+`players`, `localPlayer`, `identities`, `onPlayerJoined/Left`, `onSpawned/Despawned`. Put a
+`NetworkIdentity` on each prefab root; its `behaviours` list (auto-filled from children) fixes the
+replication order. `PlayerID` is the Aurix actor id. Modules and RPC methods are bound by reflection
+in declaration order, so host and clients must run the same build. Scene objects, interest
+management, client prediction and IL-weaved RPC calls (`CmdHit(10)` instead of `Rpc(nameof(CmdHit), 10)`)
+are on the roadmap.
+
+Check without Unity: `cd BuildCheck~/framework-check && NET_API_KEY=an_… dotnet run -c Release`.
+
 ## PurrNet, Mirror and FishNet transports
 
 Already on [PurrNet](https://github.com/PurrNet/PurrNet), [Mirror](https://github.com/MirrorNetworking/Mirror)

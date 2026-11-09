@@ -8,6 +8,17 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 ## [Unreleased]
 
 ### Added
+- Unity gameplay framework (`Aurix.Net.Unity.Framework`, `Runtime/Framework/`): host-authoritative
+  netcode in the PurrNet/Mirror/FishNet mould over an Aurix relay room — `NetworkManager`
+  (`StartHost`/`StartServer`/`StartClient`, prefab registry, `Spawn`/`Despawn`, ownership, tick),
+  `NetworkIdentity` (objectId, owner, isServer/isClient/isOwner/isController, despawn on owner
+  leave), `NetworkBehaviour` with `SyncVar<T>`, `SyncList<T>`, `SyncDictionary<K,V>` (server- or
+  owner-authoritative, per-module send interval, onChanged events, full state on spawn/late join,
+  deltas per tick) and `[ServerRpc]` / `[ObserversRpc]` / `[TargetRpc]` methods (requireOwnership,
+  runLocally, bufferLast for late joiners, `RpcInfo` sender), `NetSerializer` for primitives, Unity
+  math types, strings, byte[], enums, arrays/lists, `PlayerID`, `NetworkIdentity` references and
+  `INetSerializable`. Reflection-bound in this version (no IL weaving); `BuildCheck~/framework-check`
+  runs host + two clients through spawn, sync, RPCs, ownership transfer, late join and despawn.
 - Unity: transports for third-party netcode over an Aurix relay room — `AurixNetTransport`
   (PurrNet `GenericTransport`/`ITransport`), `AurixNetMirrorTransport` (Mirror `Transport`) and
   `AurixNetFishNetTransport` (FishNet `Transport`) on a shared `RelayBridge`: the host is the room
