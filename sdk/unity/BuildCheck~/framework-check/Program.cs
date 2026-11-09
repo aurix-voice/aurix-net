@@ -169,6 +169,26 @@ static class Program
         mvC.nt.Teleport(new Vector3(100, 0, 0), Quaternion.identity); await PumpMover(400);
         Check(Math.Abs(mvH.nt.transform.position.x - 100) < 0.01f, $"teleport snaps on remote (x={mvH.nt.transform.position.x:0.##})");
 
+        // interest management: DistanceRule — c1's avatar at x=100 sees a server object at x=110 but not one at x=500
+        {
+            var hostV = Make("hostV"); var cV = Make("cV"); var roomV = room + "-vis"; hostV.roomName = roomV; cV.roomName = roomV;
+            hostV.visibilityRules.Add(new DistanceRule(hostV, 50f)); hostV.visibilityIntervalTicks = 2;
+            hostV.StartHost(); await Until(() => hostV.isServer, 8000, hostV);
+            var near = (Mover)hostV.Spawn(1); near.nt.transform.position = new Vector3(110, 0, 0); near.nt.RenderUpdate(0);
+            var far = (Mover)hostV.Spawn(1); far.nt.transform.position = new Vector3(500, 0, 0); far.nt.RenderUpdate(0);
+            cV.StartClient(); await Until(() => cV.players.Count == 2, 8000, hostV, cV);
+            var avatar = (Mover)hostV.Spawn(1, cV.localPlayer);
+            await Until(() => cV.TryGetIdentity(avatar.objectId, out _), 5000, hostV, cV);
+            var avC = (Mover)(cV.TryGetIdentity(avatar.objectId, out var avId) ? avId : null);
+            avC.nt.transform.position = new Vector3(100, 0, 0);
+            async Task PumpV(int ms) { var until = DateTime.UtcNow.AddMilliseconds(ms); while (DateTime.UtcNow < until) { hostV.NetworkUpdate(0.01f); cV.NetworkUpdate(0.01f); avC.nt.RenderUpdate(0.01f); avatar.nt.RenderUpdate(0.01f); await Task.Delay(10); } }
+            await PumpV(600);
+            Check(cV.TryGetIdentity(near.objectId, out _) && !cV.TryGetIdentity(far.objectId, out _) && near.IsObserver(cV.localPlayer.Value) && !far.IsObserver(cV.localPlayer.Value), $"DistanceRule: near visible, far hidden (client has {cV.identities.Count()} objects)");
+            avC.nt.transform.position = new Vector3(480, 0, 0); await PumpV(600);
+            Check(cV.TryGetIdentity(far.objectId, out _) && !cV.TryGetIdentity(near.objectId, out _), "moving the avatar flips visibility: far spawned, near despawned on the client");
+            hostV.Stop(); cV.Stop(); await Pump(300, hostV, cV);
+        }
+
         // scene object: same sceneId registered on every peer, bound (not instantiated) and replicated
         host.Stop(); c1.Stop(); await Pump(300, host, c1);
         var room2 = room + "-scene";

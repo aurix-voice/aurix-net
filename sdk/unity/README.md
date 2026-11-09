@@ -123,8 +123,8 @@ replication order; objects placed in the scene get a non-zero `sceneId` and are 
 in declaration order, so host and clients must run the same build. RPC methods are rewritten after
 compilation by the weaver in `Editor/CodeGen` (an `ILPostProcessor`, like Mirror/PurrNet/NGO): calling
 `CmdHit(10)` sends the RPC and the body runs where it should; without the weaver (or from code you do
-not own) use `Rpc(nameof(CmdHit), 10)` / `RpcTo(player, …)`. Interest management and client
-prediction are on the roadmap.
+not own) use `Rpc(nameof(CmdHit), 10)` / `RpcTo(player, …)`. Interest management: add `INetworkVisibilityRule`s to `NetworkManager.visibilityRules` (e.g. `new DistanceRule(manager, 50f)`) or set `NetworkIdentity.visibilityRule`; clients only hold objects they can see. Client
+prediction is on the roadmap.
 
 Check without Unity: `cd BuildCheck~/framework-check && NET_API_KEY=an_… dotnet run -c Release`.
 

@@ -34,6 +34,17 @@ namespace Aurix.Net.Unity.Framework
         public bool IsController(bool ownerHasAuthority) => ownerHasAuthority ? isController : isServer;
         public PlayerID? localPlayer => networkManager?.localPlayer;
 
+        readonly HashSet<PlayerID> _observers = new HashSet<PlayerID>();
+        /// <summary>Server: players holding a copy of this object (clients: empty).</summary>
+        public IReadOnlyCollection<PlayerID> observers => _observers;
+        public bool IsObserver(PlayerID p) => _observers.Contains(p);
+        internal bool AddObserver(PlayerID p) { if (!_observers.Add(p)) return false; onObserverAdded?.Invoke(p); return true; }
+        internal bool RemoveObserver(PlayerID p) { if (!_observers.Remove(p)) return false; onObserverRemoved?.Invoke(p); return true; }
+        internal void ClearObservers() => _observers.Clear();
+        [Tooltip("Visibility rules on this object only (null = the manager's rules).")]
+        public INetworkVisibilityRule visibilityRule;
+
+        public event Action<PlayerID> onObserverAdded, onObserverRemoved;
         public event Action<PlayerID?, PlayerID?> onOwnerChanged;
         public event Action onSpawned, onDespawned;
 

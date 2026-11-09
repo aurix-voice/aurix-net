@@ -52,6 +52,10 @@ namespace Aurix.Net.Unity.Framework
         /// <summary>Async grant source; wins over the inspector field.</summary>
         public Func<Task<string>> GrantProvider;
         public INetworkObjectFactory factory = new PrefabFactory();
+        /// <summary>Server: who sees what. Empty = everyone sees everything. All rules must agree (AND).</summary>
+        public readonly List<INetworkVisibilityRule> visibilityRules = new List<INetworkVisibilityRule>();
+        [Tooltip("Server: re-evaluate visibility rules every N network ticks (0 = only on spawn/join).")]
+        public int visibilityIntervalTicks = 5;
 
         public static NetworkManager main { get; private set; }
 
@@ -159,7 +163,7 @@ namespace Aurix.Net.Unity.Framework
 
         void Teardown()
         {
-            foreach (var id in _ids.Values.ToArray()) { id.MarkDespawned(); onDespawned?.Invoke(id); if (id.sceneId == 0) factory.Destroy(id); }
+            foreach (var id in _ids.Values.ToArray()) { id.ClearObservers(); id.MarkDespawned(); onDespawned?.Invoke(id); if (id.sceneId == 0) factory.Destroy(id); }
             _ids.Clear(); _players.Clear(); _buffered.Clear(); _toServer.Clear(); _toClient.Clear();
             isServer = false; isClient = false; localPlayer = null; serverPlayer = null; tick = 0; _nextId = 1;
             _server = null; _client = null;
@@ -188,9 +192,9 @@ namespace Aurix.Net.Unity.Framework
             if (id.isSpawned) return id;
             id.Setup(this, _nextId++, prefabId, owner);
             _ids[id.objectId] = id;
-            Broadcast(Msg.Spawn, w => WriteSpawn(w, id));
             foreach (var b in id.behaviours) foreach (var m in b.modules) m.ClearDirty();
             id.MarkSpawned(true);
+            foreach (var p in _players) if (p != localPlayer && CanSee(p, id)) { id.AddObserver(p); Send(p.id, Msg.Spawn, w => WriteSpawn(w, id)); }
             onSpawned?.Invoke(id);
             return id;
         }
@@ -199,7 +203,8 @@ namespace Aurix.Net.Unity.Framework
         {
             if (!isServer) { Debug.LogWarning("only the server despawns"); return; }
             if (id == null || !_ids.Remove(id.objectId)) return;
-            Broadcast(Msg.Despawn, w => w.WriteBits(id.objectId, 32));
+            foreach (var p in id.observers) Send(p.id, Msg.Despawn, w => w.WriteBits(id.objectId, 32));
+            id.ClearObservers();
             _buffered.RemoveAll(x => x.obj == id.objectId);
             id.MarkDespawned(); onDespawned?.Invoke(id); if (id.sceneId == 0) factory.Destroy(id);
         }
@@ -210,11 +215,13 @@ namespace Aurix.Net.Unity.Framework
             if (id == null || !id.isSpawned || id.owner == player) return;
             if (player.HasValue && !_players.Contains(player.Value)) { Debug.LogWarning($"player {player} is not in the room"); return; }
             id.SetOwner(player);
-            Broadcast(Msg.Owner, w => { w.WriteBits(id.objectId, 32); WriteOwner(w, player); });
+            if (player.HasValue && player != localPlayer && !id.IsObserver(player.Value)) { id.AddObserver(player.Value); Send(player.Value.id, Msg.Spawn, w => WriteSpawn(w, id)); SendBuffered(player.Value, id); }
+            else foreach (var p in id.observers) Send(p.id, Msg.Owner, w => { w.WriteBits(id.objectId, 32); WriteOwner(w, player); });
         }
 
         void HandlePlayerLeft(PlayerID p)
         {
+            foreach (var id in _ids.Values) id.RemoveObserver(p);
             foreach (var id in _ids.Values.Where(i => i.owner == p).ToArray())
             {
                 if (id.despawnOnOwnerDisconnect) Despawn(id); else SetOwnership(id, null);
@@ -238,13 +245,41 @@ namespace Aurix.Net.Unity.Framework
                 w.WriteBits(Version, 8); w.WriteBits(tick, 32); w.WriteBits(serverPlayer.Value.id, 16);
                 w.WriteUInt((ulong)_players.Count, 16); foreach (var x in _players) w.WriteBits(x.id, 16);
             });
-            foreach (var id in _ids.Values) Send(p.id, Msg.Spawn, w => WriteSpawn(w, id));
+            foreach (var id in _ids.Values) if (CanSee(p, id)) { id.AddObserver(p); Send(p.id, Msg.Spawn, w => WriteSpawn(w, id)); SendBuffered(p, id); }
+        }
+
+        void SendBuffered(PlayerID p, NetworkIdentity id)
+        {
             foreach (var b in _buffered)
             {
+                if (b.obj != id.objectId) continue;
                 if (b.target.HasValue && b.target.Value != p) continue;
-                if (b.excludeOwner && _ids.TryGetValue(b.obj, out var ni) && ni.owner == p) continue;
+                if (b.excludeOwner && id.owner == p) continue;
                 Send(p.id, Msg.Rpc, w => { w.WriteBits(b.obj, 32); w.WriteBits(b.comp, 8); w.WriteBits(b.method, 8); w.WriteBits(serverPlayer.Value.id, 16); w.WriteUInt((ulong)b.body.Length, 16); w.WriteBytes(b.body); });
             }
+        }
+
+        /// <summary>Server: may this player hold a copy? Owner and the host's own player always may.</summary>
+        public bool CanSee(PlayerID p, NetworkIdentity id)
+        {
+            if (p == localPlayer || id.owner == p) return true;
+            if (id.visibilityRule != null) return id.visibilityRule.CanSee(p, id);
+            foreach (var r in visibilityRules) if (!r.CanSee(p, id)) return false;
+            return true;
+        }
+
+        /// <summary>Server: re-run the rules now; spawns on players that gained sight, despawns on those that lost it.</summary>
+        public void EvaluateVisibility()
+        {
+            if (!isServer) return;
+            foreach (var id in _ids.Values.ToArray())
+                foreach (var p in _players)
+                {
+                    if (p == localPlayer) continue;
+                    bool see = CanSee(p, id), has = id.IsObserver(p);
+                    if (see && !has) { id.AddObserver(p); Send(p.id, Msg.Spawn, w => WriteSpawn(w, id)); SendBuffered(p, id); }
+                    else if (!see && has) { id.RemoveObserver(p); Send(p.id, Msg.Despawn, w => w.WriteBits(id.objectId, 32)); }
+                }
         }
 
         // ---- tick ----
@@ -263,6 +298,7 @@ namespace Aurix.Net.Unity.Framework
         void Tick()
         {
             tick++; if (isServer) serverTick = tick;
+            if (isServer && visibilityIntervalTicks > 0 && tick % (uint)visibilityIntervalTicks == 0 && (visibilityRules.Count > 0 || _ids.Values.Any(i => i.visibilityRule != null))) EvaluateVisibility();
             float now = tick * (1f / Math.Max(1, tickRate));
             foreach (var id in _ids.Values.ToArray())
             {
@@ -277,7 +313,7 @@ namespace Aurix.Net.Unity.Framework
                         var body = new BitWriter(); m.WriteDelta(body); m.ClearDirty();
                         var bytes = body.Finish();
                         void Write(BitWriter w) { w.WriteBits(id.objectId, 32); w.WriteBits((ulong)b.componentIndex, 8); w.WriteBits((ulong)mi, 8); w.WriteBits(tick, 32); w.WriteUInt((ulong)bytes.Length, 16); w.WriteBytes(bytes); }
-                        if (isServer) { if (m.ownerOnly && id.owner.HasValue) Send(id.owner.Value.id, Msg.Sync, Write); else Broadcast(Msg.Sync, Write); }
+                        if (isServer) { if (m.ownerOnly && id.owner.HasValue) { if (id.owner != localPlayer) Send(id.owner.Value.id, Msg.Sync, Write); } else foreach (var p in id.observers) Send(p.id, Msg.Sync, Write); }
                         else Send(-1, Msg.Sync, Write);
                     }
                     b.OnTick(tick);
@@ -308,7 +344,7 @@ namespace Aurix.Net.Unity.Framework
                     var a = (ObserversRpcAttribute)r.attr;
                     if (!isServer) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: ObserversRpc may only be called on the server"); return true; }
                     var bytes = Pack(b, r, args);
-                    foreach (var p in _players) { if (p == localPlayer || (a.excludeOwner && id.owner == p)) continue; Send(p.id, Msg.Rpc, w => WriteRpc(w, id, b, r, bytes)); }
+                    foreach (var p in id.observers) { if (p == localPlayer || (a.excludeOwner && id.owner == p)) continue; Send(p.id, Msg.Rpc, w => WriteRpc(w, id, b, r, bytes)); }
                     if (a.bufferLast) Buffer(id, b, r, null, a.excludeOwner, bytes);
                     return !(isClient && a.runLocally && !(a.excludeOwner && id.isOwner));
                 }
@@ -320,6 +356,7 @@ namespace Aurix.Net.Unity.Framework
                     var bytes = Pack(b, r, args);
                     if (a.bufferLast) Buffer(id, b, r, target, false, bytes);
                     if (target == localPlayer) return !(isClient && a.runLocally);
+                    if (!id.IsObserver(target.Value)) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: {target} does not see this object"); return true; }
                     Send(target.Value.id, Msg.Rpc, w => WriteRpc(w, id, b, r, bytes));
                     return true;
                 }
@@ -400,7 +437,7 @@ namespace Aurix.Net.Unity.Framework
                     case Msg.Hello: if (r.ReadBits(8) == Version && _players.Contains(from)) SendWelcome(from); else Debug.LogWarning($"[AurixNet] hello from {from} with another protocol version"); return;
                     case Msg.Sync: { var (id, b, m) = ReadModuleRef(r); r.ReadBits(32); var bytes = r.ReadBytes((int)r.ReadUInt(16)); if (id == null || !m.ownerAuth || id.owner != from) return; m.lastReceivedTick = tick; m.ReadDelta(new BitReader(bytes)); m.ClearDirty();
                         void Write(BitWriter w) { w.WriteBits(id.objectId, 32); w.WriteBits((ulong)b.componentIndex, 8); w.WriteBits((ulong)m.index, 8); w.WriteBits(tick, 32); w.WriteUInt((ulong)bytes.Length, 16); w.WriteBytes(bytes); }
-                        if (!m.ownerOnly) Broadcast(Msg.Sync, Write, except: from.id); return; }
+                        if (!m.ownerOnly) foreach (var p in id.observers) if (p != from) Send(p.id, Msg.Sync, Write); return; }
                     case Msg.Rpc:
                     {
                         var (id, b, _) = ReadModuleRef(r, module: false); byte mi = (byte)r.ReadBits(8); r.ReadBits(16); var bytes = r.ReadBytes((int)r.ReadUInt(16));

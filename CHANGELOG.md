@@ -31,6 +31,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   layout as Netcode for GameObjects — not yet exercised in an editor) and on plain .NET through
   `sdk/unity/Weaver/Aurix.Net.Weaver.Cli` (`aurix-weave <assembly.dll>`), which `framework-check`
   applies to its own test assembly before running the live scenario.
+- Interest management: per-object observer sets on the server, `INetworkVisibilityRule`
+  (`DistanceRule`, `OwnerOnlyRule`, `AlwaysVisibleRule`, `NoVisibilityRule`, or a per-object rule),
+  re-evaluated every `visibilityIntervalTicks`; spawn/despawn, deltas, ObserversRpc and TargetRpc
+  follow visibility; owners and the host's player always see their objects.
 - Unity: transports for third-party netcode over an Aurix relay room — `AurixNetTransport`
   (PurrNet `GenericTransport`/`ITransport`), `AurixNetMirrorTransport` (Mirror `Transport`) and
   `AurixNetFishNetTransport` (FishNet `Transport`) on a shared `RelayBridge`: the host is the room
