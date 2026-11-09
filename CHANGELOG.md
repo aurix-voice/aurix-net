@@ -51,6 +51,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   buttons in play mode), `NetworkIdentity` inspector (stable `sceneId` auto-assigned for scene
   objects from scene + hierarchy path, runtime owner/observers), menu "Aurix Net/Assign scene ids".
   Written against the public UnityEditor API but not yet run in an editor.
+- `NetworkReflection`: replicate listed fields/properties of any component or plain object by name (change-mask
+  deltas, full state to late joiners) and call its methods over the network via `Invoke(name, args)` with a
+  Server/Observers/Target type per method.
 - `StateMachine` + `StateNode`/`StateNode<T>`: replicated state machine (server- or owner-authoritative);
   `SetState`, `SetState(node, data)`, `Next`, `Stop`; Enter/Exit/StateUpdate on every peer with the same
   payload, late joiners enter the current state.

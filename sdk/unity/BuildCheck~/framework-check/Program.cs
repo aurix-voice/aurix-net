@@ -88,19 +88,21 @@ class Round : StateNode<int> { public int enters, exits, last; public override v
 class Phases : NetworkIdentity { public StateMachine sm = new StateMachine(); public Idle idle = new Idle(); public Round round = new Round(); public Phases() { sm.states.Add(idle); sm.states.Add(round); behaviours.Add(sm); behaviours.Add(idle); behaviours.Add(round); } }
 class Counter : NetworkBehaviour { public SyncVar<int> v = new SyncVar<int>(); }
 class LodBox : NetworkIdentity { public NetworkLOD lod = new NetworkLOD { evaluateIntervalTicks = 1 }; public Counter counter = new Counter(); public LodBox() { behaviours.Add(lod); behaviours.Add(counter); } }
+class Plain { public int hp = 5; public string title { get; set; } = "start"; public Vector3 pos; public int healed; public string lastWhisper; public void Heal(int n) { hp += n; healed++; } public void Whisper(string s) => lastWhisper = s; }
+class Reflected : NetworkIdentity { public Plain plain = new Plain(); public NetworkReflection refl; public Reflected() { refl = new NetworkReflection { trackedBehaviour = plain, trackedFields = { "hp", "title", "pos" }, trackedMethods = { new ReflectedMethod("Heal", ReflectionRpcType.Server), new ReflectedMethod("Whisper", ReflectionRpcType.Target) } }; behaviours.Add(refl); } }
 class Mover : NetworkIdentity { public NetworkTransform nt = new NetworkTransform { syncParent = true }; public Mover() { behaviours.Add(nt); } }
 
 class TestFactory : INetworkObjectFactory
 {
     public readonly List<TestIdentity> alive = new List<TestIdentity>();
     public readonly List<NetworkIdentity> all = new List<NetworkIdentity>();
-    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 4) { var ph = new Phases(); all.Add(ph); return ph; } if (prefabId == 5) { var lb = new LodBox(); all.Add(lb); return lb; } if (prefabId == 3) { var tg = new Target(); all.Add(tg); return tg; } if (prefabId == 2) { var pw = new PawnIdentity(); all.Add(pw); return pw; } if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
+    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 6) { var rf = new Reflected(); all.Add(rf); return rf; } if (prefabId == 4) { var ph = new Phases(); all.Add(ph); return ph; } if (prefabId == 5) { var lb = new LodBox(); all.Add(lb); return lb; } if (prefabId == 3) { var tg = new Target(); all.Add(tg); return tg; } if (prefabId == 2) { var pw = new PawnIdentity(); all.Add(pw); return pw; } if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
     public void Destroy(NetworkIdentity id) { all.Remove(id); if (id is TestIdentity t) alive.Remove(t); }
 }
 
 static class Program
 {
-    const int PH = 4, LB = 5;
+    const int PH = 4, LB = 5, RF = 6;
     static async Task<string> Grant(HttpClient h, string key, string pid)
     {
         var req = new HttpRequestMessage(HttpMethod.Post, "http://127.0.0.1:8090/v1/grants");
@@ -290,6 +292,30 @@ static class Program
             box.counter.v.value++; await Until(() => ((LodBox)bF).counter.v.value == box.counter.v.value, 3000, hostL, cN, cF);
             Check(box.lod.GetTier(cF.localPlayer.Value) == 0 && ((LodBox)bF).counter.v.value == box.counter.v.value, "far player moved close: tier 0 and deltas resume");
             hostL.Stop(); cN.Stop(); cF.Stop(); await Pump(300, hostL, cN, cF);
+        }
+
+        // NetworkReflection: fields/properties of a plain object replicate by name; tracked methods are callable as RPCs
+        {
+            var hostR = Make("hostR"); var cR = Make("cR"); var cR2 = Make("cR2"); hostR.roomName = cR.roomName = cR2.roomName = room + "-refl";
+            hostR.StartHost(); await Until(() => hostR.isServer, 8000, hostR);
+            var rf = (Reflected)hostR.Spawn(RF);
+            cR.StartClient(); await Until(() => cR.TryGetIdentity(rf.objectId, out _), 8000, hostR, cR);
+            cR.TryGetIdentity(rf.objectId, out var rfC1); var rfC = (Reflected)rfC1;
+            Check(rfC.plain.hp == 5 && rfC.plain.title == "start", "full state of tracked members on spawn");
+            rf.plain.hp = 42; rf.plain.title = "boss"; rf.plain.pos = new Vector3(1, 2, 3);
+            await Until(() => rfC.plain.hp == 42 && rfC.plain.title == "boss", 3000, hostR, cR);
+            Check(rfC.plain.hp == 42 && rfC.plain.title == "boss" && rfC.plain.pos.z == 3, "changed field, property and Vector3 replicated to the client");
+            rfC.refl.Invoke("Heal", 8);
+            await Until(() => rf.plain.healed == 1, 3000, hostR, cR);
+            Check(rf.plain.hp == 50 && rf.plain.healed == 1, $"client called a Server-type tracked method on the server (hp {rf.plain.hp})");
+            await Until(() => rfC.plain.hp == 50, 3000, hostR, cR);
+            cR2.StartClient(); await Until(() => cR2.TryGetIdentity(rf.objectId, out _), 8000, hostR, cR, cR2); await Pump(200, hostR, cR, cR2);
+            cR2.TryGetIdentity(rf.objectId, out var rfC2x); var rfC2 = (Reflected)rfC2x;
+            Check(rfC2.plain.hp == 50 && rfC2.plain.title == "boss" && rfC.plain.hp == 50, "late joiner gets the current tracked state");
+            rf.refl.Invoke("Whisper", cR2.localPlayer.Value, "psst");
+            await Until(() => rfC2.plain.lastWhisper == "psst", 3000, hostR, cR, cR2);
+            Check(rfC2.plain.lastWhisper == "psst" && rfC.plain.lastWhisper == null, "Target-type tracked method reached only the target");
+            hostR.Stop(); cR.Stop(); cR2.Stop(); await Pump(300, hostR, cR, cR2);
         }
 
         // static RPCs: no NetworkIdentity, routed via NetworkManager.main (host) / the client manager
