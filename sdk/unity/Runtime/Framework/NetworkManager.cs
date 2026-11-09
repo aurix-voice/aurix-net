@@ -35,7 +35,7 @@ namespace Aurix.Net.Unity.Framework
     [DefaultExecutionOrder(-100)]
     public sealed class NetworkManager : MonoBehaviour
     {
-        enum Msg : byte { Hello = 1, Welcome, PlayerJoined, PlayerLeft, Spawn, Despawn, Owner, Sync, Rpc }
+        enum Msg : byte { Hello = 1, Welcome, PlayerJoined, PlayerLeft, Spawn, Despawn, Owner, Sync, Rpc, ViewTick, ServerTick }
         const byte Version = 1;
 
         [Header("Aurix Net")]
@@ -60,6 +60,22 @@ namespace Aurix.Net.Unity.Framework
         public event Action onPromotedToHost, onHostChanged;
         [Tooltip("StartAuto: room props to match exactly (JSON object), SQL-like lobby expression, and the props a hosted room is created with.")]
         public string matchFilterJson, matchExpr, roomPropsJson;
+        [Tooltip("Remote objects are rendered this many ticks behind the newest server state; reported to the server for lag compensation (match NetworkTransform.interpolationTicks).")]
+        public float viewDelayTicks = 2f;
+        readonly Dictionary<PlayerID, uint> _viewTicks = new Dictionary<PlayerID, uint>();
+        /// <summary>Server: the server tick this player is currently looking at (its latest known server tick minus its view delay).</summary>
+        public uint ViewTickOf(PlayerID p) => _viewTicks.TryGetValue(p, out var t) ? t : serverTick;
+
+        /// <summary>Server: rewinds every ColliderRollback to the tick <paramref name="shooter"/> was looking at, runs <paramref name="body"/>, restores.</summary>
+        public void Rollback(PlayerID shooter, Action body) => Rollback(ViewTickOf(shooter), body);
+
+        public void Rollback(uint tick, Action body)
+        {
+            if (!isServer) { body(); return; }
+            var list = new List<ColliderRollback>();
+            foreach (var id in _ids.Values) if (id.isSpawned) foreach (var b in id.behaviours) if (b is ColliderRollback cr) { cr.Rollback(tick); list.Add(cr); }
+            try { body(); } finally { foreach (var cr in list) cr.Restore(); }
+        }
 
         public INetworkObjectFactory factory = new PrefabFactory();
         /// <summary>Server: who sees what. Empty = everyone sees everything. All rules must agree (AND).</summary>
@@ -288,6 +304,7 @@ namespace Aurix.Net.Unity.Framework
 
         void HandlePlayerLeft(PlayerID p)
         {
+            _viewTicks.Remove(p);
             foreach (var id in _ids.Values) id.RemoveObserver(p);
             foreach (var id in _ids.Values.Where(i => i.owner == p).ToArray())
             {
@@ -365,6 +382,12 @@ namespace Aurix.Net.Unity.Framework
         void Tick()
         {
             tick++; if (isServer) serverTick = tick;
+            if (isServer && _players.Count > (isClient ? 1 : 0)) Broadcast(Msg.ServerTick, w => w.WriteBits(tick, 32));   // clients learn the server clock even when nothing else changed
+            if (isClient && !isServer && serverTick > 0 && _client != null && _client.State == BridgeState.Started)
+            {
+                uint vt = serverTick - (uint)Math.Min(serverTick, (uint)Math.Round(viewDelayTicks));
+                Send(-1, Msg.ViewTick, w => w.WriteBits(vt, 32));
+            }
             if (isServer && visibilityIntervalTicks > 0 && tick % (uint)visibilityIntervalTicks == 0 && (visibilityRules.Count > 0 || _ids.Values.Any(i => i.visibilityRule != null))) EvaluateVisibility();
             float now = tick * (1f / Math.Max(1, tickRate));
             foreach (var id in _ids.Values.ToArray())
@@ -502,6 +525,7 @@ namespace Aurix.Net.Unity.Framework
             {
                 switch (kind)
                 {
+                    case Msg.ViewTick: { uint vt = (uint)r.ReadBits(32); if (vt <= serverTick) _viewTicks[from] = vt; return; }
                     case Msg.Hello: if (r.ReadBits(8) == Version && _players.Contains(from)) SendWelcome(from); else Debug.LogWarning($"[AurixNet] hello from {from} with another protocol version"); return;
                     case Msg.Sync: { var (id, b, m) = ReadModuleRef(r); r.ReadBits(32); var bytes = r.ReadBytes((int)r.ReadUInt(16)); if (id == null || !m.ownerAuth || id.owner != from) return; m.lastReceivedTick = tick; m.ReadDelta(new BitReader(bytes)); m.ClearDirty();
                         void Write(BitWriter w) { w.WriteBits(id.objectId, 32); w.WriteBits((ulong)b.componentIndex, 8); w.WriteBits((ulong)m.index, 8); w.WriteBits(tick, 32); w.WriteUInt((ulong)bytes.Length, 16); w.WriteBytes(bytes); }
@@ -528,6 +552,7 @@ namespace Aurix.Net.Unity.Framework
                     _players.Clear(); int n = (int)r.ReadUInt(16); for (int i = 0; i < n; i++) _players.Add(new PlayerID((ushort)r.ReadBits(16)));
                     return;
                 }
+                case Msg.ServerTick: { uint st = (uint)r.ReadBits(32); if (st > serverTick) serverTick = st; return; }
                 case Msg.PlayerJoined: { var p = new PlayerID((ushort)r.ReadBits(16)); if (!_players.Contains(p)) _players.Add(p); onPlayerJoined?.Invoke(p); return; }
                 case Msg.PlayerLeft: { var p = new PlayerID((ushort)r.ReadBits(16)); _players.Remove(p); onPlayerLeft?.Invoke(p); return; }
                 case Msg.Spawn:

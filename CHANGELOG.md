@@ -51,6 +51,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   buttons in play mode), `NetworkIdentity` inspector (stable `sceneId` auto-assigned for scene
   objects from scene + hierarchy path, runtime owner/observers), menu "Aurix Net/Assign scene ids".
   Written against the public UnityEditor API but not yet run in an editor.
+- Lag compensation: `ColliderRollback` keeps a per-tick pose history on the server; clients report
+  their view tick (`viewDelayTicks` behind the newest server tick, `Msg.ViewTick`) and the server
+  broadcasts its clock every tick; `NetworkManager.Rollback(shooter, body)` rewinds all rollback
+  components to the shooter's view tick around `body` and restores them.
 - Sync modules: `SyncHashSet<T>`, `SyncQueue<T>`, `SyncArray<T>` (changed slots only), `SyncEvent<T>`
   (fire-and-forget payload, not replayed to late joiners) and `SyncTimer` (server-tick countdown,
   `remaining`/`finished`/`Poll()`), same authority/full/delta rules as `SyncList`.

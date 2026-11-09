@@ -74,13 +74,14 @@ class Pawn : PredictedBehaviour<MoveInput, MoveState>
 }
 class PawnIdentity : NetworkIdentity { public Pawn pawn = new Pawn(); public PawnIdentity() { behaviours.Add(pawn); } }
 class TestIdentity : NetworkIdentity { public Player player = new Player(); public TestIdentity() { behaviours.Add(player); } }
+class Target : NetworkIdentity { public ColliderRollback cr = new ColliderRollback(); public Target() { behaviours.Add(cr); } }
 class Mover : NetworkIdentity { public NetworkTransform nt = new NetworkTransform(); public Mover() { behaviours.Add(nt); } }
 
 class TestFactory : INetworkObjectFactory
 {
     public readonly List<TestIdentity> alive = new List<TestIdentity>();
     public readonly List<NetworkIdentity> all = new List<NetworkIdentity>();
-    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 2) { var pw = new PawnIdentity(); all.Add(pw); return pw; } if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
+    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 3) { var tg = new Target(); all.Add(tg); return tg; } if (prefabId == 2) { var pw = new PawnIdentity(); all.Add(pw); return pw; } if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
     public void Destroy(NetworkIdentity id) { all.Remove(id); if (id is TestIdentity t) alive.Remove(t); }
 }
 
@@ -200,7 +201,7 @@ static class Program
             var hostX = Make("hostX"); var cX = Make("cX"); var roomX = room + "-mods"; hostX.roomName = cX.roomName = roomX;
             hostX.StartHost(); await Until(() => hostX.isServer, 8000, hostX);
             var px = (TestIdentity)hostX.Spawn(0);
-            px.player.tags.Add("vip"); px.player.tags.Add("beta"); px.player.queue.Enqueue(1); px.player.queue.Enqueue(2); px.player.queue.Enqueue(3); px.player.slots[2] = 42; px.player.timer.Start(0.4f);
+            px.player.tags.Add("vip"); px.player.tags.Add("beta"); px.player.queue.Enqueue(1); px.player.queue.Enqueue(2); px.player.queue.Enqueue(3); px.player.slots[2] = 42; px.player.timer.Start(1.2f);
             cX.StartClient(); await Until(() => cX.TryGetIdentity(px.objectId, out _), 8000, hostX, cX);
             var pc = ((TestIdentity)(cX.TryGetIdentity(px.objectId, out var pxi) ? pxi : null)).player;
             pc.boom.onInvoked += v => pc.boomsSeen += v;
@@ -209,9 +210,28 @@ static class Program
             px.player.tags.Remove("beta"); px.player.queue.Dequeue(); px.player.slots[0] = 7; px.player.boom.Invoke(5); px.player.boom.Invoke(6);
             await Pump(400, hostX, cX);
             Check(!pc.tags.Contains("beta") && pc.tags.Count == 1 && pc.queue.Count == 2 && pc.queue.Peek() == 2 && pc.slots[0] == 7 && pc.slots[2] == 42 && pc.boomsSeen == 11, $"deltas: remove/dequeue/slot/event replicated (booms {pc.boomsSeen})");
-            await Pump(400, hostX, cX);
+            Check(!pc.timer.finished && pc.timer.remaining > 0.2f, $"SyncTimer still running on the client ({pc.timer.remaining:0.00}s left)");
+            await Until(() => pc.timer.finished && px.player.timer.finished, 3000, hostX, cX);
             Check(pc.timer.finished && px.player.timer.finished, "SyncTimer finished on both sides from the server tick");
             hostX.Stop(); cX.Stop(); await Pump(300, hostX, cX);
+        }
+
+        // Lag compensation: server rewinds ColliderRollback poses to the shooter's view tick
+        {
+            var hostL = Make("hostL"); var cL = Make("cL"); hostL.roomName = cL.roomName = room + "-lag";
+            hostL.StartHost(); await Until(() => hostL.isServer, 8000, hostL);
+            var tg = (Target)hostL.Spawn(3);
+            cL.StartClient(); await Until(() => cL.TryGetIdentity(tg.objectId, out _), 8000, hostL, cL);
+            // the server moves the target one unit per tick (x = server tick)
+            var mover = new Func<Task>(async () => { var until = DateTime.UtcNow.AddMilliseconds(600); while (DateTime.UtcNow < until) { tg.cr.transform.position = new Vector3(hostL.serverTick, 0, 0); hostL.NetworkUpdate(0.01f); cL.NetworkUpdate(0.01f); await Task.Delay(5); } });
+            await mover();
+            uint view = hostL.ViewTickOf(cL.localPlayer.Value); float seenX = -1, liveX = tg.cr.transform.position.x;
+            hostL.Rollback(cL.localPlayer.Value, () => seenX = tg.cr.transform.position.x);
+            tg.cr.TryGetPose(view, out var hp);
+            Check(view > 0 && view < hostL.serverTick && view >= hostL.serverTick - 6 && Math.Abs(seenX - hp.pos.x) < 0.001f && seenX < liveX - 1 && Math.Abs(tg.cr.transform.position.x - liveX) < 0.001f,
+                $"Rollback(shooter) sees the recorded pose at the shooter's view tick (view {view}, server {hostL.serverTick}, seen x={seenX:0.##}, live x={liveX:0.##}) and restores");
+            Check(tg.cr.history.Count > 10 && !tg.cr.isRolledBack, $"server keeps a pose history ({tg.cr.history.Count} ticks)");
+            hostL.Stop(); cL.Stop(); await Pump(300, hostL, cL);
         }
 
         // Quick match: StartAuto hosts when nothing matches, the next StartAuto joins that room as a client
