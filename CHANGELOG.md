@@ -47,6 +47,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   host leaves, the room's new master is promoted to server with the objects it holds (same ids,
   live state), other clients re-attach to it (`RelayBridge.OnPromoted` / `OnHostChanged`).
   Transport adapters keep the old behaviour (disconnect) unless `AllowHostMigration` is set.
+- Editor: `NetworkManager` inspector (role, players, tick, objects with owner/observers, Start/Stop
+  buttons in play mode), `NetworkIdentity` inspector (stable `sceneId` auto-assigned for scene
+  objects from scene + hierarchy path, runtime owner/observers), menu "Aurix Net/Assign scene ids".
+  Written against the public UnityEditor API but not yet run in an editor.
 - Unity: transports for third-party netcode over an Aurix relay room — `AurixNetTransport`
   (PurrNet `GenericTransport`/`ITransport`), `AurixNetMirrorTransport` (Mirror `Transport`) and
   `AurixNetFishNetTransport` (FishNet `Transport`) on a shared `RelayBridge`: the host is the room
