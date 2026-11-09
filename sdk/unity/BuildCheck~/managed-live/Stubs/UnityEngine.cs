@@ -8,6 +8,8 @@ namespace UnityEngine
     public class Component : Object { Transform _t; public Transform transform => _t ??= new Transform(); public GameObject gameObject = new GameObject(); public T[] GetComponentsInChildren<T>() => new T[0]; public void GetComponentsInChildren<T>(bool inc, List<T> r) { } public T GetComponent<T>() where T : class => null; }
     public class Rigidbody : Component { public Vector3 position, velocity, angularVelocity; public Quaternion rotation; public bool isKinematic; public void MovePosition(Vector3 p) { position = p; } public void MoveRotation(Quaternion q) { rotation = q; } }
     public enum AnimatorControllerParameterType { Float = 1, Int = 3, Bool = 4, Trigger = 9 }
+    public class Texture2D : Object { public int width, height; public byte[] raw = new byte[0]; public Texture2D(int w, int h) { width = w; height = h; } }
+    public static class ImageConversion { public static byte[] EncodeToPNG(this Texture2D t) => t.raw; public static bool LoadImage(this Texture2D t, byte[] b) { t.raw = b; return true; } }
     public class AudioClip : Object { public string name; public float length = 1f; }
     public class AudioSource : Component { public AudioClip clip; public float volume = 1f, pitch = 1f, spatialBlend, minDistance = 1f, maxDistance = 500f, time; public bool loop, mute, isPlaying; public AudioClip lastOneShot; public float lastOneShotScale; public void Play() { isPlaying = true; } public void Stop() { isPlaying = false; time = 0; } public void Pause() { isPlaying = false; } public void UnPause() { isPlaying = true; } public void PlayOneShot(AudioClip c, float scale = 1f) { lastOneShot = c; lastOneShotScale = scale; } }
     public class SkinnedMeshRenderer : Component { public Transform[] bones = new Transform[0]; }

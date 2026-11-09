@@ -70,6 +70,94 @@ namespace Aurix.Net.Unity.Framework
     }
 
     /// <summary>
+    /// Owner → server input value (not replicated to other observers). The owner writes <see cref="value"/> whenever the
+    /// input changes; the server gets <see cref="onChanged"/>. Use it for non-predicted input (menus, abilities, chat
+    /// typing state); predicted movement uses <c>PredictedBehaviour</c>.
+    /// </summary>
+    public sealed class SyncInput<T> : NetworkModule
+    {
+        T _value;
+        public event Action<T> onChanged;
+        /// <summary>Server tick at which the latest input was received.</summary>
+        public uint lastInputTick { get; private set; }
+
+        public SyncInput(T defaultValue = default, float sendIntervalInSeconds = 0f) { _value = defaultValue; sendIntervalInSeconds = Math.Max(0, sendIntervalInSeconds); this.sendIntervalInSeconds = sendIntervalInSeconds; ownerAuth = true; serverOnly = true; }
+
+        public T value
+        {
+            get => _value;
+            set
+            {
+                if (NetSerializer.AreEqual(_value, value)) return;
+                if (identity != null && identity.isSpawned && !identity.isOwner) { Debug.LogWarning($"SyncInput<{typeof(T).Name}>: only the owner may write it"); return; }
+                _value = value; isDirty = true; onChanged?.Invoke(value);
+            }
+        }
+
+        public override void WriteFull(BitWriter w) => NetSerializer.Write(w, _value, typeof(T));
+        public override void ReadFull(BitReader r) { _value = (T)NetSerializer.Read(r, typeof(T)); }
+        public override void WriteDelta(BitWriter w) => WriteFull(w);
+        public override void ReadDelta(BitReader r)
+        {
+            var v = (T)NetSerializer.Read(r, typeof(T)); lastInputTick = lastReceivedTick;
+            if (NetSerializer.AreEqual(_value, v)) return;
+            _value = v; onChanged?.Invoke(v);
+        }
+        public static implicit operator T(SyncInput<T> s) => s._value;
+    }
+
+    /// <summary>Replicates a Texture2D (PNG-encoded) through <see cref="SyncBigData"/>; remotes get a decoded texture in <see cref="onChanged"/>.</summary>
+    public sealed class SyncTexture : NetworkModule
+    {
+        readonly SyncBigData _data;
+        public Texture2D texture { get; private set; }
+        public event Action<Texture2D> onChanged;
+        public float progress => _data.progress;
+        public bool isTransferring => _data.isTransferring;
+
+        public SyncTexture(bool ownerAuth = false, int chunkSize = 8 * 1024)
+        {
+            this.ownerAuth = ownerAuth; _data = new SyncBigData(ownerAuth, chunkSize);
+            _data.onCompleted += bytes => { if (bytes.Length == 0) { texture = null; onChanged?.Invoke(null); return; } var t = new Texture2D(2, 2); if (t.LoadImage(bytes)) { texture = t; onChanged?.Invoke(t); } };
+        }
+
+        /// <summary>Controller: replace the texture (encoded to PNG and streamed).</summary>
+        public void Set(Texture2D tex) { if (identity != null && identity.isSpawned && !isController) { Debug.LogWarning("SyncTexture: only the controller may set it"); return; } texture = tex; _data.Set(tex != null ? tex.EncodeToPNG() : Array.Empty<byte>()); isDirty = true; }
+
+        public override void OnBeforeSend() { _data.OnBeforeSend(); if (_data.isDirty) isDirty = true; }
+        public override void WriteFull(BitWriter w) => _data.WriteFull(w);
+        public override void ReadFull(BitReader r) => _data.ReadFull(r);
+        public override void WriteDelta(BitWriter w) { _data.WriteDelta(w); _data.ClearDirty(); }
+        public override void ReadDelta(BitReader r) => _data.ReadDelta(r);
+    }
+
+    /// <summary>Replicates a named file (name + bytes) through <see cref="SyncBigData"/>.</summary>
+    public sealed class SyncFile : NetworkModule
+    {
+        readonly SyncBigData _data;
+        public string fileName { get; private set; } = "";
+        public byte[] bytes => _data.data;
+        public event Action<string, byte[]> onChanged;
+        public float progress => _data.progress;
+        public bool isTransferring => _data.isTransferring;
+        string _incomingName;
+
+        public SyncFile(bool ownerAuth = false, int chunkSize = 8 * 1024)
+        {
+            this.ownerAuth = ownerAuth; _data = new SyncBigData(ownerAuth, chunkSize);
+            _data.onCompleted += b => { fileName = _incomingName ?? fileName; onChanged?.Invoke(fileName, b); };
+        }
+
+        public void Set(string name, byte[] content) { if (identity != null && identity.isSpawned && !isController) { Debug.LogWarning("SyncFile: only the controller may set it"); return; } fileName = name ?? ""; _data.Set(content); isDirty = true; }
+
+        public override void OnBeforeSend() { _data.OnBeforeSend(); if (_data.isDirty) isDirty = true; }
+        public override void WriteFull(BitWriter w) { NetSerializer.WriteString(w, fileName); _data.WriteFull(w); }
+        public override void ReadFull(BitReader r) { _incomingName = NetSerializer.ReadString(r); _data.ReadFull(r); }
+        public override void WriteDelta(BitWriter w) { NetSerializer.WriteString(w, fileName); _data.WriteDelta(w); _data.ClearDirty(); }
+        public override void ReadDelta(BitReader r) { _incomingName = NetSerializer.ReadString(r); _data.ReadDelta(r); }
+    }
+
+    /// <summary>
     /// Replicates a large byte payload (texture, save file, level blob) in chunks over the reliable sync path.
     /// Controller calls <see cref="Set"/>; receivers get <see cref="progress"/> updates and <see cref="onCompleted"/>.
     /// Late joiners receive the whole payload with the spawn state.

@@ -93,6 +93,8 @@ class Reflected : NetworkIdentity { public Plain plain = new Plain(); public Net
 class Rig : NetworkIdentity { public Transform[] b = { new Transform(), new Transform(), new Transform() }; public NetworkBones bones; public Rig() { bones = new NetworkBones { extraBones = b, sendRate = 30, smoothing = 0 }; behaviours.Add(bones); } }
 class Speaker : NetworkIdentity { public AudioSource src = new AudioSource(); public NetworkAudioSource audio; public Speaker() { audio = new NetworkAudioSource { audioSource = src, clips = { new AudioClip { name = "a" }, new AudioClip { name = "b" } } }; behaviours.Add(audio); } }
 class Racer : NetworkBehaviour { public ValidatedSyncVar<int> speed = new ValidatedSyncVar<int>(1, 0f, (cur, proposed) => proposed <= 10); public SyncBigData blob = new SyncBigData(false, 4096); }
+class Inputs : NetworkBehaviour { public SyncInput<int> ability = new SyncInput<int>(); public SyncTexture tex = new SyncTexture(); public SyncFile file = new SyncFile(); }
+class InputsIdentity : NetworkIdentity { public Inputs inputs = new Inputs(); public InputsIdentity() { behaviours.Add(inputs); } }
 class RacerIdentity : NetworkIdentity { public Racer racer = new Racer(); public RacerIdentity() { behaviours.Add(racer); } }
 class Packer : NetworkBehaviour
 {
@@ -122,13 +124,13 @@ class TestFactory : INetworkObjectFactory
 {
     public readonly List<TestIdentity> alive = new List<TestIdentity>();
     public readonly List<NetworkIdentity> all = new List<NetworkIdentity>();
-    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 11) { var gi = new GenericIdentity(); all.Add(gi); return gi; } if (prefabId == 10) { var pk = new PackerIdentity(); all.Add(pk); return pk; } if (prefabId == 9) { var rc = new RacerIdentity(); all.Add(rc); return rc; } if (prefabId == 7) { var rg = new Rig(); all.Add(rg); return rg; } if (prefabId == 8) { var sp = new Speaker(); all.Add(sp); return sp; } if (prefabId == 6) { var rf = new Reflected(); all.Add(rf); return rf; } if (prefabId == 4) { var ph = new Phases(); all.Add(ph); return ph; } if (prefabId == 5) { var lb = new LodBox(); all.Add(lb); return lb; } if (prefabId == 3) { var tg = new Target(); all.Add(tg); return tg; } if (prefabId == 2) { var pw = new PawnIdentity(); all.Add(pw); return pw; } if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
+    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 12) { var ii = new InputsIdentity(); all.Add(ii); return ii; } if (prefabId == 11) { var gi = new GenericIdentity(); all.Add(gi); return gi; } if (prefabId == 10) { var pk = new PackerIdentity(); all.Add(pk); return pk; } if (prefabId == 9) { var rc = new RacerIdentity(); all.Add(rc); return rc; } if (prefabId == 7) { var rg = new Rig(); all.Add(rg); return rg; } if (prefabId == 8) { var sp = new Speaker(); all.Add(sp); return sp; } if (prefabId == 6) { var rf = new Reflected(); all.Add(rf); return rf; } if (prefabId == 4) { var ph = new Phases(); all.Add(ph); return ph; } if (prefabId == 5) { var lb = new LodBox(); all.Add(lb); return lb; } if (prefabId == 3) { var tg = new Target(); all.Add(tg); return tg; } if (prefabId == 2) { var pw = new PawnIdentity(); all.Add(pw); return pw; } if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
     public void Destroy(NetworkIdentity id) { all.Remove(id); if (id is TestIdentity t) alive.Remove(t); }
 }
 
 static class Program
 {
-    const int PH = 4, LB = 5, RF = 6, RG = 7, SP = 8, RC = 9, PK = 10, GI = 11;
+    const int PH = 4, LB = 5, RF = 6, RG = 7, SP = 8, RC = 9, PK = 10, GI = 11, II = 12;
     static async Task<string> Grant(HttpClient h, string key, string pid)
     {
         var req = new HttpRequestMessage(HttpMethod.Post, "http://127.0.0.1:8090/v1/grants");
@@ -454,6 +456,27 @@ static class Program
             cA.TryGetIdentity(obj.objectId, out var objC1); var objC = objC1 as TestIdentity;
             Check(objC != null && cA.pendingSpawnCount == 0 && objC.player.health.value == 55 && objC.isOwner, $"after load: spawned, queued Sync and Owner applied (health {objC?.player.health.value}, owner {objC?.isOwner})");
             hostA.Stop(); cA.Stop(); await Pump(300, hostA, cA);
+        }
+
+        // SyncInput (owner → server only) + SyncTexture / SyncFile over SyncBigData
+        {
+            var hostI = Make("hostI"); var cI = Make("cI"); var cI2 = Make("cI2"); hostI.roomName = cI.roomName = cI2.roomName = room + "-input";
+            hostI.StartHost(); await Until(() => hostI.isServer, 8000, hostI);
+            cI.StartClient(); cI2.StartClient(); await Until(() => hostI.players.Count == 3, 8000, hostI, cI, cI2);
+            var ii = (InputsIdentity)hostI.Spawn(II, cI.localPlayer);
+            await Until(() => cI.TryGetIdentity(ii.objectId, out _) && cI2.TryGetIdentity(ii.objectId, out _), 5000, hostI, cI, cI2);
+            cI.TryGetIdentity(ii.objectId, out var iiC1); var iiC = (InputsIdentity)iiC1; cI2.TryGetIdentity(ii.objectId, out var iiC2x); var iiC2 = (InputsIdentity)iiC2x;
+            int serverSaw = 0; ii.inputs.ability.onChanged += v => serverSaw = v;
+            iiC.inputs.ability.value = 3;
+            await Until(() => serverSaw == 3, 3000, hostI, cI, cI2); await Pump(200, hostI, cI, cI2);
+            Check(serverSaw == 3 && ii.inputs.ability.value == 3 && iiC2.inputs.ability.value == 0, $"SyncInput reached the server (3) and not the other client ({iiC2.inputs.ability.value})");
+            var png = new byte[12_000]; new Random(3).NextBytes(png); var tex = new Texture2D(64, 64) { raw = png };
+            Texture2D gotTex = null; iiC2.inputs.tex.onChanged += t => gotTex = t;
+            string gotName = null; byte[] gotFile = null; iiC2.inputs.file.onChanged += (n, b) => { gotName = n; gotFile = b; };
+            ii.inputs.tex.Set(tex); ii.inputs.file.Set("level.json", System.Text.Encoding.UTF8.GetBytes("{\"rooms\":3}"));
+            await Until(() => gotTex != null && gotFile != null, 5000, hostI, cI, cI2);
+            Check(gotTex != null && gotTex.raw.AsSpan().SequenceEqual(png) && gotName == "level.json" && System.Text.Encoding.UTF8.GetString(gotFile) == "{\"rooms\":3}", $"SyncTexture (12 KB) and SyncFile arrived intact ({gotName})");
+            hostI.Stop(); cI.Stop(); cI2.Stop(); await Pump(300, hostI, cI, cI2);
         }
 
         // static RPCs: no NetworkIdentity, routed via NetworkManager.main (host) / the client manager

@@ -51,6 +51,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   buttons in play mode), `NetworkIdentity` inspector (stable `sceneId` auto-assigned for scene
   objects from scene + hierarchy path, runtime owner/observers), menu "Aurix Net/Assign scene ids".
   Written against the public UnityEditor API but not yet run in an editor.
+- `SyncInput<T>` (owner → server only input value with `onChanged`), `SyncTexture` (PNG over `SyncBigData`) and
+  `SyncFile` (name + bytes over `SyncBigData`).
 - Addressables: `AddressablesPrefabFactory` (compiled when `com.unity.addressables` is present) and the general
   `IAsyncNetworkObjectFactory`: a spawn whose prefab is still loading stays pending on the client together with
   every later message for that object (sync, ownership, RPCs, despawn), then applies in order once loaded.
