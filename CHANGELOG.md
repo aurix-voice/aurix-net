@@ -51,6 +51,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   buttons in play mode), `NetworkIdentity` inspector (stable `sceneId` auto-assigned for scene
   objects from scene + hierarchy path, runtime owner/observers), menu "Aurix Net/Assign scene ids".
   Written against the public UnityEditor API but not yet run in an editor.
+- `NetworkTransform.adaptiveSync` (Conservative/Balanced/Aggressive) with pluggable `TransformSyncStrategy` /
+  `CompositeTransformSyncStrategy` (`SetSyncStrategy`): the controller skips sends while receivers can reconstruct
+  the motion within tolerance (bounded by `maxSendInterval`), receivers extrapolate with the same model.
 - `SyncInput<T>` (owner → server only input value with `onChanged`), `SyncTexture` (PNG over `SyncBigData`) and
   `SyncFile` (name + bytes over `SyncBigData`).
 - Addressables: `AddressablesPrefabFactory` (compiled when `com.unity.addressables` is present) and the general

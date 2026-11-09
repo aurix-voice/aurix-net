@@ -118,19 +118,20 @@ class DelayedFactory : IAsyncNetworkObjectFactory
     public void InstantiateAsync(NetworkManager m, int prefabId, Action<NetworkIdentity> ready) => _pending.Add((delayPumps, prefabId, ready));
     public void Pump(NetworkManager m) { for (int i = _pending.Count - 1; i >= 0; i--) { var p = _pending[i]; if (--p.left <= 0) { _pending.RemoveAt(i); p.ready(inner.Instantiate(m, p.pid)); } else _pending[i] = p; } }
 }
+class Glider : NetworkIdentity { public NetworkTransform nt = new NetworkTransform { adaptiveSync = AdaptiveSyncLevel.Balanced, interpolationTicks = 2 }; public Glider() { behaviours.Add(nt); } }
 class Mover : NetworkIdentity { public NetworkTransform nt = new NetworkTransform { syncParent = true }; public Mover() { behaviours.Add(nt); } }
 
 class TestFactory : INetworkObjectFactory
 {
     public readonly List<TestIdentity> alive = new List<TestIdentity>();
     public readonly List<NetworkIdentity> all = new List<NetworkIdentity>();
-    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 12) { var ii = new InputsIdentity(); all.Add(ii); return ii; } if (prefabId == 11) { var gi = new GenericIdentity(); all.Add(gi); return gi; } if (prefabId == 10) { var pk = new PackerIdentity(); all.Add(pk); return pk; } if (prefabId == 9) { var rc = new RacerIdentity(); all.Add(rc); return rc; } if (prefabId == 7) { var rg = new Rig(); all.Add(rg); return rg; } if (prefabId == 8) { var sp = new Speaker(); all.Add(sp); return sp; } if (prefabId == 6) { var rf = new Reflected(); all.Add(rf); return rf; } if (prefabId == 4) { var ph = new Phases(); all.Add(ph); return ph; } if (prefabId == 5) { var lb = new LodBox(); all.Add(lb); return lb; } if (prefabId == 3) { var tg = new Target(); all.Add(tg); return tg; } if (prefabId == 2) { var pw = new PawnIdentity(); all.Add(pw); return pw; } if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
+    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 13) { var gl = new Glider(); all.Add(gl); return gl; } if (prefabId == 12) { var ii = new InputsIdentity(); all.Add(ii); return ii; } if (prefabId == 11) { var gi = new GenericIdentity(); all.Add(gi); return gi; } if (prefabId == 10) { var pk = new PackerIdentity(); all.Add(pk); return pk; } if (prefabId == 9) { var rc = new RacerIdentity(); all.Add(rc); return rc; } if (prefabId == 7) { var rg = new Rig(); all.Add(rg); return rg; } if (prefabId == 8) { var sp = new Speaker(); all.Add(sp); return sp; } if (prefabId == 6) { var rf = new Reflected(); all.Add(rf); return rf; } if (prefabId == 4) { var ph = new Phases(); all.Add(ph); return ph; } if (prefabId == 5) { var lb = new LodBox(); all.Add(lb); return lb; } if (prefabId == 3) { var tg = new Target(); all.Add(tg); return tg; } if (prefabId == 2) { var pw = new PawnIdentity(); all.Add(pw); return pw; } if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
     public void Destroy(NetworkIdentity id) { all.Remove(id); if (id is TestIdentity t) alive.Remove(t); }
 }
 
 static class Program
 {
-    const int PH = 4, LB = 5, RF = 6, RG = 7, SP = 8, RC = 9, PK = 10, GI = 11, II = 12;
+    const int PH = 4, LB = 5, RF = 6, RG = 7, SP = 8, RC = 9, PK = 10, GI = 11, II = 12, GL = 13;
     static async Task<string> Grant(HttpClient h, string key, string pid)
     {
         var req = new HttpRequestMessage(HttpMethod.Post, "http://127.0.0.1:8090/v1/grants");
@@ -477,6 +478,30 @@ static class Program
             await Until(() => gotTex != null && gotFile != null, 5000, hostI, cI, cI2);
             Check(gotTex != null && gotTex.raw.AsSpan().SequenceEqual(png) && gotName == "level.json" && System.Text.Encoding.UTF8.GetString(gotFile) == "{\"rooms\":3}", $"SyncTexture (12 KB) and SyncFile arrived intact ({gotName})");
             hostI.Stop(); cI.Stop(); cI2.Stop(); await Pump(300, hostI, cI, cI2);
+        }
+
+        // adaptive transform sync: constant-velocity motion skips most sends, receiver reconstructs within tolerance
+        {
+            var hostD = Make("hostD"); var cD = Make("cD"); hostD.roomName = cD.roomName = room + "-adapt";
+            hostD.StartHost(); await Until(() => hostD.isServer, 8000, hostD);
+            var gl = (Glider)hostD.Spawn(GL);
+            cD.StartClient(); await Until(() => cD.TryGetIdentity(gl.objectId, out _), 8000, hostD, cD); await Pump(200, hostD, cD);
+            cD.TryGetIdentity(gl.objectId, out var glC1); var glC = (Glider)glC1;
+            float worst = 0; int made0 = gl.nt.sync.sendsMade, skipped0 = gl.nt.sync.sendsSkipped;
+            for (int i = 0; i < 90; i++)
+            {
+                gl.nt.transform.position = new Vector3(i * 0.1f, 0, 0);
+                hostD.NetworkUpdate(1f / 30); cD.NetworkUpdate(1f / 30); glC.nt.RenderUpdate(1f / 30);   // exactly one tick per iteration
+                if (i > 20) worst = Math.Max(worst, Math.Abs(glC.nt.transform.position.x - gl.nt.transform.position.x));   // includes render delay (interpolationTicks + transit)
+                await Task.Delay(33);
+            }
+            int made = gl.nt.sync.sendsMade - made0, skipped = gl.nt.sync.sendsSkipped - skipped0;
+            Check(skipped > made && made >= 3, $"adaptive sync skipped {skipped} sends, made {made} over 90 ticks of linear motion");
+            Check(worst < 1.0f, $"receiver stays within 10 ticks of the controller while sends are skipped (worst {worst:0.00} units at 0.1/tick)");
+            gl.nt.transform.position = new Vector3(100, 5, 0);
+            for (int i = 0; i < 40; i++) { hostD.NetworkUpdate(0.01f); cD.NetworkUpdate(0.01f); glC.nt.RenderUpdate(0.033f); await Task.Delay(10); }
+            Check(Vector3.Distance(glC.nt.transform.position, new Vector3(100, 5, 0)) < 0.1f, "a jump breaks the skip streak and is sent");
+            hostD.Stop(); cD.Stop(); await Pump(300, hostD, cD);
         }
 
         // static RPCs: no NetworkIdentity, routed via NetworkManager.main (host) / the client manager
