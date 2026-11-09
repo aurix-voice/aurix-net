@@ -51,6 +51,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   buttons in play mode), `NetworkIdentity` inspector (stable `sceneId` auto-assigned for scene
   objects from scene + hierarchy path, runtime owner/observers), menu "Aurix Net/Assign scene ids".
   Written against the public UnityEditor API but not yet run in an editor.
+- `NetworkBones`: replicates local pose of SkinnedMeshRenderer bones + extra bones (per-bone change mask,
+  quantised, smoothed on remotes) for ragdolls/procedural animation.
+- `NetworkAudioSource`: volume/pitch/loop/mute/spatial settings as sync vars, Play/Stop/Pause/UnPause/PlayOneShot
+  as RPCs, clips by index into a shared list.
 - `NetworkReflection`: replicate listed fields/properties of any component or plain object by name (change-mask
   deltas, full state to late joiners) and call its methods over the network via `Invoke(name, args)` with a
   Server/Observers/Target type per method.

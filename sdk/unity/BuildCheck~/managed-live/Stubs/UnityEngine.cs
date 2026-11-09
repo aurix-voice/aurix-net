@@ -5,9 +5,12 @@ namespace UnityEngine
 {
     public class Object { public string name; public static T Instantiate<T>(T o) where T : Object => o; public static void Destroy(Object o) { } }
     public class GameObject : Object { public T GetComponent<T>() where T : class => null; }
-    public class Component : Object { Transform _t; public Transform transform => _t ??= new Transform(); public GameObject gameObject = new GameObject(); public void GetComponentsInChildren<T>(bool inc, List<T> r) { } public T GetComponent<T>() where T : class => null; }
+    public class Component : Object { Transform _t; public Transform transform => _t ??= new Transform(); public GameObject gameObject = new GameObject(); public T[] GetComponentsInChildren<T>() => new T[0]; public void GetComponentsInChildren<T>(bool inc, List<T> r) { } public T GetComponent<T>() where T : class => null; }
     public class Rigidbody : Component { public Vector3 position, velocity, angularVelocity; public Quaternion rotation; public bool isKinematic; public void MovePosition(Vector3 p) { position = p; } public void MoveRotation(Quaternion q) { rotation = q; } }
     public enum AnimatorControllerParameterType { Float = 1, Int = 3, Bool = 4, Trigger = 9 }
+    public class AudioClip : Object { public string name; public float length = 1f; }
+    public class AudioSource : Component { public AudioClip clip; public float volume = 1f, pitch = 1f, spatialBlend, minDistance = 1f, maxDistance = 500f, time; public bool loop, mute, isPlaying; public AudioClip lastOneShot; public float lastOneShotScale; public void Play() { isPlaying = true; } public void Stop() { isPlaying = false; time = 0; } public void Pause() { isPlaying = false; } public void UnPause() { isPlaying = true; } public void PlayOneShot(AudioClip c, float scale = 1f) { lastOneShot = c; lastOneShotScale = scale; } }
+    public class SkinnedMeshRenderer : Component { public Transform[] bones = new Transform[0]; }
     public class AnimatorControllerParameter { public string name; public AnimatorControllerParameterType type; }
     public class Animator : Component { public AnimatorControllerParameter[] parameters = new AnimatorControllerParameter[0]; public float GetFloat(string n) => 0; public void SetFloat(string n, float v) { } public void SetFloat(string n, float v, float damp, float dt) { } public int GetInteger(string n) => 0; public void SetInteger(string n, int v) { } public bool GetBool(string n) => false; public void SetBool(string n, bool v) { } public void SetTrigger(string n) { } }
     public class RequireComponentAttribute : Attribute { public RequireComponentAttribute(Type t) { } }

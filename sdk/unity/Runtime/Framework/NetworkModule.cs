@@ -16,6 +16,7 @@ namespace Aurix.Net.Unity.Framework
         public NetworkIdentity identity => behaviour?.identity;
         public int index { get; private set; }
         public bool ownerAuth { get; protected set; }
+        internal void SetAuthority(bool ownerAuth) { this.ownerAuth = ownerAuth; }
         /// <summary>Owner-auth modules only: send to the owner and the server, not to other observers.</summary>
         public bool ownerOnly { get; protected set; }
         /// <summary>Owner-auth modules only: the server consumes the data and does not relay it to observers (inputs).</summary>

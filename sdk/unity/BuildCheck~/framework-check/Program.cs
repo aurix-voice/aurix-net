@@ -90,19 +90,21 @@ class Counter : NetworkBehaviour { public SyncVar<int> v = new SyncVar<int>(); }
 class LodBox : NetworkIdentity { public NetworkLOD lod = new NetworkLOD { evaluateIntervalTicks = 1 }; public Counter counter = new Counter(); public LodBox() { behaviours.Add(lod); behaviours.Add(counter); } }
 class Plain { public int hp = 5; public string title { get; set; } = "start"; public Vector3 pos; public int healed; public string lastWhisper; public void Heal(int n) { hp += n; healed++; } public void Whisper(string s) => lastWhisper = s; }
 class Reflected : NetworkIdentity { public Plain plain = new Plain(); public NetworkReflection refl; public Reflected() { refl = new NetworkReflection { trackedBehaviour = plain, trackedFields = { "hp", "title", "pos" }, trackedMethods = { new ReflectedMethod("Heal", ReflectionRpcType.Server), new ReflectedMethod("Whisper", ReflectionRpcType.Target) } }; behaviours.Add(refl); } }
+class Rig : NetworkIdentity { public Transform[] b = { new Transform(), new Transform(), new Transform() }; public NetworkBones bones; public Rig() { bones = new NetworkBones { extraBones = b, sendRate = 30, smoothing = 0 }; behaviours.Add(bones); } }
+class Speaker : NetworkIdentity { public AudioSource src = new AudioSource(); public NetworkAudioSource audio; public Speaker() { audio = new NetworkAudioSource { audioSource = src, clips = { new AudioClip { name = "a" }, new AudioClip { name = "b" } } }; behaviours.Add(audio); } }
 class Mover : NetworkIdentity { public NetworkTransform nt = new NetworkTransform { syncParent = true }; public Mover() { behaviours.Add(nt); } }
 
 class TestFactory : INetworkObjectFactory
 {
     public readonly List<TestIdentity> alive = new List<TestIdentity>();
     public readonly List<NetworkIdentity> all = new List<NetworkIdentity>();
-    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 6) { var rf = new Reflected(); all.Add(rf); return rf; } if (prefabId == 4) { var ph = new Phases(); all.Add(ph); return ph; } if (prefabId == 5) { var lb = new LodBox(); all.Add(lb); return lb; } if (prefabId == 3) { var tg = new Target(); all.Add(tg); return tg; } if (prefabId == 2) { var pw = new PawnIdentity(); all.Add(pw); return pw; } if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
+    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 7) { var rg = new Rig(); all.Add(rg); return rg; } if (prefabId == 8) { var sp = new Speaker(); all.Add(sp); return sp; } if (prefabId == 6) { var rf = new Reflected(); all.Add(rf); return rf; } if (prefabId == 4) { var ph = new Phases(); all.Add(ph); return ph; } if (prefabId == 5) { var lb = new LodBox(); all.Add(lb); return lb; } if (prefabId == 3) { var tg = new Target(); all.Add(tg); return tg; } if (prefabId == 2) { var pw = new PawnIdentity(); all.Add(pw); return pw; } if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
     public void Destroy(NetworkIdentity id) { all.Remove(id); if (id is TestIdentity t) alive.Remove(t); }
 }
 
 static class Program
 {
-    const int PH = 4, LB = 5, RF = 6;
+    const int PH = 4, LB = 5, RF = 6, RG = 7, SP = 8;
     static async Task<string> Grant(HttpClient h, string key, string pid)
     {
         var req = new HttpRequestMessage(HttpMethod.Post, "http://127.0.0.1:8090/v1/grants");
@@ -316,6 +318,29 @@ static class Program
             await Until(() => rfC2.plain.lastWhisper == "psst", 3000, hostR, cR, cR2);
             Check(rfC2.plain.lastWhisper == "psst" && rfC.plain.lastWhisper == null, "Target-type tracked method reached only the target");
             hostR.Stop(); cR.Stop(); cR2.Stop(); await Pump(300, hostR, cR, cR2);
+        }
+
+        // NetworkBones + NetworkAudioSource
+        {
+            var hostB = Make("hostB"); var cB = Make("cB"); hostB.roomName = cB.roomName = room + "-bones";
+            hostB.StartHost(); await Until(() => hostB.isServer, 8000, hostB);
+            var rig = (Rig)hostB.Spawn(RG); rig.b[0].localPosition = new Vector3(0, 1, 0); rig.b[2].localRotation = new Quaternion(0, 0.7071f, 0, 0.7071f);
+            var spk = (Speaker)hostB.Spawn(SP);
+            cB.StartClient(); await Until(() => cB.TryGetIdentity(rig.objectId, out _) && cB.TryGetIdentity(spk.objectId, out _), 8000, hostB, cB);
+            cB.TryGetIdentity(rig.objectId, out var rigC1); var rigC = (Rig)rigC1; cB.TryGetIdentity(spk.objectId, out var spkC1); var spkC = (Speaker)spkC1;
+            Check(rigC.bones.boneCount == 3 && Vector3.Distance(rigC.b[0].localPosition, new Vector3(0, 1, 0)) < 0.02f && Quaternion.Angle(rigC.b[2].localRotation, rig.b[2].localRotation) < 1f, $"bones full pose on spawn ({rigC.bones.boneCount} bones)");
+            rig.b[1].localPosition = new Vector3(2, 3, 4);
+            await Until(() => Vector3.Distance(rigC.b[1].localPosition, new Vector3(2, 3, 4)) < 0.02f, 3000, hostB, cB);
+            Check(Vector3.Distance(rigC.b[1].localPosition, new Vector3(2, 3, 4)) < 0.02f && Vector3.Distance(rigC.b[0].localPosition, new Vector3(0, 1, 0)) < 0.02f, "moved bone delta replicated, untouched bone kept");
+            spk.audio.volume.value = 0.3f; spk.audio.loop.value = true; spk.audio.Play(1);
+            await Until(() => spkC.src.isPlaying && spkC.src.clip != null, 3000, hostB, cB);
+            Check(spkC.src.isPlaying && spkC.src.clip.name == "b" && Math.Abs(spkC.src.volume - 0.3f) < 0.001f && spkC.src.loop, $"audio: Play(clip b) + settings replicated (vol {spkC.src.volume})");
+            spk.audio.PlayOneShot(0, 0.5f);
+            await Until(() => spkC.src.lastOneShot != null, 3000, hostB, cB);
+            Check(spkC.src.lastOneShot.name == "a" && spkC.src.lastOneShotScale == 0.5f && spk.src.lastOneShot.name == "a", "one-shot ran on host and client");
+            spk.audio.Stop(); await Until(() => !spkC.src.isPlaying, 3000, hostB, cB);
+            Check(!spkC.src.isPlaying && !spkC.audio.isPlaying, "Stop replicated");
+            hostB.Stop(); cB.Stop(); await Pump(300, hostB, cB);
         }
 
         // static RPCs: no NetworkIdentity, routed via NetworkManager.main (host) / the client manager
