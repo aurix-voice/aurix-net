@@ -13,9 +13,9 @@ namespace Aurix.Net.Unity.Framework
     /// <summary>Module carrying one transform sample per tick; interpolation lives in <see cref="NetworkTransform"/>.</summary>
     public sealed class TransformSync : NetworkModule
     {
-        public struct Sample { public uint tick; public Vector3 pos; public Quaternion rot; public Vector3 scale; }
+        public struct Sample { public uint tick; public Vector3 pos; public Quaternion rot; public Vector3 scale; public uint parent; }
         public Sample current;
-        public bool syncPosition = true, syncRotation = true, syncScale;
+        public bool syncPosition = true, syncRotation = true, syncScale, syncParent;
         public float positionResolution = 0.001f, positionRange = 8192f;
         public readonly List<Sample> buffer = new List<Sample>(16);
         public event System.Action<Sample> onSample;
@@ -24,10 +24,10 @@ namespace Aurix.Net.Unity.Framework
         public TransformSync(bool ownerAuth = true, float sendInterval = 0f) { this.ownerAuth = ownerAuth; sendIntervalInSeconds = sendInterval; }
 
         /// <summary>Controller side: record the current transform; marks dirty when something moved.</summary>
-        public void Set(Vector3 pos, Quaternion rot, Vector3 scale)
+        public void Set(Vector3 pos, Quaternion rot, Vector3 scale, uint parent = 0)
         {
-            current.pos = pos; current.rot = rot; current.scale = scale;
-            if (!_sentOnce || (syncPosition && pos != _lastSent.pos) || (syncRotation && Quaternion.Angle(rot, _lastSent.rot) > 0.01f) || (syncScale && scale != _lastSent.scale)) isDirty = true;
+            current.pos = pos; current.rot = rot; current.scale = scale; current.parent = parent;
+            if (!_sentOnce || (syncPosition && pos != _lastSent.pos) || (syncRotation && Quaternion.Angle(rot, _lastSent.rot) > 0.01f) || (syncScale && scale != _lastSent.scale) || (syncParent && parent != _lastSent.parent)) isDirty = true;
         }
 
         public override void WriteFull(BitWriter w) => WriteSample(w, current, true);
@@ -45,7 +45,9 @@ namespace Aurix.Net.Unity.Framework
         void WriteSample(BitWriter w, in Sample s, bool full)
         {
             bool p = syncPosition && (full || s.pos != _lastSent.pos), q = syncRotation && (full || Quaternion.Angle(s.rot, _lastSent.rot) > 0.01f), sc = syncScale && (full || s.scale != _lastSent.scale);
-            w.WriteBool(p); w.WriteBool(q); w.WriteBool(sc);
+            bool pa = syncParent && (full || s.parent != _lastSent.parent);
+            w.WriteBool(p); w.WriteBool(q); w.WriteBool(sc); w.WriteBool(pa);
+            if (pa) w.WriteBits(s.parent, 32);
             if (p) { w.WriteQuantized(s.pos.x, -positionRange, positionRange, positionResolution); w.WriteQuantized(s.pos.y, -positionRange, positionRange, positionResolution); w.WriteQuantized(s.pos.z, -positionRange, positionRange, positionResolution); }
             if (q) WriteQuat(w, s.rot);
             if (sc) { w.WriteF32(s.scale.x); w.WriteF32(s.scale.y); w.WriteF32(s.scale.z); }
@@ -53,7 +55,8 @@ namespace Aurix.Net.Unity.Framework
 
         void ReadSample(BitReader r, ref Sample s, bool full)
         {
-            bool p = r.ReadBool(), q = r.ReadBool(), sc = r.ReadBool();
+            bool p = r.ReadBool(), q = r.ReadBool(), sc = r.ReadBool(), pa = r.ReadBool();
+            if (pa) s.parent = (uint)r.ReadBits(32);
             if (p) s.pos = new Vector3(r.ReadQuantized(-positionRange, positionRange, positionResolution), r.ReadQuantized(-positionRange, positionRange, positionResolution), r.ReadQuantized(-positionRange, positionRange, positionResolution));
             if (q) s.rot = ReadQuat(r);
             if (sc) s.scale = new Vector3(r.ReadF32(), r.ReadF32(), r.ReadF32());
@@ -82,6 +85,9 @@ namespace Aurix.Net.Unity.Framework
         [Tooltip("Who drives the transform: the owner (true) or the server (false).")] public bool ownerAuth = true;
         public SyncMode syncPosition = SyncMode.World, syncRotation = SyncMode.World;
         public bool syncScale;
+        [Tooltip("Replicate the parent NetworkIdentity: remotes re-parent and the pose is sent in the parent's local space while attached.")] public bool syncParent;
+        /// <summary>Controller: the networked parent this object is attached to (null = none / a non-networked parent).</summary>
+        public NetworkIdentity parentIdentity { get; private set; }
         [Tooltip("Sends per second from the controller (0 = every network tick).")] public float sendRate;
         [Tooltip("Remote copies render this many ticks behind the newest sample.")] public float interpolationTicks = 2f;
         [Tooltip("Snap instead of interpolating when the remote jumped farther than this.")] public float teleportDistance = 5f;
@@ -100,7 +106,7 @@ namespace Aurix.Net.Unity.Framework
         void EnsureSync()
         {
             if (sync != null) return;
-            sync = new TransformSync(ownerAuth, sendRate > 0 ? 1f / sendRate : 0f) { syncPosition = syncPosition != SyncMode.No, syncRotation = syncRotation != SyncMode.No, syncScale = syncScale, positionResolution = positionResolution, positionRange = positionRange };
+            sync = new TransformSync(ownerAuth, sendRate > 0 ? 1f / sendRate : 0f) { syncPosition = syncPosition != SyncMode.No, syncRotation = syncRotation != SyncMode.No, syncScale = syncScale, syncParent = syncParent, positionResolution = positionResolution, positionRange = positionRange };
             Sample();
             sync.onSample += s => { if (!isController && sync.buffer.Count > 1 && Vector3.Distance(sync.buffer[sync.buffer.Count - 2].pos, s.pos) > teleportDistance) { sync.buffer.RemoveRange(0, sync.buffer.Count - 1); _render = s.tick; } _newest = s.tick; };
         }
@@ -126,17 +132,39 @@ namespace Aurix.Net.Unity.Framework
             Interpolate(dt);
         }
 
+        /// <summary>Controller: attach to another networked object (or detach with null); replicated when syncParent is on.</summary>
+        public void SetParent(NetworkIdentity parent, bool worldPositionStays = true)
+        {
+            parentIdentity = parent;
+            transform.SetParent(parent != null ? parent.transform : null, worldPositionStays);
+            Sample();
+        }
+
+        bool attached => syncParent && parentIdentity != null;
+
         void Sample()
         {
             var t = transform;
-            sync.Set(syncPosition == SyncMode.Local ? t.localPosition : t.position, syncRotation == SyncMode.Local ? t.localRotation : t.rotation, t.localScale);
+            bool local = attached;
+            sync.Set(syncPosition == SyncMode.Local || local ? t.localPosition : t.position, syncRotation == SyncMode.Local || local ? t.localRotation : t.rotation, t.localScale, attached ? parentIdentity.objectId : 0);
         }
+
+        uint _appliedParent;
 
         protected virtual void Apply(Vector3 pos, Quaternion rot, Vector3 scale)
         {
             var t = transform;
-            if (syncPosition == SyncMode.World) t.position = pos; else if (syncPosition == SyncMode.Local) t.localPosition = pos;
-            if (syncRotation == SyncMode.World) t.rotation = rot; else if (syncRotation == SyncMode.Local) t.localRotation = rot;
+            if (syncParent && sync.current.parent != _appliedParent)
+            {
+                _appliedParent = sync.current.parent;
+                NetworkIdentity p = null;
+                if (_appliedParent != 0 && networkManager != null && !networkManager.TryGetIdentity(_appliedParent, out p)) p = null;
+                parentIdentity = p;
+                t.SetParent(p != null ? p.transform : null, false);
+            }
+            bool local = syncParent && _appliedParent != 0;
+            if (syncPosition == SyncMode.World && !local) t.position = pos; else if (syncPosition != SyncMode.No) t.localPosition = pos;
+            if (syncRotation == SyncMode.World && !local) t.rotation = rot; else if (syncRotation != SyncMode.No) t.localRotation = rot;
             if (syncScale) t.localScale = scale;
         }
 

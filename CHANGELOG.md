@@ -51,6 +51,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   buttons in play mode), `NetworkIdentity` inspector (stable `sceneId` auto-assigned for scene
   objects from scene + hierarchy path, runtime owner/observers), menu "Aurix Net/Assign scene ids".
   Written against the public UnityEditor API but not yet run in an editor.
+- `NetworkTransform.syncParent` + `SetParent(NetworkIdentity)`: the parent object id travels with the
+  pose, remotes re-parent and apply the pose in the parent's local space while attached.
 - Static RPCs: `[ServerRpc]`/`[ObserversRpc]`/`[TargetRpc]` on static methods of any class, routed via
   `NetworkManager.main` (the active manager; `SetMain` to pick one); identified on the wire by an FNV-1a
   hash of type/method/arg-count so the weaver and runtime agree across assemblies; `bufferLast` replays

@@ -83,7 +83,7 @@ static class Chat
     [ObserversRpc(bufferLast: true)] public static void Motd(string text) { clientLog.Add("motd:" + text); }
 }
 class Target : NetworkIdentity { public ColliderRollback cr = new ColliderRollback(); public Target() { behaviours.Add(cr); } }
-class Mover : NetworkIdentity { public NetworkTransform nt = new NetworkTransform(); public Mover() { behaviours.Add(nt); } }
+class Mover : NetworkIdentity { public NetworkTransform nt = new NetworkTransform { syncParent = true }; public Mover() { behaviours.Add(nt); } }
 
 class TestFactory : INetworkObjectFactory
 {
@@ -222,6 +222,24 @@ static class Program
             await Until(() => pc.timer.finished && px.player.timer.finished, 3000, hostX, cX);
             Check(pc.timer.finished && px.player.timer.finished, "SyncTimer finished on both sides from the server tick");
             hostX.Stop(); cX.Stop(); await Pump(300, hostX, cX);
+        }
+
+        // NetworkTransform parent sync: child attached to a networked parent replicates the parent + local pose
+        {
+            var hostP = Make("hostP"); var cP = Make("cP"); hostP.roomName = cP.roomName = room + "-parent";
+            hostP.StartHost(); await Until(() => hostP.isServer, 8000, hostP);
+            var pa = (Mover)hostP.Spawn(1); var ch = (Mover)hostP.Spawn(1);
+            pa.nt.transform.position = new Vector3(10, 0, 0);
+            ch.nt.SetParent(pa); ch.nt.transform.localPosition = new Vector3(1, 2, 3);
+            cP.StartClient(); await Until(() => cP.TryGetIdentity(ch.objectId, out _) && cP.TryGetIdentity(pa.objectId, out _), 8000, hostP, cP);
+            await Pump(400, hostP, cP);
+            cP.TryGetIdentity(pa.objectId, out var cpa); cP.TryGetIdentity(ch.objectId, out var cch);
+            var cnt = ((Mover)cch).nt;
+            Check(cnt.transform.parent == cpa.transform && cnt.parentIdentity == cpa && Vector3.Distance(cnt.transform.localPosition, new Vector3(1, 2, 3)) < 0.01f, $"late joiner re-parents the child under the networked parent with the local pose ({cnt.transform.localPosition.x},{cnt.transform.localPosition.y},{cnt.transform.localPosition.z})");
+            ch.nt.SetParent(null); ch.nt.transform.position = new Vector3(5, 5, 5);
+            for (int i = 0; i < 40; i++) { hostP.NetworkUpdate(0.01f); cP.NetworkUpdate(0.01f); cnt.RenderUpdate(0.01f); await Task.Delay(10); }
+            Check(cnt.transform.parent == null && cnt.parentIdentity == null && Vector3.Distance(cnt.transform.position, new Vector3(5, 5, 5)) < 0.01f, "detach replicates: parent cleared, world pose follows");
+            hostP.Stop(); cP.Stop(); await Pump(300, hostP, cP);
         }
 
         // static RPCs: no NetworkIdentity, routed via NetworkManager.main (host) / the client manager
