@@ -35,7 +35,7 @@ namespace Aurix.Net.Unity.Framework
     [DefaultExecutionOrder(-100)]
     public sealed class NetworkManager : MonoBehaviour
     {
-        enum Msg : byte { Hello = 1, Welcome, PlayerJoined, PlayerLeft, Spawn, Despawn, Owner, Sync, Rpc, ViewTick, ServerTick }
+        enum Msg : byte { Hello = 1, Welcome, PlayerJoined, PlayerLeft, Spawn, Despawn, Owner, Sync, Rpc, ViewTick, ServerTick, StaticRpc }
         const byte Version = 1;
 
         [Header("Aurix Net")]
@@ -84,6 +84,8 @@ namespace Aurix.Net.Unity.Framework
         public int visibilityIntervalTicks = 5;
 
         public static NetworkManager main { get; private set; }
+        /// <summary>Static RPCs route through <see cref="main"/> (the first manager created, or the one set here).</summary>
+        public static void SetMain(NetworkManager m) => main = m;
 
         public bool isServer { get; private set; }
         public bool isClient { get; private set; }
@@ -190,6 +192,7 @@ namespace Aurix.Net.Unity.Framework
 
         void ServerStarted(RelayBridge b, bool withLocalPlayer)
         {
+            if (main == null || main == this || (!main.isServer && !main.isClient)) main = this;
             isServer = true; isClient = withLocalPlayer; localPlayer = serverPlayer = new PlayerID((ushort)b.LocalActor); if (withLocalPlayer) _players.Add(localPlayer.Value);
             foreach (var a in b.Peers) { var p = new PlayerID((ushort)a); if (!_players.Contains(p)) _players.Add(p); }
             foreach (var so in _sceneObjects.Values) SpawnExisting(so, -1, null);
@@ -204,6 +207,7 @@ namespace Aurix.Net.Unity.Framework
 
         void ClientStarted(RelayBridge b)
         {
+            if (main == null || main == this || (!main.isServer && !main.isClient)) main = this;
             isClient = true; localPlayer = new PlayerID((ushort)b.LocalActor); serverPlayer = new PlayerID((ushort)b.MasterActor);
             Send(-1, Msg.Hello, w => w.WriteBits(Version, 8));   // our data path is up: ask for the world
         }
@@ -330,6 +334,7 @@ namespace Aurix.Net.Unity.Framework
                 w.WriteUInt((ulong)_players.Count, 16); foreach (var x in _players) w.WriteBits(x.id, 16);
             });
             foreach (var id in _ids.Values) if (CanSee(p, id)) { id.AddObserver(p); Send(p.id, Msg.Spawn, w => WriteSpawn(w, id)); SendBuffered(p, id); }
+            foreach (var kv in _staticBuffered) { var sr = StaticRpcs.Find(kv.Key); if (sr != null) Send(p.id, Msg.StaticRpc, w => WriteStaticRpc(w, sr, kv.Value)); }
         }
 
         void SendBuffered(PlayerID p, NetworkIdentity id)
@@ -455,6 +460,58 @@ namespace Aurix.Net.Unity.Framework
             return true;
         }
 
+        // ---- static RPCs (woven prologue calls these) ----
+        /// <summary>Routes a static RPC through NetworkManager.main. Returns true when the body must NOT run locally.</summary>
+        public static bool __StaticRpcSend(uint hash, object[] args)
+        {
+            var m = main; if (m == null || (!m.isServer && !m.isClient)) return false;
+            var r = StaticRpcs.Find(hash); if (r == null) return false;
+            return m.SendStaticRpc(r, args);
+        }
+
+        public static RpcInfo __StaticLocalInfo() => main == null ? default : new RpcInfo(main.localPlayer ?? default, main.isServer);
+
+        bool SendStaticRpc(StaticRpcMethod r, object[] args)
+        {
+            string name = r.method.DeclaringType.Name + "." + r.method.Name;
+            switch (r.attr.kind)
+            {
+                case RpcKind.Server:
+                {
+                    var a = (ServerRpcAttribute)r.attr;
+                    if (isServer) return false;
+                    var bytes = PackStatic(r, args);
+                    Send(-1, Msg.StaticRpc, w => WriteStaticRpc(w, r, bytes));
+                    return !a.runLocally;
+                }
+                case RpcKind.Observers:
+                {
+                    var a = (ObserversRpcAttribute)r.attr;
+                    if (!isServer) { Debug.LogWarning($"{name}: ObserversRpc may only be called on the server"); return true; }
+                    var bytes = PackStatic(r, args);
+                    foreach (var p in _players) if (p != localPlayer) Send(p.id, Msg.StaticRpc, w => WriteStaticRpc(w, r, bytes));
+                    if (a.bufferLast) _staticBuffered[r.hash] = bytes;
+                    return !(isClient && a.runLocally);
+                }
+                case RpcKind.Target:
+                {
+                    var a = (TargetRpcAttribute)r.attr;
+                    if (!isServer) { Debug.LogWarning($"{name}: TargetRpc may only be called on the server"); return true; }
+                    if (!(args.Length > 0 && args[0] is PlayerID target)) { Debug.LogWarning($"{name}: TargetRpc needs a PlayerID first parameter"); return true; }
+                    if (target == localPlayer) return !(isClient && a.runLocally);
+                    if (!_players.Contains(target)) { Debug.LogWarning($"{name}: {target} is not in the room"); return true; }
+                    var bytes = PackStatic(r, args);
+                    Send(target.id, Msg.StaticRpc, w => WriteStaticRpc(w, r, bytes));
+                    return true;
+                }
+            }
+            return true;
+        }
+
+        readonly Dictionary<uint, byte[]> _staticBuffered = new Dictionary<uint, byte[]>();
+        static byte[] PackStatic(StaticRpcMethod r, object[] args) { var body = new BitWriter(); StaticRpcs.WriteArgs(body, r, args); return body.Finish(); }
+        void WriteStaticRpc(BitWriter w, StaticRpcMethod r, byte[] bytes) { w.WriteBits(r.hash, 32); w.WriteBits(localPlayer?.id ?? 0, 16); w.WriteUInt((ulong)bytes.Length, 16); w.WriteBytes(bytes); }
+
         static byte[] Pack(NetworkBehaviour b, RpcMethod r, object[] args) { var body = new BitWriter(); b.WriteArgs(body, r, args); return body.Finish(); }
         void WriteRpc(BitWriter w, NetworkIdentity id, NetworkBehaviour b, RpcMethod r, byte[] bytes) { w.WriteBits(id.objectId, 32); w.WriteBits((ulong)b.componentIndex, 8); w.WriteBits(r.index, 8); w.WriteBits(localPlayer.Value.id, 16); w.WriteUInt((ulong)bytes.Length, 16); w.WriteBytes(bytes); }
 
@@ -525,6 +582,13 @@ namespace Aurix.Net.Unity.Framework
             {
                 switch (kind)
                 {
+                    case Msg.StaticRpc:
+                    {
+                        uint h = (uint)r.ReadBits(32); r.ReadBits(16); var bytes = r.ReadBytes((int)r.ReadUInt(16));
+                        var sr = StaticRpcs.Find(h); if (sr == null || sr.attr.kind != RpcKind.Server) return;
+                        StaticRpcs.Invoke(sr, new BitReader(bytes), new RpcInfo(from, true));
+                        return;
+                    }
                     case Msg.ViewTick: { uint vt = (uint)r.ReadBits(32); if (vt <= serverTick) _viewTicks[from] = vt; return; }
                     case Msg.Hello: if (r.ReadBits(8) == Version && _players.Contains(from)) SendWelcome(from); else Debug.LogWarning($"[AurixNet] hello from {from} with another protocol version"); return;
                     case Msg.Sync: { var (id, b, m) = ReadModuleRef(r); r.ReadBits(32); var bytes = r.ReadBytes((int)r.ReadUInt(16)); if (id == null || !m.ownerAuth || id.owner != from) return; m.lastReceivedTick = tick; m.ReadDelta(new BitReader(bytes)); m.ClearDirty();
@@ -550,6 +614,13 @@ namespace Aurix.Net.Unity.Framework
                     if (r.ReadBits(8) != Version) { onError?.Invoke("protocol version mismatch"); Stop(); return; }
                     tick = serverTick = (uint)r.ReadBits(32); r.ReadBits(16);
                     _players.Clear(); int n = (int)r.ReadUInt(16); for (int i = 0; i < n; i++) _players.Add(new PlayerID((ushort)r.ReadBits(16)));
+                    return;
+                }
+                case Msg.StaticRpc:
+                {
+                    uint h = (uint)r.ReadBits(32); var sender = new PlayerID((ushort)r.ReadBits(16)); var bytes = r.ReadBytes((int)r.ReadUInt(16));
+                    var sr = StaticRpcs.Find(h); if (sr == null || sr.attr.kind == RpcKind.Server) return;
+                    StaticRpcs.Invoke(sr, new BitReader(bytes), new RpcInfo(sender, false));
                     return;
                 }
                 case Msg.ServerTick: { uint st = (uint)r.ReadBits(32); if (st > serverTick) serverTick = st; return; }

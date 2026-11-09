@@ -23,6 +23,7 @@ namespace Aurix.Net.Weaver
         public const string RpcInfoType = "Aurix.Net.Unity.Framework.RpcInfo";
         public const string ImplSuffix = "__Impl";
         public const string MarkerType = "AurixNetWoven";
+        public const string ManagerType = "Aurix.Net.Unity.Framework.NetworkManager";
 
         public sealed class Result { public int Methods; public List<string> Diagnostics = new List<string>(); public bool Changed => Methods > 0; internal readonly Dictionary<MethodDefinition, MethodDefinition> Redirect = new Dictionary<MethodDefinition, MethodDefinition>(); }
 
@@ -32,7 +33,17 @@ namespace Aurix.Net.Weaver
             var res = new Result();
             if (module.Types.Any(t => t.Name == MarkerType)) { res.Diagnostics.Add("already woven"); return res; }
             var behaviours = module.GetTypes().Where(t => t.IsClass && !t.IsAbstract || t.IsClass).Where(t => DerivesFrom(t, BehaviourType)).ToList();
-            if (behaviours.Count == 0) return res;
+            var statics = module.GetTypes().SelectMany(t => t.Methods).Where(m => m.IsStatic && !m.IsConstructor && HasRpcAttribute(m) && !m.Name.EndsWith(ImplSuffix)).ToList();
+            foreach (var m in statics)
+            {
+                if (m.Body == null) { res.Diagnostics.Add($"{m.DeclaringType.FullName}.{m.Name}: no body"); continue; }
+                if (m.ReturnType.MetadataType != MetadataType.Void) { res.Diagnostics.Add($"{m.DeclaringType.FullName}.{m.Name}: RPC methods must return void"); continue; }
+                bool info = m.Parameters.Count > 0 && m.Parameters[m.Parameters.Count - 1].ParameterType.FullName == RpcInfoType;
+                int argc = info ? m.Parameters.Count - 1 : m.Parameters.Count;
+                WeaveStatic(m, StaticHash(m.DeclaringType.FullName, m.Name, argc), info, res);
+                res.Methods++;
+            }
+            if (behaviours.Count == 0 && res.Methods == 0) return res;
             foreach (var t in behaviours)
             {
                 foreach (var entry in RpcIndex(t))
@@ -136,6 +147,74 @@ namespace Aurix.Net.Weaver
             il.Emit(OpCodes.Ret);
             body.InitLocals = true;
             body.OptimizeMacros();
+        }
+
+        /// <summary>Same as StaticRpcs.Hash: FNV-1a over "Type.FullName::Method/argCount".</summary>
+        public static uint StaticHash(string typeFullName, string method, int argCount)
+        {
+            uint h = 2166136261;
+            foreach (char c in typeFullName + "::" + method + "/" + argCount) { h ^= c; h *= 16777619; }
+            return h;
+        }
+
+        static void WeaveStatic(MethodDefinition m, uint hash, bool wantsInfo, Result res)
+        {
+            var type = m.DeclaringType; var module = m.Module;
+            if (type.Methods.Any(x => x.Name == m.Name + ImplSuffix && x.Parameters.Count == m.Parameters.Count)) return;
+            var manager = FindManager(module);
+            if (manager == null) { res.Diagnostics.Add($"{type.FullName}.{m.Name}: NetworkManager type not found"); return; }
+
+            var impl = m;
+            var fresh = new MethodDefinition(m.Name, m.Attributes, m.ReturnType);
+            foreach (var p in m.Parameters) fresh.Parameters.Add(new ParameterDefinition(p.Name, p.Attributes, p.ParameterType) { Constant = p.HasConstant ? p.Constant : null });
+            foreach (var a in m.CustomAttributes) fresh.CustomAttributes.Add(a);
+            m.CustomAttributes.Clear();
+            m.Name = m.Name + ImplSuffix;
+            m.Attributes = (m.Attributes & ~MethodAttributes.MemberAccessMask) | MethodAttributes.Private;
+            type.Methods.Add(fresh);
+            res.Redirect[impl] = fresh;
+            m = fresh;
+
+            var body = m.Body = new MethodBody(m);
+            var il = body.GetILProcessor();
+            var send = module.ImportReference(manager.Methods.First(x => x.Name == "__StaticRpcSend"));
+            var localInfo = module.ImportReference(manager.Methods.First(x => x.Name == "__StaticLocalInfo"));
+            var objType = module.TypeSystem.Object;
+            int n = wantsInfo ? m.Parameters.Count - 1 : m.Parameters.Count;
+
+            il.Emit(OpCodes.Ldc_I4, unchecked((int)hash));
+            il.Emit(OpCodes.Ldc_I4, n);
+            il.Emit(OpCodes.Newarr, objType);
+            for (int i = 0; i < n; i++)
+            {
+                il.Emit(OpCodes.Dup);
+                il.Emit(OpCodes.Ldc_I4, i);
+                il.Emit(OpCodes.Ldarg, m.Parameters[i]);
+                var pt = m.Parameters[i].ParameterType;
+                if (pt.IsValueType || pt.IsGenericParameter) il.Emit(OpCodes.Box, pt);
+                il.Emit(OpCodes.Stelem_Ref);
+            }
+            il.Emit(OpCodes.Call, send);
+            var runBody = il.Create(OpCodes.Nop);
+            il.Emit(OpCodes.Brfalse, runBody);
+            il.Emit(OpCodes.Ret);
+            il.Append(runBody);
+            for (int i = 0; i < n; i++) il.Emit(OpCodes.Ldarg, m.Parameters[i]);
+            if (wantsInfo) il.Emit(OpCodes.Call, localInfo);
+            il.Emit(OpCodes.Call, impl);
+            il.Emit(OpCodes.Ret);
+            body.InitLocals = true;
+            body.OptimizeMacros();
+        }
+
+        static TypeDefinition FindManager(ModuleDefinition module)
+        {
+            var own = module.GetType(ManagerType); if (own != null) return own;
+            foreach (var ar in module.AssemblyReferences)
+            {
+                try { var t = module.AssemblyResolver.Resolve(ar).MainModule.GetType(ManagerType); if (t != null) return t; } catch { }
+            }
+            return null;
         }
 
         static MethodReference FindMethod(TypeDefinition t, string name)

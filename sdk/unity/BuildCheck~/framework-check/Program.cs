@@ -74,6 +74,14 @@ class Pawn : PredictedBehaviour<MoveInput, MoveState>
 }
 class PawnIdentity : NetworkIdentity { public Pawn pawn = new Pawn(); public PawnIdentity() { behaviours.Add(pawn); } }
 class TestIdentity : NetworkIdentity { public Player player = new Player(); public TestIdentity() { behaviours.Add(player); } }
+static class Chat
+{
+    public static readonly List<string> serverLog = new List<string>(), clientLog = new List<string>(), whispers = new List<string>();
+    [ServerRpc] public static void Say(string text, RpcInfo info = default) { serverLog.Add(info.sender + ":" + text); }
+    [ObserversRpc] public static void Announce(string text) { clientLog.Add(text); }
+    [TargetRpc] public static void Whisper(PlayerID to, string text) { whispers.Add(to + "<" + text); }
+    [ObserversRpc(bufferLast: true)] public static void Motd(string text) { clientLog.Add("motd:" + text); }
+}
 class Target : NetworkIdentity { public ColliderRollback cr = new ColliderRollback(); public Target() { behaviours.Add(cr); } }
 class Mover : NetworkIdentity { public NetworkTransform nt = new NetworkTransform(); public Mover() { behaviours.Add(nt); } }
 
@@ -214,6 +222,28 @@ static class Program
             await Until(() => pc.timer.finished && px.player.timer.finished, 3000, hostX, cX);
             Check(pc.timer.finished && px.player.timer.finished, "SyncTimer finished on both sides from the server tick");
             hostX.Stop(); cX.Stop(); await Pump(300, hostX, cX);
+        }
+
+        // static RPCs: no NetworkIdentity, routed via NetworkManager.main (host) / the client manager
+        {
+            // NetworkManager.main is whichever manager started last in this process; make the client "main" to send, then the host to receive
+            Check(typeof(Chat).GetMethod("Say__Impl", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic) != null, "static RPC woven (Say__Impl present)");
+            var hostS = Make("hostS"); var cS = Make("cS"); hostS.roomName = cS.roomName = room + "-static";
+            hostS.StartHost(); await Until(() => hostS.isServer, 8000, hostS);
+            NetworkManager.SetMain(hostS);   // several managers live in this process; a Unity game has one
+            Chat.Motd("welcome"); Chat.clientLog.Clear();  // buffered before the client exists
+            cS.StartClient(); await Until(() => cS.isClient && hostS.players.Count == 2, 8000, hostS, cS);
+            await Pump(300, hostS, cS);
+            Check(Chat.clientLog.Contains("motd:welcome"), "late joiner gets bufferLast static ObserversRpc");
+            NetworkManager.SetMain(cS); Chat.Say("hi from client");
+            await Until(() => Chat.serverLog.Count > 0, 3000, hostS, cS);
+            Check(Chat.serverLog.Count == 1 && Chat.serverLog[0] == cS.localPlayer + ":hi from client", $"static ServerRpc reached the host with the sender ({string.Join(",", Chat.serverLog)})");
+            NetworkManager.SetMain(hostS);
+            Chat.Announce("round 2"); Chat.Whisper(cS.localPlayer.Value, "psst"); Chat.Whisper(hostS.localPlayer.Value, "self");
+            await Until(() => Chat.clientLog.Contains("round 2") && Chat.whispers.Count >= 2, 3000, hostS, cS);
+            Check(Chat.clientLog.Count(x => x == "round 2") == 2 && Chat.whispers.Contains(cS.localPlayer + "<psst") && Chat.whispers.Contains(hostS.localPlayer + "<self") && Chat.whispers.Count == 2,
+                $"static ObserversRpc ran on host+client, static TargetRpc on the target only (whispers {string.Join(",", Chat.whispers)})");
+            hostS.Stop(); cS.Stop(); await Pump(300, hostS, cS);
         }
 
         // Lag compensation: server rewinds ColliderRollback poses to the shooter's view tick
