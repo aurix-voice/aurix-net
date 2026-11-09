@@ -284,7 +284,8 @@ static class Program
             Check(box.lod.GetTier(cN.localPlayer.Value) == 0 && box.lod.IsCulled(cF.localPlayer.Value), $"tiers: near={box.lod.GetTier(cN.localPlayer.Value)} far culled");
             int before = ((LodBox)bF).counter.v.value;
             for (int i = 0; i < 20; i++) { box.counter.v.value++; await Pump(30, hostL, cN, cF); }
-            Check(((LodBox)bN).counter.v.value == box.counter.v.value && ((LodBox)bF).counter.v.value == before && box.IsObserver(cF.localPlayer.Value), $"near client follows ({((LodBox)bN).counter.v.value}), culled client frozen at {before} but still observes");
+            await Pump(300, hostL, cN, cF);
+            Check(((LodBox)bN).counter.v.value == box.counter.v.value && ((LodBox)bF).counter.v.value == before && box.IsObserver(cF.localPlayer.Value), $"near client follows ({((LodBox)bN).counter.v.value}), culled client frozen at {before} (now {((LodBox)bF).counter.v.value}) but still observes");
             avF.transform.position = new Vector3(8, 0, 0); await Pump(300, hostL, cN, cF);
             box.counter.v.value++; await Until(() => ((LodBox)bF).counter.v.value == box.counter.v.value, 3000, hostL, cN, cF);
             Check(box.lod.GetTier(cF.localPlayer.Value) == 0 && ((LodBox)bF).counter.v.value == box.counter.v.value, "far player moved close: tier 0 and deltas resume");

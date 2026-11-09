@@ -52,7 +52,7 @@ namespace Aurix.Net.Unity.Framework
         public List<StateNode> states = new List<StateNode>();
 
         public event Action<StateNode, StateNode> onStateChanged;
-        public int currentStateId => _sync.value.id;
+        public int currentStateId => _sync == null ? -1 : _sync.value.id;
         public int previousStateId { get; private set; } = -1;
         public StateNode currentStateNode => currentStateId >= 0 && currentStateId < states.Count ? states[currentStateId] : null;
         public StateNode previousStateNode => previousStateId >= 0 && previousStateId < states.Count ? states[previousStateId] : null;
@@ -65,12 +65,12 @@ namespace Aurix.Net.Unity.Framework
             public bool Equals(State o) => id == o.id && seq == o.seq;
         }
 
-        readonly SyncVar<State> _sync = new SyncVar<State>(new State { id = -1 });
+        SyncVar<State> _sync;
         int _applied = -1; uint _appliedSeq;
 
         protected override void OnBeforeBind()
         {
-            _sync.ownerAuth = ownerAuth;
+            _sync = new SyncVar<State>(new State { id = -1 }, 0f, ownerAuth);
             foreach (var s in states) if (s != null) s.machine = this;
             _sync.onChanged += _ => ApplyIncoming();
         }
@@ -116,6 +116,7 @@ namespace Aurix.Net.Unity.Framework
 
         void ApplyIncoming()
         {
+            if (_sync == null) return;
             var st = _sync.value;
             if (st.id == _applied && st.seq == _appliedSeq) return;
             bool asServer = isServer;
