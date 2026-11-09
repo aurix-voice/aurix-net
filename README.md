@@ -50,12 +50,11 @@ Two roles run it: the **operator** (whoever hosts the nodes — sets quotas, dra
 
 Clients open a WebSocket (`/ws`) for control (JSON), authenticate with a grant issued by the developer's backend (`POST /v1/grants` with an API key), and join a room. The server answers with a data endpoint (host, QUIC port, certificate fingerprint, 30-second ticket). The client connects over QUIC, sends the ticket as the first datagram, and from then on game events travel as datagrams on three channels; small unreliable messages are coalesced per datagram. Where UDP is blocked the same datagrams ride as binary WebSocket frames.
 
-## Licence
-
-Server crates AGPL-3.0-only; `net-common` and `net-transport` Apache-2.0 so clients and SDKs can embed them.
-
 ## License
 
-[AGPL-3.0-only](LICENSE): run it, change it, self-host it; if you offer a modified node as a
-service, publish the changes. SDKs you embed in a game talk to the node over the network and are
-not affected by the AGPL's network clause the way the server is — see the file for the terms.
+Two licences, by what the code is for:
+
+- **Server, AGPL-3.0-only** ([LICENSE](LICENSE)): `net-server`, `net-api`, `net-auth`, `net-control`, `net-db`, `net-rooms`, `net-game`, `net-cli`, `net-loadtest` and the `dashboard`. Run it, change it, self-host it; if you offer a modified node as a service, publish the changes.
+- **Everything a game embeds, Apache-2.0** ([LICENSE-APACHE](LICENSE-APACHE)): `net-client`, `net-common`, `net-wire`, `net-transport`, `net-ffi`, `net-replication`, `net-rollback`, `net-lagcomp`, `net-fpmath`, all `net-sim*` crates and every SDK under `sdk/` (Web, Unity, Godot, C/C++). Ship them in closed-source games without obligations beyond attribution.
+
+Each crate states its licence in `Cargo.toml`; each SDK package in its `package.json`.

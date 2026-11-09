@@ -48,7 +48,7 @@ export function PlayerLookup({ projectId }: { projectId?: string }) {
       {q.error ? <Callout tone="danger">{q.error instanceof Error ? q.error.message : String(q.error)}</Callout> : null}
       {d ? (
         <>
-          <div className="flex flex-wrap items-center gap-2 text-sm">
+          <div className="flex flex-wrap items-center gap-2 text-sm" data-testid="player-lookup-status">
             <Mono>{d.player_id}</Mono>
             {d.ban ? (
               <Badge tone="danger">{d.ban.expires_at ? t("players.bannedUntil", { at: fmtDateTimeShort(locale, d.ban.expires_at) }) : t("players.banned")}</Badge>

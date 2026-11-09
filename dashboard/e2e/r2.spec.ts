@@ -240,9 +240,10 @@ test("operator looks up a player and bans from the lookup", async ({ page }) => 
   await page.getByLabel("Player id").fill("ghost-7");
   await page.getByRole("button", { name: "Find" }).click();
   await expect(page.getByText("Not in any live room on any node.")).toBeVisible();
-  await expect(page.getByText("Not banned")).toBeVisible();
+  const status = page.getByTestId("player-lookup-status");
+  await expect(status.getByText("Not banned")).toBeVisible();
   await page.getByRole("button", { name: "Ban player" }).click();
-  await expect(page.getByText("Banned", { exact: true })).toBeVisible();
+  await expect(status.getByText("Banned", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: /Bans/ }).click();
   await expect(page.getByRole("row").filter({ hasText: "ghost-7" })).toBeVisible();
 });
