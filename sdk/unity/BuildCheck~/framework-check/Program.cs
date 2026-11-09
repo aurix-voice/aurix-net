@@ -33,15 +33,16 @@ class Player : NetworkBehaviour
     public readonly List<string> log = new List<string>();
     public string tag;
 
-    [ServerRpc] void CmdHit(int dmg, RpcInfo info) { log.Add($"CmdHit({dmg}) from {info.sender}"); health.value -= dmg; }
-    [ObserversRpc(bufferLast: true)] void RpcShout(string text, RpcInfo info) { log.Add($"Shout:{text}"); }
-    [TargetRpc] void RpcWhisper(string text) { log.Add($"Whisper:{text}"); }
+    [ServerRpc] void CmdHit(int dmg, RpcInfo info = default) { log.Add($"CmdHit({dmg}) from {info.sender}"); health.value -= dmg; }
+    [ObserversRpc(bufferLast: true)] void RpcShout(string text, RpcInfo info = default) { log.Add($"Shout:{text}"); }
+    [TargetRpc] void RpcWhisper(PlayerID to, string text) { log.Add($"Whisper:{text}"); }
     [ServerRpc(requireOwnership: false)] void CmdAny(byte b) { log.Add($"CmdAny({b})"); }
 
-    public void Hit(int d) => Rpc(nameof(CmdHit), d);
-    public void Shout(string s) => Rpc(nameof(RpcShout), s);
-    public void Whisper(PlayerID to, string s) => RpcTo(to, nameof(RpcWhisper), s);
-    public void Any(byte b) => Rpc(nameof(CmdAny), b);
+    public void Hit(int d) => CmdHit(d);                       // woven: direct call
+    public void Shout(string s) => Rpc(nameof(RpcShout), s);   // reflection mode still works on woven code
+    public void Whisper(PlayerID to, string s) => RpcWhisper(to, s);
+    public void Any(byte b) => CmdAny(b);
+    public static bool Woven => typeof(Player).GetMethod("CmdHit" + ImplSuffix, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic) != null;
     protected override void OnSpawned(bool asServer) { log.Add($"spawned server={asServer} owner={owner} mine={isOwner}"); }
     protected override void OnOwnerChanged(PlayerID? o, PlayerID? n) { log.Add($"owner {o}->{n}"); }
 }
@@ -79,6 +80,7 @@ static class Program
 
     static async Task<int> Main()
     {
+        Console.WriteLine("RPC methods woven: " + Player.Woven);
         Console.WriteLine("FRAMEWORK COMPILE OK: " + string.Join(", ", new[] { typeof(NetworkManager), typeof(NetworkIdentity), typeof(NetworkBehaviour), typeof(SyncVar<>), typeof(SyncList<>), typeof(SyncDictionary<,>) }.Select(t => t.Name)));
         var key = Environment.GetEnvironmentVariable("NET_API_KEY");
         if (string.IsNullOrEmpty(key)) { Console.WriteLine("NET_API_KEY unset: live test skipped"); return 0; }
@@ -89,6 +91,7 @@ static class Program
 
         host.StartHost(); await Until(() => host.isServer, 8000, host);
         Check(host.isServer && host.isHost && host.localPlayer.HasValue, $"host started as {host.localPlayer}");
+        Check(Player.Woven, "test assembly was woven (CmdHit__Impl present)");
 
         // a server object exists before anyone joins (late-join path for c1)
         var srvObj = (TestIdentity)host.Spawn(0);

@@ -14,3 +14,5 @@ sdk/godot/bin/
 sdk/godot/.sconsign.dblite
 sdk/godot/src/*.os
 sdk/godot/check~/addons/aurix_net/bin/*.so
+sdk/unity/Weaver/*/bin/
+sdk/unity/Weaver/*/obj/

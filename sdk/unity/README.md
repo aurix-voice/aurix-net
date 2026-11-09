@@ -109,7 +109,7 @@ public class Player : NetworkBehaviour
     [ObserversRpc(bufferLast: true)] void RpcShout(string s) { ... }         // server → everyone (late joiners get the last one)
     [TargetRpc] void RpcWhisper(string s) { ... }                            // server → one player
 
-    void Update() { if (isOwner && Input.GetMouseButtonDown(0)) Rpc(nameof(CmdHit), 10); }
+    void Update() { if (isOwner && Input.GetMouseButtonDown(0)) CmdHit(10); }        // woven: a plain call
     protected override void OnSpawned(bool asServer) { health.onChanged += h => bar.value = h; }
 }
 ```
@@ -120,9 +120,11 @@ public class Player : NetworkBehaviour
 `players`, `localPlayer`, `identities`, `onPlayerJoined/Left`, `onSpawned/Despawned`. Put a
 `NetworkIdentity` on each prefab root; its `behaviours` list (auto-filled from children) fixes the
 replication order; objects placed in the scene get a non-zero `sceneId` and are bound, not instantiated. Drop-in components: `NetworkTransform`, `NetworkRigidbody`, `NetworkAnimator` (`Runtime/Framework/Components/`). `PlayerID` is the Aurix actor id. Modules and RPC methods are bound by reflection
-in declaration order, so host and clients must run the same build. Interest
-management, client prediction and IL-weaved RPC calls (`CmdHit(10)` instead of `Rpc(nameof(CmdHit), 10)`)
-are on the roadmap.
+in declaration order, so host and clients must run the same build. RPC methods are rewritten after
+compilation by the weaver in `Editor/CodeGen` (an `ILPostProcessor`, like Mirror/PurrNet/NGO): calling
+`CmdHit(10)` sends the RPC and the body runs where it should; without the weaver (or from code you do
+not own) use `Rpc(nameof(CmdHit), 10)` / `RpcTo(player, …)`. Interest management and client
+prediction are on the roadmap.
 
 Check without Unity: `cd BuildCheck~/framework-check && NET_API_KEY=an_… dotnet run -c Release`.
 

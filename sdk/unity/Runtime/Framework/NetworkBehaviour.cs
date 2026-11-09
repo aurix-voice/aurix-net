@@ -57,6 +57,8 @@ namespace Aurix.Net.Unity.Framework
     public sealed class RpcMethod
     {
         public MethodInfo method; public RpcAttribute attr; public Type[] paramTypes; public bool wantsInfo; public byte index;
+        /// <summary>Woven assemblies: the original body, renamed to Method__Impl; invoked instead of <see cref="method"/> on receive.</summary>
+        public MethodInfo impl;
     }
 
     public abstract class NetworkBehaviour : MonoBehaviour
@@ -109,7 +111,8 @@ namespace Aurix.Net.Unity.Framework
                     var a = m.GetCustomAttribute<RpcAttribute>(); if (a == null) continue;
                     var ps = m.GetParameters();
                     bool info = ps.Length > 0 && ps[ps.Length - 1].ParameterType == typeof(RpcInfo);
-                    methods.Add(new RpcMethod { method = m, attr = a, wantsInfo = info, paramTypes = ps.Take(info ? ps.Length - 1 : ps.Length).Select(p => p.ParameterType).ToArray() });
+                    var impl = cur.GetMethod(m.Name + ImplSuffix, F, null, ps.Select(p => p.ParameterType).ToArray(), null);
+                    methods.Add(new RpcMethod { method = m, impl = impl, attr = a, wantsInfo = info, paramTypes = ps.Take(info ? ps.Length - 1 : ps.Length).Select(p => p.ParameterType).ToArray() });
                 }
             }
             var ordered = methods.OrderBy(r => r.method.DeclaringType.FullName).ThenBy(r => r.method.Name).ThenBy(r => r.paramTypes.Length).ToArray();
@@ -132,10 +135,29 @@ namespace Aurix.Net.Unity.Framework
         /// <summary>Called every network tick on the server and on clients.</summary>
         public virtual void OnTick(uint tick) { }
 
-        /// <summary>Call a [ServerRpc] or [ObserversRpc] method by name.</summary>
-        protected void Rpc(string method, params object[] args) => networkManager?.SendRpc(this, Find(method), null, args);
-        /// <summary>Call a [TargetRpc] method on one player.</summary>
-        protected void RpcTo(PlayerID target, string method, params object[] args) => networkManager?.SendRpc(this, Find(method), target, args);
+        /// <summary>Suffix the IL weaver gives the original body of an RPC method.</summary>
+        public const string ImplSuffix = "__Impl";
+
+        /// <summary>Call a [ServerRpc] or [ObserversRpc] method by name (reflection mode; woven assemblies call the method directly).</summary>
+        protected void Rpc(string method, params object[] args) { var r = Find(method); if (networkManager != null && !networkManager.SendRpc(this, r, TargetOf(r, args), args)) InvokeRpcLocal(r, args, LocalInfo()); }
+        /// <summary>Call a [TargetRpc] method on one player by name.</summary>
+        protected void RpcTo(PlayerID target, string method, params object[] args) { var r = Find(method); if (networkManager != null && !networkManager.SendRpc(this, r, target, args)) InvokeRpcLocal(r, args, LocalInfo()); }
+
+        /// <summary>Woven RPC prologue: routes the call; returns true when the body must not run here.</summary>
+        protected bool __RpcSend(int index, object[] args)
+        {
+            if (index >= rpcs.Length || networkManager == null) return false;
+            var r = rpcs[index];
+            return networkManager.SendRpc(this, r, TargetOf(r, args), args);
+        }
+
+        /// <summary>Woven RPC prologue: the RpcInfo for a locally executed call.</summary>
+        protected RpcInfo __LocalInfo() => LocalInfo();
+
+        RpcInfo LocalInfo() => new RpcInfo(localPlayer ?? default, isServer);
+
+        /// <summary>[TargetRpc] methods take the target player as their first parameter.</summary>
+        static PlayerID? TargetOf(RpcMethod r, object[] args) => r.attr.kind == RpcKind.Target && args.Length > 0 && args[0] is PlayerID p ? p : (PlayerID?)null;
 
         RpcMethod Find(string name)
         {
@@ -154,14 +176,15 @@ namespace Aurix.Net.Unity.Framework
             var args = new object[r.paramTypes.Length + (r.wantsInfo ? 1 : 0)];
             for (int i = 0; i < r.paramTypes.Length; i++) args[i] = NetSerializer.Read(reader, r.paramTypes[i]);
             if (r.wantsInfo) args[args.Length - 1] = info;
-            r.method.Invoke(this, args);
+            (r.impl ?? r.method).Invoke(this, args);
         }
 
         internal void InvokeRpcLocal(RpcMethod r, object[] args, RpcInfo info)
         {
-            if (!r.wantsInfo) { r.method.Invoke(this, args); return; }
+            var target = r.impl ?? r.method;
+            if (!r.wantsInfo) { target.Invoke(this, args); return; }
             var a = new object[args.Length + 1]; Array.Copy(args, a, args.Length); a[args.Length] = info;
-            r.method.Invoke(this, a);
+            target.Invoke(this, a);
         }
     }
 }

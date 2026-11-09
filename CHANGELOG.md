@@ -24,6 +24,13 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   (velocities + extrapolation, kinematic remotes) and `NetworkAnimator` (float/int/bool parameters,
   triggers as RPCs); scene objects bound by `NetworkIdentity.sceneId` instead of instantiated;
   a `Hello`/`Welcome` handshake so a joiner gets the world only once its data path is up.
+- IL weaver for the framework (`Editor/CodeGen/RpcWeaver.cs`, Mono.Cecil): `[ServerRpc]` /
+  `[ObserversRpc]` / `[TargetRpc]` methods become direct call sites (`CmdHit(10)` routes the call,
+  the original body moves to `CmdHit__Impl`; `[TargetRpc]` takes the target `PlayerID` as its first
+  parameter). Runs in Unity through an `ILPostProcessor` (`Aurix.Net.CodeGen`, editor-only, same
+  layout as Netcode for GameObjects — not yet exercised in an editor) and on plain .NET through
+  `sdk/unity/Weaver/Aurix.Net.Weaver.Cli` (`aurix-weave <assembly.dll>`), which `framework-check`
+  applies to its own test assembly before running the live scenario.
 - Unity: transports for third-party netcode over an Aurix relay room — `AurixNetTransport`
   (PurrNet `GenericTransport`/`ITransport`), `AurixNetMirrorTransport` (Mirror `Transport`) and
   `AurixNetFishNetTransport` (FishNet `Transport`) on a shared `RelayBridge`: the host is the room

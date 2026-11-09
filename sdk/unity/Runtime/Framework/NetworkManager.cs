@@ -286,45 +286,49 @@ namespace Aurix.Net.Unity.Framework
         }
 
         // ---- RPC ----
-        internal void SendRpc(NetworkBehaviour b, RpcMethod r, PlayerID? target, object[] args)
+        /// <summary>Routes an RPC call. Returns true when the call was handled here (sent, buffered or refused)
+        /// and the body must NOT run locally; false when the caller should execute the body.</summary>
+        internal bool SendRpc(NetworkBehaviour b, RpcMethod r, PlayerID? target, object[] args)
         {
-            if (!b.isSpawned) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: object not spawned"); return; }
+            if (!b.isSpawned) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: object not spawned"); return true; }
             var id = b.identity;
-            var body = new BitWriter(); b.WriteArgs(body, r, args); var bytes = body.Finish();
-            void Write(BitWriter w) { w.WriteBits(id.objectId, 32); w.WriteBits((ulong)b.componentIndex, 8); w.WriteBits(r.index, 8); w.WriteBits(localPlayer.Value.id, 16); w.WriteUInt((ulong)bytes.Length, 16); w.WriteBytes(bytes); }
-            var info = new RpcInfo(localPlayer.Value, isServer);
             switch (r.attr.kind)
             {
                 case RpcKind.Server:
                 {
                     var a = (ServerRpcAttribute)r.attr;
-                    if (isServer) { b.InvokeRpcLocal(r, args, info); return; }
-                    if (a.requireOwnership && !id.isOwner) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: ServerRpc requires ownership"); return; }
-                    Send(-1, Msg.Rpc, Write);
-                    if (a.runLocally) b.InvokeRpcLocal(r, args, info);
-                    return;
+                    if (isServer) return false;
+                    if (a.requireOwnership && !id.isOwner) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: ServerRpc requires ownership"); return true; }
+                    var bytes = Pack(b, r, args);
+                    Send(-1, Msg.Rpc, w => WriteRpc(w, id, b, r, bytes));
+                    return !a.runLocally;
                 }
                 case RpcKind.Observers:
                 {
                     var a = (ObserversRpcAttribute)r.attr;
-                    if (!isServer) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: ObserversRpc may only be called on the server"); return; }
-                    foreach (var p in _players) { if (p == localPlayer || (a.excludeOwner && id.owner == p)) continue; Send(p.id, Msg.Rpc, Write); }
+                    if (!isServer) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: ObserversRpc may only be called on the server"); return true; }
+                    var bytes = Pack(b, r, args);
+                    foreach (var p in _players) { if (p == localPlayer || (a.excludeOwner && id.owner == p)) continue; Send(p.id, Msg.Rpc, w => WriteRpc(w, id, b, r, bytes)); }
                     if (a.bufferLast) Buffer(id, b, r, null, a.excludeOwner, bytes);
-                    if (isClient && a.runLocally && !(a.excludeOwner && id.isOwner)) b.InvokeRpcLocal(r, args, info);
-                    return;
+                    return !(isClient && a.runLocally && !(a.excludeOwner && id.isOwner));
                 }
                 case RpcKind.Target:
                 {
                     var a = (TargetRpcAttribute)r.attr;
-                    if (!isServer) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: TargetRpc may only be called on the server"); return; }
-                    if (!target.HasValue) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: TargetRpc needs a target (use RpcTo)"); return; }
+                    if (!isServer) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: TargetRpc may only be called on the server"); return true; }
+                    if (!target.HasValue) { Debug.LogWarning($"{b.GetType().Name}.{r.method.Name}: TargetRpc needs a target (first parameter PlayerID, or RpcTo)"); return true; }
+                    var bytes = Pack(b, r, args);
                     if (a.bufferLast) Buffer(id, b, r, target, false, bytes);
-                    if (target == localPlayer) { if (isClient && a.runLocally) b.InvokeRpcLocal(r, args, info); return; }
-                    Send(target.Value.id, Msg.Rpc, Write);
-                    return;
+                    if (target == localPlayer) return !(isClient && a.runLocally);
+                    Send(target.Value.id, Msg.Rpc, w => WriteRpc(w, id, b, r, bytes));
+                    return true;
                 }
             }
+            return true;
         }
+
+        static byte[] Pack(NetworkBehaviour b, RpcMethod r, object[] args) { var body = new BitWriter(); b.WriteArgs(body, r, args); return body.Finish(); }
+        void WriteRpc(BitWriter w, NetworkIdentity id, NetworkBehaviour b, RpcMethod r, byte[] bytes) { w.WriteBits(id.objectId, 32); w.WriteBits((ulong)b.componentIndex, 8); w.WriteBits(r.index, 8); w.WriteBits(localPlayer.Value.id, 16); w.WriteUInt((ulong)bytes.Length, 16); w.WriteBytes(bytes); }
 
         void Buffer(NetworkIdentity id, NetworkBehaviour b, RpcMethod r, PlayerID? target, bool excludeOwner, byte[] body)
         {
