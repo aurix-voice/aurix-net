@@ -15,6 +15,9 @@ namespace Aurix.Net.Unity.Framework
         [Tooltip("Despawn this object when its owner leaves (otherwise ownership is just removed).")]
         public bool despawnOnOwnerDisconnect = true;
 
+        [Tooltip("Non-zero for objects placed in the scene: the same id on host and clients binds them (set by the editor; see NetworkManager.RegisterSceneObject).")]
+        public uint sceneId;
+
         public NetworkManager networkManager { get; private set; }
         public uint objectId { get; private set; }
         public int prefabId { get; private set; } = -1;

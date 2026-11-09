@@ -119,8 +119,8 @@ public class Player : NetworkBehaviour
 `StartClient()`, `Stop()`; `Spawn(prefab, owner?)`, `Despawn(id)`, `SetOwnership(id, player?)`;
 `players`, `localPlayer`, `identities`, `onPlayerJoined/Left`, `onSpawned/Despawned`. Put a
 `NetworkIdentity` on each prefab root; its `behaviours` list (auto-filled from children) fixes the
-replication order. `PlayerID` is the Aurix actor id. Modules and RPC methods are bound by reflection
-in declaration order, so host and clients must run the same build. Scene objects, interest
+replication order; objects placed in the scene get a non-zero `sceneId` and are bound, not instantiated. Drop-in components: `NetworkTransform`, `NetworkRigidbody`, `NetworkAnimator` (`Runtime/Framework/Components/`). `PlayerID` is the Aurix actor id. Modules and RPC methods are bound by reflection
+in declaration order, so host and clients must run the same build. Interest
 management, client prediction and IL-weaved RPC calls (`CmdHit(10)` instead of `Rpc(nameof(CmdHit), 10)`)
 are on the roadmap.
 

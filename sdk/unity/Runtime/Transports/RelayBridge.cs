@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading.Tasks;
+using Aurix.Net;
 using Aurix.Net.Managed;
 
 namespace Aurix.Net.Transports
@@ -69,22 +70,28 @@ namespace Aurix.Net.Transports
                 var grant = Settings.GrantProvider != null ? await Settings.GrantProvider() : Settings.Grant;
                 if (string.IsNullOrEmpty(grant)) throw new NetException("no grant: set Grant or GrantProvider");
                 var c = await ManagedClient.ConnectAsync(Settings.HttpUrl, grant, Settings.TimeoutMs);
+                // Frames and control messages can arrive while the join handshake is still awaiting the
+                // data path (the host answers player_joined at once); queue them until Started.
+                var early = new List<object>(); bool started = false;
+                c.OnControl += j => { if (started) OnControl(j); else early.Add(j); };
+                c.OnEvent += f =>
+                {
+                    if (f.Code != Settings.EventCode) return;
+                    if (!started) { early.Add(f); return; }
+                    Dispatch(f, host);
+                };
                 if (host) await c.JoinOrCreateAsync(Settings.RoomName, "relay", Settings.MaxPlayers);
                 else await c.JoinAsync(Settings.RoomName);
                 MasterActor = (int)Json.Num(c.JoinedJson, "master");
                 if (host && MasterActor != c.Actor) { c.Dispose(); throw new NetException("room already has a host (master actor " + MasterActor + ")"); }
                 if (!host && MasterActor == c.Actor) { c.Dispose(); throw new NetException("no host in room " + Settings.RoomName); }
                 _client = c;
-                c.OnControl += OnControl;
-                c.OnEvent += f =>
-                {
-                    if (f.Code != Settings.EventCode) return;
-                    if (host) { if (_peers.Contains(f.From)) OnData?.Invoke(f.From, f.Payload, true); }
-                    else if (f.From == MasterActor) OnData?.Invoke(f.From, f.Payload, false);
-                };
                 c.OnClosed += r => Fail(BridgeLeave.Lost, r);
                 if (host) foreach (var a in Actors(c.JoinedJson)) if (a != c.Actor) AddPeer(a);
                 Set(BridgeState.Started);
+                started = true;
+                foreach (var e in early) { if (e is string j) OnControl(j); else if (e is EventFrame f) Dispatch(f, host); }
+                early.Clear();
             }
             catch (Exception e)
             {
@@ -92,6 +99,12 @@ namespace Aurix.Net.Transports
                 Set(BridgeState.Stopped);
                 OnDisconnected?.Invoke(BridgeLeave.Failed);
             }
+        }
+
+        void Dispatch(EventFrame f, bool host)
+        {
+            if (host) { if (_peers.Contains(f.From)) OnData?.Invoke(f.From, f.Payload, true); }
+            else if (f.From == MasterActor) OnData?.Invoke(f.From, f.Payload, false);
         }
 
         public void Stop() => Stop(BridgeLeave.Local);

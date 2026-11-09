@@ -15,6 +15,7 @@
     <Compile Include="../../Runtime/Unity/*.cs" />
     <Compile Include="../../Runtime/Transports/*.cs" />
     <Compile Include="../../Runtime/Framework/*.cs" />
+    <Compile Include="../../Runtime/Framework/Components/*.cs" />
     <Compile Include="../managed-live/Stubs/*.cs" />
   </ItemGroup>
 </Project>

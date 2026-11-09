@@ -47,12 +47,14 @@ class Player : NetworkBehaviour
 }
 
 class TestIdentity : NetworkIdentity { public Player player = new Player(); public TestIdentity() { behaviours.Add(player); } }
+class Mover : NetworkIdentity { public NetworkTransform nt = new NetworkTransform(); public Mover() { behaviours.Add(nt); } }
 
 class TestFactory : INetworkObjectFactory
 {
     public readonly List<TestIdentity> alive = new List<TestIdentity>();
-    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { var t = new TestIdentity(); alive.Add(t); return t; }
-    public void Destroy(NetworkIdentity id) => alive.Remove((TestIdentity)id);
+    public readonly List<NetworkIdentity> all = new List<NetworkIdentity>();
+    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
+    public void Destroy(NetworkIdentity id) { all.Remove(id); if (id is TestIdentity t) alive.Remove(t); }
 }
 
 static class Program
@@ -151,7 +153,32 @@ static class Program
         host.Despawn(srvObj); await Pump(300, host, c1);
         Check(!c1.TryGetIdentity(srvObj.objectId, out _) && ((TestFactory)c1.factory).alive.Count == 0, "explicit despawn reaches clients and destroys instances");
 
+        // NetworkTransform: owner moves 1 unit per tick along x; remote interpolates behind and follows
+        var mvH = (Mover)host.Spawn(1, c1.localPlayer); await Until(() => c1.TryGetIdentity(mvH.objectId, out _), 5000, host, c1);
+        var mvC = (Mover)(c1.TryGetIdentity(mvH.objectId, out var mvId) ? mvId : null);
+        Check(mvC != null && mvC.nt.isOwner, "NetworkTransform object spawned, owner = c1");
+        async Task PumpMover(int ms) { var until = DateTime.UtcNow.AddMilliseconds(ms); while (DateTime.UtcNow < until) { host.NetworkUpdate(0.01f); c1.NetworkUpdate(0.01f); mvH.nt.RenderUpdate(0.01f); mvC.nt.RenderUpdate(0.01f); await Task.Delay(10); } }
+        for (int i = 1; i <= 20; i++) { mvC.nt.transform.position = new Vector3(i, 0, 0); mvC.nt.transform.rotation = Quaternion.Euler(0, i * 9, 0); await PumpMover(34); }
+        await PumpMover(400);
+        float hx = mvH.nt.transform.position.x; float ang = Quaternion.Angle(mvH.nt.transform.rotation, Quaternion.Euler(0, hx * 9, 0)); // rotation must match the interpolated position
+        Check(hx >= 15 && hx <= 20.01f && ang < 2f, $"remote follows owner motion with interpolation (host x={hx:0.##}, rot err={ang:0.##}°)");
+        Check(mvH.nt.sync.buffer.Count >= 2 && mvH.nt.sync.buffer[mvH.nt.sync.buffer.Count - 1].tick > mvH.nt.sync.buffer[0].tick, "samples stamped with increasing server ticks");
+        mvC.nt.Teleport(new Vector3(100, 0, 0), Quaternion.identity); await PumpMover(400);
+        Check(Math.Abs(mvH.nt.transform.position.x - 100) < 0.01f, $"teleport snaps on remote (x={mvH.nt.transform.position.x:0.##})");
+
+        // scene object: same sceneId registered on every peer, bound (not instantiated) and replicated
         host.Stop(); c1.Stop(); await Pump(300, host, c1);
+        var room2 = room + "-scene";
+        var host2 = Make("host2"); var c3 = Make("c3"); host2.roomName = room2; c3.roomName = room2;
+        var soH = new TestIdentity { sceneId = 77 }; var soC = new TestIdentity { sceneId = 77 };
+        host2.RegisterSceneObject(soH); c3.RegisterSceneObject(soC);
+        host2.StartHost(); await Until(() => host2.isServer && soH.isSpawned, 8000, host2);
+        soH.player.nick.value = "door"; soH.player.stats["open"] = 1;
+        c3.StartClient(); await Until(() => soC.isSpawned, 8000, host2, c3);
+        await Pump(300, host2, c3);
+        Check(soC.isSpawned && soC.objectId == soH.objectId && soC.player.nick.value == "door" && soC.player.stats["open"] == 1 && ((TestFactory)c3.factory).all.Count == 0, "scene object bound by sceneId with state, nothing instantiated");
+        host2.Stop(); c3.Stop(); await Pump(300, host2, c3);
+        Check(!soC.isSpawned && !soH.isSpawned, "scene objects survive despawn (not destroyed)");
         Console.WriteLine(fails == 0 ? "FRAMEWORK LIVE OK" : $"FRAMEWORK LIVE FAIL ({fails})");
         return fails == 0 ? 0 : 1;
     }

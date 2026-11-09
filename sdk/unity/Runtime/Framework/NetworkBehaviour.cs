@@ -83,6 +83,7 @@ namespace Aurix.Net.Unity.Framework
         internal void Bind(NetworkIdentity id, int index)
         {
             identity = id; componentIndex = index;
+            OnBeforeBind();
             var (fields, rpcList) = Reflect(GetType());
             modules = new NetworkModule[fields.Length];
             for (int i = 0; i < fields.Length; i++)
@@ -122,6 +123,8 @@ namespace Aurix.Net.Unity.Framework
         internal void InternalDespawned() { foreach (var m in modules) m.OnDespawned(); OnDespawned(); }
         internal void InternalOwnerChanged(PlayerID? o, PlayerID? n) { foreach (var m in modules) m.OnOwnerChanged(o, n); OnOwnerChanged(o, n); }
 
+        /// <summary>Called right before modules are bound: create module instances that depend on inspector fields here.</summary>
+        protected virtual void OnBeforeBind() { }
         /// <summary>Called once the object is live on this peer (state applied, owner known).</summary>
         protected virtual void OnSpawned(bool asServer) { }
         protected virtual void OnDespawned() { }

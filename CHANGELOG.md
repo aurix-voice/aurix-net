@@ -19,6 +19,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   math types, strings, byte[], enums, arrays/lists, `PlayerID`, `NetworkIdentity` references and
   `INetSerializable`. Reflection-bound in this version (no IL weaving); `BuildCheck~/framework-check`
   runs host + two clients through spawn, sync, RPCs, ownership transfer, late join and despawn.
+- Framework components: `NetworkTransform` (quantized position/rotation/scale from the controller,
+  smallest-three quaternions, tick-stamped interpolation buffer, teleport), `NetworkRigidbody`
+  (velocities + extrapolation, kinematic remotes) and `NetworkAnimator` (float/int/bool parameters,
+  triggers as RPCs); scene objects bound by `NetworkIdentity.sceneId` instead of instantiated;
+  a `Hello`/`Welcome` handshake so a joiner gets the world only once its data path is up.
 - Unity: transports for third-party netcode over an Aurix relay room — `AurixNetTransport`
   (PurrNet `GenericTransport`/`ITransport`), `AurixNetMirrorTransport` (Mirror `Transport`) and
   `AurixNetFishNetTransport` (FishNet `Transport`) on a shared `RelayBridge`: the host is the room

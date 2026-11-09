@@ -35,7 +35,7 @@ namespace Aurix.Net.Unity.Framework
     [DefaultExecutionOrder(-100)]
     public sealed class NetworkManager : MonoBehaviour
     {
-        enum Msg : byte { Welcome = 1, PlayerJoined, PlayerLeft, Spawn, Despawn, Owner, Sync, Rpc }
+        enum Msg : byte { Hello = 1, Welcome, PlayerJoined, PlayerLeft, Spawn, Despawn, Owner, Sync, Rpc }
         const byte Version = 1;
 
         [Header("Aurix Net")]
@@ -62,6 +62,8 @@ namespace Aurix.Net.Unity.Framework
         public PlayerID? localPlayer { get; private set; }
         public PlayerID? serverPlayer { get; private set; }
         public uint tick { get; private set; }
+        /// <summary>Newest server tick seen (clients); equals <see cref="tick"/> on the server.</summary>
+        public uint serverTick { get; private set; }
         public BridgeState serverState => _server?.State ?? BridgeState.Stopped;
         public BridgeState clientState => _client?.State ?? BridgeState.Stopped;
         public string lastError => _server?.LastError ?? _client?.LastError;
@@ -77,6 +79,10 @@ namespace Aurix.Net.Unity.Framework
         public event Action<NetworkIdentity> onSpawned, onDespawned;
         public event Action<string> onError;
 
+        readonly Dictionary<uint, NetworkIdentity> _sceneObjects = new Dictionary<uint, NetworkIdentity>();
+        /// <summary>Scene-placed identities by sceneId: spawned by the host on start, bound (not instantiated) on clients.</summary>
+        public void RegisterSceneObject(NetworkIdentity id) { if (id != null && id.sceneId != 0) _sceneObjects[id.sceneId] = id; }
+
         RelayBridge _server, _client;
         uint _nextId = 1;
         float _accum;
@@ -85,7 +91,13 @@ namespace Aurix.Net.Unity.Framework
         sealed class Buffered { public uint obj; public byte comp, method; public PlayerID? target; public bool excludeOwner; public byte[] body; }
         readonly List<Buffered> _buffered = new List<Buffered>();
 
-        void Awake() { if (main == null) main = this; }
+        void Awake()
+        {
+            if (main == null) main = this;
+#if UNITY_5_3_OR_NEWER
+            foreach (var id in UnityEngine.Object.FindObjectsOfType<NetworkIdentity>(true)) RegisterSceneObject(id);
+#endif
+        }
         void OnDestroy() { Stop(); if (main == this) main = null; }
         void Update() => NetworkUpdate(Time.unscaledDeltaTime);
 
@@ -105,10 +117,14 @@ namespace Aurix.Net.Unity.Framework
             var b = _server = NewBridge();
             b.OnState += s =>
             {
-                if (s == BridgeState.Started) { isServer = true; isClient = withLocalPlayer; localPlayer = serverPlayer = new PlayerID((ushort)b.LocalActor); if (withLocalPlayer) _players.Add(localPlayer.Value); }
+                if (s == BridgeState.Started)
+                {
+                    isServer = true; isClient = withLocalPlayer; localPlayer = serverPlayer = new PlayerID((ushort)b.LocalActor); if (withLocalPlayer) _players.Add(localPlayer.Value);
+                    foreach (var so in _sceneObjects.Values) SpawnExisting(so, -1, null);
+                }
                 onServerState?.Invoke(s);
             };
-            b.OnPeerJoined += a => { var p = new PlayerID((ushort)a); _players.Add(p); SendWelcome(p); Broadcast(Msg.PlayerJoined, w => w.WriteBits(p.id, 16), except: a); onPlayerJoined?.Invoke(p); };
+            b.OnPeerJoined += a => { var p = new PlayerID((ushort)a); _players.Add(p); Broadcast(Msg.PlayerJoined, w => w.WriteBits(p.id, 16), except: a); onPlayerJoined?.Invoke(p); };
             b.OnPeerLeft += (a, why) => { var p = new PlayerID((ushort)a); _players.Remove(p); HandlePlayerLeft(p); Broadcast(Msg.PlayerLeft, w => w.WriteBits(p.id, 16)); onPlayerLeft?.Invoke(p); };
             b.OnData += (from, d, _) => HandleFrame(d, new PlayerID((ushort)from), true);
             b.OnDisconnected += why => { if (why != BridgeLeave.Local) onError?.Invoke(b.LastError); Teardown(); };
@@ -122,7 +138,11 @@ namespace Aurix.Net.Unity.Framework
             var b = _client = NewBridge();
             b.OnState += s =>
             {
-                if (s == BridgeState.Started) { isClient = true; localPlayer = new PlayerID((ushort)b.LocalActor); serverPlayer = new PlayerID((ushort)b.MasterActor); }
+                if (s == BridgeState.Started)
+                {
+                    isClient = true; localPlayer = new PlayerID((ushort)b.LocalActor); serverPlayer = new PlayerID((ushort)b.MasterActor);
+                    Send(-1, Msg.Hello, w => w.WriteBits(Version, 8));   // our data path is up: ask for the world
+                }
                 onClientState?.Invoke(s);
             };
             b.OnData += (from, d, _) => HandleFrame(d, new PlayerID((ushort)from), false);
@@ -139,7 +159,7 @@ namespace Aurix.Net.Unity.Framework
 
         void Teardown()
         {
-            foreach (var id in _ids.Values.ToArray()) { id.MarkDespawned(); onDespawned?.Invoke(id); factory.Destroy(id); }
+            foreach (var id in _ids.Values.ToArray()) { id.MarkDespawned(); onDespawned?.Invoke(id); if (id.sceneId == 0) factory.Destroy(id); }
             _ids.Clear(); _players.Clear(); _buffered.Clear(); _toServer.Clear(); _toClient.Clear();
             isServer = false; isClient = false; localPlayer = null; serverPlayer = null; tick = 0; _nextId = 1;
             _server = null; _client = null;
@@ -158,7 +178,14 @@ namespace Aurix.Net.Unity.Framework
         public NetworkIdentity Spawn(int prefabId, PlayerID? owner = null)
         {
             if (!isServer) throw new NetException("only the server spawns");
-            var id = factory.Instantiate(this, prefabId);
+            return SpawnExisting(factory.Instantiate(this, prefabId), prefabId, owner);
+        }
+
+        /// <summary>Server: put an already instantiated identity (a prefab instance or a scene object) on the network.</summary>
+        public NetworkIdentity SpawnExisting(NetworkIdentity id, int prefabId, PlayerID? owner)
+        {
+            if (!isServer) throw new NetException("only the server spawns");
+            if (id.isSpawned) return id;
             id.Setup(this, _nextId++, prefabId, owner);
             _ids[id.objectId] = id;
             Broadcast(Msg.Spawn, w => WriteSpawn(w, id));
@@ -174,7 +201,7 @@ namespace Aurix.Net.Unity.Framework
             if (id == null || !_ids.Remove(id.objectId)) return;
             Broadcast(Msg.Despawn, w => w.WriteBits(id.objectId, 32));
             _buffered.RemoveAll(x => x.obj == id.objectId);
-            id.MarkDespawned(); onDespawned?.Invoke(id); factory.Destroy(id);
+            id.MarkDespawned(); onDespawned?.Invoke(id); if (id.sceneId == 0) factory.Destroy(id);
         }
 
         public void SetOwnership(NetworkIdentity id, PlayerID? player)
@@ -196,7 +223,7 @@ namespace Aurix.Net.Unity.Framework
 
         void WriteSpawn(BitWriter w, NetworkIdentity id)
         {
-            w.WriteBits(id.objectId, 32); w.WriteUInt((ulong)id.prefabId, 16); WriteOwner(w, id.owner);
+            w.WriteBits(id.objectId, 32); w.WriteBits(id.sceneId, 32); w.WriteUInt((ulong)(id.prefabId < 0 ? 0xffff : id.prefabId), 16); WriteOwner(w, id.owner);
             w.WriteUInt((ulong)id.behaviours.Count, 8);
             foreach (var b in id.behaviours) { w.WriteUInt((ulong)b.modules.Length, 8); foreach (var m in b.modules) m.WriteFull(w); }
         }
@@ -235,7 +262,7 @@ namespace Aurix.Net.Unity.Framework
 
         void Tick()
         {
-            tick++;
+            tick++; if (isServer) serverTick = tick;
             float now = tick * (1f / Math.Max(1, tickRate));
             foreach (var id in _ids.Values.ToArray())
             {
@@ -249,7 +276,7 @@ namespace Aurix.Net.Unity.Framework
                         m.nextSendTime = now + m.sendIntervalInSeconds;
                         var body = new BitWriter(); m.WriteDelta(body); m.ClearDirty();
                         var bytes = body.Finish();
-                        void Write(BitWriter w) { w.WriteBits(id.objectId, 32); w.WriteBits((ulong)b.componentIndex, 8); w.WriteBits((ulong)mi, 8); w.WriteUInt((ulong)bytes.Length, 16); w.WriteBytes(bytes); }
+                        void Write(BitWriter w) { w.WriteBits(id.objectId, 32); w.WriteBits((ulong)b.componentIndex, 8); w.WriteBits((ulong)mi, 8); w.WriteBits(tick, 32); w.WriteUInt((ulong)bytes.Length, 16); w.WriteBytes(bytes); }
                         if (isServer) { if (m.ownerOnly && id.owner.HasValue) Send(id.owner.Value.id, Msg.Sync, Write); else Broadcast(Msg.Sync, Write); }
                         else Send(-1, Msg.Sync, Write);
                     }
@@ -366,8 +393,9 @@ namespace Aurix.Net.Unity.Framework
             {
                 switch (kind)
                 {
-                    case Msg.Sync: { var (id, b, m) = ReadModuleRef(r); var bytes = r.ReadBytes((int)r.ReadUInt(16)); if (id == null || !m.ownerAuth || id.owner != from) return; m.ReadDelta(new BitReader(bytes)); m.ClearDirty();
-                        void Write(BitWriter w) { w.WriteBits(id.objectId, 32); w.WriteBits((ulong)b.componentIndex, 8); w.WriteBits((ulong)m.index, 8); w.WriteUInt((ulong)bytes.Length, 16); w.WriteBytes(bytes); }
+                    case Msg.Hello: if (r.ReadBits(8) == Version && _players.Contains(from)) SendWelcome(from); else Debug.LogWarning($"[AurixNet] hello from {from} with another protocol version"); return;
+                    case Msg.Sync: { var (id, b, m) = ReadModuleRef(r); r.ReadBits(32); var bytes = r.ReadBytes((int)r.ReadUInt(16)); if (id == null || !m.ownerAuth || id.owner != from) return; m.lastReceivedTick = tick; m.ReadDelta(new BitReader(bytes)); m.ClearDirty();
+                        void Write(BitWriter w) { w.WriteBits(id.objectId, 32); w.WriteBits((ulong)b.componentIndex, 8); w.WriteBits((ulong)m.index, 8); w.WriteBits(tick, 32); w.WriteUInt((ulong)bytes.Length, 16); w.WriteBytes(bytes); }
                         if (!m.ownerOnly) Broadcast(Msg.Sync, Write, except: from.id); return; }
                     case Msg.Rpc:
                     {
@@ -387,7 +415,7 @@ namespace Aurix.Net.Unity.Framework
                 case Msg.Welcome:
                 {
                     if (r.ReadBits(8) != Version) { onError?.Invoke("protocol version mismatch"); Stop(); return; }
-                    tick = (uint)r.ReadBits(32); r.ReadBits(16);
+                    tick = serverTick = (uint)r.ReadBits(32); r.ReadBits(16);
                     _players.Clear(); int n = (int)r.ReadUInt(16); for (int i = 0; i < n; i++) _players.Add(new PlayerID((ushort)r.ReadBits(16)));
                     return;
                 }
@@ -395,11 +423,14 @@ namespace Aurix.Net.Unity.Framework
                 case Msg.PlayerLeft: { var p = new PlayerID((ushort)r.ReadBits(16)); _players.Remove(p); onPlayerLeft?.Invoke(p); return; }
                 case Msg.Spawn:
                 {
-                    uint oid = (uint)r.ReadBits(32); int pid = (int)r.ReadUInt(16); var owner = ReadOwner(r);
+                    uint oid = (uint)r.ReadBits(32); uint sid = (uint)r.ReadBits(32); int pid = (int)r.ReadUInt(16); if (pid == 0xffff) pid = -1; var owner = ReadOwner(r);
                     if (_ids.ContainsKey(oid)) return;
-                    var id = factory.Instantiate(this, pid); id.Setup(this, oid, pid, owner); _ids[oid] = id;
+                    NetworkIdentity id;
+                    if (sid != 0) { if (!_sceneObjects.TryGetValue(sid, out id)) { Debug.LogWarning($"[AurixNet] unknown scene object {sid}"); return; } }
+                    else id = factory.Instantiate(this, pid);
+                    id.Setup(this, oid, pid, owner); _ids[oid] = id;
                     int nb = (int)r.ReadUInt(8);
-                    for (int i = 0; i < nb; i++) { int nm = (int)r.ReadUInt(8); for (int j = 0; j < nm; j++) if (i < id.behaviours.Count && j < id.behaviours[i].modules.Length) id.behaviours[i].modules[j].ReadFull(r); }
+                    for (int i = 0; i < nb; i++) { int nm = (int)r.ReadUInt(8); for (int j = 0; j < nm; j++) if (i < id.behaviours.Count && j < id.behaviours[i].modules.Length) { var mod = id.behaviours[i].modules[j]; mod.lastReceivedTick = serverTick; mod.ReadFull(r); } }
                     foreach (var b in id.behaviours) foreach (var m in b.modules) m.ClearDirty();
                     id.MarkSpawned(false); onSpawned?.Invoke(id);
                     return;
@@ -407,11 +438,11 @@ namespace Aurix.Net.Unity.Framework
                 case Msg.Despawn:
                 {
                     uint oid = (uint)r.ReadBits(32);
-                    if (_ids.TryGetValue(oid, out var id)) { _ids.Remove(oid); id.MarkDespawned(); onDespawned?.Invoke(id); factory.Destroy(id); }
+                    if (_ids.TryGetValue(oid, out var id)) { _ids.Remove(oid); id.MarkDespawned(); onDespawned?.Invoke(id); if (id.sceneId == 0) factory.Destroy(id); }
                     return;
                 }
                 case Msg.Owner: { uint oid = (uint)r.ReadBits(32); var o = ReadOwner(r); if (_ids.TryGetValue(oid, out var id)) id.SetOwner(o); return; }
-                case Msg.Sync: { var (id, _, m) = ReadModuleRef(r); var bytes = r.ReadBytes((int)r.ReadUInt(16)); if (id != null) { m.ReadDelta(new BitReader(bytes)); m.ClearDirty(); } return; }
+                case Msg.Sync: { var (id, _, m) = ReadModuleRef(r); uint st = (uint)r.ReadBits(32); var bytes = r.ReadBytes((int)r.ReadUInt(16)); if (st > serverTick) serverTick = st; if (id != null) { m.lastReceivedTick = st; m.ReadDelta(new BitReader(bytes)); m.ClearDirty(); } return; }
                 case Msg.Rpc:
                 {
                     var (id, b, _) = ReadModuleRef(r, module: false); byte mi = (byte)r.ReadBits(8); var sender = new PlayerID((ushort)r.ReadBits(16)); var bytes = r.ReadBytes((int)r.ReadUInt(16));

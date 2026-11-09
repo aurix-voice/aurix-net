@@ -21,6 +21,8 @@ namespace Aurix.Net.Unity.Framework
         public float sendIntervalInSeconds { get; set; }
         internal float nextSendTime;
         public bool isDirty { get; protected set; }
+        /// <summary>Server tick of the delta being applied (set before ReadDelta/ReadFull).</summary>
+        public uint lastReceivedTick { get; internal set; }
 
         /// <summary>True when the local side may write this module (server, or the owner for ownerAuth modules).</summary>
         public bool isController
