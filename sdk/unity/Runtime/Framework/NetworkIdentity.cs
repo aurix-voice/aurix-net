@@ -37,6 +37,8 @@ namespace Aurix.Net.Unity.Framework
         readonly HashSet<PlayerID> _observers = new HashSet<PlayerID>();
         /// <summary>Server: players holding a copy of this object (clients: empty).</summary>
         public IReadOnlyCollection<PlayerID> observers => _observers;
+        /// <summary>Set when a <see cref="NetworkLOD"/> behaviour is attached; gates per-player delta sends.</summary>
+        public NetworkLOD lod { get; internal set; }
         public bool IsObserver(PlayerID p) => _observers.Contains(p);
         internal bool AddObserver(PlayerID p) { if (!_observers.Add(p)) return false; onObserverAdded?.Invoke(p); return true; }
         internal bool RemoveObserver(PlayerID p) { if (!_observers.Remove(p)) return false; onObserverRemoved?.Invoke(p); return true; }

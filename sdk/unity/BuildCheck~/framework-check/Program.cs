@@ -83,18 +83,24 @@ static class Chat
     [ObserversRpc(bufferLast: true)] public static void Motd(string text) { clientLog.Add("motd:" + text); }
 }
 class Target : NetworkIdentity { public ColliderRollback cr = new ColliderRollback(); public Target() { behaviours.Add(cr); } }
+class Idle : StateNode { public int enters, exits; public override void Enter() => enters++; public override void Exit() => exits++; }
+class Round : StateNode<int> { public int enters, exits, last; public override void Enter(int n) { enters++; last = n; } public override void Exit() => exits++; }
+class Phases : NetworkIdentity { public StateMachine sm = new StateMachine(); public Idle idle = new Idle(); public Round round = new Round(); public Phases() { sm.states.Add(idle); sm.states.Add(round); behaviours.Add(sm); behaviours.Add(idle); behaviours.Add(round); } }
+class Counter : NetworkBehaviour { public SyncVar<int> v = new SyncVar<int>(); }
+class LodBox : NetworkIdentity { public NetworkLOD lod = new NetworkLOD { evaluateIntervalTicks = 1 }; public Counter counter = new Counter(); public LodBox() { behaviours.Add(lod); behaviours.Add(counter); } }
 class Mover : NetworkIdentity { public NetworkTransform nt = new NetworkTransform { syncParent = true }; public Mover() { behaviours.Add(nt); } }
 
 class TestFactory : INetworkObjectFactory
 {
     public readonly List<TestIdentity> alive = new List<TestIdentity>();
     public readonly List<NetworkIdentity> all = new List<NetworkIdentity>();
-    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 3) { var tg = new Target(); all.Add(tg); return tg; } if (prefabId == 2) { var pw = new PawnIdentity(); all.Add(pw); return pw; } if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
+    public NetworkIdentity Instantiate(NetworkManager m, int prefabId) { if (prefabId == 4) { var ph = new Phases(); all.Add(ph); return ph; } if (prefabId == 5) { var lb = new LodBox(); all.Add(lb); return lb; } if (prefabId == 3) { var tg = new Target(); all.Add(tg); return tg; } if (prefabId == 2) { var pw = new PawnIdentity(); all.Add(pw); return pw; } if (prefabId == 1) { var mv = new Mover(); all.Add(mv); return mv; } var t = new TestIdentity(); alive.Add(t); all.Add(t); return t; }
     public void Destroy(NetworkIdentity id) { all.Remove(id); if (id is TestIdentity t) alive.Remove(t); }
 }
 
 static class Program
 {
+    const int PH = 4, LB = 5;
     static async Task<string> Grant(HttpClient h, string key, string pid)
     {
         var req = new HttpRequestMessage(HttpMethod.Post, "http://127.0.0.1:8090/v1/grants");
@@ -240,6 +246,49 @@ static class Program
             for (int i = 0; i < 40; i++) { hostP.NetworkUpdate(0.01f); cP.NetworkUpdate(0.01f); cnt.RenderUpdate(0.01f); await Task.Delay(10); }
             Check(cnt.transform.parent == null && cnt.parentIdentity == null && Vector3.Distance(cnt.transform.position, new Vector3(5, 5, 5)) < 0.01f, "detach replicates: parent cleared, world pose follows");
             hostP.Stop(); cP.Stop(); await Pump(300, hostP, cP);
+        }
+
+        // replicated StateMachine: controller switches states (with payload), peers run Enter/Exit, late joiner enters the current state
+        {
+            var hostM = Make("hostM"); var cM = Make("cM"); var cM2 = Make("cM2"); hostM.roomName = cM.roomName = cM2.roomName = room + "-sm";
+            hostM.StartHost(); await Until(() => hostM.isServer, 8000, hostM);
+            var ph = (Phases)hostM.Spawn(PH);
+            cM.StartClient(); await Until(() => cM.TryGetIdentity(ph.objectId, out _), 8000, hostM, cM);
+            Check(ph.sm.SetState(ph.idle) && ph.idle.enters == 1, "server enters Idle locally");
+            await Until(() => cM.TryGetIdentity(ph.objectId, out var x) && ((Phases)x).idle.enters == 1, 3000, hostM, cM);
+            cM.TryGetIdentity(ph.objectId, out var phC1); var phC = (Phases)phC1;
+            Check(phC.idle.enters == 1 && phC.sm.IsCurrentState<Idle>(), "client entered Idle");
+            Check(ph.sm.SetState(ph.round, 7), "server switches to Round(7)");
+            await Until(() => phC.round.enters == 1, 3000, hostM, cM);
+            Check(phC.round.last == 7 && phC.idle.exits == 1 && phC.sm.currentStateNode == phC.round && phC.sm.previousStateNode == phC.idle, $"client exited Idle and entered Round with payload {phC.round.last}");
+            cM2.StartClient(); await Until(() => cM2.TryGetIdentity(ph.objectId, out _), 8000, hostM, cM, cM2); await Pump(200, hostM, cM, cM2);
+            cM2.TryGetIdentity(ph.objectId, out var phC2); var late = (Phases)phC2;
+            Check(late.round.enters == 1 && late.round.last == 7 && late.idle.enters == 0, "late joiner enters only the current state Round(7)");
+            Check(ph.sm.Next() && ph.sm.IsCurrentState<Idle>(), "Next() wraps to Idle");
+            await Until(() => phC.idle.enters == 2 && late.idle.enters == 1, 3000, hostM, cM, cM2);
+            Check(phC.round.exits == 1 && late.round.exits == 1, "Round exited on both clients");
+            hostM.Stop(); cM.Stop(); cM2.Stop(); await Pump(300, hostM, cM, cM2);
+        }
+
+        // NetworkLOD: far player is culled from deltas (still an observer), near player gets them; moving closer restores
+        {
+            var hostL = Make("hostL"); var cN = Make("cN"); var cF = Make("cF"); hostL.roomName = cN.roomName = cF.roomName = room + "-lod";
+            hostL.StartHost(); await Until(() => hostL.isServer, 8000, hostL);
+            var box = (LodBox)hostL.Spawn(LB);
+            cN.StartClient(); cF.StartClient(); await Until(() => hostL.players.Count == 3, 8000, hostL, cN, cF);
+            var avN = (Mover)hostL.Spawn(1, cN.localPlayer); var avF = (Mover)hostL.Spawn(1, cF.localPlayer);
+            avN.transform.position = new Vector3(5, 0, 0); avF.transform.position = new Vector3(600, 0, 0);
+            await Until(() => cN.TryGetIdentity(box.objectId, out _) && cF.TryGetIdentity(box.objectId, out _), 5000, hostL, cN, cF);
+            cN.TryGetIdentity(box.objectId, out var bN); cF.TryGetIdentity(box.objectId, out var bF);
+            await Pump(300, hostL, cN, cF);
+            Check(box.lod.GetTier(cN.localPlayer.Value) == 0 && box.lod.IsCulled(cF.localPlayer.Value), $"tiers: near={box.lod.GetTier(cN.localPlayer.Value)} far culled");
+            int before = ((LodBox)bF).counter.v.value;
+            for (int i = 0; i < 20; i++) { box.counter.v.value++; await Pump(30, hostL, cN, cF); }
+            Check(((LodBox)bN).counter.v.value == box.counter.v.value && ((LodBox)bF).counter.v.value == before && box.IsObserver(cF.localPlayer.Value), $"near client follows ({((LodBox)bN).counter.v.value}), culled client frozen at {before} but still observes");
+            avF.transform.position = new Vector3(8, 0, 0); await Pump(300, hostL, cN, cF);
+            box.counter.v.value++; await Until(() => ((LodBox)bF).counter.v.value == box.counter.v.value, 3000, hostL, cN, cF);
+            Check(box.lod.GetTier(cF.localPlayer.Value) == 0 && ((LodBox)bF).counter.v.value == box.counter.v.value, "far player moved close: tier 0 and deltas resume");
+            hostL.Stop(); cN.Stop(); cF.Stop(); await Pump(300, hostL, cN, cF);
         }
 
         // static RPCs: no NetworkIdentity, routed via NetworkManager.main (host) / the client manager

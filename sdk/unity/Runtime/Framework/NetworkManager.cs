@@ -409,7 +409,7 @@ namespace Aurix.Net.Unity.Framework
                         var bytes = body.Finish();
                         void Write(BitWriter w) { w.WriteBits(id.objectId, 32); w.WriteBits((ulong)b.componentIndex, 8); w.WriteBits((ulong)mi, 8); w.WriteBits(tick, 32); w.WriteUInt((ulong)bytes.Length, 16); w.WriteBytes(bytes); }
                         if (isServer && m.serverOnly) { m.ClearDirty(); continue; }
-                        if (isServer) { if (m.ownerOnly && id.owner.HasValue) { if (id.owner != localPlayer) Send(id.owner.Value.id, Msg.Sync, Write); } else foreach (var p in id.observers) Send(p.id, Msg.Sync, Write); }
+                        if (isServer) { if (m.ownerOnly && id.owner.HasValue) { if (id.owner != localPlayer) Send(id.owner.Value.id, Msg.Sync, Write); } else foreach (var p in id.observers) { if (id.lod != null && p != localPlayer && !id.lod.ShouldSendToPlayer(p, tick)) continue; Send(p.id, Msg.Sync, Write); } }
                         else Send(-1, Msg.Sync, Write);
                     }
                     b.OnTick(tick);

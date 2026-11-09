@@ -51,6 +51,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   buttons in play mode), `NetworkIdentity` inspector (stable `sceneId` auto-assigned for scene
   objects from scene + hierarchy path, runtime owner/observers), menu "Aurix Net/Assign scene ids".
   Written against the public UnityEditor API but not yet run in an editor.
+- `StateMachine` + `StateNode`/`StateNode<T>`: replicated state machine (server- or owner-authoritative);
+  `SetState`, `SetState(node, data)`, `Next`, `Stop`; Enter/Exit/StateUpdate on every peer with the same
+  payload, late joiners enter the current state.
+- `NetworkLOD`: per-player send-rate tiers by distance (interval per tier, hysteresis, cull beyond the last
+  tier); gates module deltas only, visibility/RPCs untouched; `onTierChanged`.
 - `NetworkTransform.syncParent` + `SetParent(NetworkIdentity)`: the parent object id travels with the
   pose, remotes re-parent and apply the pose in the parent's local space while attached.
 - Static RPCs: `[ServerRpc]`/`[ObserversRpc]`/`[TargetRpc]` on static methods of any class, routed via
