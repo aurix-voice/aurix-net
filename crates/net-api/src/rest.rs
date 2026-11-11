@@ -51,22 +51,25 @@ pub fn router(st: Shared) -> Router {
         .route("/v1/nodes", get(nodes))
         .route("/v1/grants", post(create_grant))
         .route("/v1/rooms", get(list_rooms).post(create_room))
-        .route("/v1/rooms/:id", get(get_room).delete(delete_room))
-        .route("/v1/rooms/:id/replay", get(get_replay))
-        .route("/v1/rooms/:id/desyncs", get(list_desyncs))
-        .route("/v1/rooms/:id/desyncs/:tick/:actor", get(get_desync))
+        .route("/v1/rooms/{id}", get(get_room).delete(delete_room))
+        .route("/v1/rooms/{id}/replay", get(get_replay))
+        .route("/v1/rooms/{id}/desyncs", get(list_desyncs))
+        .route("/v1/rooms/{id}/desyncs/{tick}/{actor}", get(get_desync))
         .route("/v1/usage", get(usage))
         .route("/v1/keys", get(list_keys).post(create_key))
-        .route("/v1/keys/:id", delete(revoke_key))
+        .route("/v1/keys/{id}", delete(revoke_key))
         .route("/v1/webhooks", get(list_webhooks).post(create_webhook))
         .route("/v1/matchmaking", get(mm_stats))
-        .route("/v1/players/:player_id", get(player_lookup))
+        .route("/v1/players/{player_id}", get(player_lookup))
         .route("/v1/matchmaking/tickets", post(mm_file))
-        .route("/v1/matchmaking/tickets/:id", get(mm_get).delete(mm_cancel))
-        .route("/v1/webhooks/:id", delete(delete_webhook))
+        .route(
+            "/v1/matchmaking/tickets/{id}",
+            get(mm_get).delete(mm_cancel),
+        )
+        .route("/v1/webhooks/{id}", delete(delete_webhook))
         .route("/v1/modules", get(list_modules))
         .route(
-            "/v1/modules/:name",
+            "/v1/modules/{name}",
             put(put_module)
                 .delete(delete_module)
                 .layer(DefaultBodyLimit::max(net_game::MAX_MODULE_BYTES + 1024)),
@@ -75,15 +78,18 @@ pub fn router(st: Shared) -> Router {
             "/v1/operator/projects",
             get(op_list_projects).post(op_create_project),
         )
-        .route("/v1/operator/projects/:id/keys", post(op_create_key))
-        .route("/v1/operator/projects/:id/grants", post(op_create_grant))
-        .route("/v1/operator/projects/:id/keys/:kid", delete(op_revoke_key))
-        .route("/v1/operator/projects/:id/limits", post(op_set_limits))
-        .route("/v1/operator/projects/:id/suspend", post(op_set_suspended))
+        .route("/v1/operator/projects/{id}/keys", post(op_create_key))
+        .route("/v1/operator/projects/{id}/grants", post(op_create_grant))
+        .route(
+            "/v1/operator/projects/{id}/keys/{kid}",
+            delete(op_revoke_key),
+        )
+        .route("/v1/operator/projects/{id}/limits", post(op_set_limits))
+        .route("/v1/operator/projects/{id}/suspend", post(op_set_suspended))
         .route("/v1/operator/nodes", get(op_nodes))
         .route("/v1/operator/rooms", get(op_rooms))
         .route(
-            "/v1/operator/rooms/:id",
+            "/v1/operator/rooms/{id}",
             get(op_room).delete(op_delete_room),
         )
         .route("/v1/operator/audit", get(op_audit))
@@ -93,97 +99,103 @@ pub fn router(st: Shared) -> Router {
             "/v1/operator/tokens",
             get(op_list_tokens).post(op_create_token),
         )
-        .route("/v1/operator/tokens/:id", delete(op_revoke_token))
+        .route("/v1/operator/tokens/{id}", delete(op_revoke_token))
         .route(
             "/v1/operator/webhooks",
             get(op_list_alert_webhooks).post(op_create_alert_webhook),
         )
-        .route("/v1/operator/webhooks/:id", delete(op_delete_alert_webhook))
         .route(
-            "/v1/operator/webhooks/:id/deliveries",
+            "/v1/operator/webhooks/{id}",
+            delete(op_delete_alert_webhook),
+        )
+        .route(
+            "/v1/operator/webhooks/{id}/deliveries",
             get(op_alert_webhook_deliveries),
         )
         .route(
-            "/v1/operator/webhooks/:id/test",
+            "/v1/operator/webhooks/{id}/test",
             post(op_alert_webhook_test),
         )
-        .route("/v1/operator/projects/:id/matchmaking", get(op_mm_stats))
+        .route("/v1/operator/projects/{id}/matchmaking", get(op_mm_stats))
         .route(
-            "/v1/operator/projects/:id/players/:player_id",
+            "/v1/operator/projects/{id}/players/{player_id}",
             get(op_player_lookup),
         )
-        .route("/v1/internal/players/:player_id", get(internal_find_player))
+        .route(
+            "/v1/internal/players/{player_id}",
+            get(internal_find_player),
+        )
         .route("/v1/internal/presence", get(internal_presence))
         .route("/v1/internal/stats", get(internal_stats))
-        .route("/v1/operator/nodes/:id/stats", get(op_node_stats))
+        .route("/v1/operator/nodes/{id}/stats", get(op_node_stats))
         .route(
-            "/v1/operator/projects/:id/webhooks/:wid",
+            "/v1/operator/projects/{id}/webhooks/{wid}",
             delete(op_delete_webhook),
         )
         .route(
-            "/v1/operator/projects/:id/modules/:name",
+            "/v1/operator/projects/{id}/modules/{name}",
             delete(op_delete_module),
         )
-        .route("/v1/internal/rooms/:id/players", get(internal_players))
-        .route("/v1/internal/rooms/:id/replay", get(internal_replay))
+        .route("/v1/internal/rooms/{id}/players", get(internal_players))
+        .route("/v1/internal/rooms/{id}/replay", get(internal_replay))
         .route("/v1/internal/drain", post(internal_drain))
-        .route("/v1/webhooks/:id/deliveries", get(webhook_deliveries))
+        .route("/v1/webhooks/{id}/deliveries", get(webhook_deliveries))
         .route("/v1/rejections", get(rejections))
-        .route("/v1/operator/projects/:id/rejections", get(op_rejections))
-        .route("/v1/webhooks/:id/test", post(webhook_test))
-        .route("/v1/webhooks/:id/rotate", post(webhook_rotate))
+        .route("/v1/operator/projects/{id}/rejections", get(op_rejections))
+        .route("/v1/webhooks/{id}/test", post(webhook_test))
+        .route("/v1/webhooks/{id}/rotate", post(webhook_rotate))
         .route(
-            "/v1/operator/projects/:id/webhooks/:wid/deliveries",
+            "/v1/operator/projects/{id}/webhooks/{wid}/deliveries",
             get(op_webhook_deliveries),
         )
         .route(
-            "/v1/operator/projects/:id/webhooks/:wid/rotate",
+            "/v1/operator/projects/{id}/webhooks/{wid}/rotate",
             post(op_webhook_rotate),
         )
         .route(
-            "/v1/operator/projects/:id/webhooks/:wid/test",
+            "/v1/operator/projects/{id}/webhooks/{wid}/test",
             post(op_webhook_test),
         )
-        .route("/v1/internal/rooms/:id", delete(internal_close_room))
+        .route("/v1/internal/rooms/{id}", delete(internal_close_room))
         .route(
-            "/v1/internal/rooms/:id/players/:actor",
+            "/v1/internal/rooms/{id}/players/{actor}",
             delete(internal_kick),
         )
-        .route("/v1/rooms/:id/players/:actor", delete(kick_player))
-        .route("/v1/rooms/:id/notice", post(room_notice))
+        .route("/v1/rooms/{id}/players/{actor}", delete(kick_player))
+        .route("/v1/rooms/{id}/notice", post(room_notice))
         .route("/v1/notice", post(project_notice))
-        .route("/v1/operator/rooms/:id/notice", post(op_room_notice))
-        .route("/v1/operator/projects/:id/notice", post(op_project_notice))
-        .route("/v1/internal/rooms/:id/notice", post(internal_room_notice))
+        .route("/v1/operator/rooms/{id}/notice", post(op_room_notice))
+        .route("/v1/operator/projects/{id}/notice", post(op_project_notice))
+        .route("/v1/internal/rooms/{id}/notice", post(internal_room_notice))
         .route("/v1/internal/notice", post(internal_project_notice))
         .route("/v1/bans", get(list_bans).post(create_ban))
-        .route("/v1/bans/:player_id", delete(delete_ban))
+        .route("/v1/bans/{player_id}", delete(delete_ban))
         .route(
-            "/v1/operator/projects/:id/bans",
+            "/v1/operator/projects/{id}/bans",
             get(op_list_bans).post(op_create_ban),
         )
         .route(
-            "/v1/operator/projects/:id/bans/:player_id",
+            "/v1/operator/projects/{id}/bans/{player_id}",
             delete(op_delete_ban),
         )
         .route(
-            "/v1/operator/rooms/:id/players/:actor",
+            "/v1/operator/rooms/{id}/players/{actor}",
             delete(op_kick_player),
         )
-        .route("/v1/operator/nodes/:id/drain", post(op_drain_node))
-        .route("/v1/operator/rooms/:id/replay", get(op_replay))
-        .route("/v1/operator/rooms/:id/desyncs", get(op_list_desyncs))
+        .route("/v1/operator/nodes/{id}/drain", post(op_drain_node))
+        .route("/v1/operator/rooms/{id}/replay", get(op_replay))
+        .route("/v1/operator/rooms/{id}/desyncs", get(op_list_desyncs))
         .route(
-            "/v1/operator/rooms/:id/desyncs/:tick/:actor",
+            "/v1/operator/rooms/{id}/desyncs/{tick}/{actor}",
             get(op_get_desync),
         )
         .route(
-            "/v1/operator/projects/:id",
+            "/v1/operator/projects/{id}",
             get(op_project).delete(op_delete_project),
         )
-        .route("/v1/operator/projects/:id/usage", get(op_usage))
+        .route("/v1/operator/projects/{id}/usage", get(op_usage))
         .route("/v1/operator/billing", get(op_billing))
-        .route("/v1/operator/projects/:id/rooms", get(op_project_rooms))
+        .route("/v1/operator/projects/{id}/rooms", get(op_project_rooms))
         .with_state(st)
 }
 
