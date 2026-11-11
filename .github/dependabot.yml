@@ -1,0 +1,45 @@
+# Dependabot: weekly grouped update PRs per ecosystem (one PR per group, so CI runs once per batch).
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule: { interval: "weekly", day: "monday" }
+    open-pull-requests-limit: 5
+    groups:
+      cargo-deps: { patterns: ["*"] }
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule: { interval: "weekly", day: "monday" }
+    open-pull-requests-limit: 5
+    groups:
+      githubactions-deps: { patterns: ["*"] }
+  - package-ecosystem: "npm"
+    directory: "/dashboard"
+    schedule: { interval: "weekly", day: "monday" }
+    open-pull-requests-limit: 5
+    groups:
+      npm-deps: { patterns: ["*"] }
+  - package-ecosystem: "npm"
+    directory: "/sdk/web"
+    schedule: { interval: "weekly", day: "monday" }
+    open-pull-requests-limit: 5
+    groups:
+      npm-deps: { patterns: ["*"] }
+  - package-ecosystem: "nuget"
+    directory: "/sdk/unity/Weaver/Aurix.Net.Weaver"
+    schedule: { interval: "weekly", day: "monday" }
+    open-pull-requests-limit: 5
+    groups:
+      nuget-deps: { patterns: ["*"] }
+  - package-ecosystem: "nuget"
+    directory: "/sdk/unity/Weaver/Aurix.Net.Weaver.Cli"
+    schedule: { interval: "weekly", day: "monday" }
+    open-pull-requests-limit: 5
+    groups:
+      nuget-deps: { patterns: ["*"] }
+  - package-ecosystem: "nuget"
+    directory: "/sdk/unity/BuildCheck~/framework-check"
+    schedule: { interval: "weekly", day: "monday" }
+    open-pull-requests-limit: 5
+    groups:
+      nuget-deps: { patterns: ["*"] }
