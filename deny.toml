@@ -6,7 +6,14 @@ version = 2
 yanked = "deny"
 # RUSTSEC-2023-0071 (rsa) stays only in Cargo.lock via the disabled sqlx-mysql feature; cargo-deny
 # resolves the enabled graph and does not see it (the ignore lives in .cargo/audit.toml for cargo-audit).
-ignore = []
+ignore = [
+  # rsa (Marvin timing attack): now in the enabled graph through jsonwebtoken's rust_crypto backend
+  # (RS256/RS384/RS512 verification); Aurix Net issues and verifies HS256 grants only. No fix upstream.
+  "RUSTSEC-2023-0071",
+  # crypto-bigint 0.5 timing variability: p256/p384 via jsonwebtoken rust_crypto (ES256/ES384),
+  # unused for HS256 grants; the fix needs elliptic-curve 0.14, which jsonwebtoken does not support yet.
+  "RUSTSEC-2026-0387",
+]
 
 [licenses]
 version = 2
