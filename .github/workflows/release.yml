@@ -22,7 +22,7 @@ env:
 
 jobs:
   check-version:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}" }
@@ -40,7 +40,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - { os: ubuntu-latest, arch: x86_64 }
+          - { os: ubuntu-24.04, arch: x86_64 }
           - { os: ubuntu-24.04-arm, arch: aarch64 }
     runs-on: ${{ matrix.os }}
     steps:
@@ -64,7 +64,7 @@ jobs:
 
   sdk:
     needs: check-version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}" }
@@ -99,7 +99,7 @@ jobs:
 
   sbom:
     needs: check-version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}" }
@@ -115,7 +115,7 @@ jobs:
 
   images:
     needs: check-version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}" }
@@ -148,7 +148,7 @@ jobs:
 
   release:
     needs: [server, sdk, sbom, images]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}" }
