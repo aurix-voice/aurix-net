@@ -143,7 +143,7 @@ jobs:
           nohup ../target/debug/aurix-net-server > /tmp/node.log 2>&1 &
           for i in $(seq 1 30); do curl -fs http://127.0.0.1:8090/healthz && break; sleep 1; done
           curl -fs http://127.0.0.1:8090/healthz
-      - run: npx playwright install --with-deps chromium
+      - run: for i in 1 2 3 4 5; do npx playwright install --with-deps chromium && break; sleep 20; done
       - run: npm run e2e
         env:
           CI: "1"
