@@ -24,7 +24,7 @@ jobs:
   check-version:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}" }
       - name: tag == version fields, CHANGELOG has the entry
         run: |
@@ -44,7 +44,7 @@ jobs:
           - { os: ubuntu-24.04-arm, arch: aarch64 }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}" }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -59,19 +59,19 @@ jobs:
           cp LICENSE* README.md CHANGELOG.md "$d/" 2>/dev/null || true
           cp -r deploy "$d/deploy"
           tar czf "$d.tar.gz" "$d"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: "server-${{ matrix.arch }}", path: "aurix-net-*.tar.gz", if-no-files-found: error }
 
   sdk:
     needs: check-version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}" }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: wasm32-unknown-unknown }
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with: { node-version: 22 }
       - run: cargo build --release --target wasm32-unknown-unknown -p net-sim-wasm
       - name: web package
@@ -86,7 +86,7 @@ jobs:
           (cd sdk && zip -qr "../aurix-net-godot-${TAG}.zip" godot -x 'godot/godot-cpp/*' -x 'godot/bin/*' -x 'godot/check~/*' -x '*.os' -x '*.o')
           (cd sdk && zip -qr "../aurix-net-cpp-${TAG}.zip" cpp)
           cp crates/net-ffi/include/aurix_sim.h .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sdk
           if-no-files-found: error
@@ -101,7 +101,7 @@ jobs:
     needs: check-version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}" }
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
@@ -110,22 +110,22 @@ jobs:
       - run: cargo deny check
       - run: cargo cyclonedx -f json --describe binaries --manifest-path crates/net-server/Cargo.toml
       - run: mv crates/net-server/aurix-net-server_bin.cdx.json "aurix-net-server-${TAG}.cdx.json"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: sbom, path: "aurix-net-server-*.cdx.json", if-no-files-found: error }
 
   images:
     needs: check-version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}" }
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
       - name: image names
         run: echo "REPO=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -133,7 +133,7 @@ jobs:
           tags: ${{ env.REPO }}/aurix-net:${{ env.TAG }},${{ env.REPO }}/aurix-net:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: dashboard/Dockerfile
@@ -143,16 +143,16 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # The published node image must be free of CRITICAL vulnerabilities with a fix (same gate as CI).
-      - uses: aquasecurity/trivy-action@0.35.0
+      - uses: aquasecurity/trivy-action@v0.36.0
         with: { image-ref: "${{ env.REPO }}/aurix-net:${{ env.TAG }}", scanners: vuln, severity: CRITICAL, ignore-unfixed: true, exit-code: "1" }
 
   release:
     needs: [server, sdk, sbom, images]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}" }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { path: dist, merge-multiple: true }
       - name: checksums + release notes
         run: |
@@ -162,7 +162,7 @@ jobs:
           printf '\n---\nImages: `ghcr.io/%s/aurix-net:%s`, `ghcr.io/%s/aurix-net-console:%s` (linux/amd64, linux/arm64). SBOM and SHA-256 sums attached.\n' \
             "${GITHUB_REPOSITORY_OWNER,,}" "$TAG" "${GITHUB_REPOSITORY_OWNER,,}" "$TAG" >> notes.md
           ls -la dist
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.TAG }}
           name: Aurix Net ${{ env.TAG }}
