@@ -1146,8 +1146,8 @@ fn local_stats(st: &Shared) -> Value {
         if total > 0 {
             let target = (total as f64 * 0.99).ceil() as u64;
             for b in h.get_bucket() {
-                if b.get_cumulative_count() >= target {
-                    p99 = b.get_upper_bound() * 1000.0;
+                if b.cumulative_count() >= target {
+                    p99 = b.upper_bound() * 1000.0;
                     break;
                 }
             }

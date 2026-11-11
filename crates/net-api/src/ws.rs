@@ -95,12 +95,12 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
                 m = ctl_rx.recv() => match m {
                     Some(m) => {
                         let txt = serde_json::to_string(&m).unwrap_or_default();
-                        if sink.send(Message::Text(txt)).await.is_err() { break; }
+                        if sink.send(Message::Text(txt.into())).await.is_err() { break; }
                     }
                     None => break,
                 },
                 b = bin_rx.recv() => match b {
-                    Some(b) => if sink.send(Message::Binary(b.to_vec())).await.is_err() { break; },
+                    Some(b) => if sink.send(Message::Binary(b)).await.is_err() { break; },
                     None => break,
                 },
             }
@@ -159,7 +159,7 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
                 Err(e) => sess.error(NetError::Invalid(format!("bad message: {e}"))),
             },
             Message::Binary(b) => {
-                if let Err(e) = sess.on_binary(Bytes::from(b)) {
+                if let Err(e) = sess.on_binary(b) {
                     sess.error(e);
                 }
             }

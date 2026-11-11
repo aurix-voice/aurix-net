@@ -322,7 +322,7 @@ async fn player(
 
     let (ws, _) = tokio_tungstenite::connect_async(ws_url).await?;
     let (mut tx, mut rx) = ws.split();
-    let send = |m: &ClientMsg| Message::Text(serde_json::to_string(m).unwrap());
+    let send = |m: &ClientMsg| Message::Text(serde_json::to_string(m).unwrap().into());
     tx.send(send(&ClientMsg::Auth { grant })).await?;
     let room_name = format!("lt-{}-{room}", cli.run);
     tx.send(send(&ClientMsg::JoinOrCreate {
@@ -374,7 +374,7 @@ async fn player(
     }
     let (ws_tx, mut ws_rx) = tokio::sync::mpsc::channel::<Message>(1024);
     let sink: Arc<Sink> = if cli.tunnel {
-        tx.send(Message::Binary(ticket)).await?;
+        tx.send(Message::Binary(ticket.into())).await?;
         Arc::new(Sink::Ws(ws_tx.clone()))
     } else if cli.webtransport {
         let url = data
@@ -416,7 +416,7 @@ async fn player(
                         let _ = c.send_datagram(d);
                     }
                     Sink::Ws(t) => {
-                        let _ = t.try_send(Message::Binary(d.to_vec()));
+                        let _ = t.try_send(Message::Binary(d.to_vec().into()));
                     }
                 }
             }
@@ -603,7 +603,7 @@ async fn player(
             tokio::spawn(async move {
                 while let Some(Ok(m)) = rx.next().await {
                     if let Message::Binary(b) = m {
-                        on(Bytes::from(b));
+                        on(b);
                     }
                 }
             })

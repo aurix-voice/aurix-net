@@ -123,7 +123,7 @@ impl DataPath {
                     let _ = c.send_datagram(d);
                 }
                 Sink::Ws(tx) => {
-                    let _ = tx.try_send(Message::Binary(d.to_vec()));
+                    let _ = tx.try_send(Message::Binary(d));
                 }
             }
         }
@@ -209,7 +209,7 @@ impl Client {
                     Ok(Message::Binary(b)) => {
                         let dp = tunnel_slot.lock().clone();
                         if let Some(dp) = dp {
-                            deliver(&dp, Bytes::from(b), &events_tx).await;
+                            deliver(&dp, b, &events_tx).await;
                         }
                     }
                     Ok(Message::Close(_)) | Err(_) => {
@@ -247,7 +247,7 @@ impl Client {
     pub async fn send(&self, msg: ClientMsg) -> Result<()> {
         let txt = serde_json::to_string(&msg).map_err(|e| ClientError::Ws(e.to_string()))?;
         self.ctl
-            .send(Message::Text(txt))
+            .send(Message::Text(txt.into()))
             .await
             .map_err(|_| ClientError::Disconnected)
     }
@@ -379,7 +379,7 @@ impl Client {
                 *slot.lock() = Some(dp.clone());
             }
             self.ctl
-                .send(Message::Binary(ticket))
+                .send(Message::Binary(ticket.into()))
                 .await
                 .map_err(|_| ClientError::Disconnected)?;
             dp

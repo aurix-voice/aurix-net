@@ -266,7 +266,7 @@ impl WasmLogic {
         })
     }
 
-    fn link(l: &mut Linker<Host>) -> anyhow::Result<()> {
+    fn link(l: &mut Linker<Host>) -> wasmtime::Result<()> {
         l.func_wrap("aurix", "dt", |mut c: Caller<'_, Host>| -> f32 {
             frame(&mut c).map(|f| f.dt()).unwrap_or(0.0)
         })?;

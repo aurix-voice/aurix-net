@@ -4,7 +4,7 @@
 //! After a secret rotation `X-Aurix-Signature-Previous` carries the old secret's signature
 //! until the grace period ends, so receivers can switch without dropping events.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use net_common::ipnet::is_public_ip;
 use net_common::NetError;
 use net_common::ProjectId;

@@ -2,7 +2,7 @@
 //! belongs to. 48 bytes: `u64 exp_unix, 16 session uuid, 16 room uuid(?)` is overkill;
 //! we sign `session_id || room_id || actor || exp` with HMAC-SHA256 truncated to 16 bytes.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use net_common::limits::DATA_TICKET_TTL_SECS;
 use net_common::{ActorId, RoomId, SessionId};
 use sha2::Sha256;

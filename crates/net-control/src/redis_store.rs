@@ -79,12 +79,12 @@ impl RedisStore {
         // Bounded reconnect backoff: a Redis outage costs a tick loop at most a few seconds
         // per write instead of the default unbounded exponential delays.
         let cfg = redis::aio::ConnectionManagerConfig::new()
-            .set_exponent_base(2)
-            .set_factor(100)
-            .set_max_delay(1_000)
+            .set_exponent_base(2.0)
+            .set_min_delay(std::time::Duration::from_millis(100))
+            .set_max_delay(std::time::Duration::from_millis(1_000))
             .set_number_of_retries(5)
-            .set_connection_timeout(std::time::Duration::from_secs(2))
-            .set_response_timeout(std::time::Duration::from_secs(3));
+            .set_connection_timeout(Some(std::time::Duration::from_secs(2)))
+            .set_response_timeout(Some(std::time::Duration::from_secs(3)));
         let conn = ConnectionManager::new_with_config(client, cfg)
             .await
             .map_err(|e| NetError::Redis(e.to_string()))?;

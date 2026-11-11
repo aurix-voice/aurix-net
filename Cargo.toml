@@ -40,43 +40,43 @@ publish = false
 [workspace.dependencies]
 tokio = { version = "1.36", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
-axum = { version = "0.7", features = ["ws", "macros"] }
+axum = { version = "0.8", features = ["ws", "macros"] }
 tower = { version = "0.4", features = ["full"] }
-tower-http = { version = "0.5", features = ["trace", "cors", "limit"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "limit"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.7", features = ["v4", "v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-thiserror = "1.0"
+thiserror = "2.0"
 anyhow = "1.0"
 bytes = "1.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-config = "0.14"
+config = "0.15"
 clap = { version = "4.5", features = ["derive", "env"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "derive", "macros", "tls-rustls-ring-native-roots", "postgres", "uuid", "chrono", "json", "migrate"] }
-redis = { version = "0.32", features = ["tokio-comp", "connection-manager", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
-jsonwebtoken = "9.2"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "derive", "macros", "tls-rustls-ring-native-roots", "postgres", "uuid", "chrono", "json", "migrate"] }
+redis = { version = "1.8", features = ["tokio-comp", "connection-manager", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
+jsonwebtoken = { version = "11.1", features = ["rust_crypto"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 rustls-pki-types = "1"
-rcgen = "0.13"
-tokio-tungstenite = "0.24"
+rcgen = "0.14"
+tokio-tungstenite = "0.29"
 futures = "0.3"
 dashmap = "6"
-parking_lot = "0.12"
-rand = "0.8"
-sha2 = "0.10"
-hmac = "0.12"
+parking_lot = "0.13"
+rand = "0.10"
+sha2 = "0.11"
+hmac = "0.13"
 subtle = "2"
-base64 = "0.22"
+base64 = "0.23"
 hex = "0.4"
-prometheus = { version = "0.13", default-features = false, features = ["process"] }
+prometheus = { version = "0.14", default-features = false, features = ["process"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 async-trait = "0.1"
 blake3 = "1"
 wtransport = { version = "0.7", default-features = false, features = ["quinn", "ring"] }
-wasmtime = { version = "36", default-features = false, features = ["cranelift", "runtime", "wat", "std", "parallel-compilation"] }
+wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime", "wat", "std", "parallel-compilation"] }
 
 [profile.release]
 lto = "thin"

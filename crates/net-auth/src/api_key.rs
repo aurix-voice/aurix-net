@@ -2,7 +2,7 @@
 //! SHA-256. Keys are shown once at creation.
 
 use base64::Engine;
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -45,7 +45,7 @@ pub struct ApiKeyMaterial {
 impl ApiKeyMaterial {
     pub fn generate() -> Self {
         let mut raw = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut raw);
+        rand::rng().fill_bytes(&mut raw);
         let secret = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
         let prefix = secret[..8].to_string();
         let plaintext = format!("an_{prefix}_{}", &secret[8..]);
