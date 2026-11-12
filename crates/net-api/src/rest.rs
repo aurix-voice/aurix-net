@@ -143,7 +143,9 @@ pub fn router(st: Shared) -> Router {
         )
         .route(
             "/v1/operator/projects/{id}/modules/{name}",
-            delete(op_delete_module),
+            put(op_put_module)
+                .delete(op_delete_module)
+                .layer(DefaultBodyLimit::max(net_game::MAX_MODULE_BYTES + 1024)),
         )
         .route("/v1/internal/rooms/{id}/players", get(internal_players))
         .route("/v1/internal/rooms/{id}/replay", get(internal_replay))
@@ -3453,6 +3455,45 @@ async fn op_project_audit(
     )
     .await?;
     Ok(audit_out(rows, &q)?)
+}
+
+/// Operator upload of a project's game module (the hosted console goes through here).
+async fn op_put_module(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((id, name)): Path<(Uuid, String)>,
+    body: axum::body::Bytes,
+) -> ApiResult<Json<Value>> {
+    let op = operator(&st, &h).await?;
+    let p = queries::get_project(&st.pool, id).await?;
+    if p.deleted_at.is_some() {
+        return Err(NetError::NotFound("project deleted".into()).into());
+    }
+    if !valid_module_name(&name) {
+        return Err(NetError::Invalid("module name: 1..=64 chars [A-Za-z0-9._-]".into()).into());
+    }
+    if body.is_empty() {
+        return Err(NetError::Invalid("empty module".into()).into());
+    }
+    let games = st.games.clone();
+    let bytes = body.to_vec();
+    let (hash, _) = tokio::task::spawn_blocking(move || games.load(&bytes))
+        .await
+        .map_err(|e| NetError::Internal(e.to_string()))?
+        .map_err(|e| NetError::Invalid(format!("module rejected: {e}")))?;
+    let row = queries::upsert_game_module(&st.pool, id, &name, &hash, &body).await?;
+    audit_log(
+        &st,
+        Some(id),
+        &op.actor,
+        "module.put",
+        &name,
+        json!({"hash": row.hash, "size": row.size}),
+    )
+    .await;
+    Ok(Json(
+        json!({"name": row.name, "hash": row.hash, "size": row.size, "updated_at": row.updated_at}),
+    ))
 }
 
 async fn op_delete_module(
