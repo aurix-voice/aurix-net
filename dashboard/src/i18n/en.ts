@@ -322,6 +322,7 @@ export const en = {
   "health.keys": "API keys",
   "health.keys.expiring": (v) => `${v.n} expire within 7 days`,
   "projects.limit.monthly_player_minutes": "Monthly cap: player-minutes",
+  "projects.limit.max_concurrent_players": "Players online at once (fleet-wide)",
   "projects.limit.monthly_bytes": "Monthly cap: bytes (in + out)",
   "rejections.usage_cap": "Monthly cap reached",
   "health.usage": "Player-minutes · month",

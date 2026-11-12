@@ -78,7 +78,10 @@ pub fn router(st: Shared) -> Router {
             "/v1/operator/projects",
             get(op_list_projects).post(op_create_project),
         )
-        .route("/v1/operator/projects/{id}/keys", post(op_create_key))
+        .route(
+            "/v1/operator/projects/{id}/keys",
+            get(op_list_keys).post(op_create_key),
+        )
         .route("/v1/operator/projects/{id}/grants", post(op_create_grant))
         .route(
             "/v1/operator/projects/{id}/keys/{kid}",
@@ -117,6 +120,12 @@ pub fn router(st: Shared) -> Router {
             post(op_alert_webhook_test),
         )
         .route("/v1/operator/projects/{id}/matchmaking", get(op_mm_stats))
+        .route(
+            "/v1/operator/projects/{id}/webhooks",
+            get(op_list_webhooks).post(op_create_webhook),
+        )
+        .route("/v1/operator/projects/{id}/modules", get(op_list_modules))
+        .route("/v1/operator/projects/{id}/audit", get(op_project_audit))
         .route(
             "/v1/operator/projects/{id}/players/{player_id}",
             get(op_player_lookup),
@@ -3356,6 +3365,96 @@ async fn op_delete_webhook(
 }
 
 /// Operator removes a project's WASM module; audited.
+/// Operator view of one project's API keys (same shape as the key-authenticated list).
+async fn op_list_keys(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h).await?;
+    queries::get_project(&st.pool, id).await?;
+    let rows = queries::list_api_keys(&st.pool, id).await?;
+    Ok(Json(
+        json!({"keys": rows.iter().map(key_json).collect::<Vec<_>>()}),
+    ))
+}
+
+async fn op_list_webhooks(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h).await?;
+    queries::get_project(&st.pool, id).await?;
+    let rows = queries::list_webhooks(&st.pool, id).await?;
+    Ok(Json(
+        json!({"webhooks": rows.into_iter().map(|r| json!({"id": r.id, "url": r.url, "events": r.events, "created_at": r.created_at, "previous_secret_expires_at": r.previous_secret_expires_at})).collect::<Vec<_>>()}),
+    ))
+}
+
+/// Operator-created webhook; the secret is returned once, exactly like the key path.
+async fn op_create_webhook(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<WebhookReq>,
+) -> ApiResult<Json<Value>> {
+    let op = operator(&st, &h).await?;
+    let prow = queries::get_project(&st.pool, id).await?;
+    if prow.disabled_at.is_some() {
+        return Err(NetError::Forbidden("project is suspended".into()).into());
+    }
+    crate::webhooks::validate_webhook_url(&req.url, st.cfg.server.environment == "development")?;
+    crate::webhooks::validate_events(&req.events)?;
+    let secret = ApiKeyMaterial::generate().plaintext;
+    let row = queries::insert_webhook(&st.pool, id, &req.url, &secret, &req.events).await?;
+    st.webhooks.invalidate(ProjectId::from_uuid(id));
+    audit_log(
+        &st,
+        Some(id),
+        &op.actor,
+        "webhook.create",
+        &row.id.to_string(),
+        json!({"url": row.url, "events": row.events}),
+    )
+    .await;
+    Ok(Json(
+        json!({"id": row.id, "url": row.url, "events": row.events, "secret": row.secret}),
+    ))
+}
+
+async fn op_list_modules(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h).await?;
+    queries::get_project(&st.pool, id).await?;
+    let rows = queries::list_game_modules(&st.pool, id).await?;
+    Ok(Json(json!({ "modules": rows })))
+}
+
+/// Audit trail scoped to one project (the `project` filter is forced to the path id).
+async fn op_project_audit(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(mut q): Query<AuditQuery>,
+) -> ApiResult<axum::response::Response> {
+    operator(&st, &h).await?;
+    queries::get_project(&st.pool, id).await?;
+    q.project = Some(id);
+    let rows = queries::list_audit(
+        &st.pool,
+        q.project,
+        q.action.as_deref(),
+        q.actor.as_deref(),
+        q.limit.unwrap_or(100),
+    )
+    .await?;
+    Ok(audit_out(rows, &q)?)
+}
+
 async fn op_delete_module(
     State(st): State<Shared>,
     h: HeaderMap,

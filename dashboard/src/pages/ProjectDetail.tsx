@@ -30,7 +30,7 @@ import { Badge, Callout, Card, Field, IdChip, KV, Mono } from "@/ui/Primitives";
 import { DataTable } from "@/ui/Table";
 import { useToast } from "@/ui/Toast";
 
-const LIMIT_KEYS = ["max_rooms", "max_players_per_room", "max_events_per_sec_per_room", "max_events_per_sec_per_player", "max_event_bytes", "monthly_player_minutes", "monthly_bytes"] as const;
+const LIMIT_KEYS = ["max_rooms", "max_players_per_room", "max_events_per_sec_per_room", "max_events_per_sec_per_player", "max_event_bytes", "max_concurrent_players", "monthly_player_minutes", "monthly_bytes"] as const;
 
 function initialDraft(limits: Record<string, unknown>): Record<string, string> {
   const next: Record<string, string> = {};

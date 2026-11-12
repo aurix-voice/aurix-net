@@ -24,6 +24,10 @@ pub struct ProjectLimits {
     pub monthly_player_minutes: Option<u64>,
     #[serde(default)]
     pub monthly_bytes: Option<u64>,
+    /// Fleet-wide cap on players online at once in this project (hosted plans); a join over
+    /// the cap is refused with `capacity`. `None` = unlimited.
+    #[serde(default)]
+    pub max_concurrent_players: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -39,6 +43,7 @@ pub struct EffectiveLimits {
     pub allowed_regions: Option<Vec<String>>,
     pub monthly_player_minutes: Option<u64>,
     pub monthly_bytes: Option<u64>,
+    pub max_concurrent_players: Option<u32>,
 }
 
 impl ProjectLimits {
@@ -68,6 +73,7 @@ impl ProjectLimits {
             max_cached_events_per_room: node.max_cached_events_per_room,
             monthly_player_minutes: self.monthly_player_minutes,
             monthly_bytes: self.monthly_bytes,
+            max_concurrent_players: self.max_concurrent_players,
             allowed_regions: self.allowed_regions.clone(),
         }
     }

@@ -313,6 +313,7 @@ export const ru: Messages = {
   "health.keys": "API-ключи",
   "health.keys.expiring": (v) => `${v.n} истекают в течение 7 дней`,
   "projects.limit.monthly_player_minutes": "Месячный лимит: игроко-минуты",
+  "projects.limit.max_concurrent_players": "Игроков онлайн одновременно (на весь флот)",
   "projects.limit.monthly_bytes": "Месячный лимит: байты (вход + выход)",
   "rejections.usage_cap": "Месячный лимит исчерпан",
   "health.usage": "Игроко-минуты · месяц",
