@@ -960,6 +960,26 @@ impl Session {
                 }
             }
         }
+        if rejoin.is_none() && !spectator {
+            let project = queries::get_project(&self.st.pool, g.project.0).await?;
+            let limits = ProjectLimits::from_json(&project.limits).effective(&self.st.cfg.limits);
+            if let Some(cap) = limits.max_concurrent_players {
+                let online: u64 = self
+                    .st
+                    .redis
+                    .list_rooms(g.project)
+                    .await?
+                    .iter()
+                    .map(|r| r.players as u64)
+                    .sum();
+                if online >= cap as u64 {
+                    crate::rest::reject(&self.st, g.project, "capacity");
+                    return Err(NetError::QuotaExceeded(format!(
+                        "project is at its concurrent player cap ({cap})"
+                    )));
+                }
+            }
+        }
         let joined = {
             let mut hr = h.lock();
             if hr.project != g.project {
