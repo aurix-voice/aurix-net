@@ -133,8 +133,7 @@ static RPCs on any class, `compression:`/`deltaPack:` RPC options, `StateMachine
 `NetworkAudioSource`, `NetworkTransform.adaptiveSync` + `syncParent`, `ValidatedSyncVar<T>` (server vetoes owner
 writes), `SyncInput<T>`, `SyncBigData`/`SyncTexture`/`SyncFile`, `NetworkManager.statistics` (ping, jitter, throughput,
 stall events; Window ▸ Aurix Net ▸ Network Statistics in the Editor) and `IAsyncNetworkObjectFactory` /
-`AddressablesPrefabFactory` for prefabs that load on demand. The full feature-by-feature table against PurrNet is in
-
+`AddressablesPrefabFactory` for prefabs that load on demand.
 
 ## PurrNet, Mirror and FishNet transports
 

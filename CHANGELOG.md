@@ -140,7 +140,6 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - Docker job loads the built images into the daemon before the Trivy scan; the Godot
   GDExtension step builds `libaurix_net` first.
 
-
 ## [0.1.0] — first release candidate
 
 One game-agnostic networking service — relay, sync and lockstep rooms in the same node — plus a
@@ -197,5 +196,5 @@ self-host deployment. Everything below is verified locally (see [docs/testing.md
   dumps, matchmaking queue, usage CSV, attention panel; Playwright suite against a live node.
 
 ### Not in scope
-- Unreal SDK (the engine ships its own netcode), client-hosted P2P topologies, tight coupling with
-  Aurix Voice (separate service), managed cloud (self-host first).
+- Unreal SDK (the engine ships its own netcode), client-hosted P2P topologies, coupling with
+  Aurix Voice (a separate service a game uses independently).

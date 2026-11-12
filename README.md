@@ -2,7 +2,7 @@
 
 Open-source game networking service: rooms and relay, server-authoritative state sync, deterministic lockstep. Companion of Aurix Voice; separate server, database and client. One server, one client, three room modes (`relay`, `sync`, `lockstep`). Priced by node-hours, never by CCU.
 
-Status: 0.1.0 release candidate — relay, sync and lockstep rooms, the lockstep referee, matchmaking, aurix-sim (deterministic 2D/3D physics, navmesh, bots) and the SDKs for Web, Unity, Rust, C/C++ and Godot are verified locally, incl. a clean-checkout replay of every CI job ([CHANGELOG.md](CHANGELOG.md), [docs/testing.md](docs/testing.md)); what still needs real infrastructure is in [docs/roadmap.md](docs/roadmap.md). See `docs/modes.md`, `docs/api.md` and `docs/sdk.md`.
+Status: 0.1.0 — relay, sync and lockstep rooms, the lockstep referee, matchmaking, aurix-sim (deterministic 2D/3D physics, navmesh, bots) and the SDKs for Web, Unity, Rust, C/C++ and Godot; every piece is exercised by CI against a live node ([docs/testing.md](docs/testing.md)).
 
 ## Quickstart
 
