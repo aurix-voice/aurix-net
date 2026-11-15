@@ -63,6 +63,21 @@ cell, Join Session joins one; the resolved connect string is `aurix://<room>`, w
 AurixNetDriver understands, so `Client Travel` after Join works unchanged. Friends, invites
 and presence are not implemented (return false).
 
+## 5. Sync and lockstep rooms
+
+Relay is what the NetDriver uses. The other two room modes are exposed as components on any actor:
+
+- **`AurixSyncWorld`** — client of a cell-authoritative world (`sync` rooms): set the schema JSON,
+  read entities/components/fields each tick (`OnSpawn` / `OnChange` / `OnDespawn`), send inputs for the
+  room's server logic, or owner-authoritative writes (`WriteBegin` → `WriteVector`… → `WriteEnd` →
+  `SendWrites`).
+- **`AurixLockstepComponent`** — deterministic lockstep (`lockstep` rooms): `SendInput` each tick,
+  simulate on `OnTick(Tick, Inputs)`, `ReportHash` so the cell catches desyncs; `OnRestore` and
+  `OnStateRequest` handle late join / referee checkpoints.
+
+Both read the room's data stream from the game instance's subsystem; join the room with the matching
+mode first (`Join Or Create` with Mode = Sync / Lockstep).
+
 ## Engine versions
 
 5.3 – 5.8. One source tree; the module compiles with `CppStandardVersion.Default` (5.6+ needs

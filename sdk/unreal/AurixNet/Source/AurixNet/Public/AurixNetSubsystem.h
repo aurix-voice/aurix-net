@@ -20,6 +20,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixNetRoomsListed, const TArray<F
 
 /** Native hook for the NetDriver: every relay event frame, before Blueprint delegates. */
 DECLARE_MULTICAST_DELEGATE_OneParam(FAurixNetRawEvent, const FAurixNetEventFrame&);
+/** Every data payload as received (channel, bytes); sync and lockstep components feed it to their decoders. */
+DECLARE_MULTICAST_DELEGATE_TwoParams(FAurixNetRawData, uint8, TArrayView<const uint8>);
 DECLARE_MULTICAST_DELEGATE_OneParam(FAurixNetRoomsNative, const TArray<FAurixNetRoomSummary>&);
 
 /**
@@ -89,10 +91,15 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetRoomsListed OnRoomsListed;
 
 	FAurixNetRawEvent OnRawEvent;
+	FAurixNetRawData OnRawData;
 	FAurixNetRoomsNative OnRoomsNative;
 
 	/** Flush coalesced datagrams now (the NetDriver calls it after each send burst). */
 	void Flush();
+	/** Native client handle for the sync/lockstep helpers (null when disconnected). */
+	AurixNetClient* NativeClient() const { return Client; }
+	/** Send a raw data payload (sync/lockstep rooms). */
+	bool SendData(EAurixNetChannel Channel, TArrayView<const uint8> Payload);
 	bool HasClient() const { return Client != nullptr; }
 
 	// FTickableGameObject

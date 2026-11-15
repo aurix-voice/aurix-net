@@ -139,6 +139,10 @@ bool UAurixNetSubsystem::RequestRooms(const FString& FilterExpr, int32 Limit)
 }
 
 bool UAurixNetSubsystem::SendControl(const FString& Json) { return Client && aurix_net_send_control(Client, TCHAR_TO_UTF8(*Json)) == 0; }
+bool UAurixNetSubsystem::SendData(EAurixNetChannel Channel, TArrayView<const uint8> Payload)
+{
+	return Client && aurix_net_send_data(Client, (uint8)Channel, Payload.GetData(), Payload.Num()) == 0;
+}
 void UAurixNetSubsystem::Flush() { if (Client) aurix_net_flush(Client); }
 
 void UAurixNetSubsystem::Tick(float)
@@ -152,8 +156,9 @@ void UAurixNetSubsystem::Tick(float)
 		{
 		case AURIX_NET_EVENT_DATA:
 		{
+			OnRawData.Broadcast(Ev.channel, TArrayView<const uint8>(Ev.data, (int32)Ev.data_len));
 			FAurixNetEventFrame F;
-			if (FAurixNetEventFrame::Decode(Ev.data, Ev.data_len, F))
+			if (Room.Mode == EAurixNetRoomMode::Relay && FAurixNetEventFrame::Decode(Ev.data, Ev.data_len, F))
 			{
 				OnRawEvent.Broadcast(F);
 				if (F.Code < 200 && OnEvent.IsBound())
