@@ -48,6 +48,21 @@ same way with `?listen`; it is just a player that only hosts.
 Room name, `MaxPlayers=` and props come from the URL; matchmaking and the room list are on the
 subsystem (`Join Random`, `Send Control` with lobby requests from docs/api.md).
 
+## 4. Standard session nodes (optional)
+
+Enable the Aurix Online Subsystem to use **Create Session / Find Sessions / Join Session** as usual:
+
+```ini
+[OnlineSubsystem]
+DefaultPlatformService=Aurix
+```
+
+Create Session creates (or joins as host) a relay room named after the session — set the
+`AURIXROOM` extra setting to pick the room name — Find Sessions lists open relay rooms of the
+cell, Join Session joins one; the resolved connect string is `aurix://<room>`, which the
+AurixNetDriver understands, so `Client Travel` after Join works unchanged. Friends, invites
+and presence are not implemented (return false).
+
 ## Engine versions
 
 5.3 – 5.8. One source tree; the module compiles with `CppStandardVersion.Default` (5.6+ needs

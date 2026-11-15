@@ -16,9 +16,11 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FAurixNetEvent, uint8, Code, int3
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixNetNotice, const FString&, Text);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixNetError, const FString&, Code, const FString&, Message);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixNetClosed, const FString&, Reason);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixNetRoomsListed, const TArray<FAurixNetRoomSummary>&, Rooms);
 
 /** Native hook for the NetDriver: every relay event frame, before Blueprint delegates. */
 DECLARE_MULTICAST_DELEGATE_OneParam(FAurixNetRawEvent, const FAurixNetEventFrame&);
+DECLARE_MULTICAST_DELEGATE_OneParam(FAurixNetRoomsNative, const TArray<FAurixNetRoomSummary>&);
 
 /**
  * One Aurix Net connection per game instance: connect with a player grant from your backend
@@ -61,6 +63,10 @@ public:
 	/** Relay event to specific actors. */
 	bool SendEventTo(uint8 Code, TArrayView<const uint8> Payload, TArrayView<const uint16> Actors, bool bReliable);
 
+	/** Ask the cell for open rooms (optional filter expression, see docs/matchmaking.md); answered by OnRoomsListed. */
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net")
+	bool RequestRooms(const FString& FilterExpr = TEXT(""), int32 Limit = 50);
+
 	/** Raw control-plane message (JSON ClientMsg, see docs/api.md). */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net")
 	bool SendControl(const FString& Json);
@@ -80,8 +86,10 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetNotice OnNotice;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetError OnError;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetClosed OnClosed;
+	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetRoomsListed OnRoomsListed;
 
 	FAurixNetRawEvent OnRawEvent;
+	FAurixNetRoomsNative OnRoomsNative;
 
 	/** Flush coalesced datagrams now (the NetDriver calls it after each send burst). */
 	void Flush();

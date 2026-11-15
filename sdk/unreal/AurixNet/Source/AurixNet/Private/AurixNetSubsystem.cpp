@@ -4,6 +4,8 @@
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
+#include "Policies/CondensedJsonPrintPolicy.h"
 
 static FString ModeName(EAurixNetRoomMode M)
 {
@@ -129,6 +131,13 @@ bool UAurixNetSubsystem::SendEventTo(uint8 Code, TArrayView<const uint8> Payload
 	if (!Client) return false;
 	return aurix_net_send_event(Client, Code, AURIX_NET_TARGET_ACTORS, Actors.GetData(), Actors.Num(), Payload.GetData(), Payload.Num(), bReliable ? 1 : 0) == 0;
 }
+bool UAurixNetSubsystem::RequestRooms(const FString& FilterExpr, int32 Limit)
+{
+	FString J = FString::Printf(TEXT("{\"t\":\"get_rooms\",\"limit\":%d"), FMath::Clamp(Limit, 1, 500));
+	if (!FilterExpr.IsEmpty()) J += TEXT(",\"expr\":") + Quote(FilterExpr);
+	return SendControl(J + TEXT("}"));
+}
+
 bool UAurixNetSubsystem::SendControl(const FString& Json) { return Client && aurix_net_send_control(Client, TCHAR_TO_UTF8(*Json)) == 0; }
 void UAurixNetSubsystem::Flush() { if (Client) aurix_net_flush(Client); }
 
@@ -209,6 +218,32 @@ void UAurixNetSubsystem::HandleControl(const FString& Json)
 		FString Code, Msg; O->TryGetStringField(TEXT("code"), Code); O->TryGetStringField(TEXT("message"), Msg);
 		UE_LOG(LogAurixNet, Warning, TEXT("server error %s: %s"), *Code, *Msg);
 		OnError.Broadcast(Code, Msg);
+	}
+	else if (T == TEXT("rooms") || T == TEXT("lobby_rooms"))
+	{
+		TArray<FAurixNetRoomSummary> Rooms;
+		const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
+		if (O->TryGetArrayField(TEXT("rooms"), Arr))
+		{
+			for (const auto& V : *Arr)
+			{
+				const TSharedPtr<FJsonObject> R = V->AsObject(); if (!R.IsValid()) continue;
+				FAurixNetRoomSummary S;
+				R->TryGetStringField(TEXT("id"), S.RoomId); R->TryGetStringField(TEXT("name"), S.Name);
+				FString M; R->TryGetStringField(TEXT("mode"), M); S.Mode = ModeFrom(M);
+				S.Players = (int32)R->GetNumberField(TEXT("players")); S.MaxPlayers = (int32)R->GetNumberField(TEXT("max_players"));
+				R->TryGetBoolField(TEXT("open"), S.bOpen);
+				const TSharedPtr<FJsonObject>* Props = nullptr;
+				if (R->TryGetObjectField(TEXT("props"), Props) && Props->IsValid())
+				{
+					const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Wr = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&S.PropsJson);
+					FJsonSerializer::Serialize(Props->ToSharedRef(), Wr);
+				}
+				Rooms.Add(MoveTemp(S));
+			}
+		}
+		OnRoomsNative.Broadcast(Rooms);
+		OnRoomsListed.Broadcast(Rooms);
 	}
 	else if (T == TEXT("left"))
 	{

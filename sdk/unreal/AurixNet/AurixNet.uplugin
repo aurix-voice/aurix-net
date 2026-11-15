@@ -21,6 +21,16 @@
       "Type": "Runtime",
       "LoadingPhase": "PreDefault",
       "PlatformAllowList": ["Win64", "Linux", "Mac", "Android"]
+    },
+    {
+      "Name": "OnlineSubsystemAurix",
+      "Type": "Runtime",
+      "LoadingPhase": "Default",
+      "PlatformAllowList": ["Win64", "Linux", "Mac", "Android"]
     }
+  ],
+  "Plugins": [
+    { "Name": "OnlineSubsystem", "Enabled": true },
+    { "Name": "OnlineSubsystemUtils", "Enabled": true }
   ]
 }

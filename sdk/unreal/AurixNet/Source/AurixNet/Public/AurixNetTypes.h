@@ -41,6 +41,20 @@ struct AURIXNET_API FAurixNetRoomInfo
 	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") TArray<FAurixNetPlayer> Players;
 };
 
+USTRUCT(BlueprintType)
+struct AURIXNET_API FAurixNetRoomSummary
+{
+	GENERATED_BODY()
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") FString RoomId;
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") FString Name;
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") EAurixNetRoomMode Mode = EAurixNetRoomMode::Relay;
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") int32 Players = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") int32 MaxPlayers = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") bool bOpen = true;
+	/** Lobby props as JSON text. */
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") FString PropsJson;
+};
+
 /** A relay event frame as received: code, sender actor, payload. */
 struct AURIXNET_API FAurixNetEventFrame
 {
