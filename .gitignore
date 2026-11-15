@@ -16,3 +16,7 @@ sdk/godot/src/*.os
 sdk/godot/check~/addons/aurix_net/bin/*.so
 sdk/unity/Weaver/*/bin/
 sdk/unity/Weaver/*/obj/
+
+# Unreal plugin: natives and headers are staged per host by sdk/unreal/scripts/build_native.sh
+sdk/unreal/AurixNet/Source/ThirdParty/AurixNetLibrary/include/
+sdk/unreal/AurixNet/Source/ThirdParty/AurixNetLibrary/lib/
