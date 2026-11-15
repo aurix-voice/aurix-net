@@ -826,6 +826,30 @@ impl Session {
             crate::rest::reject(&self.st, g.project, "banned");
             return Err(NetError::Forbidden(crate::rest::ban_message(&b)));
         }
+        let device: String = g
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("device"))
+            .and_then(|d| d.as_str())
+            .unwrap_or("")
+            .chars()
+            .take(128)
+            .collect();
+        let ip = if self.ip.is_unspecified() { String::new() } else { self.ip.to_string() };
+        for (kind, value) in [("ip", ip.as_str()), ("device", device.as_str())] {
+            if value.is_empty() {
+                continue;
+            }
+            if let Some(m) = queries::active_mark(&self.st.pool, g.project.0, kind, value).await? {
+                crate::rest::reject(&self.st, g.project, "banned");
+                return Err(NetError::Forbidden(crate::rest::mark_message(&m)));
+            }
+        }
+        if let Err(e) =
+            queries::touch_player_seen(&self.st.pool, g.project.0, &g.player_id, &ip, &device, &g.name).await
+        {
+            tracing::warn!(error = %e, "player_seen update failed");
+        }
         let limits = ProjectLimits::from_json(&project.limits).effective(&self.st.cfg.limits);
         if let Some(allowed) = &limits.allowed_regions {
             if !allowed.iter().any(|r| r == self.st.region.as_str()) {

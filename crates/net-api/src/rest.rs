@@ -61,6 +61,8 @@ pub fn router(st: Shared) -> Router {
         .route("/v1/webhooks", get(list_webhooks).post(create_webhook))
         .route("/v1/matchmaking", get(mm_stats))
         .route("/v1/players/{player_id}", get(player_lookup))
+        .route("/v1/players/{player_id}/export", get(player_export))
+        .route("/v1/players/{player_id}/data", delete(player_erase))
         .route("/v1/matchmaking/tickets", post(mm_file))
         .route(
             "/v1/matchmaking/tickets/{id}",
@@ -131,6 +133,14 @@ pub fn router(st: Shared) -> Router {
             get(op_player_lookup),
         )
         .route(
+            "/v1/operator/projects/{id}/players/{player_id}/export",
+            get(op_player_export),
+        )
+        .route(
+            "/v1/operator/projects/{id}/players/{player_id}/data",
+            delete(op_player_erase),
+        )
+        .route(
             "/v1/internal/players/{player_id}",
             get(internal_find_player),
         )
@@ -181,6 +191,7 @@ pub fn router(st: Shared) -> Router {
         .route("/v1/internal/notice", post(internal_project_notice))
         .route("/v1/bans", get(list_bans).post(create_ban))
         .route("/v1/bans/{player_id}", delete(delete_ban))
+        .route("/v1/bans/marks/{kind}/{value}", delete(delete_mark))
         .route(
             "/v1/operator/projects/{id}/bans",
             get(op_list_bans).post(op_create_ban),
@@ -188,6 +199,10 @@ pub fn router(st: Shared) -> Router {
         .route(
             "/v1/operator/projects/{id}/bans/{player_id}",
             delete(op_delete_ban),
+        )
+        .route(
+            "/v1/operator/projects/{id}/bans/marks/{kind}/{value}",
+            delete(op_delete_mark),
         )
         .route(
             "/v1/operator/rooms/{id}/players/{actor}",
@@ -1561,10 +1576,75 @@ async fn player_lookup_json(st: &Shared, project: Uuid, player_id: &str) -> Resu
         }
     }
     let ban = queries::get_ban(&st.pool, project, player_id).await?;
+    let marks = queries::marks_for_player(&st.pool, project, player_id).await?;
+    let seen = queries::get_player_seen(&st.pool, project, player_id).await?;
     let audit = queries::list_audit_for_target(&st.pool, project, player_id, 20).await?;
     Ok(
-        json!({"player_id": player_id, "rooms": rooms, "ban": ban, "audit": audit, "unreachable_nodes": unreachable}),
+        json!({"player_id": player_id, "rooms": rooms, "ban": ban, "marks": marks, "seen": seen, "audit": audit, "unreachable_nodes": unreachable}),
     )
+}
+
+/// Everything the cell holds about a player, for a data-subject access request.
+async fn player_export_json(st: &Shared, project: Uuid, player_id: &str) -> Result<Value> {
+    if !valid_player_id(player_id) {
+        return Err(NetError::Invalid("invalid player_id".into()));
+    }
+    Ok(json!({
+        "player_id": player_id,
+        "exported_at": chrono::Utc::now(),
+        "seen": queries::get_player_seen(&st.pool, project, player_id).await?,
+        "ban": queries::get_ban(&st.pool, project, player_id).await?,
+        "marks": queries::marks_for_player(&st.pool, project, player_id).await?,
+        "audit": queries::list_audit_for_target(&st.pool, project, player_id, 1000).await?,
+        "note": "Room state is in memory only while a room is alive and is not kept; usage is aggregated per hour without player ids.",
+    }))
+}
+
+/// Forgets a player (right to erasure): identity, marks and ban go, audit rows lose the target.
+async fn player_erase_json(st: &Shared, project: Uuid, player_id: &str, by: &str) -> Result<Value> {
+    if !valid_player_id(player_id) {
+        return Err(NetError::Invalid("invalid player_id".into()));
+    }
+    let removed = queries::erase_player(&st.pool, project, player_id).await?;
+    audit_log(st, Some(project), by, "player.erase", "erased", removed.clone()).await;
+    Ok(json!({"erased": true, "removed": removed}))
+}
+
+async fn player_export(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(player_id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Admin).await?;
+    Ok(Json(player_export_json(&st, key.project_id, &player_id).await?))
+}
+
+async fn player_erase(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path(player_id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &h, Scope::Admin).await?;
+    let by = format!("key:{}", key.id);
+    Ok(Json(player_erase_json(&st, key.project_id, &player_id, &by).await?))
+}
+
+async fn op_player_export(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((id, player_id)): Path<(Uuid, String)>,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &h).await?;
+    Ok(Json(player_export_json(&st, id, &player_id).await?))
+}
+
+async fn op_player_erase(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((id, player_id)): Path<(Uuid, String)>,
+) -> ApiResult<Json<Value>> {
+    let op = operator(&st, &h).await?;
+    Ok(Json(player_erase_json(&st, id, &player_id, &op.actor).await?))
 }
 
 async fn player_lookup(
@@ -2630,6 +2710,47 @@ pub(crate) fn valid_player_id(p: &str) -> bool {
     (1..=128).contains(&n) && !p.chars().any(char::is_control)
 }
 
+async fn remove_mark(st: &Shared, project: Uuid, kind: &str, value: &str, by: &str) -> Result<()> {
+    if !matches!(kind, "ip" | "device") {
+        return Err(NetError::Invalid("kind: ip or device".into()));
+    }
+    if !queries::delete_mark(&st.pool, project, kind, value).await? {
+        return Err(NetError::NotFound("ban not found".into()));
+    }
+    audit_log(st, Some(project), by, "player.unban", value, json!({"kind": kind})).await;
+    Ok(())
+}
+
+async fn delete_mark(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((kind, value)): Path<(String, String)>,
+) -> ApiResult<StatusCode> {
+    let key = api_key(&st, &h, Scope::Rooms).await?;
+    remove_mark(&st, key.project_id, &kind, &value, &format!("key:{}", key.id)).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn op_delete_mark(
+    State(st): State<Shared>,
+    h: HeaderMap,
+    Path((id, kind, value)): Path<(Uuid, String, String)>,
+) -> ApiResult<StatusCode> {
+    let op = operator(&st, &h).await?;
+    remove_mark(&st, id, &kind, &value, &op.actor).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) fn mark_message(m: &net_db::models::BanMarkRow) -> String {
+    let what = if m.kind == "ip" { "this network" } else { "this device" };
+    match (&m.reason, m.expires_at) {
+        (r, Some(e)) if !r.is_empty() => format!("{what} is banned until {}: {r}", e.to_rfc3339()),
+        (_, Some(e)) => format!("{what} is banned until {}", e.to_rfc3339()),
+        (r, None) if !r.is_empty() => format!("{what} is banned: {r}"),
+        _ => format!("{what} is banned"),
+    }
+}
+
 pub(crate) fn ban_message(b: &net_db::models::BanRow) -> String {
     match (&b.reason, b.expires_at) {
         (r, Some(e)) if !r.is_empty() => format!("banned until {}: {r}", e.to_rfc3339()),
@@ -2642,6 +2763,10 @@ pub(crate) fn ban_message(b: &net_db::models::BanRow) -> String {
 #[derive(Deserialize)]
 struct BanReq {
     player_id: String,
+    /// `player` (default), `player_ip`, `player_device` or `player_ip_device`: besides the id,
+    /// also ban the IP and/or device the player was last seen with (from the grant's `meta.device`).
+    #[serde(default)]
+    scope: Option<String>,
     #[serde(default)]
     reason: String,
     /// Seconds from now; omit for a permanent ban.
@@ -2662,30 +2787,55 @@ async fn add_ban(st: &Shared, project: Uuid, req: &BanReq, by: &str) -> Result<V
         .map(|d| chrono::Utc::now() + chrono::Duration::seconds(d.min(10 * 365 * 86_400) as i64));
     let row =
         queries::upsert_ban(&st.pool, project, &req.player_id, &req.reason, by, expires).await?;
+    let scope = req.scope.as_deref().unwrap_or("player");
+    let mut marks = Vec::new();
+    if scope != "player" {
+        if !matches!(scope, "player_ip" | "player_device" | "player_ip_device") {
+            return Err(NetError::Invalid("scope: player, player_ip, player_device or player_ip_device".into()));
+        }
+        let seen = queries::get_player_seen(&st.pool, project, &req.player_id).await?;
+        let Some(seen) = seen else {
+            return Err(NetError::Invalid("this player has not connected yet: no IP or device is known".into()));
+        };
+        let want_ip = scope.contains("ip");
+        let want_dev = scope.contains("device");
+        for (kind, value, want) in [("ip", seen.ip.as_str(), want_ip), ("device", seen.device.as_str(), want_dev)] {
+            if !want {
+                continue;
+            }
+            if value.is_empty() {
+                return Err(NetError::Invalid(format!("no {kind} is known for this player")));
+            }
+            marks.push(
+                queries::upsert_mark(&st.pool, project, kind, value, &req.player_id, &req.reason, by, expires).await?,
+            );
+        }
+    }
     audit_log(
         st,
         Some(project),
         by,
         "player.ban",
         &req.player_id,
-        json!({"reason": req.reason, "expires_at": row.expires_at}),
+        json!({"reason": req.reason, "expires_at": row.expires_at, "scope": scope, "marks": marks.len()}),
     )
     .await;
     Ok(json!({"ban": row}))
 }
 
 async fn remove_ban(st: &Shared, project: Uuid, player_id: &str, by: &str) -> Result<()> {
-    if !queries::delete_ban(&st.pool, project, player_id).await? {
+    let marks = queries::delete_marks_for_player(&st.pool, project, player_id).await?;
+    if !queries::delete_ban(&st.pool, project, player_id).await? && marks == 0 {
         return Err(NetError::NotFound("ban not found".into()));
     }
-    audit_log(st, Some(project), by, "player.unban", player_id, json!({})).await;
+    audit_log(st, Some(project), by, "player.unban", player_id, json!({"marks": marks})).await;
     Ok(())
 }
 
 async fn list_bans(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Read).await?;
     Ok(Json(
-        json!({"bans": queries::list_bans(&st.pool, key.project_id).await?}),
+        json!({"bans": queries::list_bans(&st.pool, key.project_id).await?, "marks": queries::list_marks(&st.pool, key.project_id).await?}),
     ))
 }
 
@@ -2718,7 +2868,7 @@ async fn op_list_bans(
 ) -> ApiResult<Json<Value>> {
     operator(&st, &h).await?;
     Ok(Json(
-        json!({"bans": queries::list_bans(&st.pool, id).await?}),
+        json!({"bans": queries::list_bans(&st.pool, id).await?, "marks": queries::list_marks(&st.pool, id).await?}),
     ))
 }
 

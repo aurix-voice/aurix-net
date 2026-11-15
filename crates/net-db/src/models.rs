@@ -64,6 +64,31 @@ pub struct FailingWebhookRow {
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]
+pub struct PlayerSeenRow {
+    pub project_id: Uuid,
+    pub player_id: String,
+    pub ip: String,
+    pub device: String,
+    pub name: String,
+    pub joins: i64,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+}
+
+/// A ban on a network identity (`ip` or `device`) rather than a player id.
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct BanMarkRow {
+    pub project_id: Uuid,
+    pub kind: String,
+    pub value: String,
+    pub player_id: String,
+    pub reason: String,
+    pub created_by: String,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize)]
 pub struct BanRow {
     pub project_id: Uuid,
     pub player_id: String,

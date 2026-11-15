@@ -1008,6 +1008,137 @@ pub async fn delete_ban(pool: &DbPool, project_id: Uuid, player_id: &str) -> Res
     Ok(r.rows_affected() > 0)
 }
 
+pub async fn touch_player_seen(
+    pool: &DbPool,
+    project_id: Uuid,
+    player_id: &str,
+    ip: &str,
+    device: &str,
+    name: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO player_seen (project_id, player_id, ip, device, name, joins) VALUES ($1, $2, $3, $4, $5, 1) \
+         ON CONFLICT (project_id, player_id) DO UPDATE SET ip = CASE WHEN EXCLUDED.ip = '' THEN player_seen.ip ELSE EXCLUDED.ip END, \
+         device = CASE WHEN EXCLUDED.device = '' THEN player_seen.device ELSE EXCLUDED.device END, \
+         name = EXCLUDED.name, joins = player_seen.joins + 1, last_seen = now()",
+    )
+    .bind(project_id)
+    .bind(player_id)
+    .bind(ip)
+    .bind(device)
+    .bind(name)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(())
+}
+
+pub async fn get_player_seen(pool: &DbPool, project_id: Uuid, player_id: &str) -> Result<Option<PlayerSeenRow>> {
+    sqlx::query_as::<_, PlayerSeenRow>("SELECT * FROM player_seen WHERE project_id = $1 AND player_id = $2")
+        .bind(project_id)
+        .bind(player_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(db_err)
+}
+
+pub async fn upsert_mark(
+    pool: &DbPool,
+    project_id: Uuid,
+    kind: &str,
+    value: &str,
+    player_id: &str,
+    reason: &str,
+    created_by: &str,
+    expires_at: Option<DateTime<Utc>>,
+) -> Result<BanMarkRow> {
+    sqlx::query_as::<_, BanMarkRow>(
+        "INSERT INTO ban_marks (project_id, kind, value, player_id, reason, created_by, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7) \
+         ON CONFLICT (project_id, kind, value) DO UPDATE SET player_id = EXCLUDED.player_id, reason = EXCLUDED.reason, \
+         created_by = EXCLUDED.created_by, expires_at = EXCLUDED.expires_at, created_at = now() RETURNING *",
+    )
+    .bind(project_id)
+    .bind(kind)
+    .bind(value)
+    .bind(player_id)
+    .bind(reason)
+    .bind(created_by)
+    .bind(expires_at)
+    .fetch_one(pool)
+    .await
+    .map_err(db_err)
+}
+
+/// The live mark on an identity, if any (expired marks do not count).
+pub async fn active_mark(pool: &DbPool, project_id: Uuid, kind: &str, value: &str) -> Result<Option<BanMarkRow>> {
+    sqlx::query_as::<_, BanMarkRow>(
+        "SELECT * FROM ban_marks WHERE project_id = $1 AND kind = $2 AND value = $3 AND (expires_at IS NULL OR expires_at > now())",
+    )
+    .bind(project_id)
+    .bind(kind)
+    .bind(value)
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn list_marks(pool: &DbPool, project_id: Uuid) -> Result<Vec<BanMarkRow>> {
+    sqlx::query_as::<_, BanMarkRow>(
+        "SELECT * FROM ban_marks WHERE project_id = $1 AND (expires_at IS NULL OR expires_at > now()) ORDER BY created_at DESC LIMIT 1000",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
+pub async fn marks_for_player(pool: &DbPool, project_id: Uuid, player_id: &str) -> Result<Vec<BanMarkRow>> {
+    sqlx::query_as::<_, BanMarkRow>("SELECT * FROM ban_marks WHERE project_id = $1 AND player_id = $2 ORDER BY created_at DESC")
+        .bind(project_id)
+        .bind(player_id)
+        .fetch_all(pool)
+        .await
+        .map_err(db_err)
+}
+
+pub async fn delete_marks_for_player(pool: &DbPool, project_id: Uuid, player_id: &str) -> Result<u64> {
+    Ok(sqlx::query("DELETE FROM ban_marks WHERE project_id = $1 AND player_id = $2")
+        .bind(project_id)
+        .bind(player_id)
+        .execute(pool)
+        .await
+        .map_err(db_err)?
+        .rows_affected())
+}
+
+pub async fn delete_mark(pool: &DbPool, project_id: Uuid, kind: &str, value: &str) -> Result<bool> {
+    Ok(sqlx::query("DELETE FROM ban_marks WHERE project_id = $1 AND kind = $2 AND value = $3")
+        .bind(project_id)
+        .bind(kind)
+        .bind(value)
+        .execute(pool)
+        .await
+        .map_err(db_err)?
+        .rows_affected()
+        > 0)
+}
+
+/// Forgets a player: last-seen identity, identity marks and ban go; audit rows that name the
+/// player keep the action but lose the target and details. Returns what was removed.
+pub async fn erase_player(pool: &DbPool, project_id: Uuid, player_id: &str) -> Result<serde_json::Value> {
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    let seen = sqlx::query("DELETE FROM player_seen WHERE project_id = $1 AND player_id = $2")
+        .bind(project_id).bind(player_id).execute(&mut *tx).await.map_err(db_err)?.rows_affected();
+    let marks = sqlx::query("DELETE FROM ban_marks WHERE project_id = $1 AND player_id = $2")
+        .bind(project_id).bind(player_id).execute(&mut *tx).await.map_err(db_err)?.rows_affected();
+    let bans = sqlx::query("DELETE FROM bans WHERE project_id = $1 AND player_id = $2")
+        .bind(project_id).bind(player_id).execute(&mut *tx).await.map_err(db_err)?.rows_affected();
+    let audit = sqlx::query("UPDATE audit SET target = 'erased', details = '{}'::jsonb WHERE project_id = $1 AND target = $2")
+        .bind(project_id).bind(player_id).execute(&mut *tx).await.map_err(db_err)?.rows_affected();
+    tx.commit().await.map_err(db_err)?;
+    Ok(serde_json::json!({"seen": seen, "marks": marks, "bans": bans, "audit_scrubbed": audit}))
+}
+
 pub async fn list_bans(pool: &DbPool, project_id: Uuid) -> Result<Vec<BanRow>> {
     sqlx::query_as::<_, BanRow>(
         "SELECT project_id, player_id, reason, created_by, expires_at, created_at FROM bans WHERE project_id = $1 AND (expires_at IS NULL OR expires_at > now()) \
