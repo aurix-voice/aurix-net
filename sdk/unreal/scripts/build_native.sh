@@ -25,6 +25,7 @@ case "$TARGET" in
   *-unknown-linux-*) UE_PLATFORM="Linux"; ARTIFACTS=("libaurix_net.so"); LINK_ARGS="-C link-arg=-Wl,-soname,libaurix_net.so" ;;
   *-pc-windows-msvc) UE_PLATFORM="Win64"; ARTIFACTS=("aurix_net.dll" "aurix_net.dll.lib") ;;
   *-apple-darwin)    UE_PLATFORM="Mac";   ARTIFACTS=("libaurix_net.dylib"); LINK_ARGS="-C link-arg=-Wl,-install_name,@rpath/libaurix_net.dylib" ;;
+  aarch64-apple-ios|aarch64-apple-ios-sim) UE_PLATFORM="IOS"; ARTIFACTS=("libaurix_net.a") ;;
   aarch64-linux-android|armv7-linux-androideabi|x86_64-linux-android)
     UE_PLATFORM="Android"; ARTIFACTS=("libaurix_net.so")
     case "$TARGET" in aarch64-*) NDK_ABI="arm64-v8a" ;; armv7-*) NDK_ABI="armeabi-v7a" ;; *) NDK_ABI="x86_64" ;; esac ;;

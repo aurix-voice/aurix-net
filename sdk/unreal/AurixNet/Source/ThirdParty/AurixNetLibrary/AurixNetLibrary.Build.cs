@@ -55,6 +55,15 @@ public class AurixNetLibrary : ModuleRules
 			}
 			AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(ModuleDirectory, "AurixNetLibrary_APL.xml"));
 		}
+		else if (Target.Platform == UnrealTargetPlatform.IOS)
+		{
+			// iOS: static library (no dylibs in the app bundle); built with --target aarch64-apple-ios.
+			string Lib = Path.Combine(LibDir, "IOS", "libaurix_net.a");
+			if (!File.Exists(Lib)) throw new BuildException("AurixNetLibrary: " + Lib + " missing (run sdk/unreal/scripts/build_native.sh --target aarch64-apple-ios)");
+			PublicAdditionalLibraries.Add(Lib);
+			PublicFrameworks.AddRange(new string[] { "Security", "SystemConfiguration", "CoreFoundation" });
+			PublicSystemLibraries.AddRange(new string[] { "resolv", "c++" });
+		}
 		else
 		{
 			throw new BuildException("AurixNetLibrary: platform " + Target.Platform + " has no prebuilt aurix_net yet");

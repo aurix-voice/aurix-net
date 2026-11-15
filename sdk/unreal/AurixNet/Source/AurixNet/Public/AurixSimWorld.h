@@ -3,9 +3,9 @@
 #include "UObject/Object.h"
 #include "AurixSimWorld.generated.h"
 
-/** Body kind for aurix-sim: 0 static, 1 dynamic, 2 kinematic. */
+/** Body kind for aurix-sim: 0 static, 1 kinematic, 2 dynamic. */
 UENUM(BlueprintType)
-enum class EAurixSimBodyKind : uint8 { Static = 0, Dynamic = 1, Kinematic = 2 };
+enum class EAurixSimBodyKind : uint8 { Static = 0, Kinematic = 1, Dynamic = 2 };
 
 USTRUCT(BlueprintType)
 struct AURIXNET_API FAurixSimHit

@@ -14,19 +14,19 @@
   "IsBetaVersion": true,
   "IsExperimentalVersion": false,
   "Installed": false,
-  "SupportedTargetPlatforms": ["Win64", "Linux", "Mac", "Android"],
+  "SupportedTargetPlatforms": ["Win64", "Linux", "Mac", "Android", "IOS"],
   "Modules": [
     {
       "Name": "AurixNet",
       "Type": "Runtime",
       "LoadingPhase": "PreDefault",
-      "PlatformAllowList": ["Win64", "Linux", "Mac", "Android"]
+      "PlatformAllowList": ["Win64", "Linux", "Mac", "Android", "IOS"]
     },
     {
       "Name": "OnlineSubsystemAurix",
       "Type": "Runtime",
       "LoadingPhase": "Default",
-      "PlatformAllowList": ["Win64", "Linux", "Mac", "Android"]
+      "PlatformAllowList": ["Win64", "Linux", "Mac", "Android", "IOS"]
     }
   ],
   "Plugins": [

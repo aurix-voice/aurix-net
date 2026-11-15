@@ -103,6 +103,15 @@ Relay is what the NetDriver uses. The other two room modes are exposed as compon
 Both read the room's data stream from the game instance's subsystem; join the room with the matching
 mode first (`Join Or Create` with Mode = Sync / Lockstep).
 
+## 5b. Physics prediction
+
+`AurixPhysicsPredictionComponent` on a physics actor: **EngineReplication** picks Chaos predictive
+interpolation (5.4+) or resimulation (5.5+) for bodies replicated over the NetDriver; **RelayEvents**
+is the NetDriver-less path — the owner streams snapshots (event 201, optional interest group), the
+others extrapolate with the received velocities and blend corrections over `CorrectionTime`.
+
+Console: `aurix.net.status`, `aurix.net.rooms [expr]`, `aurix.net.leave`.
+
 ## 6. Deterministic simulation and rollback (Quantum-style)
 
 - **`AurixSimWorld2D` / `AurixSimWorld3D`** — aurix-sim in Blueprint/C++: fixed-point (Q32.32) rigid
@@ -118,5 +127,5 @@ mode first (`Join Or Create` with Mode = Sync / Lockstep).
 
 ## Engine versions
 
-5.3 – 5.8. One source tree; the module compiles with `CppStandardVersion.Default` (5.6+ needs
+5.3 – 5.8; Win64, Linux, Mac, Android, iOS (static `libaurix_net.a`). One source tree; the module compiles with `CppStandardVersion.Default` (5.6+ needs
 C++20). Package per engine with `RunUAT BuildPlugin -Plugin=…/AurixNet.uplugin -Package=…`.
