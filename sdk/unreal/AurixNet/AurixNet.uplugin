@@ -1,0 +1,26 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "Aurix Net",
+  "Description": "Aurix Net for Unreal: an Unreal NetDriver over Aurix relay rooms (QUIC datagrams, WebSocket fallback) so the engine's own replication and RPCs run through Aurix cells without a public server, plus a Blueprint subsystem for rooms, grants, matchmaking and room events. Wraps the libaurix_net C ABI.",
+  "Category": "Networking",
+  "CreatedBy": "Aurix contributors",
+  "CreatedByURL": "https://github.com/aurix-voice/aurix-net",
+  "DocsURL": "https://github.com/aurix-voice/aurix-net/blob/main/sdk/unreal/AurixNet/Docs/QuickStart.md",
+  "MarketplaceURL": "",
+  "SupportURL": "https://github.com/aurix-voice/aurix-net/issues",
+  "CanContainContent": false,
+  "IsBetaVersion": true,
+  "IsExperimentalVersion": false,
+  "Installed": false,
+  "SupportedTargetPlatforms": ["Win64", "Linux", "Mac", "Android"],
+  "Modules": [
+    {
+      "Name": "AurixNet",
+      "Type": "Runtime",
+      "LoadingPhase": "PreDefault",
+      "PlatformAllowList": ["Win64", "Linux", "Mac", "Android"]
+    }
+  ]
+}
