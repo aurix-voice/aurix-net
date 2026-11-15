@@ -15,6 +15,20 @@ enum class EAurixNetTarget : uint8 { All = 0, Others = 1, Master = 2 };
 UENUM(BlueprintType)
 enum class EAurixNetCache : uint8 { None = 0, Add = 1, Remove = 2 };
 
+/** Host migration phases (relay NetDriver). */
+UENUM(BlueprintType)
+enum class EAurixNetMigration : uint8
+{
+	/** The master left; save what the new host must restore (room props are a good place). */
+	Starting,
+	/** We are the new master and are about to listen on the same room (level reload). */
+	BecomingHost,
+	/** A new master is listening; we are about to reconnect to it (level reload). */
+	Rejoining,
+	/** Migration finished; restore state (new host) or continue (client). */
+	Done
+};
+
 UENUM(BlueprintType)
 enum class EAurixNetState : uint8 { Disconnected, Connecting, Connected, InRoom, Closed };
 

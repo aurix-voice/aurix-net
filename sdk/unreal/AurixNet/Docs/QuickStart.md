@@ -64,6 +64,15 @@ group, cached events for late joiners), `SetGroups`, `Rpc` to a room module, `Ki
 `RequestStats`, `OnDesync`. `AurixInterestComponent` joins grid interest groups around its owner —
 send state events with `Group = CurrentGroup()` and only nearby players receive them.
 
+## 3c. Host migration
+
+With **Host migration** on (default), a relay room survives its host leaving: the cell promotes a
+new master, that player reloads the current map as the listen server on the same room, the others
+reconnect to it about a second later. Game state is yours to carry: on `OnHostMigration(Starting)`
+save what matters (room props are kept by the cell — `SetRoomProps`), on `OnHostMigration(Done,
+bNewHost = true)` restore it in the new host's world. Turn the setting off to get the classic
+"host left → everyone disconnects" behaviour.
+
 ## 4. Standard session nodes (optional)
 
 Enable the Aurix Online Subsystem to use **Create Session / Find Sessions / Join Session** as usual:

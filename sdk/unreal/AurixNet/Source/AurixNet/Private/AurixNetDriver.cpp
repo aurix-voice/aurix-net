@@ -5,6 +5,9 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "Misc/Parse.h"
+#include "AurixNetSettings.h"
+#include "Engine/Engine.h"
+#include "UObject/Package.h"
 
 UAurixNetSubsystem* UAurixNetDriver::Subsystem() const
 {
@@ -56,6 +59,7 @@ bool UAurixNetDriver::InitConnect(FNetworkNotify* InNotify, const FURL& ConnectU
 	C->InitLocalConnection(this, nullptr, ConnectURL, USOCK_Pending);
 	Remotes.Add(ServerActor, C);
 	CreateInitialClientChannels();
+	if (S->bResumingAfterMigration) { S->bResumingAfterMigration = false; S->OnHostMigration.Broadcast(EAurixNetMigration::Done, false); }
 	UE_LOG(LogAurixNet, Log, TEXT("client: joined room '%s' as actor %d, server is actor %u"), *S->GetRoom().Name, S->GetRoom().Actor, ServerActor);
 	return true;
 }
@@ -65,6 +69,7 @@ bool UAurixNetDriver::InitListen(FNetworkNotify* InNotify, FURL& LocalURL, bool 
 	if (!InitBase(false, InNotify, LocalURL, bReuseAddressAndPort, Error)) return false;
 	bListening = true;
 	InitConnectionlessHandler();
+	if (UAurixNetSubsystem* S = Subsystem()) { if (S->bResumingAfterMigration) { S->bResumingAfterMigration = false; S->OnHostMigration.Broadcast(EAurixNetMigration::Done, true); } }
 	UE_LOG(LogAurixNet, Log, TEXT("listen: room '%s', master actor %d"), *Subsystem()->GetRoom().Name, Subsystem()->GetRoom().Actor);
 	return true;
 }
@@ -93,6 +98,7 @@ void UAurixNetDriver::TickDispatch(float DeltaTime)
 {
 	Super::TickDispatch(DeltaTime);
 	bSentThisTick = false;
+	if (bMigrating) { MigrateIn -= DeltaTime; if (MigrateIn <= 0.f) { bMigrating = false; TravelForMigration(); } return; }
 	// The subsystem polled the native client this frame and queued our frames; hand them to the connections.
 	TArray<TPair<uint16, TArray<uint8>>> Batch = MoveTemp(Inbox);
 	Inbox.Reset();
@@ -151,8 +157,52 @@ void UAurixNetDriver::OnPlayerLeft(int32 Actor, bool bOffline)
 
 void UAurixNetDriver::OnMasterChanged(int32 Master)
 {
-	// Host migration is not part of the NetDriver model: when the server leaves, clients drop.
-	if (!bListening && Master != ServerActor && ServerConnection) ServerConnection->Close();
+	if (bListening || Master == ServerActor) return;
+	if (UAurixNetSettings::Get()->bHostMigration && Subsystem()) { BeginHostMigration(Master); return; }
+	if (ServerConnection) ServerConnection->Close();
+}
+
+// The master left. Everyone stays in the room: the new master reloads the current map as a listen
+// server on the same room, the others reconnect to it a moment later. Game state is the game's job
+// (Starting → save to room props, Done → restore), exactly like Fusion's host-migration callbacks.
+void UAurixNetDriver::BeginHostMigration(int32 NewMaster)
+{
+	UAurixNetSubsystem* S = Subsystem();
+	bMigrateAsHost = S->GetRoom().Actor == NewMaster;
+	MigrationRoom = S->GetRoom().Name;
+	MigrateIn = bMigrateAsHost ? 0.2f : 1.5f; // host first, clients after it listens
+	bMigrating = true;
+	UE_LOG(LogAurixNet, Log, TEXT("host migration: new master %d, we %s"), NewMaster, bMigrateAsHost ? TEXT("host") : TEXT("rejoin"));
+	S->OnHostMigration.Broadcast(EAurixNetMigration::Starting, bMigrateAsHost);
+	S->OnHostMigration.Broadcast(bMigrateAsHost ? EAurixNetMigration::BecomingHost : EAurixNetMigration::Rejoining, bMigrateAsHost);
+	// Stop talking to the old server without raising a network failure.
+	if (ServerConnection) { ServerConnection->SetConnectionState(USOCK_Closed); }
+}
+
+FString UAurixNetDriver::CurrentMapPath() const
+{
+	const UWorld* W = GetWorld();
+	return (W && W->GetOutermost()) ? W->GetOutermost()->GetName() : FString();
+}
+
+void UAurixNetDriver::TravelForMigration()
+{
+	UWorld* W = GetWorld();
+	UAurixNetSubsystem* S = Subsystem();
+	if (!W || !S || !GEngine) return;
+	S->bResumingAfterMigration = true;
+	const FString Url = FString::Printf(TEXT("aurix://%s%s%s"), *MigrationRoom, *CurrentMapPath(), bMigrateAsHost ? TEXT("?listen") : TEXT(""));
+	if (bMigrateAsHost)
+	{
+		FWorldContext* Ctx = GEngine->GetWorldContextFromWorld(W);
+		FString Err;
+		if (Ctx) GEngine->Browse(*Ctx, FURL(nullptr, *Url, TRAVEL_Absolute), Err);
+		if (!Err.IsEmpty()) UE_LOG(LogAurixNet, Error, TEXT("host migration browse failed: %s"), *Err);
+	}
+	else
+	{
+		GEngine->SetClientTravel(W, *Url, TRAVEL_Absolute);
+	}
 }
 
 void UAurixNetDriver::OnClosed(const FString& Reason)

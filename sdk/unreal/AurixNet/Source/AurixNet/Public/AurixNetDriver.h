@@ -53,6 +53,13 @@ private:
 	UFUNCTION() void HandleMasterChanged(int32 Master);
 	UFUNCTION() void HandleClosed(const FString& Reason);
 
+	void BeginHostMigration(int32 NewMaster);
+	void TravelForMigration();
+	FString CurrentMapPath() const;
+	bool bMigrating = false;
+	bool bMigrateAsHost = false;
+	float MigrateIn = 0.f;
+	FString MigrationRoom;
 	TMap<uint16, TWeakObjectPtr<UAurixNetConnection>> Remotes;
 	TArray<TPair<uint16, TArray<uint8>>> Inbox;
 	FDelegateHandle RawHandle;

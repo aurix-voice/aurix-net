@@ -16,6 +16,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FAurixNetEvent, uint8, Code, int3
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixNetNotice, const FString&, Text);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixNetError, const FString&, Code, const FString&, Message);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixNetClosed, const FString&, Reason);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixNetHostMigration, EAurixNetMigration, Phase, bool, bNewHost);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixNetRoomsListed, const TArray<FAurixNetRoomSummary>&, Rooms);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FAurixNetRoomProps, const FString&, PropsJson, bool, bVisible, bool, bOpen);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixNetPlayerProps, int32, Actor, const FString&, PropsJson);
@@ -102,6 +103,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Aurix Net|Room") FString GetRoomPropsJson() const { return RoomPropsJson; }
 	UFUNCTION(BlueprintPure, Category = "Aurix Net|Room") FString GetPlayerPropsJson(int32 Actor) const { const FString* P = PlayerProps.Find(Actor); return P ? *P : FString(); }
 
+	/** Relay NetDriver host migration (see Project Settings → Host migration). */
+	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Room") FAurixNetHostMigration OnHostMigration;
+	/** Set by the NetDriver across the migration reload so the new world knows it is resuming. */
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net|Room") bool bResumingAfterMigration = false;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Room") FAurixNetRoomProps OnRoomProps;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Room") FAurixNetPlayerProps OnPlayerProps;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Lobby") FAurixNetLobbyUpdate OnLobbyUpdate;
