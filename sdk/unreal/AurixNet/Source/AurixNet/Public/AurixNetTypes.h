@@ -13,6 +13,9 @@ UENUM(BlueprintType)
 enum class EAurixNetTarget : uint8 { All = 0, Others = 1, Master = 2 };
 
 UENUM(BlueprintType)
+enum class EAurixNetCache : uint8 { None = 0, Add = 1, Remove = 2 };
+
+UENUM(BlueprintType)
 enum class EAurixNetState : uint8 { Disconnected, Connecting, Connected, InRoom, Closed };
 
 USTRUCT(BlueprintType)

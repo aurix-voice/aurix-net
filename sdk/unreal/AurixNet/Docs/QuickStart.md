@@ -48,6 +48,22 @@ same way with `?listen`; it is just a player that only hosts.
 Room name, `MaxPlayers=` and props come from the URL; matchmaking and the room list are on the
 subsystem (`Join Random`, `Send Control` with lobby requests from docs/api.md).
 
+## 3b. Async nodes, settings, PIE
+
+**Project Settings → Plugins → Aurix Net**: cell URL, tunnel, default max players, host migration,
+interest cell size. **Aurix Net (Editor)** (per user, never cooked): a development SDK key — the
+**Connect with Dev Grant (PIE)** node then mints one player per PIE instance, so "Number of Players = 3"
+in the editor gives three distinct players in one room without a backend.
+
+Latent nodes (Success / Failure pins, nothing blocks the game thread): **Connect to Aurix**,
+**Connect and Join Room**, **Join or Create Room**, **Join Room**, **Join Random Room**.
+
+Realtime-style room features on the subsystem: `SetRoomProps` / `SetPlayerProps` (with CAS
+`Expected`), `SetRoomVisibility`, `SubscribeLobby` (+ `OnLobbyUpdate`), `SendEventEx` (interest
+group, cached events for late joiners), `SetGroups`, `Rpc` to a room module, `Kick`, `SetMaster`,
+`RequestStats`, `OnDesync`. `AurixInterestComponent` joins grid interest groups around its owner —
+send state events with `Group = CurrentGroup()` and only nearby players receive them.
+
 ## 4. Standard session nodes (optional)
 
 Enable the Aurix Online Subsystem to use **Create Session / Find Sessions / Join Session** as usual:

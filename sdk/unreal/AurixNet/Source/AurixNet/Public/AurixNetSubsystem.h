@@ -17,6 +17,14 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixNetNotice, const FString&, Tex
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixNetError, const FString&, Code, const FString&, Message);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixNetClosed, const FString&, Reason);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixNetRoomsListed, const TArray<FAurixNetRoomSummary>&, Rooms);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FAurixNetRoomProps, const FString&, PropsJson, bool, bVisible, bool, bOpen);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixNetPlayerProps, int32, Actor, const FString&, PropsJson);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixNetLobbyUpdate, const FAurixNetRoomSummary&, Room, bool, bRemoved);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixNetStats, int32, Rooms, int32, Players);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FAurixNetRpcResult, int32, Id, bool, bOk, const FString&, BodyJson, const FString&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FAurixNetDesync, int64, Tick, int32, Actor, int32, Strikes, bool, bUntrusted);
+/** Result of an async connect/join: Actor >= 0 on success. */
+DECLARE_DELEGATE_TwoParams(FAurixNetAsyncResult, int32 /*Actor*/, const FString& /*Error*/);
 
 /** Native hook for the NetDriver: every relay event frame, before Blueprint delegates. */
 DECLARE_MULTICAST_DELEGATE_OneParam(FAurixNetRawEvent, const FAurixNetEventFrame&);
@@ -54,6 +62,52 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net")
 	void Leave();
+
+	/** Non-blocking variants (the native connect/join wait for the cell): the work runs on a worker thread, Done fires on the game thread. */
+	void ConnectAsync(const FString& CellUrl, const FString& Grant, bool bTunnel, FAurixNetAsyncResult Done);
+	void JoinAsync(const FString& JoinJson, FAurixNetAsyncResult Done);
+	/** Connect with the project settings cell URL and this grant. */
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net")
+	bool ConnectWithSettings(const FString& Grant);
+	/** JSON for the join calls (join_or_create / join / join_random), shared with the async nodes. */
+	static FString JoinOrCreateJson(const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson, const FString& LobbyPropsJson = TEXT(""), bool bVisible = true, bool bOpen = true);
+	static FString JoinJsonFor(const FString& RoomName);
+	static FString JoinRandomJson(const FString& FilterJson, const FString& Expr = TEXT(""));
+	bool IsBusy() const { return bBusy; }
+
+#if WITH_EDITOR
+	/** PIE: mint a development grant with the editor-only DevApiKey (one player per PIE instance) and connect. */
+	void ConnectWithDevGrantAsync(const FString& PlayerName, FAurixNetAsyncResult Done);
+#endif
+
+	// ---- Realtime features
+	/** Room properties (JSON object); Expected = CAS: apply only if these current values match. Master or anyone, per room rules. */
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Room") bool SetRoomProps(const FString& PropsJson, const FString& ExpectedJson = TEXT(""));
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Room") bool SetRoomVisibility(bool bVisible, bool bOpen);
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Room") bool SetPlayerProps(const FString& PropsJson, const FString& ExpectedJson = TEXT(""));
+	/** Interest groups (relay): receive only events sent to groups you joined; 0 = everyone. */
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Room") bool SetGroups(const TArray<int32>& Join, const TArray<int32>& Leave);
+	/** Event with full options: group (0 = none), cache (Add keeps it for late joiners; Remove drops cached events with this code from us). */
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Room") bool SendEventEx(uint8 Code, const TArray<uint8>& Payload, EAurixNetTarget Target, const TArray<int32>& Actors, EAurixNetChannel Channel, int32 Group, EAurixNetCache Cache);
+	/** Sync rooms: steer area-of-interest — extra viewpoints (entity ids) and entities always in view. */
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Sync") bool SetView(const TArray<int64>& Viewpoints, const TArray<int64>& Interest);
+	/** Subscribe to the lobby: OnRoomsListed with the current list, then OnLobbyUpdate per change. */
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Lobby") bool SubscribeLobby(bool bSubscribe);
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Lobby") bool RequestStats();
+	/** Call a room module RPC (rooms with a WASM module); answered by OnRpcResult with this id. */
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Room") int32 Rpc(const FString& Name, const FString& BodyJson);
+	/** Master only. */
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Room") bool Kick(int32 Actor, const FString& Reason);
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Room") bool SetMaster(int32 Actor);
+	UFUNCTION(BlueprintPure, Category = "Aurix Net|Room") FString GetRoomPropsJson() const { return RoomPropsJson; }
+	UFUNCTION(BlueprintPure, Category = "Aurix Net|Room") FString GetPlayerPropsJson(int32 Actor) const { const FString* P = PlayerProps.Find(Actor); return P ? *P : FString(); }
+
+	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Room") FAurixNetRoomProps OnRoomProps;
+	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Room") FAurixNetPlayerProps OnPlayerProps;
+	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Lobby") FAurixNetLobbyUpdate OnLobbyUpdate;
+	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Lobby") FAurixNetStats OnStats;
+	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Room") FAurixNetRpcResult OnRpcResult;
+	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Lockstep") FAurixNetDesync OnDesync;
 
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net")
 	void Disconnect();
@@ -116,6 +170,11 @@ private:
 	void DestroyClient();
 
 	AurixNetClient* Client = nullptr;
+	bool bBusy = false;
+	int32 NextRpcId = 1;
+	FString RoomPropsJson;
+	TMap<int32, FString> PlayerProps;
+	void FinishJoin(int32 Actor);
 	EAurixNetState State = EAurixNetState::Disconnected;
 	FAurixNetRoomInfo Room;
 };

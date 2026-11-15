@@ -9,6 +9,6 @@ public class AurixNet : ModuleRules
 		CppStandard = CppStandardVersion.Default;
 
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "NetCore" });
-		PrivateDependencyModuleNames.AddRange(new string[] { "Json", "JsonUtilities", "Sockets", "PacketHandler", "Projects", "AurixNetLibrary" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "Json", "JsonUtilities", "Sockets", "PacketHandler", "Projects", "DeveloperSettings", "AurixNetLibrary" });
 	}
 }
