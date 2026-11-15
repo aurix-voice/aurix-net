@@ -103,6 +103,19 @@ Relay is what the NetDriver uses. The other two room modes are exposed as compon
 Both read the room's data stream from the game instance's subsystem; join the room with the matching
 mode first (`Join Or Create` with Mode = Sync / Lockstep).
 
+## 6. Deterministic simulation and rollback (Quantum-style)
+
+- **`AurixSimWorld2D` / `AurixSimWorld3D`** — aurix-sim in Blueprint/C++: fixed-point (Q32.32) rigid
+  bodies, joints, raycasts and sweeps, kinematic character controllers, grid navmesh + flow fields +
+  crowd (2D). Bit-identical on every machine and on the cell's WASM referee: `Hash`, `Snapshot`,
+  `Restore` are exact. Doubles at the API edge, integers inside.
+- **`AurixRollbackRunner`** — predict-and-rollback over `AurixLockstepComponent`: `SetLocalInput` each
+  frame, it sends the input, simulates predicted ticks at `TickHz`, and on every confirmed tick
+  restores the confirmed state, applies the confirmed inputs, re-simulates the predicted ticks and
+  reports the hash (the cell catches desyncs). Bind `OnSimulate` (your deterministic step),
+  `SaveState` / `LoadState` (e.g. `Snapshot` / `Restore` of a sim world). Late joiners receive a
+  checkpoint through `OnRestore`; `ExportReplay` / `PlayReplay` give exact replays from inputs.
+
 ## Engine versions
 
 5.3 – 5.8. One source tree; the module compiles with `CppStandardVersion.Default` (5.6+ needs
