@@ -85,9 +85,9 @@ void AurixNetClient::leave() { client_.leave(); }
 void AurixNetClient::disconnect_from() { client_.destroy(); }
 void AurixNetClient::_process(double) { poll(); }
 
-} // namespace godot
-
-
 String AurixNetClient::best_region(const String &catalog_http, int probes) {
     try { return String::utf8(aurix::net::Client::bestRegionJson(to_std(catalog_http), probes).c_str()); } catch (const std::exception &) { return String(); }
 }
+
+} // namespace godot
+
