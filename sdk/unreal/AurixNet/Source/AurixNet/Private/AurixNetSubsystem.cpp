@@ -111,7 +111,8 @@ FString UAurixNetSubsystem::JoinRandomJson(const FString& FilterJson, const FStr
 bool UAurixNetSubsystem::ConnectWithSettings(const FString& Grant)
 {
 	const UAurixNetSettings* S = UAurixNetSettings::Get();
-	return Connect(S->CellUrl, Grant, S->bForceTunnel);
+	const FString Url = (IsRunningDedicatedServer() && !S->DedicatedNodeUrl.IsEmpty()) ? S->DedicatedNodeUrl : S->CellUrl;
+	return Connect(Url, Grant, S->bForceTunnel);
 }
 
 void UAurixNetSubsystem::ConnectAsync(const FString& CellUrl, const FString& Grant, bool bTunnel, FAurixNetAsyncResult Done)

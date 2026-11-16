@@ -16,6 +16,31 @@ All modes share: WebSocket control channel, QUIC/WebTransport data path (WebSock
 when UDP is blocked), three channels (unreliable-sequenced, reliable-ordered,
 reliable-unordered), rooms/lobby/properties/master client, grants and quotas.
 
+## Topologies
+
+A mode says who simulates; a topology says where that runs and how players reach it. Aurix
+covers the four that Fusion and Quantum list, on one protocol and one SDK surface:
+
+| | Dedicated server | Client host | Shared authority | Deterministic |
+|---|---|---|---|---|
+| Mode | `relay` | `relay` | `sync` | `lockstep` |
+| Who runs the game | your headless server (UE/Unity/C++) | one player's machine | the node (WASM module or schema rules) | every client, node referees |
+| Where the room lives | a node **on the same machine** as your server | the node nearest the host | the node | the node |
+| Authority | ++ server | −− host can cheat | ++ room, clients own assigned objects | ++ inputs on the node, hash checks |
+| Path for players | direct to your machine (QUIC/WebTransport) | player → node → host | direct to the node | direct to the node |
+| Host migration | restart the server; room row is adopted by the next node | ++ turnkey (`AllowHostMigration`) | n/a (node failure: adopt) | n/a (checkpoints) |
+| Cost | your machine (+ node management on a BYOC plan) | players + a node | node-hours or shared plan | node-hours or shared plan |
+
+**Dedicated server with a public IP.** Rooms live on the node a backend connects to: there is no
+separate placement step, and a client that asks another node for the room by name is redirected
+(`room_elsewhere`) — every SDK follows that transparently. So the dedicated topology is one rule:
+run a node next to the game server and let the server create its room through the local node
+(`http://127.0.0.1:8090`); players use the project's usual URL and end up connected straight to
+your machine. The node is part of your cell (`aurix-net-agent install` on that host, or the
+self-hosted compose), so grants, matchmaking, replays and the console keep working. SDK helpers:
+Unity `NetworkManager.StartDedicated(localNodeUrl)`, Unreal `DedicatedNodeUrl` in Project
+Settings (used automatically by `-server` builds), Web/C++/Godot: connect with the node URL.
+
 ## relay
 
 Create with `mode: "relay"` (default). Events are opaque bytes with a code, a target

@@ -238,6 +238,13 @@ namespace Aurix.Net.Unity.Framework
         // ---- lifecycle ----
         public void StartHost() => StartServerInternal(true);
         public void StartServer() => StartServerInternal(false);
+        /// <summary>Dedicated-server topology: the headless server creates its room through the node running on the same machine
+        /// (default http://127.0.0.1:8090); players keep the project URL and are redirected straight to this machine.</summary>
+        public void StartDedicated(string localNodeUrl = "http://127.0.0.1:8090")
+        {
+            if (!string.IsNullOrEmpty(localNodeUrl)) httpUrl = localNodeUrl;
+            StartServerInternal(false);
+        }
 
         void StartServerInternal(bool withLocalPlayer)
         {

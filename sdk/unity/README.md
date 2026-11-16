@@ -186,3 +186,12 @@ input-margin reports (late inputs raise it at once, steady slack lowers it slowl
 to pin it), `InputRedundancy` (1–8) sets how many past inputs ride in each datagram. After a desync the
 node asks for your state at the flagged tick: handle `OnDumpRequested(tick)` with `SendDump(tick, hash, state)`
 from your rollback history; the dumps are downloadable via the REST API next to the master's.
+
+## Dedicated server with a public IP
+
+```csharp
+// headless build on the machine that also runs an Aurix Net node
+GetComponent<NetworkManager>().StartDedicated("http://127.0.0.1:8090");
+```
+
+The room lives on that node; clients keep the project URL and are redirected to your machine (`room_elsewhere`, followed automatically). See `docs/modes.md` → Topologies.

@@ -139,3 +139,7 @@ Console: `aurix.net.status`, `aurix.net.rooms [expr]`, `aurix.net.leave`. In the
 
 5.3 – 5.8; Win64, Linux, Mac, Android, iOS (static `libaurix_net.a`). One source tree; the module compiles with `CppStandardVersion.Default` (5.6+ needs
 C++20). Package per engine with `RunUAT BuildPlugin -Plugin=…/AurixNet.uplugin -Package=…`.
+
+## Dedicated server with a public IP
+
+Run a node on the game-server machine (`aurix-net-agent install` from the console, or the self-hosted compose) and set **Project Settings → Aurix Net → Dedicated Node Url** to `http://127.0.0.1:8090`. `-server` builds then create their room through that node; players keep `CellUrl` and are redirected straight to your machine. See `docs/modes.md` → Topologies.
