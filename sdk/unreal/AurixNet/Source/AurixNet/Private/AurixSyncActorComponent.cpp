@@ -84,20 +84,30 @@ bool UAurixSyncActorComponent::Spawn()
 }
 bool UAurixSyncActorComponent::Despawn() { if (!IsOwner()) return false; const bool bOk = World->SendOp(2, Entity, -1) >= 0; Entity = 0; OwnerActor = -1; return bOk; }
 bool UAurixSyncActorComponent::TransferTo(int32 Actor) { return IsOwner() && World->SendOp(3, Entity, Actor) >= 0; }
+bool UAurixSyncActorComponent::SetPolicy(EAurixOwnerPolicy Policy) { OwnershipPolicy = Policy; bPolicySent = IsOwner() && World->SendOp(4, Entity, (int32)Policy) >= 0; return bPolicySent; }
+bool UAurixSyncActorComponent::RequestOwnership()
+{
+	if (!World || Entity == 0 || IsOwner()) return false;
+	if (World->SendOp(5, Entity, -1) < 0) return false;
+	RequestLeft = RequestTimeout;
+	return true;
+}
+bool UAurixSyncActorComponent::Release() { return IsOwner() && World->SendOp(6, Entity, -1) >= 0; }
 
 void UAurixSyncActorComponent::HandleSpawn(int64 E, int32 Owner)
 {
 	// Our own spawn comes back as a spawn owned by us; the first one while we wait is ours.
 	if (bAwaitingSpawn && Entity == 0 && Net() && Owner == Net()->GetRoom().Actor)
 	{
-		bAwaitingSpawn = false; Entity = E; OwnerActor = Owner;
+		bAwaitingSpawn = false; Entity = E; OwnerActor = Owner; bPolicySent = false;
+		if (OwnershipPolicy != EAurixOwnerPolicy::DestroyOnLeave) SetPolicy(OwnershipPolicy);
 		OnBound.Broadcast(Entity); OnOwnerChanged.Broadcast(OwnerActor, true);
 	}
 }
 void UAurixSyncActorComponent::HandleChange(int64 E, int32 Owner)
 {
 	if (E != Entity) return;
-	if (Owner != OwnerActor) { OwnerActor = Owner; OnOwnerChanged.Broadcast(OwnerActor, IsOwner()); }
+	if (Owner != OwnerActor) { OwnerActor = Owner; if (IsOwner()) RequestLeft = 0.f; OnOwnerChanged.Broadcast(OwnerActor, IsOwner()); }
 	if (!IsOwner()) ApplyFromWorld();
 }
 void UAurixSyncActorComponent::HandleDespawn(int64 E, int32)
@@ -110,6 +120,7 @@ void UAurixSyncActorComponent::HandleDespawn(int64 E, int32)
 void UAurixSyncActorComponent::TickComponent(float Dt, ELevelTick T, FActorComponentTickFunction* F)
 {
 	Super::TickComponent(Dt, T, F);
+	if (RequestLeft > 0.f) { RequestLeft -= Dt; if (RequestLeft <= 0.f && !IsOwner()) OnOwnershipDenied.Broadcast(Entity); }
 	if (!IsOwner()) return;
 	Accum += Dt;
 	const float Step = WriteHz > 0 ? 1.f / WriteHz : 0.f;

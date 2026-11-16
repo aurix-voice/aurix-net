@@ -5,7 +5,13 @@ export type SyncOp =
   | { op: "write"; entity: number; writes: Array<[ComponentDef, ComponentValue]> }
   | { op: "spawn"; writes: Array<[ComponentDef, ComponentValue]> }
   | { op: "despawn"; entity: number }
-  | { op: "transfer"; entity: number; to: number };
+  | { op: "transfer"; entity: number; to: number }
+  | { op: "set_policy"; entity: number; policy: OwnerPolicy }
+  | { op: "request"; entity: number }
+  | { op: "release"; entity: number };
+
+/** Per-entity ownership policy: what the cell does when the owner leaves and who may take the entity. */
+export enum OwnerPolicy { DestroyOnLeave = 0, ToMaster = 1, Orphan = 2, Dynamic = 3 }
 
 export const KIND_INPUT = 0x10, KIND_DELTA = 0x11, KIND_RESYNC = 0x12, KIND_ACK = 0x13;
 
@@ -270,6 +276,9 @@ export class SyncWorld {
         case "write": w.writeBits(0, 8); w.writeBits(op.entity, 48); writes(op.writes); break;
         case "spawn": w.writeBits(1, 8); writes(op.writes); break;
         case "despawn": w.writeBits(2, 8); w.writeBits(op.entity, 48); break;
+        case "set_policy": w.writeBits(4, 8); w.writeBits(op.entity, 48); w.writeBits(op.policy, 8); break;
+        case "request": w.writeBits(5, 8); w.writeBits(op.entity, 48); break;
+        case "release": w.writeBits(6, 8); w.writeBits(op.entity, 48); break;
         case "transfer": w.writeBits(3, 8); w.writeBits(op.entity, 48); w.writeBits(op.to, 16); break;
       }
     }
@@ -334,5 +343,11 @@ export class SyncSession {
   despawn(entity: number): number { return this.sendOps([{ op: "despawn", entity }]); }
   /** Hands an entity you own to another actor in the room (Fusion: RequestStateAuthority, but owner-initiated). */
   transfer(entity: number, to: number): number { return this.sendOps([{ op: "transfer", entity, to }]); }
+  /** Owner only: ownership policy for an entity (see OwnerPolicy). */
+  setPolicy(entity: number, policy: OwnerPolicy): number { return this.sendOps([{ op: "set_policy", entity, policy }]); }
+  /** Take an unowned entity or a dynamic one; refused = owner stays unchanged in the next delta. */
+  requestOwnership(entity: number): number { return this.sendOps([{ op: "request", entity }]); }
+  /** Drop ownership; the entity stays alive unowned. */
+  release(entity: number): number { return this.sendOps([{ op: "release", entity }]); }
   writeEntity(entity: number, writes: Array<[ComponentDef, ComponentValue]>): number { return this.sendOps([{ op: "write", entity, writes }]); }
 }

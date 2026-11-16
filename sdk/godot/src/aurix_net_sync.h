@@ -41,6 +41,9 @@ public:
     int spawn_entity(AurixNetClient *client);
     int despawn_entity(AurixNetClient *client, int64_t entity);
     int transfer_entity(AurixNetClient *client, int64_t entity, int to_actor);
+    int set_policy(AurixNetClient *client, int64_t entity, int policy);
+    int request_ownership(AurixNetClient *client, int64_t entity);
+    int release_entity(AurixNetClient *client, int64_t entity);
     String get_last_error() const { return last_error_; }
 };
 

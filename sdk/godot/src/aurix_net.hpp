@@ -265,6 +265,12 @@ public:
     int64_t spawn(Client& c) { return aurix_net_sync_send_op(s_, c.handle(), 1, 0, 0); }
     int64_t despawn(Client& c, uint64_t entity) { return aurix_net_sync_send_op(s_, c.handle(), 2, entity, 0); }
     int64_t transfer(Client& c, uint64_t entity, int toActor) { return aurix_net_sync_send_op(s_, c.handle(), 3, entity, toActor); }
+    /// Ownership policy: 0 destroy_on_leave (default), 1 to_master, 2 orphan, 3 dynamic. Owner only.
+    int64_t setPolicy(Client& c, uint64_t entity, int policy) { return aurix_net_sync_send_op(s_, c.handle(), 4, entity, policy); }
+    /// Take an unowned entity, or any entity with the dynamic policy; the cell arbitrates (owner unchanged = refused).
+    int64_t requestOwnership(Client& c, uint64_t entity) { return aurix_net_sync_send_op(s_, c.handle(), 5, entity, 0); }
+    /// Drop ownership; the entity stays alive without an owner.
+    int64_t release(Client& c, uint64_t entity) { return aurix_net_sync_send_op(s_, c.handle(), 6, entity, 0); }
 
 private:
     static void check(int r) { if (r != 0) throw Error(lastError()); }

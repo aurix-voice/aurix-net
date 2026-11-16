@@ -143,16 +143,56 @@ impl GameLogic for ArenaLogic {
 /// when the first byte is `OPS_MARKER`, a list of ops: `u8 n_ops`, each `u8 op` followed by
 /// `OP_WRITE: u48 entity, u8 n, writes` · `OP_SPAWN: u8 n, writes` (new entity owned by the
 /// actor, at most `MAX_OWNED` per actor) · `OP_DESPAWN: u48 entity` · `OP_TRANSFER: u48 entity,
-/// u16 actor` (hand ownership to another joined actor). Only the owner may write, despawn or
-/// transfer an entity; the first invalid op ends the input. A leaving actor's entities are
-/// despawned. For games that bring their own schema but keep simulation on the clients.
-pub struct OwnerLogic;
+/// u16 actor` (hand ownership to another joined actor) · `OP_SET_POLICY: u48 entity, u8 policy`
+/// (owner only) · `OP_REQUEST: u48 entity` (take an unowned entity, or any entity whose policy is
+/// `dynamic`; the cell arbitrates, the first request in a tick wins and the loser sees the owner
+/// unchanged) · `OP_RELEASE: u48 entity` (owner drops ownership; the entity stays, unowned).
+/// Only the owner may write, despawn, transfer, set the policy or release an entity; the first
+/// invalid op ends the input. What happens to a leaving actor's entities is the per-entity policy:
+/// `destroy_on_leave` (default) despawns them, `to_master` hands them to the oldest remaining
+/// player (the room master), `orphan` and `dynamic` leave them alive without an owner, so anyone
+/// may `OP_REQUEST` them. For games that bring their own schema but keep simulation on the clients.
+#[derive(Default)]
+pub struct OwnerLogic {
+    /// Ownership policy per entity; absent = `DestroyOnLeave`.
+    pub policies: HashMap<EntityId, OwnerPolicy>,
+}
 pub const OPS_MARKER: u8 = 0xFF;
 pub const OP_WRITE: u8 = 0;
 pub const OP_SPAWN: u8 = 1;
 pub const OP_DESPAWN: u8 = 2;
 pub const OP_TRANSFER: u8 = 3;
+pub const OP_SET_POLICY: u8 = 4;
+pub const OP_REQUEST: u8 = 5;
+pub const OP_RELEASE: u8 = 6;
 pub const MAX_OWNED: usize = 32;
+
+/// Per-entity ownership policy (`OP_SET_POLICY`): what the cell does when the owner leaves and who
+/// may take the entity over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OwnerPolicy {
+    /// Despawned with its owner (Fusion "transaction + destroy").
+    #[default]
+    DestroyOnLeave = 0,
+    /// Handed to the oldest remaining player when the owner leaves (Fusion "master client").
+    ToMaster = 1,
+    /// Stays alive without an owner; anyone may request it (Fusion "manual" / "transaction").
+    Orphan = 2,
+    /// Anyone may take it at any time, owner or not (Fusion "dynamic", physics hand-offs).
+    Dynamic = 3,
+}
+
+impl OwnerPolicy {
+    pub fn from_u8(v: u8) -> Option<Self> {
+        Some(match v {
+            0 => Self::DestroyOnLeave,
+            1 => Self::ToMaster,
+            2 => Self::Orphan,
+            3 => Self::Dynamic,
+            _ => return None,
+        })
+    }
+}
 
 fn owns(frame: &mut Frame, id: EntityId, actor: ActorId) -> bool {
     frame.entity_mut(id).is_some_and(|e| e.owner == Some(actor))
@@ -191,8 +231,33 @@ impl GameLogic for OwnerLogic {
             .filter(|e| e.owner == Some(actor))
             .map(|e| e.id)
             .collect();
+        // Oldest remaining player = lowest actor id still owning an avatar (actor ids follow join order).
+        let master = frame
+            .entities()
+            .filter_map(|e| e.owner)
+            .filter(|a| *a != actor)
+            .min_by_key(|a| a.0);
         for e in owned {
-            let _ = frame.despawn(e);
+            match self.policies.get(&e).copied().unwrap_or_default() {
+                OwnerPolicy::DestroyOnLeave => {
+                    let _ = frame.despawn(e);
+                    self.policies.remove(&e);
+                }
+                OwnerPolicy::ToMaster => {
+                    if let Some(ent) = frame.entity_mut(e) {
+                        ent.owner = master;
+                    }
+                    if master.is_none() {
+                        let _ = frame.despawn(e);
+                        self.policies.remove(&e);
+                    }
+                }
+                OwnerPolicy::Orphan | OwnerPolicy::Dynamic => {
+                    if let Some(ent) = frame.entity_mut(e) {
+                        ent.owner = None;
+                    }
+                }
+            }
         }
     }
     fn step(&mut self, frame: &mut Frame, inputs: &[(ActorId, Option<EntityId>, Vec<u8>, bool)]) {
@@ -238,7 +303,57 @@ impl GameLogic for OwnerLogic {
                             break;
                         };
                         let id = EntityId::from_u64(id);
-                        owns(frame, id, *actor) && Some(id) != *avatar && frame.despawn(id).is_ok()
+                        let ok = owns(frame, id, *actor) && Some(id) != *avatar && frame.despawn(id).is_ok();
+                        if ok {
+                            self.policies.remove(&id);
+                        }
+                        ok
+                    }
+                    OP_SET_POLICY => {
+                        let (Ok(id), Ok(p)) = (r.read_bits(48), r.read_bits(8)) else {
+                            break;
+                        };
+                        let id = EntityId::from_u64(id);
+                        match OwnerPolicy::from_u8(p as u8) {
+                            Some(policy) if owns(frame, id, *actor) && Some(id) != *avatar => {
+                                self.policies.insert(id, policy);
+                                true
+                            }
+                            _ => false,
+                        }
+                    }
+                    OP_REQUEST => {
+                        let Ok(id) = r.read_bits(48) else {
+                            break;
+                        };
+                        let id = EntityId::from_u64(id);
+                        let policy = self.policies.get(&id).copied().unwrap_or_default();
+                        let owned = frame.entities().filter(|e| e.owner == Some(*actor)).count();
+                        match frame.entity_mut(id) {
+                            Some(ent) if owned < MAX_OWNED && (ent.owner.is_none() || policy == OwnerPolicy::Dynamic) => {
+                                ent.owner = Some(*actor);
+                                true
+                            }
+                            _ => false,
+                        }
+                    }
+                    OP_RELEASE => {
+                        let Ok(id) = r.read_bits(48) else {
+                            break;
+                        };
+                        let id = EntityId::from_u64(id);
+                        if owns(frame, id, *actor) && Some(id) != *avatar {
+                            if let Some(ent) = frame.entity_mut(id) {
+                                ent.owner = None;
+                            }
+                            // A released entity must survive without an owner.
+                            if self.policies.get(&id).copied().unwrap_or_default() == OwnerPolicy::DestroyOnLeave {
+                                self.policies.insert(id, OwnerPolicy::Orphan);
+                            }
+                            true
+                        } else {
+                            false
+                        }
                     }
                     OP_TRANSFER => {
                         let (Ok(id), Ok(to)) = (r.read_bits(48), r.read_bits(16)) else {
@@ -345,7 +460,7 @@ impl SyncRoom {
             (None, Some(l)) => (Schema::parse(ARENA_SCHEMA).unwrap(), l),
             (Some(src), None) => (
                 Schema::parse(src).map_err(|e| e.to_string())?,
-                Box::new(OwnerLogic),
+                Box::new(OwnerLogic::default()),
             ),
             (None, None) => (
                 Schema::parse(ARENA_SCHEMA).unwrap(),
@@ -781,6 +896,64 @@ mod tests {
             })
         );
         assert!(SyncRoom::new(Some("component {"), 30, 1).is_err());
+    }
+
+    #[test]
+    fn ownership_policies_orphan_master_dynamic() {
+        let src = "component Pose {\n x: f32 @range(-100, 100, 0.1)\n}";
+        let mut room = SyncRoom::new(Some(src), 30, 1).unwrap();
+        let (a, b, c) = (ActorId(1), ActorId(2), ActorId(3));
+        room.on_join(a);
+        room.on_join(b);
+        room.on_join(c);
+        let send = |room: &mut SyncRoom, actor: ActorId, w: net_wire::BitWriter| {
+            let t = room.frame.tick;
+            room.handle(actor, SyncRoom::encode_input(t, &[w.finish()]));
+            room.tick();
+        };
+        let ops = |items: &[(u8, Option<u64>, Option<(u64, u32)>)]| {
+            let mut w = net_wire::BitWriter::new();
+            w.write_bits(OPS_MARKER as u64, 8);
+            w.write_bits(items.len() as u64, 8);
+            for (op, entity, extra) in items {
+                w.write_bits(*op as u64, 8);
+                if let Some(e) = entity {
+                    w.write_bits(*e, 48);
+                }
+                if let Some((v, bits)) = extra {
+                    w.write_bits(*v, *bits);
+                }
+            }
+            w
+        };
+        // a spawns three entities (no initial writes) and gives each a policy.
+        send(&mut room, a, ops(&[(OP_SPAWN, None, Some((0, 8))), (OP_SPAWN, None, Some((0, 8))), (OP_SPAWN, None, Some((0, 8)))]));
+        let spawned: Vec<EntityId> = room
+            .frame
+            .entities()
+            .filter(|e| e.owner == Some(a) && Some(e.id) != room.avatars[&a])
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(spawned.len(), 3);
+        let (orphan, to_master, dynamic) = (spawned[0], spawned[1], spawned[2]);
+        send(&mut room, a, ops(&[
+            (OP_SET_POLICY, Some(orphan.to_u64()), Some((OwnerPolicy::Orphan as u64, 8))),
+            (OP_SET_POLICY, Some(to_master.to_u64()), Some((OwnerPolicy::ToMaster as u64, 8))),
+            (OP_SET_POLICY, Some(dynamic.to_u64()), Some((OwnerPolicy::Dynamic as u64, 8))),
+        ]));
+        // c takes the dynamic entity while a still owns it; the orphan one is refused (a owns it).
+        send(&mut room, c, ops(&[(OP_REQUEST, Some(dynamic.to_u64()), None), (OP_REQUEST, Some(orphan.to_u64()), None)]));
+        assert_eq!(room.frame.entity_mut(dynamic).unwrap().owner, Some(c));
+        assert_eq!(room.frame.entity_mut(orphan).unwrap().owner, Some(a));
+        // a leaves: orphan stays unowned, to_master goes to the oldest remaining player (b).
+        room.on_leave(a);
+        assert_eq!(room.frame.entity_mut(orphan).unwrap().owner, None);
+        assert_eq!(room.frame.entity_mut(to_master).unwrap().owner, Some(b));
+        // b requests the orphan and gets it, then releases it: unowned again, still alive.
+        send(&mut room, b, ops(&[(OP_REQUEST, Some(orphan.to_u64()), None)]));
+        assert_eq!(room.frame.entity_mut(orphan).unwrap().owner, Some(b));
+        send(&mut room, b, ops(&[(OP_RELEASE, Some(orphan.to_u64()), None)]));
+        assert_eq!(room.frame.entity_mut(orphan).unwrap().owner, None);
     }
 
     #[test]

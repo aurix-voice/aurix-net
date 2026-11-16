@@ -13,15 +13,23 @@ namespace Aurix.Net.Managed
     }
 
     /// <summary>One owner-authoritative op for <see cref="SyncWorld.EncodeOps"/>.</summary>
+    /// <summary>Per-entity ownership policy: what the cell does when the owner leaves and who may take the entity.</summary>
+    public enum OwnerPolicy : byte { DestroyOnLeave = 0, ToMaster = 1, Orphan = 2, Dynamic = 3 }
+
     public struct SyncOp
     {
-        public const byte Write = 0, Spawn = 1, Despawn = 2, Transfer = 3;
+        public const byte Write = 0, Spawn = 1, Despawn = 2, Transfer = 3, SetPolicy = 4, Request = 5, Release = 6;
+        /// <summary>Ownership policy: 0 destroy on leave (default), 1 to master, 2 orphan, 3 dynamic.</summary>
+        public byte Policy;
         public byte Op; public ulong Entity; public ushort To; public IList<(ComponentDef, ComponentValue)> Writes;
         public static SyncOp WriteEntity(ulong entity, IList<(ComponentDef, ComponentValue)> writes) => new SyncOp { Op = Write, Entity = entity, Writes = writes };
         public static SyncOp SpawnEntity(IList<(ComponentDef, ComponentValue)> writes = null) => new SyncOp { Op = Spawn, Writes = writes };
         public static SyncOp DespawnEntity(ulong entity) => new SyncOp { Op = Despawn, Entity = entity };
         /// <summary>Hands an entity you own to another actor in the room.</summary>
         public static SyncOp TransferEntity(ulong entity, ushort to) => new SyncOp { Op = Transfer, Entity = entity, To = to };
+        public static SyncOp SetEntityPolicy(ulong entity, OwnerPolicy policy) => new SyncOp { Op = SetPolicy, Entity = entity, Policy = (byte)policy };
+        public static SyncOp RequestOwnership(ulong entity) => new SyncOp { Op = Request, Entity = entity };
+        public static SyncOp ReleaseEntity(ulong entity) => new SyncOp { Op = Release, Entity = entity };
     }
 
     public sealed class SyncWorld
@@ -103,6 +111,8 @@ namespace Aurix.Net.Managed
                 w.WriteBits(op.Op, 8);
                 if (op.Op != SyncOp.Spawn) w.WriteBits(op.Entity, 48);
                 if (op.Op == SyncOp.Transfer) { w.WriteBits(op.To, 16); continue; }
+                if (op.Op == SyncOp.SetPolicy) { w.WriteBits(op.Policy, 8); continue; }
+                if (op.Op == SyncOp.Request || op.Op == SyncOp.Release) continue;
                 if (op.Op == SyncOp.Despawn) continue;
                 var ws = op.Writes ?? Array.Empty<(ComponentDef, ComponentValue)>();
                 w.WriteBits((ulong)ws.Count, 8);

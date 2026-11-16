@@ -72,7 +72,7 @@ Without a `schema` the room runs the built-in arena logic (one avatar per actor,
 owner-authoritative: each actor owns its avatar entity and its input is a list of full component
 writes that the server applies and replicates. An input starting with `0xFF` is instead a list
 of ops on entities the actor owns — `write` (any owned entity), `spawn` (a new owned entity,
-at most 32 per actor, with initial writes), `despawn`, `transfer` (hand ownership to another
+at most 32 per actor, with initial writes), `despawn`, `set_policy` (per entity: `destroy_on_leave` default, `to_master`, `orphan`, `dynamic` — what happens when the owner leaves and who may take it), `request` (take an unowned or dynamic entity; the cell arbitrates), `release` (drop ownership, entity stays), `transfer` (hand ownership to another
 actor in the room; the new owner shows up in the next delta) — so a client can own several
 objects (projectiles, pickups, vehicles) and pass them around; a leaving actor's entities are
 despawned. With `logic`, the WASM module decides what inputs mean (below).

@@ -25,6 +25,9 @@ void AurixNetSync::_bind_methods() {
     ClassDB::bind_method(D_METHOD("spawn_entity", "client"), &AurixNetSync::spawn_entity);
     ClassDB::bind_method(D_METHOD("despawn_entity", "client", "entity"), &AurixNetSync::despawn_entity);
     ClassDB::bind_method(D_METHOD("transfer_entity", "client", "entity", "to_actor"), &AurixNetSync::transfer_entity);
+    ClassDB::bind_method(D_METHOD("set_policy", "client", "entity", "policy"), &AurixNetSync::set_policy);
+    ClassDB::bind_method(D_METHOD("request_ownership", "client", "entity"), &AurixNetSync::request_ownership);
+    ClassDB::bind_method(D_METHOD("release_entity", "client", "entity"), &AurixNetSync::release_entity);
     ClassDB::bind_method(D_METHOD("get_last_error"), &AurixNetSync::get_last_error);
     ADD_SIGNAL(MethodInfo("spawn", PropertyInfo(Variant::INT, "entity"), PropertyInfo(Variant::INT, "owner")));
     ADD_SIGNAL(MethodInfo("change", PropertyInfo(Variant::INT, "entity"), PropertyInfo(Variant::INT, "owner")));
@@ -149,6 +152,19 @@ int AurixNetSync::despawn_entity(AurixNetClient *client, int64_t entity) {
 int AurixNetSync::transfer_entity(AurixNetClient *client, int64_t entity, int to_actor) {
     if (!sync_ || !client) return -1;
     return (int)sync_->transfer(client->raw(), (uint64_t)entity, to_actor);
+}
+
+int AurixNetSync::set_policy(AurixNetClient *client, int64_t entity, int policy) {
+    if (!sync_ || !client) return -1;
+    return (int)sync_->setPolicy(client->raw(), (uint64_t)entity, policy);
+}
+int AurixNetSync::request_ownership(AurixNetClient *client, int64_t entity) {
+    if (!sync_ || !client) return -1;
+    return (int)sync_->requestOwnership(client->raw(), (uint64_t)entity);
+}
+int AurixNetSync::release_entity(AurixNetClient *client, int64_t entity) {
+    if (!sync_ || !client) return -1;
+    return (int)sync_->release(client->raw(), (uint64_t)entity);
 }
 
 } // namespace godot

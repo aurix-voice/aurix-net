@@ -6,7 +6,22 @@
 class UAurixSyncWorld;
 class UAurixNetSubsystem;
 
+/** Per-entity ownership policy: what the cell does when the owner leaves and who may take the entity (Fusion ownership modes). */
+UENUM(BlueprintType)
+enum class EAurixOwnerPolicy : uint8
+{
+	/** Despawned with its owner. */
+	DestroyOnLeave = 0,
+	/** Handed to the room master (oldest remaining player) when the owner leaves. */
+	ToMaster = 1,
+	/** Stays alive unowned; anyone may RequestOwnership. */
+	Orphan = 2,
+	/** Anyone may take it at any time (physics hand-offs). */
+	Dynamic = 3
+};
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixSyncActorBound, int64, Entity);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixSyncActorDenied, int64, Entity);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixSyncActorOwner, int32, Owner, bool, bLocal);
 
 /**
@@ -39,6 +54,8 @@ public:
 	/** Also map the root component's location/rotation to fields named `position` / `rotation` when the schema has them. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Sync") bool bSyncTransform = true;
 	/** Spawn a new entity we own on BeginPlay (the typical "my pawn" case). Otherwise call BindEntity. */
+	/** Applied to our entity once spawned (owner only); change later with SetPolicy. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Sync") EAurixOwnerPolicy OwnershipPolicy = EAurixOwnerPolicy::DestroyOnLeave;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Sync") bool bSpawnOnBeginPlay = false;
 	/** Despawn our entity when the component ends play (owner only); remote despawn destroys the actor. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Sync") bool bDespawnOnEndPlay = true;
@@ -52,6 +69,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Sync") bool Despawn();
 	/** Hand the entity to another player (owner only). */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Sync") bool TransferTo(int32 Actor);
+	/** Owner only: change the entity's ownership policy. */
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Sync") bool SetPolicy(EAurixOwnerPolicy Policy);
+	/** Ask the cell for ownership (unowned entity, or Dynamic policy). OnOwnerChanged(bLocal = true) on success, OnOwnershipDenied after RequestTimeout. */
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Sync") bool RequestOwnership();
+	/** Owner only: drop ownership; the entity stays alive unowned. */
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Sync") bool Release();
+	/** Seconds to wait for the cell before a request counts as denied. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Sync", meta = (ClampMin = 0.1)) float RequestTimeout = 1.0f;
+	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Sync") FAurixSyncActorDenied OnOwnershipDenied;
 	/** Force a full write on the next tick (owner). */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Sync") void MarkDirty() { bDirty = true; }
 
@@ -81,6 +107,7 @@ private:
 	int32 PosField = -1, RotField = -1;
 	TArray<FMap> Maps;
 	TArray<uint8> LastWritten;
-	bool bDirty = true, bAwaitingSpawn = false, bResolved = false;
+	bool bDirty = true, bAwaitingSpawn = false, bResolved = false, bPolicySent = false;
+	float RequestLeft = 0.f;
 	float Accum = 0.f;
 };

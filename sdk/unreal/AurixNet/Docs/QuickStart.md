@@ -105,7 +105,7 @@ and the UPROPERTY names (same as the field names); the owner writes changed valu
 (`WriteHz`), everyone else gets them applied to the same properties. `bSyncTransform` maps the root
 component to `position` / `rotation` fields. `Spawn` (or `bSpawnOnBeginPlay`) creates an entity you own,
 `BindEntity` attaches a remote one (from `AurixSyncWorld.OnSpawn`), `TransferTo` hands ownership over;
-late joiners get the cell's snapshot. Types: bool, ints/enums, float/double, FVector/FVector2D,
+late joiners get the cell's snapshot. `OwnershipPolicy` picks what the cell does when the owner leaves (destroy / to master / orphan / dynamic) and who may `RequestOwnership` (`OnOwnershipDenied` when refused); `Release` drops ownership. Types: bool, ints/enums, float/double, FVector/FVector2D,
 FRotator/FQuat, FString/FName, TArray<uint8>.
 
 Both read the room's data stream from the game instance's subsystem; join the room with the matching

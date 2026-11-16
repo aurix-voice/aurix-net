@@ -617,7 +617,9 @@ pub unsafe extern "C" fn aurix_net_sync_send_writes(
 /// One owner-authoritative op as this tick's input (rooms with a schema and no `logic`):
 /// `op` 0 = write `entity` with the queued writes, 1 = spawn a new entity you own (queued
 /// writes are its initial state; at most 32 per actor), 2 = despawn `entity`, 3 = hand `entity`
-/// to actor `to`. Only entities you own; the node ignores anything else.
+/// to actor `to`, 4 = set the ownership policy of `entity` to `to` (0 destroy_on_leave, 1 to_master,
+/// 2 orphan, 3 dynamic), 5 = request ownership of `entity` (unowned, or policy dynamic), 6 = release
+/// `entity` (stays alive, unowned). Only entities you own except 5; the node ignores anything else.
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_sync_send_op(
     s: *const AurixNetSync,
@@ -627,8 +629,8 @@ pub unsafe extern "C" fn aurix_net_sync_send_op(
     to: i32,
 ) -> i64 {
     let Some(s) = s.as_ref() else { return -1 };
-    if !(0..=3).contains(&op) {
-        set_error("send_op: op must be 0..=3");
+    if !(0..=6).contains(&op) {
+        set_error("send_op: op must be 0..=6");
         return -1;
     }
     let mut st = s.inner.lock();
@@ -646,6 +648,7 @@ pub unsafe extern "C" fn aurix_net_sync_send_op(
             }
         }
         3 => w.write_bits(to.clamp(0, 0xFFFF) as u64, 16),
+        4 => w.write_bits(to.clamp(0, 3) as u64, 8),
         _ => {}
     }
     let body = w.finish();
