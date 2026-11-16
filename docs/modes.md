@@ -34,6 +34,8 @@ cached from then on — `increase` opens the next slice, `set` picks one, `purge
 one slice, `purge_up_to` every slice up to and including `index` (e.g. per-round state a late
 joiner no longer needs). Late joiners receive the remaining slices in original order.
 
+Room flags (room props, Photon `RoomOptions` equivalents): `publish_user_id` (default true; false hides other players' `player_id` from clients — actor numbers, names and props only; operators still see ids), `suppress_room_events` (default false; true drops `player_joined` / `player_left` broadcasts for very large rooms — master changes still go out), `suppress_player_info` (default false; true sends a joiner only their own roster entry), `broadcast_props_to_all` (default true; false skips the setter when a props change is broadcast). `CheckUserOnJoin` is always on: one session per player id per room is enforced by the grant.
+
 Rate limits: a room takes `max_events_per_sec_per_room` events (default 2000) and each player
 `max_events_per_sec_per_player` (default 60, burst of 2 s worth); over the limit the event is
 dropped with `rate_limited`. Both are project quotas (`/v1/operator/projects/:id/limits`).

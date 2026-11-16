@@ -25,6 +25,18 @@ pub struct RoomConfig {
     /// Drop a player's cached events when they leave for good (room prop `cleanup_cache_on_leave`,
     /// default true); false keeps them for late joiners, the "keep the cache on leave" behaviour.
     pub cleanup_cache_on_leave: bool,
+    /// Room prop `publish_user_id` (default true): false hides other players' `player_id` from
+    /// clients (they see actor numbers, names and props only); operators still see everything.
+    pub publish_user_id: bool,
+    /// Room prop `suppress_room_events` (default false): true stops `player_joined` /
+    /// `player_left` broadcasts (big rooms where joins are noise; master changes still go out).
+    pub suppress_room_events: bool,
+    /// Room prop `suppress_player_info` (default false): true sends a joiner only their own entry
+    /// in `joined.players` instead of the whole roster.
+    pub suppress_player_info: bool,
+    /// Room prop `broadcast_props_to_all` (default true): false skips the setter when a room or
+    /// player props change is broadcast (the setter already knows).
+    pub broadcast_props_to_all: bool,
     pub max_events_per_sec: u32,
     /// Events one player may send per second (burst = 2 s worth).
     pub max_events_per_sec_per_player: u32,
@@ -322,7 +334,7 @@ impl Room {
                 let out = if was_online {
                     Vec::new()
                 } else {
-                    self.broadcast_except(a, ServerMsg::PlayerJoined { player: info })
+                    self.announce_join(a, info)
                 };
                 return Ok((a, out));
             }
@@ -369,7 +381,7 @@ impl Room {
         if self.master.is_none() && !spectator {
             self.master = Some(actor);
         }
-        out.extend(self.broadcast_except(actor, ServerMsg::PlayerJoined { player: info }));
+        out.extend(self.announce_join(actor, info));
         Ok((actor, out))
     }
 
@@ -418,6 +430,34 @@ impl Room {
 
     pub fn player_infos(&self) -> Vec<PlayerInfo> {
         self.players.values().map(|p| p.info()).collect()
+    }
+
+    /// The roster as `viewer` may see it: only their own entry under `suppress_player_info`,
+    /// other players' ids blanked unless `publish_user_id`.
+    pub fn roster_for(&self, viewer: ActorId) -> Vec<PlayerInfo> {
+        self.players
+            .values()
+            .filter(|p| !self.cfg.suppress_player_info || p.actor == viewer)
+            .map(|p| self.public_info(p, viewer))
+            .collect()
+    }
+
+    fn public_info(&self, p: &Player, viewer: ActorId) -> PlayerInfo {
+        let mut info = p.info();
+        if !self.cfg.publish_user_id && p.actor != viewer {
+            info.player_id.clear();
+        }
+        info
+    }
+
+    fn announce_join(&self, actor: ActorId, mut info: PlayerInfo) -> Vec<Outgoing> {
+        if self.cfg.suppress_room_events {
+            return Vec::new();
+        }
+        if !self.cfg.publish_user_id {
+            info.player_id.clear();
+        }
+        self.broadcast_except(actor, ServerMsg::PlayerJoined { player: info })
     }
 
     /// Counts a simulation input (sync/lockstep) that bypasses `raise_event`, so the live
@@ -472,13 +512,15 @@ impl Room {
             };
             p.online = false;
             p.offline_since = Some(now);
-            out.extend(self.broadcast_except(
-                actor,
-                ServerMsg::PlayerLeft {
+            if !self.cfg.suppress_room_events {
+                out.extend(self.broadcast_except(
                     actor,
-                    offline: true,
-                },
-            ));
+                    ServerMsg::PlayerLeft {
+                        actor,
+                        offline: true,
+                    },
+                ));
+            }
         } else {
             let Some(p) = self.players.remove(&actor) else {
                 return out;
@@ -487,13 +529,15 @@ impl Room {
             if self.cfg.cleanup_cache_on_leave {
                 self.cache.retain(|c| c.from != actor);
             }
-            out.extend(self.broadcast_except(
-                actor,
-                ServerMsg::PlayerLeft {
+            if !self.cfg.suppress_room_events {
+                out.extend(self.broadcast_except(
                     actor,
-                    offline: false,
-                },
-            ));
+                    ServerMsg::PlayerLeft {
+                        actor,
+                        offline: false,
+                    },
+                ));
+            }
         }
         if self.master == Some(actor) {
             // Oldest online (non-spectator) player becomes master.
@@ -576,12 +620,13 @@ impl Room {
         if let Some(o) = open {
             self.cfg.open = o;
         }
-        Ok(self.broadcast_all(ServerMsg::RoomProps {
+        let msg = ServerMsg::RoomProps {
             props: self.cfg.props.clone(),
             by: Some(by),
             visible: self.cfg.visible,
             open: self.cfg.open,
-        }))
+        };
+        Ok(if self.cfg.broadcast_props_to_all { self.broadcast_all(msg) } else { self.broadcast_except(by, msg) })
     }
 
     pub fn set_player_props(
@@ -605,7 +650,8 @@ impl Room {
         }
         p.props = merged;
         let props = p.props.clone();
-        Ok(self.broadcast_all(ServerMsg::PlayerProps { actor, props }))
+        let msg = ServerMsg::PlayerProps { actor, props };
+        Ok(if self.cfg.broadcast_props_to_all { self.broadcast_all(msg) } else { self.broadcast_except(actor, msg) })
     }
 
     pub fn set_groups(
@@ -817,6 +863,10 @@ mod tests {
             reserved: Vec::new(),
             reserved_until: None,
             cleanup_cache_on_leave: true,
+            publish_user_id: true,
+            suppress_room_events: false,
+            suppress_player_info: false,
+            broadcast_props_to_all: true,
             max_events_per_sec: 4,
             max_events_per_sec_per_player: 3,
             max_event_bytes: 100,
@@ -1072,6 +1122,38 @@ mod tests {
         assert_eq!(r.cache_slice_op(CacheSliceOp::PurgeUpTo(4)), 1);
         assert_eq!(codes(&r), vec![4]);
         assert_eq!(r.cache_slice_op(CacheSliceOp::Purge(9)), 1);
+    }
+
+    #[test]
+    fn room_flags_hide_ids_and_suppress_events() {
+        let mut c = cfg();
+        c.max_players = 3;
+        c.publish_user_id = false;
+        c.suppress_room_events = true;
+        c.suppress_player_info = true;
+        c.broadcast_props_to_all = false;
+        let t = Instant::now();
+        let mut r = Room::new(c, t);
+        let (a, _) = r.join("alice", "Alice", Map::new(), None, false, t).unwrap();
+        let (b, out) = r.join("bob", "Bob", Map::new(), None, false, t).unwrap();
+        assert!(out.is_empty(), "suppress_room_events: no player_joined");
+        let roster = r.roster_for(b);
+        assert_eq!(roster.len(), 1, "suppress_player_info: only self");
+        assert_eq!(roster[0].player_id, "bob");
+        let mut open = r.cfg.clone();
+        open.suppress_player_info = false;
+        r.cfg = open;
+        let ids: Vec<String> = r.roster_for(b).into_iter().map(|p| p.player_id).collect();
+        assert!(ids.contains(&"bob".to_string()) && ids.contains(&String::new()) && !ids.contains(&"alice".to_string()));
+        assert_eq!(r.player_infos().iter().filter(|p| p.player_id == "alice").count(), 1, "operators see ids");
+        let to = |o: &Outgoing| match o {
+            Outgoing::Control(a, _) | Outgoing::Data(a, _, _) => *a,
+        };
+        let out = r.set_player_props(b, Map::new(), None).unwrap();
+        assert!(out.iter().all(|o| to(o) != b), "setter excluded from props broadcast");
+        assert!(out.iter().any(|o| to(o) == a));
+        let out = r.leave(b, false, t);
+        assert!(out.iter().all(|o| !matches!(o, Outgoing::Control(_, ServerMsg::PlayerLeft { .. }))));
     }
 
     #[test]

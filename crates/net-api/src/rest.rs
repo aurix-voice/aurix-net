@@ -1056,6 +1056,10 @@ async fn create_room(
         reserved_until: (!req.reserved.is_empty())
             .then(|| std::time::Instant::now() + std::time::Duration::from_secs(60)),
         cleanup_cache_on_leave: crate::ws::prop_bool(&req.props, "cleanup_cache_on_leave", true),
+        publish_user_id: crate::ws::prop_bool(&req.props, "publish_user_id", true),
+        suppress_room_events: crate::ws::prop_bool(&req.props, "suppress_room_events", false),
+        suppress_player_info: crate::ws::prop_bool(&req.props, "suppress_player_info", false),
+        broadcast_props_to_all: crate::ws::prop_bool(&req.props, "broadcast_props_to_all", true),
         max_events_per_sec: limits.max_events_per_sec_per_room,
         max_events_per_sec_per_player: limits.max_events_per_sec_per_player,
         max_event_bytes: limits.max_event_bytes,
