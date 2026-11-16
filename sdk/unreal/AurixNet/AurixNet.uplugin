@@ -23,6 +23,12 @@
       "PlatformAllowList": ["Win64", "Linux", "Mac", "Android", "IOS"]
     },
     {
+      "Name": "AurixNetEditor",
+      "Type": "Editor",
+      "LoadingPhase": "Default",
+      "PlatformAllowList": ["Win64", "Linux", "Mac"]
+    },
+    {
       "Name": "OnlineSubsystemAurix",
       "Type": "Runtime",
       "LoadingPhase": "Default",

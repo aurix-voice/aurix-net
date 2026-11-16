@@ -110,7 +110,7 @@ interpolation (5.4+) or resimulation (5.5+) for bodies replicated over the NetDr
 is the NetDriver-less path — the owner streams snapshots (event 201, optional interest group), the
 others extrapolate with the received velocities and blend corrections over `CorrectionTime`.
 
-Console: `aurix.net.status`, `aurix.net.rooms [expr]`, `aurix.net.leave`.
+Console: `aurix.net.status`, `aurix.net.rooms [expr]`, `aurix.net.leave`. In the editor, **Window → Developer Tools → Aurix Net Debugger** shows every PIE instance: state, room, players, props, lockstep statistics, with Request rooms / Leave / Project Settings buttons.
 
 ## 6. Deterministic simulation and rollback (Quantum-style)
 
