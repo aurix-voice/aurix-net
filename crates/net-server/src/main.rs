@@ -137,11 +137,18 @@ async fn main() -> anyhow::Result<()> {
     info!(addr = %cfg.transport.quic_addr, fingerprint = %identity.fingerprint_sha256, "quic data plane listening");
 
     let registry = NodeRegistry::new(pool.clone());
-    let http_url = format!(
-        "http://{}:{}",
-        cfg.server.public_host,
-        cfg.server.http_addr.port()
-    );
+    let http_url = cfg
+        .server
+        .public_url
+        .as_deref()
+        .map(|u| u.trim_end_matches('/').to_string())
+        .unwrap_or_else(|| {
+            format!(
+                "http://{}:{}",
+                cfg.server.public_host,
+                cfg.server.http_addr.port()
+            )
+        });
     let st = Arc::new(AppState {
         grants: GrantSigner::with_previous(
             &cfg.auth.grant_secret,

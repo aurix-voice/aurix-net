@@ -131,6 +131,7 @@ its own `/healthz`), `STOPSIGNAL SIGTERM`
 7000/udp (QUIC), 7443/udp (WebTransport). Configure with `NET__SECTION__KEY` env vars
 (`NET__AUTH__GRANT_SECRET`, `NET__AUTH__ADMIN_TOKEN`, `NET__DATABASE__URL`, `NET__REDIS__URL`,
 `NET__SERVER__PUBLIC_HOST`, ...) or mount a TOML and pass `--config /etc/aurix-net/net.toml` (needed
+- `NET__SERVER__PUBLIC_URL` — public HTTP(S) base URL advertised to clients and other nodes (`/v1/regions`, `room_elsewhere` redirects, best-region probes). Set it to the proxy's URL when TLS terminates in front of the node (e.g. `https://eu-central.net.example.com`); default `http://{public_host}:{port}`.
 for list values such as `trusted_proxies` / `allowed_origins`). `deploy/docker-compose.prod.yml` is a
 two-node reference layout. The image sets `NET__SERVER__HTTP_ADDR=0.0.0.0:8090` (the bare binary
 defaults to 127.0.0.1 for dev runs; inside a container that leaves the published port dead while the

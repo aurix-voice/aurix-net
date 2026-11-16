@@ -63,6 +63,11 @@ pub struct ServerConfig {
     pub http_addr: SocketAddr,
     /// Hostname clients use to reach this node's data port.
     pub public_host: String,
+    /// Public HTTP(S) base URL advertised to clients and other nodes (`/v1/regions` endpoints,
+    /// `room_elsewhere` redirects). Default `http://{public_host}:{http_addr port}`; set it when a
+    /// reverse proxy terminates TLS, e.g. `https://eu-central.net.example.com`.
+    #[serde(default)]
+    pub public_url: Option<String>,
     pub heartbeat_secs: u64,
     /// Reverse proxies whose `X-Forwarded-For` is trusted (IPs or CIDRs). Empty = use the
     /// TCP peer address for every per-IP limit.
