@@ -1,5 +1,6 @@
 #include "aurix_net_client.h"
 #include "aurix_net_sync.h"
+#include "aurix_net_lockstep.h"
 #include <gdextension_interface.h>
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
@@ -10,6 +11,7 @@ static void init(ModuleInitializationLevel level) {
     if (level != MODULE_INITIALIZATION_LEVEL_SCENE) return;
     ClassDB::register_class<AurixNetClient>();
     ClassDB::register_class<AurixNetSync>();
+    ClassDB::register_class<AurixNetLockstep>();
 }
 static void uninit(ModuleInitializationLevel) {}
 

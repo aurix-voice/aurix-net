@@ -49,3 +49,29 @@ func _process(dt):
     # more entities you own: queue writes, then world.spawn_entity(client); world.write_entity(client, id); world.despawn_entity(client, id); world.transfer_entity(client, id, other_actor)
 ```
 `send_input(client, bytes)` is the raw input for rooms with server-side `logic`.
+
+## Lockstep rooms
+
+`AurixNetLockstep` is the client side of a lockstep room (Quantum-style): the game owns the deterministic
+simulation (use `AurixSim` worlds or your own fixed-point code), steps it on every confirmed tick and reports a
+hash; the cell compares hashes, serves late joiners from the master's checkpoints and keeps the input journal
+for replays.
+
+```gdscript
+var ls := AurixNetLockstep.new()
+client.data.connect(func(_channel, _tick, payload): ls.receive(payload))
+ls.tick.connect(func(tick: int, inputs: Array):
+    for i in inputs: sim.apply_input(i["actor"], i["data"])   # same order on every peer
+    sim.step()
+    ls.report_hash(client, tick, sim.hash()))
+ls.command.connect(func(tick, actor, data): game.on_command(actor, data))     # SendCommand from any peer
+ls.restore.connect(func(tick, hash, state): sim.restore(state))               # late join / resync
+ls.checkpoint_requested.connect(func(tick): ls.send_checkpoint(client, tick, sim.hash(), sim.snapshot()))
+ls.dump_requested.connect(func(tick): ls.send_dump(client, tick, sim.hash(), sim.snapshot()))
+func _physics_process(_dt): ls.send_input(client, encode_local_input())
+```
+
+`send_command(client, bytes)` is a reliable message outside the input stream (buy, surrender, pause): the cell
+stamps it onto the next tick and every peer gets `command` right before that tick. `set_input_delay(d, min, max,
+adaptive)` / `set_input_redundancy(n)` tune latency vs. loss; `get_confirmed_tick()`, `get_server_tick()`,
+`get_last_margin()` and `get_late_inputs()` are the live statistics.

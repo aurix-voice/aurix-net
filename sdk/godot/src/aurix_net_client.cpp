@@ -68,13 +68,13 @@ bool AurixNetClient::set_view(const PackedInt64Array &viewpoints, const PackedIn
     std::vector<uint64_t> v, i;
     for (int k = 0; k < viewpoints.size(); ++k) v.push_back((uint64_t)viewpoints[k]);
     for (int k = 0; k < interest.size(); ++k) i.push_back((uint64_t)interest[k]);
-    AURIX_TRY(client_.setView(v, i); return true;)
+    AURIX_TRY(client_.setView(v, i); return true, false)
 }
 bool AurixNetClient::set_groups(const PackedInt32Array &join, const PackedInt32Array &leave) {
     std::vector<uint16_t> j, l;
     for (int k = 0; k < join.size(); ++k) j.push_back((uint16_t)join[k]);
     for (int k = 0; k < leave.size(); ++k) l.push_back((uint16_t)leave[k]);
-    AURIX_TRY(client_.setGroups(j, l); return true;)
+    AURIX_TRY(client_.setGroups(j, l); return true, false)
 }
 bool AurixNetClient::send_data(int channel, const PackedByteArray &payload) {
     AURIX_TRY(client_.sendData((aurix::net::Channel)channel, payload.ptr(), payload.size()); return true, false);
