@@ -571,6 +571,21 @@ pub unsafe extern "C" fn aurix_net_lockstep_send_input(
     tick as i64
 }
 
+/// Reliable command outside the input stream (buy, surrender, pause): delivered to everyone in the
+/// next tick's inputs under actor 65535 as `[u16 actor, u16 len, bytes]*`, journaled and replayed.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_lockstep_send_command(
+    h: *mut AurixNetClient,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    if data.is_null() || len == 0 || len > 1024 {
+        set_error("send_command: 1..=1024 bytes");
+        return -1;
+    }
+    let d = std::slice::from_raw_parts(data, len);
+    send_frame(h, LockstepClient::command_frame(d))
+}
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_lockstep_report_hash(
     h: *mut AurixNetClient,

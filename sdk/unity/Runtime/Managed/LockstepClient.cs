@@ -9,9 +9,14 @@ namespace Aurix.Net.Managed
     public sealed class LockstepClient
     {
         public const byte KindInput = 0x10, KindBundle = 0x20, KindHash = 0x21, KindCheckpoint = 0x22, KindCheckpointReq = 0x23, KindCatchup = 0x24, KindInputStats = 0x25, KindDumpReq = 0x26, KindDump = 0x27;
+        public const byte KindCommand = 0x28;
 
         /// <summary>Confirmed inputs for one tick, in tick order, every tick exactly once (empty dictionary = nobody sent).</summary>
         public event Action<uint, Dictionary<ushort, byte[]>> OnTick;
+        /// <summary>Pseudo-actor whose input carries the tick's commands (see SendCommand).</summary>
+        public const ushort CommandActor = 0xFFFF;
+        /// <summary>Reliable command delivered to everyone at the same tick: (tick, sender actor, bytes). Raised before OnTick of that tick.</summary>
+        public event Action<uint, ushort, byte[]> OnCommand;
         /// <summary>Catch-up start: restore the game state from this checkpoint (state empty at tick 0 = fresh start).</summary>
         public event Action<uint, ulong, byte[]> OnRestore;
         /// <summary>The node asked us (the master) for the confirmed state at a tick ≤ this one: answer with SendCheckpoint.</summary>
@@ -115,6 +120,7 @@ namespace Aurix.Net.Managed
             while (_pending.TryGetValue(_next, out var inputs))
             {
                 _pending.Remove(_next); var t = _next; _next++; Delivered++;
+                if (inputs.TryGetValue(CommandActor, out var cmds)) { inputs.Remove(CommandActor); DispatchCommands(t, cmds); }
                 OnTick?.Invoke(t, inputs);
             }
             // Ticks older than the redundancy window that never arrived are lost for good only if the
@@ -134,6 +140,43 @@ namespace Aurix.Net.Managed
             _recentInputs.Add(input); int keep = Math.Max(1, Math.Min(8, InputRedundancy)); while (_recentInputs.Count > keep) _recentInputs.RemoveAt(0);
             _send(Channel.Unreliable, SyncWorld.EncodeInput(tick - (uint)(_recentInputs.Count - 1), _recentInputs));
         }
+
+        /// <summary>Reliable command outside the input stream (buy, surrender, pause): the server stamps it onto the next tick and every client and the referee get it via OnCommand, journaled and replayed. 1..1024 bytes.</summary>
+
+        public void SendCommand(byte[] data)
+
+        {
+
+            if (data == null || data.Length == 0 || data.Length > 1024) throw new ArgumentException("1..1024 bytes", nameof(data));
+
+            var b = new byte[1 + data.Length]; b[0] = KindCommand; Buffer.BlockCopy(data, 0, b, 1, data.Length);
+
+            _send(Channel.Reliable, b);
+
+        }
+
+        void DispatchCommands(uint tick, byte[] cmds)
+
+        {
+
+            int i = 0;
+
+            while (i + 4 <= cmds.Length)
+
+            {
+
+                ushort actor = (ushort)((cmds[i] << 8) | cmds[i + 1]); int len = (cmds[i + 2] << 8) | cmds[i + 3]; i += 4;
+
+                if (i + len > cmds.Length) break;
+
+                var d = new byte[len]; Buffer.BlockCopy(cmds, i, d, 0, len); i += len;
+
+                OnCommand?.Invoke(tick, actor, d);
+
+            }
+
+        }
+
 
         public void ReportHash(uint tick, ulong hash)
         {

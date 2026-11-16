@@ -51,6 +51,18 @@ void UAurixLockstepComponent::TickComponent(float DeltaTime, ELevelTick TickType
 					FAurixLockstepInput& In = Inputs.Emplace_GetRef(); In.Actor = Actor; In.Data.Append(D, (int32)L);
 				}
 			}
+			for (int32 I = Inputs.Num() - 1; I >= 0; --I)
+			{
+				if (Inputs[I].Actor != 0xFFFF) continue;
+				const TArray<uint8>& C = Inputs[I].Data;
+				for (int32 P = 0; P + 4 <= C.Num();)
+				{
+					const int32 From = (C[P] << 8) | C[P + 1]; const int32 Len = (C[P + 2] << 8) | C[P + 3]; P += 4;
+					if (P + Len > C.Num()) break;
+					OnCommand.Broadcast((int64)Ev.tick, From, TArray<uint8>(C.GetData() + P, Len)); P += Len;
+				}
+				Inputs.RemoveAt(I);
+			}
 			OnTick.Broadcast((int64)Ev.tick, Inputs);
 			break;
 		}
@@ -72,6 +84,11 @@ int64 UAurixLockstepComponent::SendInput(const TArray<uint8>& Data)
 	UAurixNetSubsystem* N = Net();
 	if (!Ls || !N || !N->NativeClient()) return -1;
 	return aurix_net_lockstep_send_input(Ls, N->NativeClient(), Data.GetData(), Data.Num());
+}
+bool UAurixLockstepComponent::SendCommand(const TArray<uint8>& Data)
+{
+	UAurixNetSubsystem* N = Net();
+	return N && N->NativeClient() && Data.Num() > 0 && Data.Num() <= 1024 && aurix_net_lockstep_send_command(N->NativeClient(), Data.GetData(), Data.Num()) == 0;
 }
 bool UAurixLockstepComponent::ReportHash(int64 Tick, int64 Hash)
 {

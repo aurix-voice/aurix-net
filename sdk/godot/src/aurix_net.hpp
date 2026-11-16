@@ -189,6 +189,8 @@ public:
     }
     /// Sends this tick's local input through the client; returns the tick it was stamped with (or -1).
     int64_t sendInput(Client& c, const uint8_t* data, size_t len) { return aurix_net_lockstep_send_input(ls_, c.handle(), data, len); }
+    /// Reliable command outside the input stream; everyone gets it next tick as input of actor AURIX_NET_COMMAND_ACTOR.
+    void sendCommand(Client& c, const std::vector<uint8_t>& data) { if (aurix_net_lockstep_send_command(c.handle(), data.data(), data.size()) != 0) { const char* e = aurix_net_last_error(); throw Error(e ? e : "send_command failed"); } }
     static void reportHash(Client& c, uint32_t tick, uint64_t hash) { aurix_net_lockstep_report_hash(c.handle(), tick, hash); }
     static void sendCheckpoint(Client& c, uint32_t tick, uint64_t hash, const uint8_t* s, size_t n) { aurix_net_lockstep_send_checkpoint(c.handle(), tick, hash, s, n); }
     static void sendDump(Client& c, uint32_t tick, uint64_t hash, const uint8_t* s, size_t n) { aurix_net_lockstep_send_dump(c.handle(), tick, hash, s, n); }

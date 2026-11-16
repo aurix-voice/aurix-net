@@ -100,6 +100,8 @@ Relay is what the NetDriver uses. The other two room modes are exposed as compon
   simulate on `OnTick(Tick, Inputs)`, `ReportHash` so the cell catches desyncs; `OnRestore` and
   `OnStateRequest` handle late join / referee checkpoints.
 
+`SendCommand` sends a reliable command outside the input stream (buy, surrender, pause); the cell stamps it onto the next tick and everyone receives it through `OnCommand` right before `OnTick` of that tick, so simulations stay in step. Commands are journaled and part of replays.
+
 **Shared mode without codegen** - `AurixSyncActorComponent` on any actor: pick the schema component
 and the UPROPERTY names (same as the field names); the owner writes changed values into the sync room
 (`WriteHz`), everyone else gets them applied to the same properties. `bSyncTransform` maps the root

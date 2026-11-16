@@ -1822,6 +1822,12 @@ async fn get_replay(
 fn local_replay(st: &Shared, id: Uuid, q: &ReplayQuery) -> Option<Result<Value>> {
     let h = st.host.get(RoomId::from_uuid(id))?;
     let g = h.lock();
+    if let Some(sy) = g.sync.as_ref() {
+        return Some(
+            serde_json::to_value(sy.replay_window(q.from.unwrap_or(0), q.to))
+                .map_err(|e| NetError::Internal(e.to_string())),
+        );
+    }
     Some(match g.lockstep.as_ref() {
         Some(l) => serde_json::to_value(l.replay_window(q.from.unwrap_or(0), q.to))
             .map_err(|e| NetError::Internal(e.to_string())),

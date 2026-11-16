@@ -67,6 +67,10 @@ int32_t aurix_net_lockstep_poll(AurixNetLockstep *ls, AurixNetLsEvent *out);    
 int32_t aurix_net_lockstep_input(AurixNetLockstep *ls, uint16_t index, uint16_t *actor, const uint8_t **data, size_t *len);
 int64_t aurix_net_lockstep_send_input(AurixNetLockstep *ls, AurixNetClient *h, const uint8_t *data, size_t len); /* stamped tick or -1 */
 int32_t aurix_net_lockstep_report_hash(AurixNetClient *h, uint32_t tick, uint64_t hash);
+/* Reliable command outside the input stream: arrives in the next tick's inputs for every client under
+   actor AURIX_NET_COMMAND_ACTOR as [u16 actor, u16 len, bytes]*; journaled, replayed, seen by the referee. */
+#define AURIX_NET_COMMAND_ACTOR 0xFFFF
+int32_t aurix_net_lockstep_send_command(AurixNetClient *h, const uint8_t *data, size_t len);
 int32_t aurix_net_lockstep_send_checkpoint(AurixNetClient *h, uint32_t tick, uint64_t hash, const uint8_t *state, size_t len);
 int32_t aurix_net_lockstep_send_dump(AurixNetClient *h, uint32_t tick, uint64_t hash, const uint8_t *state, size_t len);
 int64_t aurix_net_lockstep_get(AurixNetLockstep *ls, int32_t key);

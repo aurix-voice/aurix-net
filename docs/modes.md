@@ -139,6 +139,10 @@ report it (`Hash` frame). The server compares hashes per tick; a minority is rep
 everyone as `desync`. The server keeps the canonical input journal, which is also the replay
 format (`net-rollback::Replay`): seed + schema hash + inputs per tick reproduces the game.
 
+**Commands** (Quantum `DeterministicCommand`): a reliable message outside the per-tick input stream — buy, surrender, pause. The server stamps it onto the next tick and ships it inside that tick's bundle as the input of pseudo-actor 65535, so it is in the journal, in catch-ups, in replays and in the referee's input stream; every client sees it at the same tick (`SendCommand` / `OnCommand` in the SDKs). Up to 1 KB per command, 4 KB per tick.
+
+**Instant replay for sync rooms**: room props `replay_every` (ticks between snapshots, default hz/2) and `replay_secs` (window, default 30; 0 off) keep full-world delta frames on the node; `GET /v1/rooms/{id}/replay?from=&to=` returns them (`mode: "sync"`) and any SDK sync client replays them by feeding the frames, in order, to a fresh world.
+
 Use `net-fpmath` (Q32.32 fixed point, table trig, deterministic RNG) for anything that
 touches game state; never floats.
 
@@ -219,3 +223,4 @@ inputs are lost; sync rooms checkpoint every 2 s. A `room.rehosted` webhook fire
 | `0x22` Checkpoint | master -> server (reliable) | lockstep |
 | `0x23` CheckpointReq | server -> master (reliable) | lockstep |
 | `0x24` Catchup | server -> joiner (reliable), then `0x20` bundles | lockstep |
+| `0x28` Command | client -> server (reliable); delivered inside the next `0x20` bundle as the input of pseudo-actor 65535 (`[u16 actor, u16 len, bytes]*`) | lockstep |

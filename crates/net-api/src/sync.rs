@@ -15,7 +15,7 @@ use net_lagcomp::{History, Hitbox};
 use net_replication::{ClientView, ReplicationConfig, Replicator};
 use net_sim::{EntityId, Frame, FrameConfig, Input};
 use net_wire::{BitReader, ComponentValue, Schema, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 pub const KIND_INPUT: u8 = 0x10;
 pub const KIND_DELTA: u8 = 0x11;
@@ -398,6 +398,11 @@ pub struct SyncRoom {
     pub resyncs: u64,
     /// Watch-only actors: a view of the whole world, no avatar, inputs ignored.
     spectators: HashSet<ActorId>,
+    /// Instant replay: full-world delta frames (`0x11`, fresh baseline) every `replay_every`
+    /// ticks, the last `replay_keep` of them. Room props `replay_every` / `replay_secs`.
+    replay: VecDeque<(u32, Bytes)>,
+    replay_every: u32,
+    replay_keep: usize,
 }
 
 /// Input frames a client may send in a burst before the per-tick allowance applies.
@@ -491,6 +496,9 @@ impl SyncRoom {
             invalid_inputs: 0,
             resyncs: 0,
             spectators: HashSet::new(),
+            replay: VecDeque::new(),
+            replay_every: (hz as u32 / 2).max(1),
+            replay_keep: 60,
         })
     }
 
@@ -665,7 +673,54 @@ impl SyncRoom {
             b.extend_from_slice(&d);
             out.push((*a, b.freeze()));
         }
+        if self.replay_keep > 0 && self.frame.tick.0 % self.replay_every == 0 {
+            // A fresh view has no baseline and no viewpoint: the delta is the whole world.
+            let mut v = ClientView::new(ActorId(0xFFFF));
+            let d = self.rep.build(&self.frame, &mut v);
+            let mut b = BytesMut::with_capacity(d.len() + 1);
+            b.put_u8(KIND_DELTA);
+            b.extend_from_slice(&d);
+            self.replay.push_back((self.frame.tick.0, b.freeze()));
+            while self.replay.len() > self.replay_keep {
+                self.replay.pop_front();
+            }
+        }
         out
+    }
+
+    /// Room props `replay_every` (ticks between snapshots, default hz/2) and `replay_secs`
+    /// (window kept, default 30; 0 disables the ring).
+    pub fn set_replay(&mut self, every: Option<u32>, secs: Option<u32>) {
+        if let Some(e) = every {
+            self.replay_every = e.max(1);
+        }
+        if let Some(s) = secs {
+            self.replay_keep = (s as usize * self.hz as usize / self.replay_every as usize).min(4096);
+        }
+        self.replay.truncate(self.replay_keep);
+    }
+
+    /// Instant replay of a live sync room: full-world `0x11` frames for ticks `from..to`, each
+    /// decodable by any SDK's sync client as if it were the first delta after joining
+    /// (feed them in order to a fresh `SyncWorld`/`SyncSession`). `from_tick` is the first tick
+    /// actually held.
+    pub fn replay_window(&self, from: u32, to: Option<u32>) -> serde_json::Value {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let frames: Vec<serde_json::Value> = self
+            .replay
+            .iter()
+            .filter(|(t, _)| *t >= from && to.is_none_or(|hi| *t <= hi))
+            .map(|(t, d)| serde_json::json!({ "tick": t, "delta": b64.encode(d) }))
+            .collect();
+        serde_json::json!({
+            "mode": "sync",
+            "tick_hz": self.hz,
+            "schema_hash": self.schema_hash,
+            "every": self.replay_every,
+            "from_tick": self.replay.front().map(|(t, _)| *t).unwrap_or(from).max(from),
+            "frames": frames,
+        })
     }
 
     /// Simulation events raised during the last tick(s), as relay frames: `target` None means

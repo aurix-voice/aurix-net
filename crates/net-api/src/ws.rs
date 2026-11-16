@@ -1610,6 +1610,11 @@ pub async fn build_sync(
         crate::sync::SyncRoom::replication_from_props(props),
         logic,
     )
+    .map(|mut r| {
+        let u32p = |k: &str| props.get(k).and_then(|v| v.as_u64()).map(|v| v as u32);
+        r.set_replay(u32p("replay_every"), u32p("replay_secs"));
+        r
+    })
     .map_err(|e| NetError::Invalid(format!("schema: {e}")))
 }
 

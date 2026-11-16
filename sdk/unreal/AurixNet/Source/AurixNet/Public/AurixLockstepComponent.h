@@ -17,6 +17,8 @@ struct AURIXNET_API FAurixLockstepInput
 
 /** A confirmed tick: run your deterministic simulation with these inputs, then ReportHash(Tick, Hash). */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixLockstepTick, int64, Tick, const TArray<FAurixLockstepInput>&, Inputs);
+/** A reliable command (SendCommand) from Actor, delivered to everyone at Tick; fires before OnTick of that tick. */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FAurixLockstepCommand, int64, Tick, int32, Actor, const TArray<uint8>&, Data);
 /** The cell restored a checkpoint (late join / resync): load this state before continuing from Tick. */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FAurixLockstepRestore, int64, Tick, int64, Hash, const TArray<uint8>&, State);
 /** The cell asks for a checkpoint (or a full dump): answer with SendCheckpoint / SendDump. */
@@ -42,6 +44,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Lockstep") int64 SendInput(const TArray<uint8>& Data);
 	/** Report the state hash after simulating Tick; the cell detects desyncs and can referee. */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Lockstep") bool ReportHash(int64 Tick, int64 Hash);
+	/** Reliable command outside the input stream (buy, surrender, pause): the cell stamps it onto the next tick; everyone (and the referee) gets it at that tick via OnCommand; journaled and replayed. 1..1024 bytes. */
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Lockstep") bool SendCommand(const TArray<uint8>& Data);
+	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Lockstep") FAurixLockstepCommand OnCommand;
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Lockstep") bool SendCheckpoint(int64 Tick, int64 Hash, const TArray<uint8>& State);
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Lockstep") bool SendDump(int64 Tick, int64 Hash, const TArray<uint8>& State);
 	/** FNV-1a of a byte buffer, the same function the cell and other SDKs use for state hashes. */

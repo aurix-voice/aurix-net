@@ -6,12 +6,17 @@ import { Channel } from "./packet.js";
 import { SyncWorld } from "./sync.js";
 
 export const LS_INPUT = 0x10, LS_BUNDLE = 0x20, LS_HASH = 0x21, LS_CHECKPOINT = 0x22, LS_CHECKPOINT_REQ = 0x23, LS_CATCHUP = 0x24, LS_INPUT_STATS = 0x25, LS_DUMP_REQ = 0x26, LS_DUMP = 0x27;
+const LS_COMMAND = 0x28;
+/** Pseudo-actor whose per-tick input carries the commands. */
+export const COMMAND_ACTOR = 0xffff;
 
 export type TickInputs = Map<number, Uint8Array>;
 
 export class LockstepClient {
   /** Confirmed inputs for one tick, in tick order, every tick exactly once (empty map = nobody sent). */
   onTick?: (tick: number, inputs: TickInputs) => void;
+  /** Reliable command delivered to everyone at the same tick (sender actor, bytes); fires before onTick of that tick. */
+  onCommand?: (tick: number, actor: number, data: Uint8Array) => void;
   /** Catch-up start: restore the game state from this checkpoint (empty state at tick 0 = fresh start). */
   onRestore?: (tick: number, hash: bigint, state: Uint8Array) => void;
   /** The node asked us (the master) for the confirmed state at a tick <= this one: answer with sendCheckpoint. */
@@ -82,11 +87,25 @@ export class LockstepClient {
   }
 
   private drain(): void {
-    for (;;) { const inputs = this.pending.get(this.next); if (!inputs) break; this.pending.delete(this.next); const t = this.next++; this.delivered++; this.onTick?.(t, inputs); }
+    for (;;) { const inputs = this.pending.get(this.next); if (!inputs) break; this.pending.delete(this.next); const t = this.next++; this.delivered++; const cmds = inputs.get(COMMAND_ACTOR); if (cmds) { inputs.delete(COMMAND_ACTOR); this.dispatchCommands(t, cmds); } this.onTick?.(t, inputs); }
     for (const t of [...this.pending.keys()].sort((a, b) => a - b)) { if (t <= this.next + 600) break; this.pending.delete(t); this.dropped++; }
   }
 
   /** Queues this tick's local input (sent with the previous ones for redundancy); returns the tick it was stamped with. */
+  /** Reliable command outside the input stream (buy, surrender, pause): stamped onto the next tick by the server, journaled, replayed, seen by the referee. 1..1024 bytes. */
+  sendCommand(data: Uint8Array): void {
+    if (data.length === 0 || data.length > 1024) throw new Error("command: 1..1024 bytes");
+    const b = new Uint8Array(1 + data.length); b[0] = LS_COMMAND; b.set(data, 1);
+    this.send(Channel.Reliable, b);
+  }
+  private dispatchCommands(tick: number, cmds: Uint8Array): void {
+    let i = 0;
+    while (i + 4 <= cmds.length) {
+      const actor = (cmds[i] << 8) | cmds[i + 1]; const len = (cmds[i + 2] << 8) | cmds[i + 3]; i += 4;
+      if (i + len > cmds.length) break;
+      this.onCommand?.(tick, actor, cmds.slice(i, i + len)); i += len;
+    }
+  }
   sendInput(input: Uint8Array): number {
     const tick = Math.max(this.serverTick + this.inputDelay, this.lastInput + 1); this.lastInput = tick;
     this.recentInputs.push(input); const keep = Math.max(1, Math.min(8, this.inputRedundancy)); while (this.recentInputs.length > keep) this.recentInputs.shift();

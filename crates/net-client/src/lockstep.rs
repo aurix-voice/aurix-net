@@ -11,6 +11,9 @@ use bytes::{BufMut, Bytes, BytesMut};
 pub const LS_INPUT: u8 = 0x10;
 pub const LS_BUNDLE: u8 = 0x20;
 pub const LS_HASH: u8 = 0x21;
+pub const LS_COMMAND: u8 = 0x28;
+/// Pseudo-actor whose per-tick input carries the commands.
+pub const COMMAND_ACTOR: u16 = 0xFFFF;
 pub const LS_CHECKPOINT: u8 = 0x22;
 pub const LS_CHECKPOINT_REQ: u8 = 0x23;
 pub const LS_CATCHUP: u8 = 0x24;
@@ -286,6 +289,18 @@ impl LockstepClient {
         b.put_u64(hash);
         Outgoing {
             reliable: false,
+            payload: b.freeze(),
+        }
+    }
+    /// Reliable out-of-input-stream command; the server stamps it onto the next tick and every
+    /// client (and the referee) receives it in that tick's inputs under `COMMAND_ACTOR` (65535)
+    /// as `[u16 actor, u16 len, bytes]*`.
+    pub fn command_frame(data: &[u8]) -> Outgoing {
+        let mut b = BytesMut::with_capacity(1 + data.len());
+        b.put_u8(LS_COMMAND);
+        b.extend_from_slice(data);
+        Outgoing {
+            reliable: true,
             payload: b.freeze(),
         }
     }

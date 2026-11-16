@@ -66,6 +66,16 @@ pub const KIND_INPUT_STATS: u8 = 0x25;
 pub const KIND_DUMP_REQ: u8 = 0x26;
 /// client->server  u32 tick, u64 hash, bytes state (<= MAX_CHECKPOINT_BYTES).
 pub const KIND_DUMP: u8 = 0x27;
+/// Command: client -> server (reliable). Out-of-input-stream reliable messages (buy, surrender,
+/// pause) that must still be deterministic: the server stamps them onto the next tick and ships
+/// them inside that tick's bundle as the input of the pseudo-actor `COMMAND_ACTOR`, so they are in
+/// the journal, in catch-ups, in replays and in the referee's input stream.
+pub const KIND_COMMAND: u8 = 0x28;
+/// Pseudo-actor carrying the tick's commands: `[u16 actor, u16 len, bytes]*`.
+pub const COMMAND_ACTOR: ActorId = ActorId(0xFFFF);
+/// Commands kept per tick (bytes) and per command; more are dropped (the sender sees no effect).
+pub const MAX_COMMANDS_BYTES_PER_TICK: usize = 4096;
+pub const MAX_COMMAND_BYTES: usize = 1024;
 /// Ticks between input-margin reports (per actor).
 pub const INPUT_REPORT_EVERY: u32 = 30;
 const MAX_PENDING_DUMPS: usize = 16;
@@ -101,6 +111,8 @@ pub struct LockstepRoom {
     pub tick: Tick,
     pub actors: BTreeMap<ActorId, ()>,
     pending: BTreeMap<u32, TickInputs>,
+    /// Commands received since the last tick, already in `COMMAND_ACTOR` wire form.
+    pending_commands: Vec<u8>,
     pub journal: Journal,
     recent: VecDeque<Bytes>,
     /// Hash reports per tick: actor -> hash.
@@ -206,6 +218,7 @@ impl LockstepRoom {
             tick: Tick(0),
             actors: BTreeMap::new(),
             pending: BTreeMap::new(),
+            pending_commands: Vec::new(),
             journal: Journal::default(),
             recent: VecDeque::new(),
             hashes: BTreeMap::new(),
@@ -607,6 +620,20 @@ impl LockstepRoom {
                 }
                 true
             }
+            KIND_COMMAND => {
+                payload.advance(1);
+                if payload.is_empty()
+                    || payload.len() > MAX_COMMAND_BYTES
+                    || self.pending_commands.len() + 4 + payload.len() > MAX_COMMANDS_BYTES_PER_TICK
+                    || !self.actors.contains_key(&actor)
+                {
+                    return true;
+                }
+                self.pending_commands.put_u16(actor.0 as u16);
+                self.pending_commands.put_u16(payload.len() as u16);
+                self.pending_commands.extend_from_slice(&payload);
+                true
+            }
             KIND_HASH => {
                 payload.advance(1);
                 if payload.len() < 12 {
@@ -801,6 +828,9 @@ impl LockstepRoom {
                 inputs.entry(*a).or_default();
             }
         }
+        if !self.pending_commands.is_empty() {
+            inputs.insert(COMMAND_ACTOR, std::mem::take(&mut self.pending_commands));
+        }
         for (a, d) in inputs.iter().take(255) {
             self.journal.record(Tick(t), *a, d.clone());
         }
@@ -928,6 +958,27 @@ pub fn window_replay(r: &mut net_rollback::Replay, from: u32, to: Option<u32>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn commands_ride_the_next_bundle_as_the_command_actor() {
+        let mut l = LockstepRoom::new(30, 1);
+        let (a, b) = (ActorId(1), ActorId(2));
+        l.on_join(a);
+        l.on_join(b);
+        let _ = l.tick();
+        assert!(l.handle(a, Bytes::from_static(&[KIND_COMMAND, b'x', b'y'])));
+        assert!(l.handle(b, Bytes::from_static(&[KIND_COMMAND, 7])));
+        // unknown actor: dropped
+        assert!(l.handle(ActorId(9), Bytes::from_static(&[KIND_COMMAND, 1])));
+        let d = l.tick();
+        let bundles = LockstepRoom::decode_bundles(d);
+        let (_, inputs) = bundles.last().unwrap();
+        assert_eq!(inputs[&COMMAND_ACTOR], vec![0, 1, 0, 2, b'x', b'y', 0, 2, 0, 1, 7]);
+        // nothing pending: the next bundle has no command actor
+        let d = l.tick();
+        let bundles = LockstepRoom::decode_bundles(d);
+        assert!(!bundles.last().unwrap().1.contains_key(&COMMAND_ACTOR));
+    }
+
     #[test]
     fn replay_window_cuts_inputs_and_hashes_consistently() {
         let mut r = net_rollback::Replay {
