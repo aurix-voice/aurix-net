@@ -45,7 +45,7 @@ namespace Aurix.Net.Unity.Framework
     [DefaultExecutionOrder(-100)]
     public sealed class NetworkManager : MonoBehaviour
     {
-        enum Msg : byte { Hello = 1, Welcome, PlayerJoined, PlayerLeft, Spawn, Despawn, Owner, Sync, Rpc, ViewTick, ServerTick, StaticRpc, Ping, Pong }
+        enum Msg : byte { Hello = 1, Welcome, PlayerJoined, PlayerLeft, Spawn, Despawn, Owner, Sync, Rpc, ViewTick, ServerTick, StaticRpc, Ping, Pong, SceneLoad, SceneReady }
         const byte Version = 1;
 
         [Header("Aurix Net")]
@@ -123,6 +123,68 @@ namespace Aurix.Net.Unity.Framework
         public event Action<PlayerID> onPlayerJoined, onPlayerLeft;
         public event Action<NetworkIdentity> onSpawned, onDespawned;
         public event Action<string> onError;
+        /// <summary>Synchronised scene load (server LoadScene): start on every peer, done when all players reported ready (or sceneLoadTimeout passed).</summary>
+        public event Action<string> onSceneLoadStart, onSceneLoadDone;
+        /// <summary>How the scene is actually loaded; defaults to SceneManager.LoadSceneAsync in Unity, a no-op elsewhere. Replace for Addressables/custom loaders.</summary>
+        public Func<string, Task> sceneLoader = DefaultSceneLoader;
+        /// <summary>Seconds the server waits for every player's ready before finishing the load anyway.</summary>
+        public float sceneLoadTimeout = 30f;
+        /// <summary>Name of the scene a LoadScene is in flight for, null otherwise.</summary>
+        public string loadingScene { get; private set; }
+        public bool isSceneLoading => loadingScene != null;
+        ushort _sceneLoadId; readonly HashSet<PlayerID> _sceneReady = new HashSet<PlayerID>(); HashSet<PlayerID> _sceneWaitFor; float _sceneDeadline;
+
+        /// <summary>Server only: load a scene on every peer in lock step (Fusion LoadScene). Clients pause their view until the server says done; late joiners get the current scene name in Welcome.</summary>
+        public void LoadScene(string sceneName)
+        {
+            if (!isServer || string.IsNullOrEmpty(sceneName)) return;
+            _sceneLoadId++; loadingScene = sceneName; _sceneReady.Clear();
+            _sceneWaitFor = new HashSet<PlayerID>(_players); _sceneDeadline = (float)_clock.Elapsed.TotalSeconds + sceneLoadTimeout;
+            Broadcast(Msg.SceneLoad, w => { w.WriteBits(_sceneLoadId, 16); WriteString(w, sceneName); });
+            onSceneLoadStart?.Invoke(sceneName);
+            var id = _sceneLoadId;
+            RunSceneLoad(sceneName, () => { if (id == _sceneLoadId && localPlayer.HasValue) SceneReadyFrom(localPlayer.Value); });
+        }
+        void SceneReadyFrom(PlayerID p)
+        {
+            if (!isServer || loadingScene == null) return;
+            _sceneReady.Add(p);
+            if (_sceneWaitFor != null && _sceneWaitFor.All(x => _sceneReady.Contains(x) || !_players.Contains(x))) FinishSceneLoad();
+        }
+        void FinishSceneLoad()
+        {
+            var name = loadingScene; loadingScene = null; _sceneWaitFor = null;
+            if (isServer) Broadcast(Msg.SceneReady, w => w.WriteBits(_sceneLoadId, 16));
+            onSceneLoadDone?.Invoke(name);
+        }
+        void TickSceneLoad()
+        {
+            if (isServer && loadingScene != null && (float)_clock.Elapsed.TotalSeconds >= _sceneDeadline) FinishSceneLoad();
+        }
+        void RunSceneLoad(string sceneName, Action done)
+        {
+            var t = sceneLoader != null ? sceneLoader(sceneName) : Task.CompletedTask;
+            if (t.IsCompleted) { done(); return; }
+            _pendingSceneLoad = (t, done);
+        }
+        (Task task, Action done)? _pendingSceneLoad;
+        void PollSceneLoad()
+        {
+            if (_pendingSceneLoad is { } p && p.task.IsCompleted) { _pendingSceneLoad = null; p.done(); }
+        }
+        static void WriteString(BitWriter w, string s) { var b = System.Text.Encoding.UTF8.GetBytes(s ?? ""); w.WriteBits((uint)Math.Min(b.Length, 255), 8); for (int i = 0; i < Math.Min(b.Length, 255); i++) w.WriteBits(b[i], 8); }
+        static string ReadString(BitReader r) { int n = (int)r.ReadBits(8); var b = new byte[n]; for (int i = 0; i < n; i++) b[i] = (byte)r.ReadBits(8); return System.Text.Encoding.UTF8.GetString(b); }
+        static Task DefaultSceneLoader(string sceneName)
+        {
+#if UNITY_5_3_OR_NEWER
+            var tcs = new TaskCompletionSource<bool>();
+            var op = UnityEngine.SceneManagement.SceneManager.LoadSceneAsync(sceneName);
+            if (op == null) tcs.SetResult(false); else op.completed += _ => tcs.SetResult(true);
+            return tcs.Task;
+#else
+            return Task.CompletedTask;
+#endif
+        }
 
         readonly Dictionary<uint, NetworkIdentity> _sceneObjects = new Dictionary<uint, NetworkIdentity>();
         /// <summary>Scene-placed identities by sceneId: spawned by the host on start, bound (not instantiated) on clients.</summary>
@@ -402,6 +464,7 @@ namespace Aurix.Net.Unity.Framework
                 Send(-1, Msg.Ping, w => { w.WriteBits((uint)_clock.ElapsedMilliseconds, 32); w.WriteBits((ulong)Math.Min(65535, Math.Max(0, statistics.ping)), 16); });
             _server?.Pump(); _client?.Pump();
             if (isOffline) { _server?.Flush(); _client?.Flush(); return; }
+            PollSceneLoad(); TickSceneLoad();
             _accum += dt; float step = 1f / Math.Max(1, tickRate);
             int n = 0;
             while (_accum >= step && n++ < 8) { _accum -= step; Tick(); }
@@ -614,6 +677,7 @@ namespace Aurix.Net.Unity.Framework
             {
                 switch (kind)
                 {
+                    case Msg.SceneReady: { ushort id = (ushort)r.ReadBits(16); if (id == _sceneLoadId) SceneReadyFrom(from); return; }
                     case Msg.StaticRpc:
                     {
                         uint h = (uint)r.ReadBits(32); r.ReadBits(16); var bytes = r.ReadBytes((int)r.ReadUInt(16));
@@ -644,6 +708,15 @@ namespace Aurix.Net.Unity.Framework
             if (from != serverPlayer) return;
             switch (kind)
             {
+                case Msg.SceneLoad:
+                {
+                    ushort id = (ushort)r.ReadBits(16); var name = ReadString(r);
+                    if (isServer) return;
+                    loadingScene = name; onSceneLoadStart?.Invoke(name);
+                    RunSceneLoad(name, () => Send(-1, Msg.SceneReady, w => w.WriteBits(id, 16)));
+                    return;
+                }
+                case Msg.SceneReady: { r.ReadBits(16); if (!isServer && loadingScene != null) { var name = loadingScene; loadingScene = null; onSceneLoadDone?.Invoke(name); } return; }
                 case Msg.Welcome:
                 {
                     if (r.ReadBits(8) != Version) { onError?.Invoke("protocol version mismatch"); Stop(); return; }

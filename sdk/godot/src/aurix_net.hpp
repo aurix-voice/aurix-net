@@ -80,6 +80,18 @@ public:
     int actor() const { return actor_; }
 
     /// Protocol JSON, e.g. {"t":"set_room_props","props":{...}}.
+    /// Photon GetRegions + best-region ping: JSON {region, endpoint, rtt_ms, candidates} from the catalog or any node.
+    static std::string bestRegionJson(const std::string& catalogHttp, int probes = 3) {
+        char* j = aurix_net_best_region(catalogHttp.c_str(), probes);
+        if (!j) { const char* e = aurix_net_last_error(); throw Error(e ? e : "best_region failed"); }
+        std::string out(j); aurix_net_string_free(j); return out;
+    }
+    /// The fastest node's HTTP URL (use it as the cell URL for connect).
+    static std::string bestRegionEndpoint(const std::string& catalogHttp, int probes = 3) {
+        const std::string j = bestRegionJson(catalogHttp, probes);
+        const std::string key = "\"endpoint\":\""; size_t i = j.find(key); if (i == std::string::npos) return "";
+        i += key.size(); size_t e = j.find('"', i); return j.substr(i, e - i);
+    }
     void sendControl(const std::string& json) { if (aurix_net_send_control(h_, json.c_str()) != 0) throw Error(lastError()); }
     /// Sync rooms: which entities define this player's viewpoints (AOI centres, at most 4) and which extra
     /// entities are always of interest (explicit interest). Empty = defaults (own avatar).

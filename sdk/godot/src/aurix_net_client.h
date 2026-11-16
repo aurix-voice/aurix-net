@@ -24,6 +24,8 @@ public:
     int join_or_create(const String &room, int mode = MODE_RELAY, int max_players = 8, const String &props_json = "");
     int join(const String &room, const String &schema_hash = "");
     bool send_control(const String &json);
+    /// GetRegions + ping: JSON {region, endpoint, rtt_ms, candidates}; empty on error.
+    static String best_region(const String &catalog_http, int probes);
     bool set_view(const PackedInt64Array &viewpoints, const PackedInt64Array &interest);
     bool set_groups(const PackedInt32Array &join, const PackedInt32Array &leave);
     bool send_event(int code, const PackedByteArray &payload, int target = TARGET_OTHERS, bool reliable = false);

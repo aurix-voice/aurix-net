@@ -463,3 +463,27 @@ void UAurixNetSubsystem::HandleControl(const FString& Json)
 		SetState(EAurixNetState::Connected);
 	}
 }
+
+
+void UAurixNetSubsystem::BestRegionAsync(const FString& CatalogUrl, int32 Probes, FAurixNetRegionResult Done)
+{
+	Async(EAsyncExecution::Thread, [CatalogUrl, Probes, Done]()
+	{
+		char* J = aurix_net_best_region(TCHAR_TO_UTF8(*CatalogUrl), Probes);
+		FString Json, Err;
+		if (J) { Json = UTF8_TO_TCHAR(J); aurix_net_string_free(J); }
+		else { Err = aurix_net_last_error() ? FString(UTF8_TO_TCHAR(aurix_net_last_error())) : TEXT("best_region failed"); }
+		AsyncTask(ENamedThreads::GameThread, [Json, Err, Done]()
+		{
+			FString Endpoint, Region; int32 Rtt = -1;
+			TSharedPtr<FJsonObject> Obj;
+			if (!Json.IsEmpty() && FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Obj) && Obj.IsValid())
+			{
+				Obj->TryGetStringField(TEXT("endpoint"), Endpoint);
+				Obj->TryGetStringField(TEXT("region"), Region);
+				Obj->TryGetNumberField(TEXT("rtt_ms"), Rtt);
+			}
+			Done.ExecuteIfBound(Endpoint, Region, Rtt, Json, Err);
+		});
+	});
+}

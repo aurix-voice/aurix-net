@@ -576,3 +576,68 @@ async fn deliver(dp: &Arc<DataPath>, d: Bytes, ev: &mpsc::Sender<Event>) {
         }
     }
 }
+
+
+/// One region candidate from [`best_region`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RegionCandidate {
+    pub region: String,
+    pub display_name: String,
+    pub endpoint: String,
+    /// Best of `probes` round trips to `/healthz`, or -1 when unreachable.
+    pub rtt_ms: i32,
+}
+
+/// Result of [`best_region`]: the lowest-RTT live node plus every candidate measured.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RegionPick {
+    pub region: String,
+    pub endpoint: String,
+    pub rtt_ms: i32,
+    pub candidates: Vec<RegionCandidate>,
+}
+
+/// Photon `GetRegions` + best-region ping in one call: reads `GET {catalog}/v1/regions` (any node or the
+/// catalog answers), probes every live endpoint `probes` times over HTTP(S) `/healthz` and returns the
+/// fastest. Use the chosen `endpoint` as the cell URL for `connect`. Nodes that do not answer are kept
+/// in `candidates` with `rtt_ms = -1`.
+pub async fn best_region(catalog_http: &str, probes: u8) -> Result<RegionPick> {
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .map_err(|e| ClientError::Http(e.to_string()))?;
+    let base = catalog_http.trim_end_matches('/');
+    let regions: Vec<serde_json::Value> = http
+        .get(format!("{base}/v1/regions"))
+        .send()
+        .await
+        .map_err(|e| ClientError::Http(e.to_string()))?
+        .json()
+        .await
+        .map_err(|e| ClientError::Http(e.to_string()))?;
+    let probes = probes.clamp(1, 10);
+    let mut tasks = Vec::new();
+    for r in &regions {
+        let region = r["id"].as_str().unwrap_or_default().to_string();
+        let display_name = r["display_name"].as_str().unwrap_or_default().to_string();
+        for ep in r["endpoints"].as_array().into_iter().flatten().filter_map(|e| e.as_str()) {
+            let (http, region, display_name, ep) = (http.clone(), region.clone(), display_name.clone(), ep.trim_end_matches('/').to_string());
+            tasks.push(async move {
+                let mut best: i32 = -1;
+                for _ in 0..probes {
+                    let t = std::time::Instant::now();
+                    if http.get(format!("{ep}/healthz")).send().await.is_ok() {
+                        let ms = t.elapsed().as_millis() as i32;
+                        best = if best < 0 { ms } else { best.min(ms) };
+                    }
+                }
+                RegionCandidate { region, display_name, endpoint: ep, rtt_ms: best }
+            });
+        }
+    }
+    let candidates: Vec<RegionCandidate> = futures::future::join_all(tasks).await;
+    let Some(win) = candidates.iter().filter(|c| c.rtt_ms >= 0).min_by_key(|c| c.rtt_ms) else {
+        return Err(ClientError::Http("no reachable region".into()));
+    };
+    Ok(RegionPick { region: win.region.clone(), endpoint: win.endpoint.clone(), rtt_ms: win.rtt_ms, candidates })
+}

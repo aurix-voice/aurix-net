@@ -11,6 +11,7 @@ void AurixNetClient::_bind_methods() {
     ClassDB::bind_method(D_METHOD("join_or_create", "room", "mode", "max_players", "props_json"), &AurixNetClient::join_or_create, DEFVAL(MODE_RELAY), DEFVAL(8), DEFVAL(""));
     ClassDB::bind_method(D_METHOD("join", "room", "schema_hash"), &AurixNetClient::join, DEFVAL(""));
     ClassDB::bind_method(D_METHOD("send_control", "json"), &AurixNetClient::send_control);
+    ClassDB::bind_static_method("AurixNetClient", D_METHOD("best_region", "catalog_http", "probes"), &AurixNetClient::best_region, DEFVAL(3));
     ClassDB::bind_method(D_METHOD("set_view", "viewpoints", "interest"), &AurixNetClient::set_view, DEFVAL(PackedInt64Array()));
     ClassDB::bind_method(D_METHOD("set_groups", "join", "leave"), &AurixNetClient::set_groups, DEFVAL(PackedInt32Array()));
     ClassDB::bind_method(D_METHOD("send_event", "code", "payload", "target", "reliable"), &AurixNetClient::send_event, DEFVAL(TARGET_OTHERS), DEFVAL(false));
@@ -85,3 +86,8 @@ void AurixNetClient::disconnect_from() { client_.destroy(); }
 void AurixNetClient::_process(double) { poll(); }
 
 } // namespace godot
+
+
+String AurixNetClient::best_region(const String &catalog_http, int probes) {
+    try { return String::utf8(aurix::net::Client::bestRegionJson(to_std(catalog_http), probes).c_str()); } catch (const std::exception &) { return String(); }
+}

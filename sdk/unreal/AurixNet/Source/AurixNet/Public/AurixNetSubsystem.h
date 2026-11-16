@@ -26,6 +26,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FAurixNetRpcResult, int32, Id, boo
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FAurixNetDesync, int64, Tick, int32, Actor, int32, Strikes, bool, bUntrusted);
 /** Result of an async connect/join: Actor >= 0 on success. */
 DECLARE_DELEGATE_TwoParams(FAurixNetAsyncResult, int32 /*Actor*/, const FString& /*Error*/);
+/** Best region: endpoint URL (empty on error), region id, RTT ms, full JSON (candidates), error. */
+DECLARE_DELEGATE_FiveParams(FAurixNetRegionResult, const FString& /*Endpoint*/, const FString& /*Region*/, int32 /*RttMs*/, const FString& /*Json*/, const FString& /*Error*/);
 
 /** Native hook for the NetDriver: every relay event frame, before Blueprint delegates. */
 DECLARE_MULTICAST_DELEGATE_OneParam(FAurixNetRawEvent, const FAurixNetEventFrame&);
@@ -66,6 +68,8 @@ public:
 
 	/** Non-blocking variants (the native connect/join wait for the cell): the work runs on a worker thread, Done fires on the game thread. */
 	void ConnectAsync(const FString& CellUrl, const FString& Grant, bool bTunnel, FAurixNetAsyncResult Done);
+	/** Photon GetRegions + best-region ping off the game thread: reads /v1/regions from the catalog, probes every live node, hands back the fastest endpoint to use as the cell URL. */
+	void BestRegionAsync(const FString& CatalogUrl, int32 Probes, FAurixNetRegionResult Done);
 	void JoinAsync(const FString& JoinJson, FAurixNetAsyncResult Done);
 	/** Connect with the project settings cell URL and this grant. */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net")

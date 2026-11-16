@@ -34,6 +34,7 @@ const char *aurix_net_last_error(void);
 
 /* backend/tooling only */
 char *aurix_net_issue_grant(const char *http, const char *api_key, const char *player_id, const char *name);
+char *aurix_net_best_region(const char *catalog_http, int32_t probes); /* GetRegions + ping: JSON {region, endpoint, rtt_ms, candidates}; NULL on error; free with aurix_net_string_free */
 void aurix_net_string_free(char *s);
 
 AurixNetClient *aurix_net_connect(const char *http, const char *grant, int32_t tunnel);

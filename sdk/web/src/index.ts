@@ -27,6 +27,9 @@ type Listener = (...a: any[]) => void;
 
 /** Browser/Node client. Control over WebSocket; data over WebTransport datagrams (browsers)
  *  or the WebSocket tunnel (fallback / Node). Set `forceTunnel` to skip WebTransport. */
+export interface RegionCandidate { region: string; displayName: string; endpoint: string; rttMs: number }
+export interface RegionPick { region: string; endpoint: string; rttMs: number; candidates: RegionCandidate[] }
+
 export class Client {
   private ws!: WebSocket; private link = new Link(); private timer?: ReturnType<typeof setInterval>;
   private path?: DataPath; forceTunnel = false;
@@ -40,6 +43,25 @@ export class Client {
 
   /** URL given to connect(), the grant and the last join message: what rejoin() needs. */
   entryUrl = ""; grant = ""; lastJoin: object | null = null; private opts: { timeoutMs?: number } = {};
+  /** Photon GetRegions + best-region ping: reads `/v1/regions` from the catalog (or any node), probes every
+   *  live endpoint's `/healthz` and returns the fastest; pass `endpoint` to `connect`. */
+  static async bestRegion(catalogHttp: string, probes = 3): Promise<RegionPick> {
+    const base = catalogHttp.replace(/\/$/, "");
+    const regions = (await (await fetch(`${base}/v1/regions`)).json()) as Array<{ id: string; display_name: string; endpoints: string[] }>;
+    const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+    const candidates = await Promise.all(regions.flatMap((r) => r.endpoints.map(async (ep) => {
+      const endpoint = ep.replace(/\/$/, ""); let best = -1;
+      for (let i = 0; i < Math.max(1, Math.min(10, probes)); i++) {
+        const t = now();
+        try { await fetch(`${endpoint}/healthz`, { cache: "no-store" }); const ms = Math.round(now() - t); best = best < 0 ? ms : Math.min(best, ms); } catch { /* unreachable */ }
+      }
+      return { region: r.id, displayName: r.display_name, endpoint, rttMs: best } as RegionCandidate;
+    })));
+    const ok = candidates.filter((c) => c.rttMs >= 0).sort((a, b) => a.rttMs - b.rttMs);
+    if (!ok.length) throw new Error("no reachable region");
+    return { region: ok[0].region, endpoint: ok[0].endpoint, rttMs: ok[0].rttMs, candidates };
+  }
+
   static async connect(httpUrl: string, grant: string, opts: { timeoutMs?: number } = {}): Promise<Client> {
     const c = new Client(); c.entryUrl = httpUrl; c.grant = grant; c.opts = opts;
     const url = httpUrl.replace(/^http/, "ws") + "/ws";
