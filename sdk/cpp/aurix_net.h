@@ -44,6 +44,9 @@ char *aurix_net_joined_json(AurixNetClient *h);
 int32_t aurix_net_send_data(AurixNetClient *h, uint8_t channel, const uint8_t *data, size_t len);
 int32_t aurix_net_send_event(AurixNetClient *h, uint8_t code, int32_t target, const uint16_t *actors, size_t n_actors,
                              const uint8_t *data, size_t len, int32_t reliable);
+/* send_event + interest group (-1 = none) and cache (0 none, 1 add for late joiners, 2 remove) */
+int32_t aurix_net_send_event_ex(AurixNetClient *h, uint8_t code, int32_t target, const uint16_t *actors, size_t n_actors,
+                                const uint8_t *data, size_t len, int32_t reliable, int32_t group, int32_t cache);
 void aurix_net_flush(AurixNetClient *h);
 int32_t aurix_net_poll(AurixNetClient *h, AurixNetEvent *out);          /* 1 = event filled */
 void aurix_net_event_free(AurixNetEvent *ev);

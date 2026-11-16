@@ -261,3 +261,42 @@ scenes). Values are raw Q32.32 (`aurix_fx_from_double`/`aurix_fx_to_double`); ha
 the same numbers the Web/Unity wrappers pass through. A GDExtension can call it directly from
 `aurix_net_client.cpp`'s neighbourhood (header copied to `sdk/godot/src`); `crates/net-ffi/ctest/sim.c`
 is the offline check (golden hashes + a resting ball in 2D and 3D + a sphere cast).
+
+## Best region (Photon `GetRegions`)
+
+Every SDK can pick the closest live node before connecting: it reads `GET /v1/regions` from the catalog (or any
+node), probes each endpoint's `/healthz` a few times and returns the fastest — Rust `best_region(catalog, probes)`,
+C `aurix_net_best_region` (JSON, free with `aurix_net_string_free`), C++ `Client::bestRegionEndpoint`, Godot
+`AurixNetClient.best_region`, Web `Client.bestRegion`, Unity `RegionPicker.BestRegionAsync`, Unreal
+`UAurixNetSubsystem::BestRegionAsync`. Use the returned endpoint as the cell URL; every candidate with its RTT comes
+back too, so a region picker UI is one call.
+
+## Chat (Photon Chat)
+
+No separate chat service: `Chat` (Web), `ChatClient` (Unity) and `aurix::net::Chat` (C++) run on a relay room.
+Channels are interest groups (`join` = subscribe, chat groups live at `groupBase + channel`, default 60000), messages
+are reliable events to the group with `cache: add` so late joiners receive the history the room still holds (the
+room's cache limits and `cleanup_cache_on_leave` apply), whispers are events to one actor and are never cached.
+Payload: `u8 kind (0 channel, 1 whisper), u16 channel, UTF-8 text` on a reserved event code (default 240). Chat
+stays inside the room, so moderation (kick, bans), rate limits and GDPR export/erase cover it for free.
+
+## Lockstep commands (Quantum `DeterministicCommand`)
+
+`SendCommand(bytes)` (Unity `LockstepClient`, Web `LockstepSession`, C `aurix_net_lockstep_send_command`, C++
+`Lockstep::sendCommand`, Unreal `UAurixLockstepComponent::SendCommand`) sends a reliable message outside the input
+stream; the cell stamps it onto the next tick and everyone (and the referee) receives it at that tick —
+`OnCommand(tick, actor, bytes)` right before `OnTick`, or as the input of pseudo-actor 65535 where the SDK exposes
+raw bundles (C/C++). Commands are journaled, so replays and late-join catch-ups include them.
+
+## Unity: TickTimer and synchronised scene load
+
+`TickTimer.CreateFromSeconds(nm, 3f)` / `Expired(nm)` is evaluated against the network tick, so every peer agrees
+(store it in a SyncVar or predicted state). `NetworkManager.LoadScene(name)` on the server loads the scene on every
+peer and raises `onSceneLoadDone` only when all players reported ready (or `sceneLoadTimeout` passed); replace
+`sceneLoader` for Addressables or custom streaming.
+
+## Sync-room instant replay
+
+Room props `replay_every` (ticks, default hz/2) and `replay_secs` (default 30, 0 off) keep full-world delta frames on
+the node; `GET /v1/rooms/{id}/replay?from=&to=` returns them (`mode: "sync"`). Feed the frames, in order, to a fresh
+sync world in any SDK to play back a kill cam — no extra client state needed.

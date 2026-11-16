@@ -13,7 +13,7 @@ pub mod sync;
 
 use bytes::Bytes;
 use net_client::protocol::{ClientMsg, ServerMsg};
-use net_client::{Client, Event, EventTarget, Options};
+use net_client::{Client, Event, EventTarget, CacheOp, Options};
 use net_common::{ActorId, Channel};
 use parking_lot::Mutex;
 use std::cell::RefCell;
@@ -307,6 +307,65 @@ pub unsafe extern "C" fn aurix_net_send_event(
         .inner
         .lock()
         .send_event(code, target, payload, reliable != 0)
+    {
+        Ok(()) => 0,
+        Err(e) => {
+            set_error(e);
+            -1
+        }
+    }
+}
+/// `aurix_net_send_event` plus `group` (interest group, -1 = none) and `cache` (0 none, 1 add to the room
+/// cache for late joiners, 2 remove).
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_send_event_ex(
+    h: *mut AurixNetClient,
+    code: u8,
+    target: i32,
+    actors: *const u16,
+    n_actors: usize,
+    data: *const u8,
+    len: usize,
+    reliable: i32,
+    group: i32,
+    cache: i32,
+) -> i32 {
+    let Some(h) = h.as_ref() else { return -1 };
+    let target = match target {
+        0 => EventTarget::All,
+        1 => EventTarget::Others,
+        2 => EventTarget::Master,
+        3 if !actors.is_null() => EventTarget::Actors(
+            std::slice::from_raw_parts(actors, n_actors)
+                .iter()
+                .map(|a| ActorId(*a))
+                .collect(),
+        ),
+        _ => {
+            set_error("bad target");
+            return -1;
+        }
+    };
+    let payload = if data.is_null() || len == 0 {
+        Bytes::new()
+    } else {
+        Bytes::copy_from_slice(std::slice::from_raw_parts(data, len))
+    };
+    match h
+        .inner
+        .lock()
+        .send_event_ex(
+            code,
+            target,
+            payload,
+            reliable != 0,
+            (0..=0xFFFF).contains(&group).then_some(group as u16),
+            match cache {
+                1 => CacheOp::Add,
+                2 => CacheOp::Remove,
+                _ => CacheOp::None,
+            },
+        )
     {
         Ok(()) => 0,
         Err(e) => {

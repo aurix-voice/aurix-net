@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <set>
 
 namespace aurix::net {
 
@@ -130,6 +131,10 @@ public:
 
     void sendEvent(uint8_t code, const uint8_t* data, size_t len, Target target = Target::Others, bool reliable = false, const std::vector<uint16_t>& actors = {}) {
         if (aurix_net_send_event(h_, code, int32_t(target), actors.empty() ? nullptr : actors.data(), actors.size(), data, len, reliable ? 1 : 0) != 0) throw Error(lastError());
+    }
+    /// sendEvent plus interest group (-1 = none) and cache (0 none, 1 add for late joiners, 2 remove).
+    void sendEventEx(uint8_t code, const uint8_t* data, size_t len, Target target, bool reliable, const std::vector<uint16_t>& actors, int group, int cache) {
+        if (aurix_net_send_event_ex(h_, code, (int32_t)target, actors.empty() ? nullptr : actors.data(), actors.size(), data, len, reliable ? 1 : 0, group, cache) != 0) throw Error(lastError());
     }
     void sendData(Channel ch, const uint8_t* data, size_t len) { if (aurix_net_send_data(h_, uint8_t(ch), data, len) != 0) throw Error(lastError()); }
     /// Push queued unreliable messages; call once per frame.
@@ -308,4 +313,34 @@ private:
     AurixNetSync* s_; int tickHz_; double interp_; double renderTick_ = 0; bool gotDelta_ = false;
 };
 
+
+/// Photon Chat on top of a relay room: channels are interest groups (join = subscribe, groups at groupBase + channel),
+/// messages are reliable cached events to the group (late joiners get the history the room still holds), whispers
+/// are events to one actor. Feed every received event frame to `onEventFrame` (from your onData handler) and
+/// read messages from `onMessage`.
+class Chat {
+public:
+    struct Message { uint16_t from = 0; bool whisper = false; uint16_t channel = 0; std::string text; };
+    std::function<void(const Message&)> onMessage;
+    explicit Chat(Client& c, uint8_t code = 240, uint16_t groupBase = 60000, bool history = true) : c_(c), code_(code), base_(groupBase), history_(history) {}
+    void join(uint16_t channel) { if (joined_.insert(channel).second) c_.setGroups({ (uint16_t)(base_ + channel) }); }
+    void leave(uint16_t channel) { if (joined_.erase(channel)) c_.setGroups({}, { (uint16_t)(base_ + channel) }); }
+    void send(uint16_t channel, const std::string& text) { auto b = encode(0, channel, text); c_.sendEventEx(code_, b.data(), b.size(), Target::All, true, {}, base_ + channel, history_ ? 1 : 0); }
+    void whisper(uint16_t actor, const std::string& text) { auto b = encode(1, 0, text); c_.sendEventEx(code_, b.data(), b.size(), Target::Actors, true, { actor }, -1, 0); }
+    /// Returns true when the frame was a chat message (consumed).
+    bool onEventFrame(const EventFrame& f) {
+        if (f.code != code_ || f.len < 3) return false;
+        Message m; m.from = f.from; m.whisper = f.payload[0] == 1; m.channel = (uint16_t)((f.payload[1] << 8) | f.payload[2]);
+        m.text.assign((const char*)f.payload + 3, f.len - 3);
+        if (!m.whisper && !joined_.count(m.channel)) return true;
+        if (onMessage) onMessage(m);
+        return true;
+    }
+private:
+    static std::vector<uint8_t> encode(uint8_t kind, uint16_t channel, const std::string& text) {
+        std::vector<uint8_t> b; b.reserve(3 + text.size()); b.push_back(kind); b.push_back((uint8_t)(channel >> 8)); b.push_back((uint8_t)channel);
+        size_t n = text.size() > 2000 ? 2000 : text.size(); b.insert(b.end(), text.begin(), text.begin() + n); return b;
+    }
+    Client& c_; uint8_t code_; uint16_t base_; bool history_; std::set<uint16_t> joined_;
+};
 } // namespace aurix::net

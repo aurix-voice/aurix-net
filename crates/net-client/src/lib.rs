@@ -462,18 +462,30 @@ impl Client {
     }
 
     /// Relay helper: raise an event.
-    pub fn send_event(
+    /// Event with the room's defaults: no interest group, not cached. See [`Self::send_event_ex`].
+    pub fn send_event(&self,
+        code: u8,
+        target: EventTarget,
+        payload: Bytes,
+        reliable: bool,) -> Result<()> {
+        self.send_event_ex(code, target, payload, reliable, None, CacheOp::None)
+    }
+    /// Event to `target` on the reliable or unreliable channel; `group` limits delivery to members of
+    /// that interest group, `cache` keeps/removes it in the room cache for late joiners.
+    pub fn send_event_ex(
         &self,
         code: u8,
         target: EventTarget,
         payload: Bytes,
         reliable: bool,
+        group: Option<u16>,
+        cache: CacheOp,
     ) -> Result<()> {
         let frame = EventFrame {
             code,
             target,
-            cache: CacheOp::None,
-            group: None,
+            cache,
+            group,
             from: net_common::ActorId(0),
             payload,
         };

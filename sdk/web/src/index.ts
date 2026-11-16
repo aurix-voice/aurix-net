@@ -7,6 +7,7 @@ export { encodeEvent, decodeEvent } from "./event.js";
 export type { Target, EventFrame } from "./event.js";
 export * from "./sync.js";
 export * from "./lockstep.js";
+export * from "./chat.js";
 
 export type RoomMode = "relay" | "sync" | "lockstep";
 /** `stats` answer: live rooms/players of the project, grouped by the room prop `lobby` ("" = default lobby). */
@@ -228,6 +229,8 @@ export class Client {
     const m = await this.waitFor((m) => m.t === "rpc_result" && m.id === id, (m) => m.t === "error");
     return { ok: m.ok, status: m.status, body: m.body, error: m.error };
   }
+  /** Relay interest groups: events raised with `group` reach only its members. */
+  setGroups(join: number[] = [], leave: number[] = []) { this.send({ t: "set_groups", join, leave }); }
   setView(viewpoints: (number | bigint)[] = [], interest: (number | bigint)[] = []) {
     this.send({ t: "set_view", viewpoints: viewpoints.map(Number), interest: interest.map(Number) });
   }

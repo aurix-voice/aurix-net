@@ -230,6 +230,9 @@ namespace Aurix.Net.Managed
             return await WaitForAsync("rpc_result", timeoutMs);
         }
 
+        /// <summary>Relay interest groups: events raised with a group reach only its members.</summary>
+        public Task SetGroupsAsync(ushort[] join = null, ushort[] leave = null) =>
+            SendControlAsync("{\"t\":\"set_groups\",\"join\":[" + string.Join(",", join ?? Array.Empty<ushort>()) + "],\"leave\":[" + string.Join(",", leave ?? Array.Empty<ushort>()) + "]}");
         public Task SetViewAsync(ulong[] viewpoints = null, ulong[] interest = null) =>
             SendControlAsync("{\"t\":\"set_view\",\"viewpoints\":[" + string.Join(",", viewpoints ?? Array.Empty<ulong>()) + "],\"interest\":[" + string.Join(",", interest ?? Array.Empty<ulong>()) + "]}");
 
