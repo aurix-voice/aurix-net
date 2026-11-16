@@ -81,6 +81,23 @@ public:
 
     /// Protocol JSON, e.g. {"t":"set_room_props","props":{...}}.
     void sendControl(const std::string& json) { if (aurix_net_send_control(h_, json.c_str()) != 0) throw Error(lastError()); }
+    /// Sync rooms: which entities define this player's viewpoints (AOI centres, at most 4) and which extra
+    /// entities are always of interest (explicit interest). Empty = defaults (own avatar).
+    void setView(const std::vector<uint64_t>& viewpoints, const std::vector<uint64_t>& interest = {}) {
+        sendControl("{\"t\":\"set_view\",\"viewpoints\":" + joinU64(viewpoints) + ",\"interest\":" + joinU64(interest) + "}");
+    }
+    /// Relay interest groups: join and leave group ids (events raised to a group reach only its members).
+    void setGroups(const std::vector<uint16_t>& join, const std::vector<uint16_t>& leave = {}) {
+        std::vector<uint64_t> j(join.begin(), join.end()), l(leave.begin(), leave.end());
+        sendControl("{\"t\":\"set_groups\",\"join\":" + joinU64(j) + ",\"leave\":" + joinU64(l) + "}");
+    }
+private:
+    static std::string joinU64(const std::vector<uint64_t>& v) {
+        std::string out = "[";
+        for (size_t i = 0; i < v.size(); ++i) { if (i) out += ","; out += std::to_string(v[i]); }
+        return out + "]";
+    }
+public:
 
     int joinOrCreate(const std::string& name, Mode mode = Mode::Relay, int maxPlayers = 8, const std::string& propsJson = "") {
         std::string j = "{\"t\":\"join_or_create\",\"name\":" + quote(name) + ",\"mode\":\"" + modeName(mode) + "\",\"max_players\":" + std::to_string(maxPlayers);

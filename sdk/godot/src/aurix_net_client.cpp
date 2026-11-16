@@ -11,6 +11,8 @@ void AurixNetClient::_bind_methods() {
     ClassDB::bind_method(D_METHOD("join_or_create", "room", "mode", "max_players", "props_json"), &AurixNetClient::join_or_create, DEFVAL(MODE_RELAY), DEFVAL(8), DEFVAL(""));
     ClassDB::bind_method(D_METHOD("join", "room", "schema_hash"), &AurixNetClient::join, DEFVAL(""));
     ClassDB::bind_method(D_METHOD("send_control", "json"), &AurixNetClient::send_control);
+    ClassDB::bind_method(D_METHOD("set_view", "viewpoints", "interest"), &AurixNetClient::set_view, DEFVAL(PackedInt64Array()));
+    ClassDB::bind_method(D_METHOD("set_groups", "join", "leave"), &AurixNetClient::set_groups, DEFVAL(PackedInt32Array()));
     ClassDB::bind_method(D_METHOD("send_event", "code", "payload", "target", "reliable"), &AurixNetClient::send_event, DEFVAL(TARGET_OTHERS), DEFVAL(false));
     ClassDB::bind_method(D_METHOD("send_data", "channel", "payload"), &AurixNetClient::send_data);
     ClassDB::bind_method(D_METHOD("flush"), &AurixNetClient::flush);
@@ -59,6 +61,19 @@ int AurixNetClient::join(const String &room, const String &schema_hash) {
 bool AurixNetClient::send_control(const String &json) { AURIX_TRY(client_.sendControl(to_std(json)); return true, false); }
 bool AurixNetClient::send_event(int code, const PackedByteArray &payload, int target, bool reliable) {
     AURIX_TRY(client_.sendEvent((uint8_t)code, payload.ptr(), payload.size(), (aurix::net::Target)target, reliable); return true, false);
+}
+
+bool AurixNetClient::set_view(const PackedInt64Array &viewpoints, const PackedInt64Array &interest) {
+    std::vector<uint64_t> v, i;
+    for (int k = 0; k < viewpoints.size(); ++k) v.push_back((uint64_t)viewpoints[k]);
+    for (int k = 0; k < interest.size(); ++k) i.push_back((uint64_t)interest[k]);
+    AURIX_TRY(client_.setView(v, i); return true;)
+}
+bool AurixNetClient::set_groups(const PackedInt32Array &join, const PackedInt32Array &leave) {
+    std::vector<uint16_t> j, l;
+    for (int k = 0; k < join.size(); ++k) j.push_back((uint16_t)join[k]);
+    for (int k = 0; k < leave.size(); ++k) l.push_back((uint16_t)leave[k]);
+    AURIX_TRY(client_.setGroups(j, l); return true;)
 }
 bool AurixNetClient::send_data(int channel, const PackedByteArray &payload) {
     AURIX_TRY(client_.sendData((aurix::net::Channel)channel, payload.ptr(), payload.size()); return true, false);
