@@ -24,8 +24,7 @@ Self-hosting means you are both; nothing in the operator role is locked behind a
 | Scope | Allows |
 |---|---|
 | `read` | list/get rooms, regions, usage, tickets |
-| `rooms` | create/close rooms, matchmaking tickets |
-| `grants` | `POST /v1/grants` |
+| `rooms` | create/close rooms, matchmaking tickets, `POST /v1/grants` |
 | `admin` | keys, webhooks |
 
 `POST /v1/grants` `{player_id, name, room?, scopes?, meta?, ttl_secs?}` → `{grant, expires_at}`.
@@ -39,7 +38,7 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | GET | `/metrics` | none | Prometheus |
 | GET | `/v1/regions` | key | regions with live nodes |
 | GET | `/v1/nodes` | key | nodes visible to the project |
-| POST | `/v1/grants` | `grants` | issue a join grant |
+| POST | `/v1/grants` | `rooms` | issue a join grant |
 | GET/POST | `/v1/rooms` | `read`/`rooms` | list open rooms / create a **relay** room (`name, max_players, visible, open, props, lobby_props, reserved`); sync/lockstep rooms are created by a client through the control plane (`create`) because they need the schema/simulation setup |
 | GET/DELETE | `/v1/rooms/:id` | `read`/`rooms` | details / close; `players[]` comes from the host node (any node answers) with live per-player counters `events`, `bytes_in`, `eps` (1 s window), `idle_secs`, `since_secs` — relay events raised through the data path; reset on rehost |
 | GET | `/v1/rooms/:id/desyncs` | `read` | state dumps collected after lockstep desyncs (`{tick, actor, hash, bytes, at}`, 24 h) |
@@ -241,14 +240,15 @@ CLI: `aurix-net modules | module-put <name> <file> | module-delete <name>`.
 
 | Limit | Default | Error |
 |---|---|---|
-| HTTP requests per IP | 50/s (burst 100) | 429 |
-| WebSocket connects per IP | 60/min | 429 |
-| Concurrent sessions/data connections per IP | 64 | 429 / connection refused |
+| HTTP requests per IP | 200/s (burst 400) | 429 |
+| WebSocket connects per IP | 600/min | 429 |
+| Concurrent sessions/data connections per IP | 512 | 429 / connection refused |
 | Failed `auth` per IP | 20/min | `rate_limited`, connection closed |
 | Room name | 1..=64 chars, no control characters | `invalid` |
 | `lobby_props` per room | ≤32 keys, each 1..=64 chars | `invalid` |
 | Control message (post-auth) | 68 KiB; 8 KiB before `auth` | connection closed |
-| Write calls per API key (grants, rooms, tickets, keys, webhooks, modules) | 20/s | 429 `rate_limited` |
+| Write calls per API key (rooms, tickets, keys, webhooks, modules) | 20/s | 429 `rate_limited` |
+| Grants per API key (`POST /v1/grants`) | 500/s | 429 `rate_limited` |
 | Pre-auth control message | 8 KiB, 10 s to authenticate | connection closed |
 | Request body | 64 KiB (module upload 8 MiB) | 413 |
 
