@@ -7,3 +7,6 @@
 3. Per engine version (5.3 – 5.8): `RunUAT.sh BuildPlugin -Plugin=<repo>/sdk/unreal/AurixNet/AurixNet.uplugin
    -Package=<out>/AurixNet-5.x -TargetPlatforms=Win64+Linux+Mac+Android`; set `EngineVersion` in the packaged
    descriptor. Staged `include/` and `lib/` are built per host and are not committed.
+
+Step 3 has not been run for any engine version yet; until it passes the plugin stays beta
+(`IsBetaVersion` in the descriptor).

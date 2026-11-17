@@ -125,6 +125,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   own (op list input, ≤ 32 spawned per actor); a leaving actor's entities are despawned. Web
   `SyncClient.spawn/despawn/transfer/writeEntity`, C# `SyncWorld.EncodeOps`/`SyncOp`, C ABI
   `aurix_net_sync_send_op` (C++ `Sync::spawn/despawn/transfer/writeEntity`).
+- Unreal Engine plugin (`sdk/unreal`), beta: `AurixNetDriver` runs the engine's own replication and
+  RPCs over a relay room, `UAurixNetSubsystem` and async nodes for Blueprint, an Online Subsystem
+  for the standard session nodes, sync and lockstep components, physics prediction, aurix-sim with
+  a rollback runner. Written for UE 5.3-5.8 and not yet built with an engine: CI runs the
+  engine-free checks only (`sdk/unreal/scripts/check_plugin.py`).
 
 ### Fixed
 - Re-hosting: two players rejoining the same orphaned room through one node at the same time could
@@ -196,5 +201,5 @@ self-host deployment. Everything below is verified locally (see [docs/testing.md
   dumps, matchmaking queue, usage CSV, attention panel; Playwright suite against a live node.
 
 ### Not in scope
-- Unreal SDK (the engine ships its own netcode), client-hosted P2P topologies, coupling with
-  Aurix Voice (a separate service a game uses independently).
+- Client-hosted P2P topologies, coupling with Aurix Voice (a separate service a game uses
+  independently).

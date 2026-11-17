@@ -7,7 +7,7 @@
 | C ABI, aurix-sim | `libaurix_net` also exports `sim_*`/`sim3_*` (`include/aurix_sim.h`, copies in `sdk/cpp`, `sdk/godot/src`) | native | verified (`ctest/sim.c`: six golden hashes) |
 | C++ (header-only) | `sdk/cpp/aurix_net.hpp` | via C ABI: relay, sync (`aurix::net::Sync`), lockstep | verified (`echo_test.cpp`, `sync_test.cpp`) |
 | Unity (UPM) | `sdk/unity` | pure C# (WebSocket control + tunnel), optional P/Invoke QUIC | managed core live-tested with dotnet; `NetRunner`/`NetView`/`NetTransform`/`[Sync]`/`[Rpc]`, `LockstepClient` + editor window written, real editor build pending; `NetRigidbody`/`NetAnimator`/`TickTimer`/`ISpawned`/`IDespawned` compile-checked (BuildCheck), editor run pending a license |
-| Unreal Engine 5.3–5.8 | `sdk/unreal` | C++ plugin over C ABI: NetDriver over relay rooms + Blueprint subsystem | source only — not yet compiled against an engine |
+| Unreal Engine (beta) | `sdk/unreal` | C++ plugin over C ABI: NetDriver over relay rooms + Blueprint subsystem | beta: written for UE 5.3-5.8, engine-free checks in CI (`sdk/unreal/scripts/check_plugin.py`), not yet built with an engine |
 | Godot 4 GDExtension | `sdk/godot` | C++ wrapper over C ABI | verified (godot-cpp 4.2 build, headless Godot 4.2.2 relay + sync replication: `sdk/godot/check~`) |
 | Web (`@aurix/net`) | `sdk/web` | WS control + WS tunnel (WebTransport next) | verified (`npm test`) |
 

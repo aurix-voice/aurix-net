@@ -137,6 +137,9 @@ Console: `aurix.net.status`, `aurix.net.rooms [expr]`, `aurix.net.leave`. In the
 
 ## Engine versions
 
+Beta: the plugin has not been built with an engine yet, so the range below is what the source is
+written for, not a tested one.
+
 5.3 – 5.8; Win64, Linux, Mac, Android, iOS (static `libaurix_net.a`). One source tree; the module compiles with `CppStandardVersion.Default` (5.6+ needs
 C++20). Package per engine with `RunUAT BuildPlugin -Plugin=…/AurixNet.uplugin -Package=…`.
 
