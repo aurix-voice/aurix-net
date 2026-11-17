@@ -1,6 +1,6 @@
 use crate::models::*;
+use crate::Timestamp;
 use crate::{db_err, DbPool};
-use chrono::{DateTime, Utc};
 use net_common::Result;
 use uuid::Uuid;
 
@@ -55,7 +55,7 @@ pub async fn insert_api_key(
     prefix: &str,
     name: &str,
     scopes: &[String],
-    expires_at: Option<DateTime<Utc>>,
+    expires_at: Option<Timestamp>,
     allowed_cidrs: &[String],
 ) -> Result<ApiKeyRow> {
     sqlx::query_as::<_, ApiKeyRow>(
@@ -503,7 +503,7 @@ pub async fn rotate_webhook_secret(
     project_id: Uuid,
     id: Uuid,
     new_secret: &str,
-    grace: chrono::Duration,
+    grace: time::Duration,
 ) -> Result<Option<WebhookRow>> {
     sqlx::query_as::<_, WebhookRow>(
         "UPDATE webhooks SET previous_secret = secret, previous_secret_expires_at = $4, secret = $3 \
@@ -512,7 +512,7 @@ pub async fn rotate_webhook_secret(
     .bind(id)
     .bind(project_id)
     .bind(new_secret)
-    .bind(Utc::now() + grace)
+    .bind(Timestamp::now() + grace)
     .fetch_optional(pool)
     .await
     .map_err(db_err)
@@ -623,7 +623,7 @@ pub async fn delete_game_module(pool: &DbPool, project_id: Uuid, name: &str) -> 
 pub async fn add_usage(
     pool: &DbPool,
     project_id: Uuid,
-    hour: DateTime<Utc>,
+    hour: Timestamp,
     metric: &str,
     qty: f64,
 ) -> Result<()> {
@@ -643,7 +643,7 @@ pub async fn add_usage(
 
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct UsageRow {
-    pub hour: DateTime<Utc>,
+    pub hour: Timestamp,
     pub metric: String,
     pub quantity: f64,
 }
@@ -652,7 +652,7 @@ pub struct UsageRow {
 pub async fn usage_totals_since(
     pool: &DbPool,
     project_id: Uuid,
-    since: DateTime<Utc>,
+    since: Timestamp,
 ) -> Result<(f64, f64)> {
     sqlx::query_as::<_, (f64, f64)>(
         "SELECT COALESCE(SUM(quantity) FILTER (WHERE metric = 'player_minutes'), 0)::float8, \
@@ -669,8 +669,8 @@ pub async fn usage_totals_since(
 pub async fn usage_between(
     pool: &DbPool,
     project_id: Uuid,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
+    from: Timestamp,
+    to: Timestamp,
 ) -> Result<Vec<UsageRow>> {
     sqlx::query_as::<_, UsageRow>(
         "SELECT hour, metric, quantity FROM usage_hours WHERE project_id = $1 AND hour >= $2 AND hour < $3 ORDER BY hour, metric",
@@ -694,8 +694,8 @@ pub struct ProjectMetricRow {
 /// Per-project metric totals in [from, to) — the monthly billing report.
 pub async fn usage_by_project_between(
     pool: &DbPool,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
+    from: Timestamp,
+    to: Timestamp,
 ) -> Result<Vec<ProjectMetricRow>> {
     sqlx::query_as::<_, ProjectMetricRow>(
         "SELECT project_id, metric, SUM(quantity)::float8 AS quantity FROM usage_hours \
@@ -711,8 +711,8 @@ pub async fn usage_by_project_between(
 /// Rooms created per project in [from, to).
 pub async fn rooms_created_between(
     pool: &DbPool,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
+    from: Timestamp,
+    to: Timestamp,
 ) -> Result<Vec<(Uuid, i64)>> {
     sqlx::query_as::<_, (Uuid, i64)>(
         "SELECT project_id, COUNT(*) FROM rooms WHERE created_at >= $1 AND created_at < $2 GROUP BY project_id",
@@ -734,8 +734,8 @@ pub async fn list_projects_all(pool: &DbPool) -> Result<Vec<ProjectRow>> {
 
 pub async fn usage_fleet_between(
     pool: &DbPool,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
+    from: Timestamp,
+    to: Timestamp,
 ) -> Result<Vec<UsageRow>> {
     sqlx::query_as::<_, UsageRow>(
         "SELECT hour, metric, SUM(quantity)::float8 AS quantity FROM usage_hours WHERE hour >= $1 AND hour < $2 GROUP BY hour, metric ORDER BY hour, metric",
@@ -981,7 +981,7 @@ pub async fn upsert_ban(
     player_id: &str,
     reason: &str,
     created_by: &str,
-    expires_at: Option<DateTime<Utc>>,
+    expires_at: Option<Timestamp>,
 ) -> Result<BanRow> {
     sqlx::query_as::<_, BanRow>(
         "INSERT INTO bans (project_id, player_id, reason, created_by, expires_at) VALUES ($1, $2, $3, $4, $5) \
@@ -1057,7 +1057,7 @@ pub async fn upsert_mark(
     player_id: &str,
     reason: &str,
     created_by: &str,
-    expires_at: Option<DateTime<Utc>>,
+    expires_at: Option<Timestamp>,
 ) -> Result<BanMarkRow> {
     sqlx::query_as::<_, BanMarkRow>(
         "INSERT INTO ban_marks (project_id, kind, value, player_id, reason, created_by, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7) \
@@ -1280,7 +1280,7 @@ pub async fn insert_operator_token(
     token_hash: &str,
     prefix: &str,
     created_by: &str,
-    expires_at: Option<DateTime<Utc>>,
+    expires_at: Option<Timestamp>,
     allowed_cidrs: &[String],
 ) -> Result<OperatorTokenRow> {
     sqlx::query_as::<_, OperatorTokenRow>(

@@ -195,7 +195,7 @@ impl Dispatcher {
         let body = serde_json::json!({
             "event": "join.validate",
             "project": project.to_string(),
-            "at": chrono::Utc::now().to_rfc3339(),
+            "at": net_db::Timestamp::now().to_rfc3339(),
             "data": payload,
         })
         .to_string();
@@ -256,7 +256,7 @@ impl Dispatcher {
                 secret: r.secret,
                 previous: r.previous_secret.filter(|_| {
                     r.previous_secret_expires_at
-                        .is_some_and(|t| t > chrono::Utc::now())
+                        .is_some_and(|t| t > net_db::Timestamp::now())
                 }),
                 events: r.events,
             })
@@ -290,7 +290,7 @@ impl Dispatcher {
         let body = serde_json::json!({
             "event": "rpc",
             "project": project.to_string(),
-            "at": chrono::Utc::now().to_rfc3339(),
+            "at": net_db::Timestamp::now().to_rfc3339(),
             "data": payload,
         })
         .to_string();
@@ -612,7 +612,7 @@ async fn worker(
                             secret: r.secret,
                             previous: r.previous_secret.filter(|_| {
                                 r.previous_secret_expires_at
-                                    .is_some_and(|t| t > chrono::Utc::now())
+                                    .is_some_and(|t| t > net_db::Timestamp::now())
                             }),
                             events: r.events,
                         })
@@ -639,7 +639,7 @@ async fn worker(
         let body = serde_json::json!({
             "event": ev.event,
             "project": project_field,
-            "at": chrono::Utc::now().to_rfc3339(),
+            "at": net_db::Timestamp::now().to_rfc3339(),
             "data": ev.payload,
         })
         .to_string();

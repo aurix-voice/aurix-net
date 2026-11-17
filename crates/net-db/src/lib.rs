@@ -2,6 +2,9 @@
 
 pub mod models;
 pub mod queries;
+mod timestamp;
+
+pub use timestamp::Timestamp;
 
 use net_common::config::DatabaseConfig;
 use net_common::{NetError, Result};

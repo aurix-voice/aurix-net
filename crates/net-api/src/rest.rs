@@ -8,11 +8,11 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
-use chrono::{DateTime, Utc};
 use net_auth::api_key::{hash_key, looks_like_key, ApiKeyMaterial, Scope};
 use net_common::{NetError, ProjectId, Result, RoomId};
 use net_db::models::ApiKeyRow;
 use net_db::queries;
+use net_db::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::net::IpAddr;
@@ -445,12 +445,11 @@ struct BillingQuery {
     format: Option<String>,
 }
 
-fn month_bounds(spec: Option<&str>) -> Result<(chrono::DateTime<Utc>, chrono::DateTime<Utc>)> {
-    use chrono::{Datelike, TimeZone};
+fn month_bounds(spec: Option<&str>) -> Result<(Timestamp, Timestamp)> {
     let (y, m) = match spec {
         None => {
-            let n = Utc::now();
-            (n.year(), n.month())
+            let n = Timestamp::now();
+            (n.year(), u8::from(n.month()))
         }
         Some(s) => {
             let (y, m) = s
@@ -459,7 +458,7 @@ fn month_bounds(spec: Option<&str>) -> Result<(chrono::DateTime<Utc>, chrono::Da
             let y: i32 = y
                 .parse()
                 .map_err(|_| NetError::Invalid("month: YYYY-MM".into()))?;
-            let m: u32 = m
+            let m: u8 = m
                 .parse()
                 .map_err(|_| NetError::Invalid("month: YYYY-MM".into()))?;
             if !(1..=12).contains(&m) || !(2020..=2100).contains(&y) {
@@ -468,15 +467,11 @@ fn month_bounds(spec: Option<&str>) -> Result<(chrono::DateTime<Utc>, chrono::Da
             (y, m)
         }
     };
-    let from = Utc
-        .with_ymd_and_hms(y, m, 1, 0, 0, 0)
-        .single()
-        .ok_or_else(|| NetError::Invalid("month: YYYY-MM".into()))?;
+    let from =
+        Timestamp::month_start(y, m).ok_or_else(|| NetError::Invalid("month: YYYY-MM".into()))?;
     let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
-    let to = Utc
-        .with_ymd_and_hms(ny, nm, 1, 0, 0, 0)
-        .single()
-        .ok_or_else(|| NetError::Invalid("month: YYYY-MM".into()))?;
+    let to =
+        Timestamp::month_start(ny, nm).ok_or_else(|| NetError::Invalid("month: YYYY-MM".into()))?;
     Ok((from, to))
 }
 
@@ -535,7 +530,7 @@ async fn op_billing(
             .partial_cmp(&a["player_minutes"].as_f64())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    let month = from.format("%Y-%m").to_string();
+    let month = format!("{:04}-{:02}", from.year(), u8::from(from.month()));
     match q.format.as_deref() {
         None | Some("json") => Ok(Json(
             json!({"month": month, "from": from, "to": to, "projects": rows, "totals": total}),
@@ -670,13 +665,9 @@ fn key_write(st: &Shared, key: &ApiKeyRow) -> Result<()> {
 /// Records why a project's player/key was turned away (hourly Redis buckets, see
 /// `RedisStore::incr_rejection`). Off the request path; failures are only logged.
 /// First instant of the current UTC calendar month.
-pub(crate) fn month_start() -> chrono::DateTime<chrono::Utc> {
-    use chrono::{Datelike, TimeZone};
-    let now = chrono::Utc::now();
-    chrono::Utc
-        .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
-        .single()
-        .unwrap_or(now)
+pub(crate) fn month_start() -> Timestamp {
+    let now = Timestamp::now();
+    Timestamp::month_start(now.year(), now.month().into()).unwrap_or(now)
 }
 
 /// Month-to-date (player_minutes, bytes) of a project, cached 30 s per node so the join path
@@ -756,7 +747,7 @@ async fn rejections_json(st: &Shared, project: Uuid, hours: Option<u32>) -> Resu
             for (k, v) in &counts {
                 *total.entry(k.clone()).or_default() += v;
             }
-            let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(t, 0)
+            let ts = Timestamp::from_unix(t)
                 .map(|d| d.to_rfc3339())
                 .unwrap_or_default();
             json!({"t": ts, "counts": counts})
@@ -1595,7 +1586,7 @@ async fn player_export_json(st: &Shared, project: Uuid, player_id: &str) -> Resu
     }
     Ok(json!({
         "player_id": player_id,
-        "exported_at": chrono::Utc::now(),
+        "exported_at": Timestamp::now(),
         "seen": queries::get_player_seen(&st.pool, project, player_id).await?,
         "ban": queries::get_ban(&st.pool, project, player_id).await?,
         "marks": queries::marks_for_player(&st.pool, project, player_id).await?,
@@ -2086,15 +2077,15 @@ async fn delete_room(
 
 #[derive(Deserialize)]
 struct UsageQuery {
-    from: Option<DateTime<Utc>>,
-    to: Option<DateTime<Utc>>,
+    from: Option<Timestamp>,
+    to: Option<Timestamp>,
     /// `json` (default) or `csv` (hour,metric,quantity; attachment for billing exports).
     format: Option<String>,
 }
 
 fn usage_out(
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
+    from: Timestamp,
+    to: Timestamp,
     rows: Vec<net_db::queries::UsageRow>,
     q: &UsageQuery,
     name: &str,
@@ -2115,11 +2106,7 @@ fn usage_out(
                     r.quantity
                 ));
             }
-            let file = format!(
-                "aurix-net-usage-{name}-{}-{}.csv",
-                from.format("%Y%m%d"),
-                to.format("%Y%m%d")
-            );
+            let file = format!("aurix-net-usage-{name}-{}-{}.csv", ymd(from), ymd(to));
             Ok((
                 [
                     (
@@ -2145,8 +2132,8 @@ async fn usage(
     Query(q): Query<UsageQuery>,
 ) -> ApiResult<axum::response::Response> {
     let key = api_key(&st, &h, Scope::Read).await?;
-    let to = q.to.unwrap_or_else(Utc::now);
-    let from = q.from.unwrap_or(to - chrono::Duration::days(30));
+    let to = q.to.unwrap_or_else(Timestamp::now);
+    let from = q.from.unwrap_or(to - time::Duration::days(30));
     let rows = queries::usage_between(&st.pool, key.project_id, from, to).await?;
     Ok(usage_out(from, to, rows, &q, &key.project_id.to_string())?)
 }
@@ -2194,9 +2181,9 @@ fn cidr_allows(cidrs: &[String], ip: IpAddr) -> bool {
         .any(|c| net_common::ipnet::IpNet::parse(c).is_some_and(|n| n.contains(ip)))
 }
 
-fn key_expiry(secs: Option<u64>) -> Option<chrono::DateTime<chrono::Utc>> {
+fn key_expiry(secs: Option<u64>) -> Option<Timestamp> {
     secs.filter(|s| *s > 0)
-        .map(|s| chrono::Utc::now() + chrono::Duration::seconds(s.min(10 * 365 * 86_400) as i64))
+        .map(|s| Timestamp::now() + time::Duration::seconds(s.min(10 * 365 * 86_400) as i64))
 }
 
 fn validate_scopes(s: &[String]) -> Result<Vec<String>> {
@@ -2216,7 +2203,7 @@ async fn issue_key(
     project: Uuid,
     name: &str,
     scopes: &[String],
-    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    expires_at: Option<Timestamp>,
     allowed_cidrs: &[String],
 ) -> Result<Value> {
     let scopes = validate_scopes(scopes)?;
@@ -2552,7 +2539,7 @@ async fn rotate_webhook(
     req: &RotateReq,
     by: &str,
 ) -> Result<Value> {
-    let grace = chrono::Duration::seconds(req.grace_secs.unwrap_or(86_400).min(7 * 86_400) as i64);
+    let grace = time::Duration::seconds(req.grace_secs.unwrap_or(86_400).min(7 * 86_400) as i64);
     let secret = ApiKeyMaterial::generate().plaintext;
     let row = queries::rotate_webhook_secret(&st.pool, project, wid, &secret, grace)
         .await?
@@ -2827,7 +2814,7 @@ async fn add_ban(st: &Shared, project: Uuid, req: &BanReq, by: &str) -> Result<V
     let expires = req
         .duration_secs
         .filter(|d| *d > 0)
-        .map(|d| chrono::Utc::now() + chrono::Duration::seconds(d.min(10 * 365 * 86_400) as i64));
+        .map(|d| Timestamp::now() + time::Duration::seconds(d.min(10 * 365 * 86_400) as i64));
     let row =
         queries::upsert_ban(&st.pool, project, &req.player_id, &req.reason, by, expires).await?;
     let scope = req.scope.as_deref().unwrap_or("player");
@@ -3269,16 +3256,16 @@ async fn op_attention(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<
 /// Everything that deserves an operator's eye right now; shared by `/v1/operator/attention`
 /// and the alert loop.
 pub(crate) async fn attention_value(st: &Shared) -> Result<Value> {
-    let now = chrono::Utc::now();
+    let now = Timestamp::now();
     let nodes = queries::list_all_nodes(&st.pool).await?;
     let stale: Vec<Value> = nodes
         .iter()
-        .filter(|n| (now - n.last_heartbeat).num_seconds() > 30)
+        .filter(|n| (now - n.last_heartbeat).whole_seconds() > 30)
         .map(|n| json!({"id": n.id, "public_host": n.public_host, "quic_port": n.quic_port, "region": n.region, "last_heartbeat": n.last_heartbeat}))
         .collect();
     let draining: Vec<Value> = nodes
         .iter()
-        .filter(|n| n.draining && (now - n.last_heartbeat).num_seconds() <= 30)
+        .filter(|n| n.draining && (now - n.last_heartbeat).whole_seconds() <= 30)
         .map(|n| json!({"id": n.id, "public_host": n.public_host, "quic_port": n.quic_port, "region": n.region, "rooms": n.rooms}))
         .collect();
     let projects = queries::list_projects(&st.pool).await?;
@@ -3477,6 +3464,22 @@ struct AuditQuery {
     format: Option<String>,
 }
 
+/// `YYYYMMDD`, for file names.
+fn ymd(t: Timestamp) -> String {
+    format!("{:04}{:02}{:02}", t.year(), u8::from(t.month()), t.day())
+}
+
+/// `YYYYMMDDTHHMMSSZ`, for file names.
+fn compact(t: Timestamp) -> String {
+    format!(
+        "{}T{:02}{:02}{:02}Z",
+        ymd(t),
+        t.hour(),
+        t.minute(),
+        t.second()
+    )
+}
+
 fn csv_cell(s: &str) -> String {
     if s.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", s.replace('"', "\"\""))
@@ -3506,10 +3509,7 @@ fn audit_out(
                     csv_cell(&r.details.to_string()),
                 ));
             }
-            let file = format!(
-                "aurix-net-audit-{}.csv",
-                chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
-            );
+            let file = format!("aurix-net-audit-{}.csv", compact(Timestamp::now()));
             Ok((
                 [
                     (
@@ -3783,8 +3783,8 @@ async fn op_fleet_usage(
     Query(q): Query<UsageQuery>,
 ) -> ApiResult<axum::response::Response> {
     operator(&st, &h).await?;
-    let to = q.to.unwrap_or_else(Utc::now);
-    let from = q.from.unwrap_or(to - chrono::Duration::days(30));
+    let to = q.to.unwrap_or_else(Timestamp::now);
+    let from = q.from.unwrap_or(to - time::Duration::days(30));
     let rows = queries::usage_fleet_between(&st.pool, from, to).await?;
     Ok(usage_out(from, to, rows, &q, "fleet")?)
 }
@@ -3809,8 +3809,8 @@ async fn op_usage(
     Query(q): Query<UsageQuery>,
 ) -> ApiResult<axum::response::Response> {
     operator(&st, &h).await?;
-    let to = q.to.unwrap_or_else(Utc::now);
-    let from = q.from.unwrap_or(to - chrono::Duration::days(30));
+    let to = q.to.unwrap_or_else(Timestamp::now);
+    let from = q.from.unwrap_or(to - time::Duration::days(30));
     let rows = queries::usage_between(&st.pool, id, from, to).await?;
     Ok(usage_out(from, to, rows, &q, &id.to_string())?)
 }

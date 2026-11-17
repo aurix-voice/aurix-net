@@ -1,7 +1,6 @@
 //! Join grants: the developer's backend asks the control plane for a short-lived token
 //! naming the player and what they may do; the client presents it over the control channel.
 
-use chrono::Utc;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use net_common::{NetError, ProjectId, Result};
 use serde::{Deserialize, Serialize};
@@ -103,7 +102,9 @@ impl GrantSigner {
                 return Err(NetError::Invalid(format!("unknown scope {s}")));
             }
         }
-        let now = Utc::now().timestamp();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
         let ttl = ttl_override
             .map(|t| (t as i64).min(self.ttl_secs))
             .unwrap_or(self.ttl_secs);

@@ -35,7 +35,7 @@ base64 = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
 uuid = { workspace = true }
-chrono = { workspace = true }
+time = { workspace = true }
 tracing = { workspace = true }
 quinn = { workspace = true }
 redis = { workspace = true }

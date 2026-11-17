@@ -15,19 +15,7 @@ pub async fn meter(st: Shared) {
     iv.tick().await;
     loop {
         iv.tick().await;
-        let hour = chrono::Utc::now()
-            .date_naive()
-            .and_hms_opt(
-                chrono::Utc::now()
-                    .format("%H")
-                    .to_string()
-                    .parse()
-                    .unwrap_or(0),
-                0,
-                0,
-            )
-            .map(|t| t.and_utc())
-            .unwrap_or_else(chrono::Utc::now);
+        let hour = net_db::Timestamp::now().hour_start();
         for (project, (rooms, players, bytes_in, bytes_out)) in st.host.usage() {
             let minutes = METER_EVERY.as_secs_f64() / 60.0;
             for (metric, qty) in [

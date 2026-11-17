@@ -17,4 +17,3 @@ base64 = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 uuid = { workspace = true }
-chrono = { workspace = true }

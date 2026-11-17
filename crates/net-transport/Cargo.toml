@@ -7,7 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-chrono = { workspace = true }
+time = { workspace = true }
 wtransport = { workspace = true }
 net-common = { path = "../net-common" }
 bytes = { workspace = true }

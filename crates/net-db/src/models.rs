@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use crate::Timestamp;
 use serde::Serialize;
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -9,9 +9,9 @@ pub struct ProjectRow {
     pub name: String,
     pub plan: String,
     pub limits: serde_json::Value,
-    pub created_at: DateTime<Utc>,
-    pub disabled_at: Option<DateTime<Utc>>,
-    pub deleted_at: Option<DateTime<Utc>>,
+    pub created_at: Timestamp,
+    pub disabled_at: Option<Timestamp>,
+    pub deleted_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -22,10 +22,10 @@ pub struct ApiKeyRow {
     pub prefix: String,
     pub name: String,
     pub scopes: Vec<String>,
-    pub created_at: DateTime<Utc>,
-    pub last_used_at: Option<DateTime<Utc>>,
-    pub revoked_at: Option<DateTime<Utc>>,
-    pub expires_at: Option<DateTime<Utc>>,
+    pub created_at: Timestamp,
+    pub last_used_at: Option<Timestamp>,
+    pub revoked_at: Option<Timestamp>,
+    pub expires_at: Option<Timestamp>,
     /// Empty = any source address.
     pub allowed_cidrs: Vec<String>,
 }
@@ -34,7 +34,7 @@ pub struct ApiKeyRow {
 pub struct ApiKeyAuth {
     #[sqlx(flatten)]
     pub key: ApiKeyRow,
-    pub project_disabled_at: Option<DateTime<Utc>>,
+    pub project_disabled_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]
@@ -45,10 +45,10 @@ pub struct OperatorTokenRow {
     pub token_hash: String,
     pub prefix: String,
     pub created_by: String,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: Option<DateTime<Utc>>,
-    pub revoked_at: Option<DateTime<Utc>>,
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub created_at: Timestamp,
+    pub expires_at: Option<Timestamp>,
+    pub revoked_at: Option<Timestamp>,
+    pub last_used_at: Option<Timestamp>,
     /// Empty = any source address.
     pub allowed_cidrs: Vec<String>,
     pub last_used_ip: Option<String>,
@@ -71,8 +71,8 @@ pub struct PlayerSeenRow {
     pub device: String,
     pub name: String,
     pub joins: i64,
-    pub first_seen: DateTime<Utc>,
-    pub last_seen: DateTime<Utc>,
+    pub first_seen: Timestamp,
+    pub last_seen: Timestamp,
 }
 
 /// A ban on a network identity (`ip` or `device`) rather than a player id.
@@ -84,8 +84,8 @@ pub struct BanMarkRow {
     pub player_id: String,
     pub reason: String,
     pub created_by: String,
-    pub expires_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<Timestamp>,
+    pub created_at: Timestamp,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]
@@ -94,8 +94,8 @@ pub struct BanRow {
     pub player_id: String,
     pub reason: String,
     pub created_by: String,
-    pub expires_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<Timestamp>,
+    pub created_at: Timestamp,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]
@@ -109,7 +109,7 @@ pub struct WebhookDeliveryRow {
     pub attempts: i16,
     pub latency_ms: i32,
     pub error: Option<String>,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]
@@ -133,8 +133,8 @@ pub struct NodeRow {
     pub players: i32,
     pub load_factor: f32,
     pub draining: bool,
-    pub started_at: DateTime<Utc>,
-    pub last_heartbeat: DateTime<Utc>,
+    pub started_at: Timestamp,
+    pub last_heartbeat: Timestamp,
     pub heartbeat_secs: i32,
 }
 
@@ -153,8 +153,8 @@ pub struct RoomRow {
     pub schema_hash: Option<String>,
     pub props: serde_json::Value,
     pub lobby_props: Vec<String>,
-    pub created_at: DateTime<Utc>,
-    pub closed_at: Option<DateTime<Utc>>,
+    pub created_at: Timestamp,
+    pub closed_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]
@@ -165,9 +165,9 @@ pub struct WebhookRow {
     pub secret: String,
     pub events: Vec<String>,
     pub enabled: bool,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     pub previous_secret: Option<String>,
-    pub previous_secret_expires_at: Option<DateTime<Utc>>,
+    pub previous_secret_expires_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]
@@ -178,8 +178,8 @@ pub struct GameModuleRow {
     #[serde(skip)]
     pub wasm: Vec<u8>,
     pub size: i32,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]
@@ -190,7 +190,7 @@ pub struct AuditRow {
     pub action: String,
     pub target: String,
     pub details: serde_json::Value,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]
@@ -201,7 +201,7 @@ pub struct OperatorWebhookRow {
     pub secret: String,
     pub events: Vec<String>,
     pub created_by: String,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]
@@ -214,5 +214,5 @@ pub struct OperatorWebhookDeliveryRow {
     pub attempts: i16,
     pub latency_ms: i32,
     pub error: Option<String>,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 }

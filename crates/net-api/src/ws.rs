@@ -745,7 +745,7 @@ impl Session {
                     // Row exists for this node but the room is not hosted yet: creation in
                     // progress on another session, or a row left over from a crash.
                     _ if row.node_id == Some(self.st.node_id.0)
-                        && (chrono::Utc::now() - row.created_at).num_seconds() < 10 =>
+                        && (net_db::Timestamp::now() - row.created_at).whole_seconds() < 10 =>
                     {
                         Err(NetError::Conflict("room_pending".into()))
                     }

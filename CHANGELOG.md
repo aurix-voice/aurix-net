@@ -149,6 +149,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   adoption was still in flight). The node now tracks in-flight adoptions, concurrent joins get
   `room_pending` and retry for up to 2 s; `join` retries too. Found on a two-host run
   ([docs/testing.md](docs/testing.md), Multi-host).
+- `chrono` is unmaintained (RUSTSEC-2026-0543) and is replaced by `time`. Dates in REST
+  responses, CSV exports and webhook payloads are written exactly as before.
 
 ### CI
 - `release.yml`: tag-driven release (version/CHANGELOG check, server bundles for linux

@@ -56,13 +56,11 @@ pub fn server_identity(
             // valid <= 14 days, so the dev certificate is short-lived and regenerated per start.
             let mut params = rcgen::CertificateParams::new(names)
                 .map_err(|e| NetError::Config(format!("self-signed: {e}")))?;
-            let now = chrono::Utc::now();
-            let ymd = |d: chrono::DateTime<chrono::Utc>| {
-                use chrono::Datelike;
-                rcgen::date_time_ymd(d.year(), d.month() as u8, d.day() as u8)
-            };
-            params.not_before = ymd(now - chrono::Duration::days(1));
-            params.not_after = ymd(now + chrono::Duration::days(12));
+            let now = time::OffsetDateTime::now_utc();
+            let ymd =
+                |d: time::OffsetDateTime| rcgen::date_time_ymd(d.year(), d.month() as u8, d.day());
+            params.not_before = ymd(now - time::Duration::days(1));
+            params.not_after = ymd(now + time::Duration::days(12));
             let key_pair = rcgen::KeyPair::generate()
                 .map_err(|e| NetError::Config(format!("self-signed key: {e}")))?;
             let cert = params

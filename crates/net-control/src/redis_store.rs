@@ -225,7 +225,7 @@ impl RedisStore {
         let mut c = self.conn.clone();
         let meta = serde_json::json!({
             "tick": tick, "actor": actor, "hash": format!("{hash:016x}"), "bytes": state.len(),
-            "at": chrono::Utc::now().to_rfc3339(),
+            "at": net_db::Timestamp::now().to_rfc3339(),
         })
         .to_string();
         let _: () = redis::pipe()
@@ -360,7 +360,7 @@ impl RedisStore {
     /// 26 h TTL). Fire-and-forget from the hot path; one HINCRBY + EXPIRE.
     pub async fn incr_rejection(&self, project: ProjectId, reason: &str) -> Result<()> {
         let mut c = self.conn.clone();
-        let hour = chrono::Utc::now().timestamp() / 3600;
+        let hour = net_db::Timestamp::now().unix_timestamp() / 3600;
         let k = format!("net:rej:{project}:{hour}");
         redis::pipe()
             .atomic()
@@ -381,7 +381,7 @@ impl RedisStore {
         hours: u32,
     ) -> Result<Vec<(i64, std::collections::HashMap<String, i64>)>> {
         let mut c = self.conn.clone();
-        let now = chrono::Utc::now().timestamp() / 3600;
+        let now = net_db::Timestamp::now().unix_timestamp() / 3600;
         let hours = hours.clamp(1, 26) as i64;
         let mut out = Vec::with_capacity(hours as usize);
         for h in (now - hours + 1)..=now {
