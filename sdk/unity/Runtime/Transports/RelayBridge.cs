@@ -42,14 +42,14 @@ namespace Aurix.Net.Transports
         public readonly RelayBridgeSettings Settings;
         public bool IsHost { get; private set; }
         public BridgeState State { get; private set; } = BridgeState.Stopped;
-        public int LocalActor => _client?.Actor ?? -1;
+        public int LocalActor => _localHost != null ? _localHost.LocalActor : _client?.Actor ?? -1;
         public int MasterActor { get; private set; } = -1;
         public string LastError { get; private set; }
 
         /// <summary>Host side: a client actor joined / left the room.</summary>
         public event Action<int> OnPeerJoined;
         public event Action<int, BridgeLeave> OnPeerLeft;
-        /// <summary>Frame from actor <c>from</c> (host side: a client; client side: always the master).</summary>
+        /// <summary>Frame from actor <c>from</c> (host side: a client; client side: always the master); the flag is true when it came on the reliable channel.</summary>
         public event Action<int, ArraySegment<byte>, bool> OnData;
         public event Action<BridgeState> OnState;
         /// <summary>Client side: the link to the host ended (after <see cref="State"/> went Stopped).</summary>
@@ -65,6 +65,11 @@ namespace Aurix.Net.Transports
         public bool HasPeer(int actor) => _peers.Contains(actor);
 
         ManagedClient _client;
+        // Host mode: the client half of an adapter is linked to the host bridge in this process and
+        // shows up on the host as the host's own actor id. Frames wait in _local until Pump.
+        RelayBridge _localHost, _localClient;
+        readonly Queue<KeyValuePair<byte[], bool>> _local = new Queue<KeyValuePair<byte[], bool>>();
+        int _run;
 
         public RelayBridge(RelayBridgeSettings settings) { Settings = settings; }
 
@@ -73,16 +78,57 @@ namespace Aurix.Net.Transports
         /// <summary>Quick match: join a random open room matching MatchFilterJson/MatchExpr as a client, or host a fresh one (random name, PropsJson) when none exists. Check IsHost once Started.</summary>
         public void StartAuto() => Start(false, true);
 
+        /// <summary>Host mode: connect to a host bridge of this process instead of joining the room a second time. The host sees its own actor id as a peer.</summary>
+        public void StartLocal(RelayBridge host)
+        {
+            if (State != BridgeState.Stopped) return;
+            IsHost = false; LastError = null;
+            Set(BridgeState.Starting);
+            if (host == null || host._localClient != null || host.State == BridgeState.Stopped || host.State == BridgeState.Stopping)
+            {
+                LastError = "no local host";
+                Set(BridgeState.Stopped);
+                OnDisconnected?.Invoke(BridgeLeave.Failed);
+                return;
+            }
+            _localHost = host; host._localClient = this;
+            if (host.State == BridgeState.Started) host.AttachLocal();
+        }
+
+        void AttachLocal()
+        {
+            var c = _localClient;
+            if (c == null || !IsHost || c.State != BridgeState.Starting) return;
+            c.MasterActor = LocalActor;
+            _peers.Add(LocalActor); OnPeerJoined?.Invoke(LocalActor);
+            if (_localClient == c) c.Set(BridgeState.Started);
+        }
+
+        void EndLocal(BridgeLeave why, string reason)
+        {
+            var h = _localHost; if (h == null) return;
+            int actor = h.LocalActor;
+            _localHost = null; _local.Clear();
+            if (why != BridgeLeave.Local) LastError = reason;
+            Set(BridgeState.Stopping);
+            if (h._localClient == this) { h._localClient = null; h._local.Clear(); h.RemovePeer(actor, why == BridgeLeave.Kicked ? BridgeLeave.Kicked : BridgeLeave.Lost); }
+            Set(BridgeState.Stopped);
+            OnDisconnected?.Invoke(why);
+        }
+
         async void Start(bool host, bool auto = false)
         {
             if (State != BridgeState.Stopped) return;
             IsHost = host; LastError = null;
+            int run = ++_run;
             Set(BridgeState.Starting);
             try
             {
                 var grant = Settings.GrantProvider != null ? await Settings.GrantProvider() : Settings.Grant;
                 if (string.IsNullOrEmpty(grant)) throw new NetException("no grant: set Grant or GrantProvider");
                 var c = await ManagedClient.ConnectAsync(Settings.HttpUrl, grant, Settings.TimeoutMs);
+                // Stopped while connecting: drop the link instead of joining.
+                if (run != _run) { c.Dispose(); return; }
                 // Frames and control messages can arrive while the join handshake is still awaiting the
                 // data path (the host answers player_joined at once); queue them until Started.
                 var early = new List<object>(); bool started = false;
@@ -105,6 +151,7 @@ namespace Aurix.Net.Transports
                 }
                 else if (host) await c.JoinOrCreateAsync(Settings.RoomName, "relay", Settings.MaxPlayers, Settings.PropsJson);
                 else await c.JoinAsync(Settings.RoomName);
+                if (run != _run) { c.Dispose(); return; }
                 MasterActor = (int)Json.Num(c.JoinedJson, "master");
                 if (host && MasterActor != c.Actor) { c.Dispose(); throw new NetException("room already has a host (master actor " + MasterActor + ")"); }
                 if (!host && MasterActor == c.Actor) { c.Dispose(); throw new NetException("no host in room " + Settings.RoomName); }
@@ -115,10 +162,13 @@ namespace Aurix.Net.Transports
                 started = true;
                 foreach (var e in early) { if (e is string j) OnControl(j); else if (e is EventFrame f) Dispatch(f, host); }
                 early.Clear();
+                AttachLocal();
             }
             catch (Exception e)
             {
+                if (run != _run) return;
                 LastError = e.Message;
+                _localClient?.EndLocal(BridgeLeave.Failed, e.Message);
                 Set(BridgeState.Stopped);
                 OnDisconnected?.Invoke(BridgeLeave.Failed);
             }
@@ -126,17 +176,26 @@ namespace Aurix.Net.Transports
 
         void Dispatch(EventFrame f, bool host)
         {
-            if (host) { if (_peers.Contains(f.From)) OnData?.Invoke(f.From, f.Payload, true); }
-            else if (f.From == MasterActor) OnData?.Invoke(f.From, f.Payload, false);
+            if (host) { if (_peers.Contains(f.From)) OnData?.Invoke(f.From, f.Payload, f.Reliable); }
+            else if (f.From == MasterActor) OnData?.Invoke(f.From, f.Payload, f.Reliable);
         }
 
         public void Stop() => Stop(BridgeLeave.Local);
 
         void Stop(BridgeLeave why)
         {
-            if (_client == null) { if (State == BridgeState.Starting) Set(BridgeState.Stopped); return; }
+            if (_localHost != null) { EndLocal(why, LastError); return; }
+            _run++;
+            if (_client == null)
+            {
+                if (State != BridgeState.Starting) return;
+                _localClient?.EndLocal(BridgeLeave.HostGone, "host stopped");
+                Set(BridgeState.Stopped);
+                return;
+            }
             Set(BridgeState.Stopping);
             if (IsHost) foreach (var a in _peers.ToArray()) { _peers.Remove(a); OnPeerLeft?.Invoke(a, BridgeLeave.Local); }
+            _localClient?.EndLocal(BridgeLeave.HostGone, "host stopped");
             try { _client.Dispose(); } catch { }
             _client = null;
             Set(BridgeState.Stopped);
@@ -154,12 +213,14 @@ namespace Aurix.Net.Transports
         public void SendTo(int actor, ArraySegment<byte> data, bool reliable)
         {
             if (_client == null || !IsHost) return;
+            if (_localClient != null && actor == LocalActor) { if (_localClient.State == BridgeState.Started) _localClient._local.Enqueue(new KeyValuePair<byte[], bool>(Copy(data), reliable)); return; }
             _client.SendEvent(Settings.EventCode, Copy(data), Target.Actors, reliable, new[] { (ushort)actor });
         }
 
         /// <summary>Client → host.</summary>
         public void SendToHost(ArraySegment<byte> data, bool reliable)
         {
+            if (_localHost != null) { if (State == BridgeState.Started) _localHost._local.Enqueue(new KeyValuePair<byte[], bool>(Copy(data), reliable)); return; }
             if (_client == null || IsHost) return;
             _client.SendEvent(Settings.EventCode, Copy(data), Target.Master, reliable);
         }
@@ -168,12 +229,21 @@ namespace Aurix.Net.Transports
         public void Kick(int actor)
         {
             if (_client == null || !IsHost) return;
+            if (_localClient != null && actor == LocalActor) { _localClient.EndLocal(BridgeLeave.Kicked, KickReason); return; }
             _ = _client.SendControlAsync("{\"t\":\"kick\",\"actor\":" + actor + ",\"reason\":\"" + KickReason + "\"}");
             RemovePeer(actor, BridgeLeave.Kicked);
         }
 
         /// <summary>Dispatch pending messages on the calling thread (every frame).</summary>
-        public void Pump() => _client?.Poll();
+        public void Pump()
+        {
+            _client?.Poll();
+            while (_local.Count > 0 && State == BridgeState.Started)
+            {
+                var f = _local.Dequeue();
+                OnData?.Invoke(_localHost != null ? MasterActor : LocalActor, new ArraySegment<byte>(f.Key), f.Value);
+            }
+        }
         public void Flush() => _client?.Flush();
 
         /// <summary>Largest payload for one frame on the given channel.</summary>
@@ -193,7 +263,7 @@ namespace Aurix.Net.Transports
                     if (!Settings.AllowHostMigration) { if (!IsHost || m != LocalActor) Fail(BridgeLeave.HostGone, IsHost ? "lost mastership" : "host left the room"); break; }
                     MasterActor = m;
                     if (m == LocalActor && !IsHost) { IsHost = true; _peers.Clear(); foreach (var a in _known) if (a != LocalActor) _peers.Add(a); OnPromoted?.Invoke(); }
-                    else if (m != LocalActor) { if (IsHost) { IsHost = false; _peers.Clear(); } OnHostChanged?.Invoke(m); }
+                    else if (m != LocalActor) { if (IsHost) { _localClient?.EndLocal(BridgeLeave.HostGone, "lost mastership"); IsHost = false; _peers.Clear(); } OnHostChanged?.Invoke(m); }
                     break;
                 }
                 case "left":

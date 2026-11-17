@@ -132,6 +132,15 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   engine-free checks only (`sdk/unreal/scripts/check_plugin.py`).
 
 ### Fixed
+- Unity transport adapters: `AurixNetMirrorTransport` clients are no longer kicked on connect (the
+  server-side connect callback was raised twice and a repeated connection id is rejected);
+  `AurixNetMirrorTransport` and `AurixNetFishNetTransport` pass on the channel a frame arrived on
+  instead of always "reliable"; host mode works in `AurixNetTransport` and
+  `AurixNetFishNetTransport` (the local client is linked to the host in-process instead of joining
+  the room a second time under the same grant, which replaced the host's session); a connect that
+  is stopped before it completes no longer leaves a player in the room;
+  `AurixNetMirrorTransport.ServerUri()` keeps the room name intact (`aurix://room/<name>`).
+  `transports-check` covers all of these.
 - Re-hosting: two players rejoining the same orphaned room through one node at the same time could
   end up in two rooms of the same name (the row was mistaken for a crash leftover while the
   adoption was still in flight). The node now tracks in-flight adoptions, concurrent joins get

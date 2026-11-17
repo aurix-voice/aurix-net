@@ -85,7 +85,8 @@ namespace Aurix.Net.PurrNet
                 if (_client == b) _client = null;
                 onDisconnected?.Invoke(ServerConn, Map(why, false), false);
             };
-            b.StartClient();
+            // Host mode (StartHost = server + client on one transport): the client talks to the local host in-process.
+            if (_host != null) b.StartLocal(_host); else b.StartClient();
         }
 
         public void Disconnect() { var b = _client; _client = null; b?.Stop(); }

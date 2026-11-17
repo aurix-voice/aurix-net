@@ -161,14 +161,22 @@ Add the component next to the framework's `NetworkManager`, point the manager's 
 Topology: the framework's server joins or creates the relay room and must be its master; clients
 join the same room and talk only to the master. The framework's connection id equals the Aurix
 actor id. Reliable channels ride the reliable relay channel (fragmented above the datagram size,
-MTU 8192), unreliable ones the unreliable channel (MTU = datagram payload). Disconnecting a client
-from the server kicks the actor; the kicked client sees the framework's server-side disconnect.
+MTU 8192), unreliable ones the unreliable channel (MTU = datagram payload); received frames are
+handed on with the channel they were sent on (`AurixNetMirrorTransport`,
+`AurixNetFishNetTransport`). Disconnecting a client from the server kicks the actor; the kicked
+client sees the framework's server-side disconnect.
+Host mode: with `AurixNetTransport` (`StartHost`) and `AurixNetFishNetTransport` (a client host)
+the server and a client start on the same transport; that client is linked to the server
+in-process (no second join, one grant), and the server sees it under its own actor id. With
+`AurixNetMirrorTransport` the host uses the framework's own local connection; its `ServerUri()`
+is `aurix://room/<room name>` and `ClientConnect(Uri)` accepts it.
 Not yet: host migration (on `master_changed` the host stops and clients disconnect; reconnect from
 the framework's side), lobby/matchmaking from inside the framework (use the Aurix REST/WS API or
 `join_random` through a small wrapper).
 
 Check without Unity: `cd BuildCheck~/transports-check && NET_API_KEY=an_… dotnet run -c Release`
-runs host + two clients through each adapter against a local node (compile-only without the key).
+runs host + two clients through each adapter against a local node, plus host mode for the two
+adapters that have it (compile-only without the key).
 
 ## Checks
 

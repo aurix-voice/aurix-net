@@ -78,7 +78,7 @@ namespace Aurix.Net.FishNetTransport
             b.OnState += s => HandleServerConnectionState(new ServerConnectionStateArgs(Map(s), Index));
             b.OnPeerJoined += a => HandleRemoteConnectionState(new RemoteConnectionStateArgs(RemoteConnectionState.Started, a, Index));
             b.OnPeerLeft += (a, why) => HandleRemoteConnectionState(new RemoteConnectionStateArgs(RemoteConnectionState.Stopped, a, Index));
-            b.OnData += (from, d, _) => HandleServerReceivedDataArgs(new ServerReceivedDataArgs(d, FChannel.Reliable, from, Index));
+            b.OnData += (from, d, rel) => HandleServerReceivedDataArgs(new ServerReceivedDataArgs(d, rel ? FChannel.Reliable : FChannel.Unreliable, from, Index));
             b.OnDisconnected += why => { if (_server == b) _server = null; if (why != BridgeLeave.Local) Debug.LogWarning("[AurixNet] server stopped: " + b.LastError); };
             b.StartHost();
             return true;
@@ -89,9 +89,10 @@ namespace Aurix.Net.FishNetTransport
             if (_client != null) return false;
             var b = _client = NewBridge(GetClientAddress());
             b.OnState += s => HandleClientConnectionState(new ClientConnectionStateArgs(Map(s), Index));
-            b.OnData += (from, d, _) => HandleClientReceivedDataArgs(new ClientReceivedDataArgs(d, FChannel.Reliable, Index));
+            b.OnData += (from, d, rel) => HandleClientReceivedDataArgs(new ClientReceivedDataArgs(d, rel ? FChannel.Reliable : FChannel.Unreliable, Index));
             b.OnDisconnected += why => { if (_client == b) _client = null; if (why == BridgeLeave.Failed) Debug.LogError("[AurixNet] connect failed: " + b.LastError); };
-            b.StartClient();
+            // Client host (server + client on one transport): the client talks to the local server in-process.
+            if (_server != null && b.Settings.RoomName == roomName) b.StartLocal(_server); else b.StartClient();
             return true;
         }
 

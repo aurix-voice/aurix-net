@@ -186,7 +186,7 @@ namespace Aurix.Net.Managed
                             OnData?.Invoke(r.Channel, r.Tick, r.Payload);
                             byte k = (byte)(r.Payload[0] & 0xf0);
                             if (RoomMode == "relay" || (k != 0x10 && k != 0x20))
-                                if (Event.TryDecode(r.Payload, out var f)) OnEvent?.Invoke(f);
+                                if (Event.TryDecode(r.Payload, out var f)) { f.Reliable = r.Channel != Channel.Unreliable; OnEvent?.Invoke(f); }
                         }
                         FlushLink();
                         break;

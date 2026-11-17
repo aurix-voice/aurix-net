@@ -20,6 +20,7 @@ namespace Mirror
         public Action<int> OnServerDisconnected;
         public abstract bool ClientConnected();
         public abstract void ClientConnect(string address);
+        public virtual void ClientConnect(Uri uri) => ClientConnect(uri.Host);
         public abstract void ClientSend(ArraySegment<byte> segment, int channelId = Channels.Reliable);
         public abstract void ClientDisconnect();
         public abstract Uri ServerUri();

@@ -25,6 +25,7 @@ namespace Aurix.Net.MirrorTransport
         /// <summary>Async grant source; wins over the inspector field.</summary>
         public Func<Task<string>> GrantProvider;
 
+        const string Scheme = "aurix";
         RelayBridge _server, _client;
 
         RelayBridge NewBridge(string room) => new RelayBridge(new RelayBridgeSettings
@@ -42,7 +43,7 @@ namespace Aurix.Net.MirrorTransport
             if (_client != null) return;
             var b = _client = NewBridge(string.IsNullOrEmpty(address) ? roomName : address);
             b.OnState += s => { if (s == BridgeState.Started) OnClientConnected?.Invoke(); };
-            b.OnData += (from, d, _) => OnClientDataReceived?.Invoke(d, Channels.Reliable);
+            b.OnData += (from, d, rel) => OnClientDataReceived?.Invoke(d, rel ? Channels.Reliable : Channels.Unreliable);
             b.OnDisconnected += why =>
             {
                 if (_client == b) _client = null;
@@ -60,19 +61,25 @@ namespace Aurix.Net.MirrorTransport
             OnClientDataSent?.Invoke(segment, channelId);
         }
 
+        /// <summary>Accepts what <see cref="ServerUri"/> returns (room name in the path); other URIs use the host part.</summary>
+        public override void ClientConnect(Uri uri) =>
+            ClientConnect(uri.Scheme == Scheme && uri.AbsolutePath.Length > 1 ? Uri.UnescapeDataString(uri.AbsolutePath.Substring(1)) : uri.Host);
+
         public override void ClientDisconnect() { var b = _client; _client = null; b?.Stop(); }
 
         // ---- server ----
-        public override Uri ServerUri() => new UriBuilder { Scheme = "aurix", Host = roomName }.Uri;
+        // The room name goes in the path: a URI host is lower-cased and cannot hold every room name.
+        public override Uri ServerUri() => new Uri(Scheme + "://room/" + Uri.EscapeDataString(roomName));
         public override bool ServerActive() => _server != null && _server.State == BridgeState.Started;
 
         public override void ServerStart()
         {
             if (_server != null) return;
             var b = _server = NewBridge(roomName);
-            b.OnPeerJoined += a => { OnServerConnected?.Invoke(a); OnServerConnectedWithAddress?.Invoke(a, "actor:" + a); };
+            // The framework listens on both connect callbacks and rejects an id it has already seen, so raise only one.
+            b.OnPeerJoined += a => OnServerConnectedWithAddress?.Invoke(a, "actor:" + a);
             b.OnPeerLeft += (a, why) => OnServerDisconnected?.Invoke(a);
-            b.OnData += (from, d, _) => OnServerDataReceived?.Invoke(from, d, Channels.Reliable);
+            b.OnData += (from, d, rel) => OnServerDataReceived?.Invoke(from, d, rel ? Channels.Reliable : Channels.Unreliable);
             b.OnDisconnected += why => { if (_server == b) _server = null; if (why != BridgeLeave.Local) Debug.LogWarning("[AurixNet] server stopped: " + b.LastError); };
             b.StartHost();
         }

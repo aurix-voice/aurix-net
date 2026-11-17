@@ -19,6 +19,8 @@ namespace Aurix.Net
         public ushort From;
         public ushort? Group;
         public ArraySegment<byte> Payload;
+        /// <summary>Set by the managed client: the frame arrived on a reliable channel.</summary>
+        public bool Reliable;
 
         /// <summary>Wire: u8 code, u8 flags, u16 from (BE), [u16 group if flags&0x10], [u16 n + n*u16 if target==3], payload.</summary>
         public static bool TryDecode(byte[] buf, out EventFrame f)
