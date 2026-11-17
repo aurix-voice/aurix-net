@@ -680,7 +680,7 @@ impl SyncRoom {
             b.extend_from_slice(&d);
             out.push((*a, b.freeze()));
         }
-        if self.replay_keep > 0 && self.frame.tick.0 % self.replay_every == 0 {
+        if self.replay_keep > 0 && self.frame.tick.0.is_multiple_of(self.replay_every) {
             // A fresh view has no baseline and no viewpoint: the delta is the whole world.
             let mut v = ClientView::new(ActorId(0xFFFF));
             let d = self.rep.build(&self.frame, &mut v);
@@ -974,7 +974,9 @@ mod tests {
             room.handle(actor, SyncRoom::encode_input(t, &[w.finish()]));
             room.tick();
         };
-        let ops = |items: &[(u8, Option<u64>, Option<(u64, u32)>)]| {
+        // (op, entity, trailing value and its bit width)
+        type Op = (u8, Option<u64>, Option<(u64, u32)>);
+        let ops = |items: &[Op]| {
             let mut w = net_wire::BitWriter::new();
             w.write_bits(OPS_MARKER as u64, 8);
             w.write_bits(items.len() as u64, 8);

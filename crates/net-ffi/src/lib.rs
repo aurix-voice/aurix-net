@@ -139,7 +139,7 @@ pub unsafe extern "C" fn aurix_net_best_region(
             .map(CString::into_raw)
             .unwrap_or(std::ptr::null_mut()),
         Err(e) => {
-            set_error(&e.to_string());
+            set_error(e);
             std::ptr::null_mut()
         }
     }

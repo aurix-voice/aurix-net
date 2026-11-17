@@ -629,7 +629,7 @@ impl LockstepRoom {
                 {
                     return true;
                 }
-                self.pending_commands.put_u16(actor.0 as u16);
+                self.pending_commands.put_u16(actor.0);
                 self.pending_commands.put_u16(payload.len() as u16);
                 self.pending_commands.extend_from_slice(&payload);
                 true
