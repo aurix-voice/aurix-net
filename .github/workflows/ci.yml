@@ -53,7 +53,7 @@ jobs:
           g++ -std=c++17 -fsyntax-only sdk/cpp/sync_test.cpp -Isdk/cpp && g++ -std=c++17 -fsyntax-only sdk/cpp/echo_test.cpp -Isdk/cpp
           gcc -std=c11 -Wall -Wextra -Werror crates/net-ffi/ctest/sim.c -Ltarget/release -laurix_net -lm -Wl,-rpath,$PWD/target/release -o /tmp/sim_ctest
           /tmp/sim_ctest
-      - name: Unreal plugin (engine-free): stage natives, descriptor/UHT checks
+      - name: "Unreal plugin (engine-free): stage natives, descriptor/UHT checks"
         run: |
           sdk/unreal/scripts/build_native.sh
           python3 sdk/unreal/scripts/check_plugin.py
