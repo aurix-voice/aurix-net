@@ -626,7 +626,11 @@ impl Room {
             visible: self.cfg.visible,
             open: self.cfg.open,
         };
-        Ok(if self.cfg.broadcast_props_to_all { self.broadcast_all(msg) } else { self.broadcast_except(by, msg) })
+        Ok(if self.cfg.broadcast_props_to_all {
+            self.broadcast_all(msg)
+        } else {
+            self.broadcast_except(by, msg)
+        })
     }
 
     pub fn set_player_props(
@@ -651,7 +655,11 @@ impl Room {
         p.props = merged;
         let props = p.props.clone();
         let msg = ServerMsg::PlayerProps { actor, props };
-        Ok(if self.cfg.broadcast_props_to_all { self.broadcast_all(msg) } else { self.broadcast_except(actor, msg) })
+        Ok(if self.cfg.broadcast_props_to_all {
+            self.broadcast_all(msg)
+        } else {
+            self.broadcast_except(actor, msg)
+        })
     }
 
     pub fn set_groups(
@@ -1134,7 +1142,9 @@ mod tests {
         c.broadcast_props_to_all = false;
         let t = Instant::now();
         let mut r = Room::new(c, t);
-        let (a, _) = r.join("alice", "Alice", Map::new(), None, false, t).unwrap();
+        let (a, _) = r
+            .join("alice", "Alice", Map::new(), None, false, t)
+            .unwrap();
         let (b, out) = r.join("bob", "Bob", Map::new(), None, false, t).unwrap();
         assert!(out.is_empty(), "suppress_room_events: no player_joined");
         let roster = r.roster_for(b);
@@ -1144,16 +1154,32 @@ mod tests {
         open.suppress_player_info = false;
         r.cfg = open;
         let ids: Vec<String> = r.roster_for(b).into_iter().map(|p| p.player_id).collect();
-        assert!(ids.contains(&"bob".to_string()) && ids.contains(&String::new()) && !ids.contains(&"alice".to_string()));
-        assert_eq!(r.player_infos().iter().filter(|p| p.player_id == "alice").count(), 1, "operators see ids");
+        assert!(
+            ids.contains(&"bob".to_string())
+                && ids.contains(&String::new())
+                && !ids.contains(&"alice".to_string())
+        );
+        assert_eq!(
+            r.player_infos()
+                .iter()
+                .filter(|p| p.player_id == "alice")
+                .count(),
+            1,
+            "operators see ids"
+        );
         let to = |o: &Outgoing| match o {
             Outgoing::Control(a, _) | Outgoing::Data(a, _, _) => *a,
         };
         let out = r.set_player_props(b, Map::new(), None).unwrap();
-        assert!(out.iter().all(|o| to(o) != b), "setter excluded from props broadcast");
+        assert!(
+            out.iter().all(|o| to(o) != b),
+            "setter excluded from props broadcast"
+        );
         assert!(out.iter().any(|o| to(o) == a));
         let out = r.leave(b, false, t);
-        assert!(out.iter().all(|o| !matches!(o, Outgoing::Control(_, ServerMsg::PlayerLeft { .. }))));
+        assert!(out
+            .iter()
+            .all(|o| !matches!(o, Outgoing::Control(_, ServerMsg::PlayerLeft { .. }))));
     }
 
     #[test]

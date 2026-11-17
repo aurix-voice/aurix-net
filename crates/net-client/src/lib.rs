@@ -463,11 +463,13 @@ impl Client {
 
     /// Relay helper: raise an event.
     /// Event with the room's defaults: no interest group, not cached. See [`Self::send_event_ex`].
-    pub fn send_event(&self,
+    pub fn send_event(
+        &self,
         code: u8,
         target: EventTarget,
         payload: Bytes,
-        reliable: bool,) -> Result<()> {
+        reliable: bool,
+    ) -> Result<()> {
         self.send_event_ex(code, target, payload, reliable, None, CacheOp::None)
     }
     /// Event to `target` on the reliable or unreliable channel; `group` limits delivery to members of
@@ -589,7 +591,6 @@ async fn deliver(dp: &Arc<DataPath>, d: Bytes, ev: &mpsc::Sender<Event>) {
     }
 }
 
-
 /// One region candidate from [`best_region`].
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RegionCandidate {
@@ -632,8 +633,18 @@ pub async fn best_region(catalog_http: &str, probes: u8) -> Result<RegionPick> {
     for r in &regions {
         let region = r["id"].as_str().unwrap_or_default().to_string();
         let display_name = r["display_name"].as_str().unwrap_or_default().to_string();
-        for ep in r["endpoints"].as_array().into_iter().flatten().filter_map(|e| e.as_str()) {
-            let (http, region, display_name, ep) = (http.clone(), region.clone(), display_name.clone(), ep.trim_end_matches('/').to_string());
+        for ep in r["endpoints"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.as_str())
+        {
+            let (http, region, display_name, ep) = (
+                http.clone(),
+                region.clone(),
+                display_name.clone(),
+                ep.trim_end_matches('/').to_string(),
+            );
             tasks.push(async move {
                 let mut best: i32 = -1;
                 for _ in 0..probes {
@@ -643,13 +654,27 @@ pub async fn best_region(catalog_http: &str, probes: u8) -> Result<RegionPick> {
                         best = if best < 0 { ms } else { best.min(ms) };
                     }
                 }
-                RegionCandidate { region, display_name, endpoint: ep, rtt_ms: best }
+                RegionCandidate {
+                    region,
+                    display_name,
+                    endpoint: ep,
+                    rtt_ms: best,
+                }
             });
         }
     }
     let candidates: Vec<RegionCandidate> = futures::future::join_all(tasks).await;
-    let Some(win) = candidates.iter().filter(|c| c.rtt_ms >= 0).min_by_key(|c| c.rtt_ms) else {
+    let Some(win) = candidates
+        .iter()
+        .filter(|c| c.rtt_ms >= 0)
+        .min_by_key(|c| c.rtt_ms)
+    else {
         return Err(ClientError::Http("no reachable region".into()));
     };
-    Ok(RegionPick { region: win.region.clone(), endpoint: win.endpoint.clone(), rtt_ms: win.rtt_ms, candidates })
+    Ok(RegionPick {
+        region: win.region.clone(),
+        endpoint: win.endpoint.clone(),
+        rtt_ms: win.rtt_ms,
+        candidates,
+    })
 }

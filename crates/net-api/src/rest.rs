@@ -1610,7 +1610,15 @@ async fn player_erase_json(st: &Shared, project: Uuid, player_id: &str, by: &str
         return Err(NetError::Invalid("invalid player_id".into()));
     }
     let removed = queries::erase_player(&st.pool, project, player_id).await?;
-    audit_log(st, Some(project), by, "player.erase", "erased", removed.clone()).await;
+    audit_log(
+        st,
+        Some(project),
+        by,
+        "player.erase",
+        "erased",
+        removed.clone(),
+    )
+    .await;
     Ok(json!({"erased": true, "removed": removed}))
 }
 
@@ -1620,7 +1628,9 @@ async fn player_export(
     Path(player_id): Path<String>,
 ) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Admin).await?;
-    Ok(Json(player_export_json(&st, key.project_id, &player_id).await?))
+    Ok(Json(
+        player_export_json(&st, key.project_id, &player_id).await?,
+    ))
 }
 
 async fn player_erase(
@@ -1630,7 +1640,9 @@ async fn player_erase(
 ) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &h, Scope::Admin).await?;
     let by = format!("key:{}", key.id);
-    Ok(Json(player_erase_json(&st, key.project_id, &player_id, &by).await?))
+    Ok(Json(
+        player_erase_json(&st, key.project_id, &player_id, &by).await?,
+    ))
 }
 
 async fn op_player_export(
@@ -1648,7 +1660,9 @@ async fn op_player_erase(
     Path((id, player_id)): Path<(Uuid, String)>,
 ) -> ApiResult<Json<Value>> {
     let op = operator(&st, &h).await?;
-    Ok(Json(player_erase_json(&st, id, &player_id, &op.actor).await?))
+    Ok(Json(
+        player_erase_json(&st, id, &player_id, &op.actor).await?,
+    ))
 }
 
 async fn player_lookup(
@@ -2727,7 +2741,15 @@ async fn remove_mark(st: &Shared, project: Uuid, kind: &str, value: &str, by: &s
     if !queries::delete_mark(&st.pool, project, kind, value).await? {
         return Err(NetError::NotFound("ban not found".into()));
     }
-    audit_log(st, Some(project), by, "player.unban", value, json!({"kind": kind})).await;
+    audit_log(
+        st,
+        Some(project),
+        by,
+        "player.unban",
+        value,
+        json!({"kind": kind}),
+    )
+    .await;
     Ok(())
 }
 
@@ -2737,7 +2759,14 @@ async fn delete_mark(
     Path((kind, value)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
     let key = api_key(&st, &h, Scope::Rooms).await?;
-    remove_mark(&st, key.project_id, &kind, &value, &format!("key:{}", key.id)).await?;
+    remove_mark(
+        &st,
+        key.project_id,
+        &kind,
+        &value,
+        &format!("key:{}", key.id),
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2752,7 +2781,11 @@ async fn op_delete_mark(
 }
 
 pub(crate) fn mark_message(m: &net_db::models::BanMarkRow) -> String {
-    let what = if m.kind == "ip" { "this network" } else { "this device" };
+    let what = if m.kind == "ip" {
+        "this network"
+    } else {
+        "this device"
+    };
     match (&m.reason, m.expires_at) {
         (r, Some(e)) if !r.is_empty() => format!("{what} is banned until {}: {r}", e.to_rfc3339()),
         (_, Some(e)) => format!("{what} is banned until {}", e.to_rfc3339()),
@@ -2801,23 +2834,42 @@ async fn add_ban(st: &Shared, project: Uuid, req: &BanReq, by: &str) -> Result<V
     let mut marks = Vec::new();
     if scope != "player" {
         if !matches!(scope, "player_ip" | "player_device" | "player_ip_device") {
-            return Err(NetError::Invalid("scope: player, player_ip, player_device or player_ip_device".into()));
+            return Err(NetError::Invalid(
+                "scope: player, player_ip, player_device or player_ip_device".into(),
+            ));
         }
         let seen = queries::get_player_seen(&st.pool, project, &req.player_id).await?;
         let Some(seen) = seen else {
-            return Err(NetError::Invalid("this player has not connected yet: no IP or device is known".into()));
+            return Err(NetError::Invalid(
+                "this player has not connected yet: no IP or device is known".into(),
+            ));
         };
         let want_ip = scope.contains("ip");
         let want_dev = scope.contains("device");
-        for (kind, value, want) in [("ip", seen.ip.as_str(), want_ip), ("device", seen.device.as_str(), want_dev)] {
+        for (kind, value, want) in [
+            ("ip", seen.ip.as_str(), want_ip),
+            ("device", seen.device.as_str(), want_dev),
+        ] {
             if !want {
                 continue;
             }
             if value.is_empty() {
-                return Err(NetError::Invalid(format!("no {kind} is known for this player")));
+                return Err(NetError::Invalid(format!(
+                    "no {kind} is known for this player"
+                )));
             }
             marks.push(
-                queries::upsert_mark(&st.pool, project, kind, value, &req.player_id, &req.reason, by, expires).await?,
+                queries::upsert_mark(
+                    &st.pool,
+                    project,
+                    kind,
+                    value,
+                    &req.player_id,
+                    &req.reason,
+                    by,
+                    expires,
+                )
+                .await?,
             );
         }
     }
@@ -2838,7 +2890,15 @@ async fn remove_ban(st: &Shared, project: Uuid, player_id: &str, by: &str) -> Re
     if !queries::delete_ban(&st.pool, project, player_id).await? && marks == 0 {
         return Err(NetError::NotFound("ban not found".into()));
     }
-    audit_log(st, Some(project), by, "player.unban", player_id, json!({"marks": marks})).await;
+    audit_log(
+        st,
+        Some(project),
+        by,
+        "player.unban",
+        player_id,
+        json!({"marks": marks}),
+    )
+    .await;
     Ok(())
 }
 

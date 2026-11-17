@@ -303,7 +303,9 @@ impl GameLogic for OwnerLogic {
                             break;
                         };
                         let id = EntityId::from_u64(id);
-                        let ok = owns(frame, id, *actor) && Some(id) != *avatar && frame.despawn(id).is_ok();
+                        let ok = owns(frame, id, *actor)
+                            && Some(id) != *avatar
+                            && frame.despawn(id).is_ok();
                         if ok {
                             self.policies.remove(&id);
                         }
@@ -330,7 +332,10 @@ impl GameLogic for OwnerLogic {
                         let policy = self.policies.get(&id).copied().unwrap_or_default();
                         let owned = frame.entities().filter(|e| e.owner == Some(*actor)).count();
                         match frame.entity_mut(id) {
-                            Some(ent) if owned < MAX_OWNED && (ent.owner.is_none() || policy == OwnerPolicy::Dynamic) => {
+                            Some(ent)
+                                if owned < MAX_OWNED
+                                    && (ent.owner.is_none() || policy == OwnerPolicy::Dynamic) =>
+                            {
                                 ent.owner = Some(*actor);
                                 true
                             }
@@ -347,7 +352,9 @@ impl GameLogic for OwnerLogic {
                                 ent.owner = None;
                             }
                             // A released entity must survive without an owner.
-                            if self.policies.get(&id).copied().unwrap_or_default() == OwnerPolicy::DestroyOnLeave {
+                            if self.policies.get(&id).copied().unwrap_or_default()
+                                == OwnerPolicy::DestroyOnLeave
+                            {
                                 self.policies.insert(id, OwnerPolicy::Orphan);
                             }
                             true
@@ -695,7 +702,8 @@ impl SyncRoom {
             self.replay_every = e.max(1);
         }
         if let Some(s) = secs {
-            self.replay_keep = (s as usize * self.hz as usize / self.replay_every as usize).min(4096);
+            self.replay_keep =
+                (s as usize * self.hz as usize / self.replay_every as usize).min(4096);
         }
         self.replay.truncate(self.replay_keep);
     }
@@ -982,7 +990,15 @@ mod tests {
             w
         };
         // a spawns three entities (no initial writes) and gives each a policy.
-        send(&mut room, a, ops(&[(OP_SPAWN, None, Some((0, 8))), (OP_SPAWN, None, Some((0, 8))), (OP_SPAWN, None, Some((0, 8)))]));
+        send(
+            &mut room,
+            a,
+            ops(&[
+                (OP_SPAWN, None, Some((0, 8))),
+                (OP_SPAWN, None, Some((0, 8))),
+                (OP_SPAWN, None, Some((0, 8))),
+            ]),
+        );
         let spawned: Vec<EntityId> = room
             .frame
             .entities()
@@ -991,13 +1007,36 @@ mod tests {
             .collect();
         assert_eq!(spawned.len(), 3);
         let (orphan, to_master, dynamic) = (spawned[0], spawned[1], spawned[2]);
-        send(&mut room, a, ops(&[
-            (OP_SET_POLICY, Some(orphan.to_u64()), Some((OwnerPolicy::Orphan as u64, 8))),
-            (OP_SET_POLICY, Some(to_master.to_u64()), Some((OwnerPolicy::ToMaster as u64, 8))),
-            (OP_SET_POLICY, Some(dynamic.to_u64()), Some((OwnerPolicy::Dynamic as u64, 8))),
-        ]));
+        send(
+            &mut room,
+            a,
+            ops(&[
+                (
+                    OP_SET_POLICY,
+                    Some(orphan.to_u64()),
+                    Some((OwnerPolicy::Orphan as u64, 8)),
+                ),
+                (
+                    OP_SET_POLICY,
+                    Some(to_master.to_u64()),
+                    Some((OwnerPolicy::ToMaster as u64, 8)),
+                ),
+                (
+                    OP_SET_POLICY,
+                    Some(dynamic.to_u64()),
+                    Some((OwnerPolicy::Dynamic as u64, 8)),
+                ),
+            ]),
+        );
         // c takes the dynamic entity while a still owns it; the orphan one is refused (a owns it).
-        send(&mut room, c, ops(&[(OP_REQUEST, Some(dynamic.to_u64()), None), (OP_REQUEST, Some(orphan.to_u64()), None)]));
+        send(
+            &mut room,
+            c,
+            ops(&[
+                (OP_REQUEST, Some(dynamic.to_u64()), None),
+                (OP_REQUEST, Some(orphan.to_u64()), None),
+            ]),
+        );
         assert_eq!(room.frame.entity_mut(dynamic).unwrap().owner, Some(c));
         assert_eq!(room.frame.entity_mut(orphan).unwrap().owner, Some(a));
         // a leaves: orphan stays unowned, to_master goes to the oldest remaining player (b).
@@ -1005,9 +1044,17 @@ mod tests {
         assert_eq!(room.frame.entity_mut(orphan).unwrap().owner, None);
         assert_eq!(room.frame.entity_mut(to_master).unwrap().owner, Some(b));
         // b requests the orphan and gets it, then releases it: unowned again, still alive.
-        send(&mut room, b, ops(&[(OP_REQUEST, Some(orphan.to_u64()), None)]));
+        send(
+            &mut room,
+            b,
+            ops(&[(OP_REQUEST, Some(orphan.to_u64()), None)]),
+        );
         assert_eq!(room.frame.entity_mut(orphan).unwrap().owner, Some(b));
-        send(&mut room, b, ops(&[(OP_RELEASE, Some(orphan.to_u64()), None)]));
+        send(
+            &mut room,
+            b,
+            ops(&[(OP_RELEASE, Some(orphan.to_u64()), None)]),
+        );
         assert_eq!(room.frame.entity_mut(orphan).unwrap().owner, None);
     }
 

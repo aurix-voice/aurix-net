@@ -13,7 +13,7 @@ pub mod sync;
 
 use bytes::Bytes;
 use net_client::protocol::{ClientMsg, ServerMsg};
-use net_client::{Client, Event, EventTarget, CacheOp, Options};
+use net_client::{CacheOp, Client, Event, EventTarget, Options};
 use net_common::{ActorId, Channel};
 use parking_lot::Mutex;
 use std::cell::RefCell;
@@ -126,7 +126,10 @@ pub unsafe extern "C" fn aurix_net_issue_grant(
 /// Photon GetRegions + best-region ping: JSON `{region, endpoint, rtt_ms, candidates:[...]}` or NULL
 /// (see aurix_net_last_error). Blocks for up to a few seconds; free with aurix_net_string_free.
 #[no_mangle]
-pub unsafe extern "C" fn aurix_net_best_region(catalog_http: *const c_char, probes: i32) -> *mut c_char {
+pub unsafe extern "C" fn aurix_net_best_region(
+    catalog_http: *const c_char,
+    probes: i32,
+) -> *mut c_char {
     let Ok(url) = std::ffi::CStr::from_ptr(catalog_http).to_str() else {
         set_error("best_region: bad url");
         return std::ptr::null_mut();
@@ -351,22 +354,18 @@ pub unsafe extern "C" fn aurix_net_send_event_ex(
     } else {
         Bytes::copy_from_slice(std::slice::from_raw_parts(data, len))
     };
-    match h
-        .inner
-        .lock()
-        .send_event_ex(
-            code,
-            target,
-            payload,
-            reliable != 0,
-            (0..=0xFFFF).contains(&group).then_some(group as u16),
-            match cache {
-                1 => CacheOp::Add,
-                2 => CacheOp::Remove,
-                _ => CacheOp::None,
-            },
-        )
-    {
+    match h.inner.lock().send_event_ex(
+        code,
+        target,
+        payload,
+        reliable != 0,
+        (0..=0xFFFF).contains(&group).then_some(group as u16),
+        match cache {
+            1 => CacheOp::Add,
+            2 => CacheOp::Remove,
+            _ => CacheOp::None,
+        },
+    ) {
         Ok(()) => 0,
         Err(e) => {
             set_error(e);

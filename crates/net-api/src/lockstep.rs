@@ -972,7 +972,10 @@ mod tests {
         let d = l.tick();
         let bundles = LockstepRoom::decode_bundles(d);
         let (_, inputs) = bundles.last().unwrap();
-        assert_eq!(inputs[&COMMAND_ACTOR], vec![0, 1, 0, 2, b'x', b'y', 0, 2, 0, 1, 7]);
+        assert_eq!(
+            inputs[&COMMAND_ACTOR],
+            vec![0, 1, 0, 2, b'x', b'y', 0, 2, 0, 1, 7]
+        );
         // nothing pending: the next bundle has no command actor
         let d = l.tick();
         let bundles = LockstepRoom::decode_bundles(d);

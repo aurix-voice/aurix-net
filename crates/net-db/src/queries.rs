@@ -1033,13 +1033,19 @@ pub async fn touch_player_seen(
     Ok(())
 }
 
-pub async fn get_player_seen(pool: &DbPool, project_id: Uuid, player_id: &str) -> Result<Option<PlayerSeenRow>> {
-    sqlx::query_as::<_, PlayerSeenRow>("SELECT * FROM player_seen WHERE project_id = $1 AND player_id = $2")
-        .bind(project_id)
-        .bind(player_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(db_err)
+pub async fn get_player_seen(
+    pool: &DbPool,
+    project_id: Uuid,
+    player_id: &str,
+) -> Result<Option<PlayerSeenRow>> {
+    sqlx::query_as::<_, PlayerSeenRow>(
+        "SELECT * FROM player_seen WHERE project_id = $1 AND player_id = $2",
+    )
+    .bind(project_id)
+    .bind(player_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)
 }
 
 pub async fn upsert_mark(
@@ -1070,7 +1076,12 @@ pub async fn upsert_mark(
 }
 
 /// The live mark on an identity, if any (expired marks do not count).
-pub async fn active_mark(pool: &DbPool, project_id: Uuid, kind: &str, value: &str) -> Result<Option<BanMarkRow>> {
+pub async fn active_mark(
+    pool: &DbPool,
+    project_id: Uuid,
+    kind: &str,
+    value: &str,
+) -> Result<Option<BanMarkRow>> {
     sqlx::query_as::<_, BanMarkRow>(
         "SELECT * FROM ban_marks WHERE project_id = $1 AND kind = $2 AND value = $3 AND (expires_at IS NULL OR expires_at > now())",
     )
@@ -1092,47 +1103,80 @@ pub async fn list_marks(pool: &DbPool, project_id: Uuid) -> Result<Vec<BanMarkRo
     .map_err(db_err)
 }
 
-pub async fn marks_for_player(pool: &DbPool, project_id: Uuid, player_id: &str) -> Result<Vec<BanMarkRow>> {
-    sqlx::query_as::<_, BanMarkRow>("SELECT * FROM ban_marks WHERE project_id = $1 AND player_id = $2 ORDER BY created_at DESC")
-        .bind(project_id)
-        .bind(player_id)
-        .fetch_all(pool)
-        .await
-        .map_err(db_err)
+pub async fn marks_for_player(
+    pool: &DbPool,
+    project_id: Uuid,
+    player_id: &str,
+) -> Result<Vec<BanMarkRow>> {
+    sqlx::query_as::<_, BanMarkRow>(
+        "SELECT * FROM ban_marks WHERE project_id = $1 AND player_id = $2 ORDER BY created_at DESC",
+    )
+    .bind(project_id)
+    .bind(player_id)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
 }
 
-pub async fn delete_marks_for_player(pool: &DbPool, project_id: Uuid, player_id: &str) -> Result<u64> {
-    Ok(sqlx::query("DELETE FROM ban_marks WHERE project_id = $1 AND player_id = $2")
-        .bind(project_id)
-        .bind(player_id)
-        .execute(pool)
-        .await
-        .map_err(db_err)?
-        .rows_affected())
+pub async fn delete_marks_for_player(
+    pool: &DbPool,
+    project_id: Uuid,
+    player_id: &str,
+) -> Result<u64> {
+    Ok(
+        sqlx::query("DELETE FROM ban_marks WHERE project_id = $1 AND player_id = $2")
+            .bind(project_id)
+            .bind(player_id)
+            .execute(pool)
+            .await
+            .map_err(db_err)?
+            .rows_affected(),
+    )
 }
 
 pub async fn delete_mark(pool: &DbPool, project_id: Uuid, kind: &str, value: &str) -> Result<bool> {
-    Ok(sqlx::query("DELETE FROM ban_marks WHERE project_id = $1 AND kind = $2 AND value = $3")
-        .bind(project_id)
-        .bind(kind)
-        .bind(value)
-        .execute(pool)
-        .await
-        .map_err(db_err)?
-        .rows_affected()
-        > 0)
+    Ok(
+        sqlx::query("DELETE FROM ban_marks WHERE project_id = $1 AND kind = $2 AND value = $3")
+            .bind(project_id)
+            .bind(kind)
+            .bind(value)
+            .execute(pool)
+            .await
+            .map_err(db_err)?
+            .rows_affected()
+            > 0,
+    )
 }
 
 /// Forgets a player: last-seen identity, identity marks and ban go; audit rows that name the
 /// player keep the action but lose the target and details. Returns what was removed.
-pub async fn erase_player(pool: &DbPool, project_id: Uuid, player_id: &str) -> Result<serde_json::Value> {
+pub async fn erase_player(
+    pool: &DbPool,
+    project_id: Uuid,
+    player_id: &str,
+) -> Result<serde_json::Value> {
     let mut tx = pool.begin().await.map_err(db_err)?;
     let seen = sqlx::query("DELETE FROM player_seen WHERE project_id = $1 AND player_id = $2")
-        .bind(project_id).bind(player_id).execute(&mut *tx).await.map_err(db_err)?.rows_affected();
+        .bind(project_id)
+        .bind(player_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?
+        .rows_affected();
     let marks = sqlx::query("DELETE FROM ban_marks WHERE project_id = $1 AND player_id = $2")
-        .bind(project_id).bind(player_id).execute(&mut *tx).await.map_err(db_err)?.rows_affected();
+        .bind(project_id)
+        .bind(player_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?
+        .rows_affected();
     let bans = sqlx::query("DELETE FROM bans WHERE project_id = $1 AND player_id = $2")
-        .bind(project_id).bind(player_id).execute(&mut *tx).await.map_err(db_err)?.rows_affected();
+        .bind(project_id)
+        .bind(player_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?
+        .rows_affected();
     let audit = sqlx::query("UPDATE audit SET target = 'erased', details = '{}'::jsonb WHERE project_id = $1 AND target = $2")
         .bind(project_id).bind(player_id).execute(&mut *tx).await.map_err(db_err)?.rows_affected();
     tx.commit().await.map_err(db_err)?;

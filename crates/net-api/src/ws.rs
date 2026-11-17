@@ -835,7 +835,11 @@ impl Session {
             .chars()
             .take(128)
             .collect();
-        let ip = if self.ip.is_unspecified() { String::new() } else { self.ip.to_string() };
+        let ip = if self.ip.is_unspecified() {
+            String::new()
+        } else {
+            self.ip.to_string()
+        };
         for (kind, value) in [("ip", ip.as_str()), ("device", device.as_str())] {
             if value.is_empty() {
                 continue;
@@ -845,8 +849,15 @@ impl Session {
                 return Err(NetError::Forbidden(crate::rest::mark_message(&m)));
             }
         }
-        if let Err(e) =
-            queries::touch_player_seen(&self.st.pool, g.project.0, &g.player_id, &ip, &device, &g.name).await
+        if let Err(e) = queries::touch_player_seen(
+            &self.st.pool,
+            g.project.0,
+            &g.player_id,
+            &ip,
+            &device,
+            &g.name,
+        )
+        .await
         {
             tracing::warn!(error = %e, "player_seen update failed");
         }
