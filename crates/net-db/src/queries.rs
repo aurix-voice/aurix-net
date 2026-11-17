@@ -1048,6 +1048,7 @@ pub async fn get_player_seen(
     .map_err(db_err)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn upsert_mark(
     pool: &DbPool,
     project_id: Uuid,
