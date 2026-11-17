@@ -8,6 +8,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 ## [Unreleased]
 
 ### Added
+- Bandwidth measurement for moving objects: `aurix-net-loadtest --objects N` (kB/s per client,
+  objects per delta), the `movers.wat` example logic and `scripts/objects.sh`; results for 100, 250
+  and 500 objects at 20 Hz in [testing.md](docs/testing.md).
 - Unity gameplay framework (`Aurix.Net.Unity.Framework`, `Runtime/Framework/`): host-authoritative
   netcode in the PurrNet/Mirror/FishNet mould over an Aurix relay room — `NetworkManager`
   (`StartHost`/`StartServer`/`StartClient`, prefab registry, `Spawn`/`Despawn`, ownership, tick),

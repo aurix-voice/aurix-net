@@ -112,6 +112,99 @@ Rule of thumb from this machine (release build, no TLS termination in front): on
 ≈ 750 sync players at 60 Hz, or ≈ 1 250 lockstep players at 60 Hz; RSS ≈ 70–200 KB per player.
 Memory, not CPU, is what grows with lockstep (journals + checkpoints per room).
 
+## Bandwidth per client: 100 / 250 / 500 moving objects at 20 Hz
+
+What one client receives when a sync room holds N objects that all move. `scripts/objects.sh` uploads
+`crates/net-game/examples/movers.wat` as the room logic: it keeps N server-owned entities and writes a
+new `pos` (vec3, range +-4096, step 0.01: 20 bits per axis) and `yaw` (range 0-360, step 0.1: 12 bits)
+on every entity on every tick. AOI is off (`aoi_cell: 0`), so every object is relevant to every client.
+That is the worst case for delta compression: nothing is ever unchanged and nothing is culled.
+
+Setup: one 8-vCPU cloud VM (Intel Xeon, Linux 6.8, KVM guest), release build, node pinned to two
+cores with `taskset`, bots (`aurix-net-loadtest --mode sync --tick-hz 20 --objects N`) on the other
+six, QUIC datagrams over loopback, Postgres and Redis from `deploy/docker-compose.dev.yml`, limits and
+socket buffers at defaults. 16 clients per room, each sends 20 inputs/s. Every step runs 40 s;
+bandwidth is taken over the last 30 s, node CPU, tick rate and the wire counters over 28 s inside
+them, after all clients joined and all objects were spawned. A step starts only when the rooms of the
+previous one are gone: they keep ticking for about 35 s after the bots leave (`player_ttl_secs` +
+`empty_ttl_secs`) and would otherwise be counted in the next step. "Payload" is the bytes of Aurix
+datagrams (link header + delta) counted by the bots; "on the wire" is the IP packets of the data port
+counted by nftables, so it includes QUIC, UDP and IP headers. 1 kB = 1000 bytes. One client of the run
+applies every delta to a local frame and reports how many objects it holds: N in every row below.
+
+Every step was run 3 times with `budget_bytes: 16000` and 4 times with the default budget, in a
+different order each time. Bandwidth came out within 0.5% and objects per delta the same in every
+run; node CPU did not, so it is given as the lowest and highest reading.
+
+Default `budget_bytes` (1100, one datagram per client per tick):
+
+| objects | payload down | on the wire down | objects per delta | refresh per object | node cores, 1 room x 16 | node cores, 10 rooms x 16 |
+|---|---|---|---|---|---|---|
+| 100 | 22.0 kB/s | 24.6 kB/s | 64 | 12.8 /s | 0.05-0.06 | 0.24-0.31 |
+| 250 | 22.0 kB/s | 24.6 kB/s | 64 | 5.1 /s | 0.05-0.07 | 0.29-0.38 |
+| 500 | 22.0 kB/s | 24.6 kB/s | 64 | 2.6 /s | 0.06-0.09 | 0.40-0.60 |
+
+The budget caps the stream at 1100 B x 20 = 22 kB/s per client whatever N is: a delta carries the
+64 objects with the highest priority and the rest wait for the next ticks, so more objects means each
+one is refreshed less often, not more traffic.
+
+`budget_bytes: 16000` (every object in every delta, 20 updates/s per object):
+
+| objects | payload down | on the wire down | objects per delta | node cores, 1 room x 16 | node cores, 10 rooms x 16 |
+|---|---|---|---|---|---|
+| 100 | 34.4 kB/s | 38.0 kB/s | 100 | 0.05-0.07 | 0.29-0.30 |
+| 250 | 85.4 kB/s | 90.4 kB/s | 250 | 0.07-0.09 | 0.48-0.49 |
+| 500 | 170.5 kB/s | 178.4 kB/s | 500 | 0.09-0.10 | 0.80-0.83 |
+
+That is 17 bytes per object per update with this schema (48-bit entity id, 72 bits of state, flags).
+A delta above 1100 bytes is split into several datagrams (2, 4 and 8 here).
+
+Upstream per client is 1.0 kB/s payload and 3.6 kB/s on the wire with the default budget (inputs and
+delta acks), 1.5 and 6.3 kB/s with `budget_bytes: 16000`. In all 42 runs behind the tables every
+client joined, clients saw 0 gaps in the delta sequence, the node counted 0 lost deltas
+(`net_sync_lost_deltas_total`) inside the measured window, and rooms ticked 20.0 times per second
+(19.9 in one of the three runs of 10 rooms x 500 objects at `budget_bytes: 16000`). Node RSS 57-113 MB
+with one room, 86-135 MB with ten. Mean tick time of the 500-object rooms: 1.3-2.5 ms with the default
+budget, 2.9-3.2 ms at `budget_bytes: 16000`, out of the 50 ms tick interval.
+
+The kernel dropped UDP datagrams on full socket buffers (`RcvbufErrors`, buffers at the Linux default
+of 212992 bytes) only in the 10-room steps at `budget_bytes: 16000`: 0-93 per run at 100 objects,
+2-208 at 250, 580-3023 at 500. Which socket dropped them and why no delta was reported lost is not
+verified.
+
+How far the CPU column can be trusted. It is the node process's CPU time from `/proc`, on a shared
+cloud VM:
+
+- The first pass of the six default-budget steps read 1.1 to 1.5 times higher than the other three
+  passes (10 rooms x 500 objects: 0.60 against 0.40, 0.42 and 0.43) at the same traffic and tick rate.
+  The cause is not verified.
+- The hypervisor takes cores away from the VM for part of the time (steal), by a different amount on
+  different cores and at different times. This kernel counts stolen time as CPU time of the process
+  that was on the core: a busy loop pinned to a core that lost 43% showed 3.0 s of CPU time for 1.7 s
+  of work. `scripts/objects.sh` prints `node_steal`, steal / (busy + steal) on the node's cores, for
+  every step. The runs behind the tables had the node on the two cores with the least steal at the
+  time: at most 3% in the 10-room steps except one run of the heaviest step with 7%. In one-room
+  steps the node is idle most of the time and the ratio is noise (0-47%).
+- With the node on two cores that lost 47-49% to steal, 10 rooms x 500 objects at
+  `budget_bytes: 16000` did not hold 20 Hz: 16.7 ticks/s, 16.5 deltas per client per second,
+  205.5 kB/s down, 108835 dropped UDP datagrams, a reading of 1.31 cores. The same step with the
+  default budget: 19.2 ticks/s, 887 drops, a reading of 0.90 cores. One run each; why the stream
+  grew while fewer deltas arrived is not verified.
+
+What this does not show: loopback has no loss, delay or MTU limits, so nothing here says how the
+fragmented deltas of the second table behave on a real network; bots and node share one machine, and
+that machine shares its host; objects that stand still or move on fewer axes cost less, and AOI
+removes what a client cannot see - neither is measured here. Reproduce (pick the node's cores by
+`node_steal`, repeat a step that shows more than a few percent):
+
+```bash
+# node started as: taskset -c 6,7 ./target/release/aurix-net-server
+export NODE_PID=<pid> NET_API_KEY=an_... WIRE=1 BOT_CPUS=0-5
+export STEPS="1x16@100 1x16@250 1x16@500 10x16@100 10x16@250 10x16@500"
+scripts/objects.sh
+BUDGET=16000 scripts/objects.sh
+```
+
 ## Soak (1 h, release build, two nodes, bots churning every 5 min)
 
 `scripts/soak-test.sh` runs relay (2 rooms × 8 players @ 20 ev/s, WS tunnel) and sync (1 room × 8 @ 20 Hz)

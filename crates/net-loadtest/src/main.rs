@@ -64,6 +64,13 @@ struct Cli {
     /// Drop this fraction of incoming datagrams on the client (simulated downstream loss).
     #[arg(long, default_value_t = 0.0)]
     drop_in: f64,
+    /// Sync with the `movers` example logic: ask each room for this many moving objects and
+    /// report bandwidth per client over the run minus --warmup-secs. Needs its schema in
+    /// --props-json. 0 = off.
+    #[arg(long, default_value_t = 0)]
+    objects: u16,
+    #[arg(long, default_value_t = 10)]
+    warmup_secs: u64,
 }
 
 #[derive(Default)]
@@ -86,6 +93,30 @@ struct Stats {
     dropped: AtomicU64,
     gaps: AtomicU64,
     acks: AtomicU64,
+    /// Sync: entity records in received deltas / entities in the frame of the first player
+    /// of room 0, which applies every delta (--objects).
+    entities: AtomicU64,
+    probe_entities: AtomicU64,
+}
+
+impl Stats {
+    /// (bytes in, bytes out, deltas, entity records)
+    fn traffic(&self) -> [u64; 4] {
+        [
+            self.bytes_in.load(Ordering::Relaxed),
+            self.bytes_out.load(Ordering::Relaxed),
+            self.received.load(Ordering::Relaxed),
+            self.entities.load(Ordering::Relaxed),
+        ]
+    }
+}
+
+/// Entity records in a delta payload (after the kind byte): the count follows the despawn list.
+fn delta_entities(d: &[u8]) -> u64 {
+    let Some(n) = d.get(8..10) else { return 0 };
+    let at = 10 + 6 * u16::from_be_bytes([n[0], n[1]]) as usize;
+    d.get(at..at + 2)
+        .map_or(0, |n| u16::from_be_bytes([n[0], n[1]]) as u64)
 }
 
 #[tokio::main]
@@ -198,6 +229,21 @@ async fn main() -> anyhow::Result<()> {
             }
         })
     };
+    let window = {
+        let stats = stats.clone();
+        let warmup = cli.warmup_secs.min(cli.duration_secs / 2);
+        let secs = cli.duration_secs - warmup;
+        tokio::spawn(async move {
+            tokio::time::sleep_until((start + Duration::from_secs(warmup)).into()).await;
+            let a = stats.traffic();
+            tokio::time::sleep(Duration::from_secs(secs)).await;
+            let b = stats.traffic();
+            (
+                secs as f64,
+                [b[0] - a[0], b[1] - a[1], b[2] - a[2], b[3] - a[3]],
+            )
+        })
+    };
     for t in tasks {
         let _ = t.await;
     }
@@ -289,6 +335,19 @@ async fn main() -> anyhow::Result<()> {
                         stats.gaps.load(Ordering::Relaxed),
                         stats.dropped.load(Ordering::Relaxed),
                         summarize_counter(&body, "net_sync_lost_deltas_total")
+                    );
+                }
+                if cli.objects > 0 {
+                    let (secs, [bin, bout, deltas, entities]) = window.await?;
+                    let per = secs * stats.joined.load(Ordering::Relaxed).max(1) as f64;
+                    println!(
+                        "objects: asked={} on client={} window={secs}s per client: down={:.2} kB/s up={:.2} kB/s deltas={:.1}/s objects per delta={:.1}",
+                        cli.objects,
+                        stats.probe_entities.load(Ordering::Relaxed),
+                        bin as f64 / per / 1000.0,
+                        bout as f64 / per / 1000.0,
+                        deltas as f64 / per,
+                        entities as f64 / deltas.max(1) as f64,
                     );
                 }
             }
@@ -442,6 +501,17 @@ async fn player(
         .run
         .wrapping_mul(1_000_003)
         .wrapping_add((room * 1000 + idx) as u64);
+    let probe = (cli.objects > 0 && room == 0 && idx == 0)
+        .then(|| {
+            let props: serde_json::Value = serde_json::from_str(&cli.props_json).ok()?;
+            let schema = net_wire::Schema::parse(props["schema"].as_str()?).ok()?;
+            Some(Arc::new(Mutex::new(net_sim::Frame::new(
+                schema,
+                Default::default(),
+                0,
+            ))))
+        })
+        .flatten();
     // Incoming datagrams -> link -> latency samples.
     let on_datagram = {
         let server_tick = server_tick.clone();
@@ -451,6 +521,7 @@ async fn player(
         let catchup = catchup.clone();
         let acks = acks.clone();
         let rng = Arc::new(AtomicU64::new(0x9E37_79B9_7F4A_7C15 ^ run_tag));
+        let probe = probe.clone();
         move |d: Bytes| {
             stats.bytes_in.fetch_add(d.len() as u64, Ordering::Relaxed);
             if drop_in > 0.0 {
@@ -473,6 +544,17 @@ async fn player(
                 if sync {
                     if m.payload[0] == net_api::sync::KIND_DELTA && m.payload.len() >= 9 {
                         stats.received.fetch_add(1, Ordering::Relaxed);
+                        stats
+                            .entities
+                            .fetch_add(delta_entities(&m.payload[1..]), Ordering::Relaxed);
+                        if let Some(f) = &probe {
+                            let mut f = f.lock();
+                            if net_replication::Replicator::apply(&mut f, &m.payload[1..]).is_ok() {
+                                stats
+                                    .probe_entities
+                                    .store(f.entities().count() as u64, Ordering::Relaxed);
+                            }
+                        }
                         let (t, base) = net_replication::delta_header(&m.payload[1..]).unwrap();
                         server_tick.store(t, Ordering::Relaxed);
                         let mut a = acks.lock();
@@ -653,7 +735,11 @@ async fn player(
                     _ => (0, -127),
                 };
             }
-            recent.push_back(vec![dir.0 as u8, dir.1 as u8, 0]);
+            recent.push_back(if cli.objects > 0 {
+                cli.objects.to_le_bytes().to_vec()
+            } else {
+                vec![dir.0 as u8, dir.1 as u8, 0]
+            });
             while recent.len() > net_api::sync::INPUT_REDUNDANCY {
                 recent.pop_front();
             }
