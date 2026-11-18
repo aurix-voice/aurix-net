@@ -7,6 +7,14 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-18
+
+One game-agnostic networking service (relay, sync and lockstep rooms in the same node) plus a
+deterministic simulation toolkit, SDKs for Web/Unity/C++/Godot, a beta Unreal Engine plugin, an
+operator console and a self-host deployment. Everything below is verified locally (see
+[docs/testing.md](docs/testing.md)) except the Unreal plugin, which has not been built with an
+engine yet.
+
 ### Added
 - Bandwidth measurement for moving objects: `aurix-net-loadtest --objects N` (kB/s per client,
   objects per delta), the `movers.wat` example logic and `scripts/objects.sh`; results for 100, 250
@@ -158,12 +166,6 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   `soak.yml`: nightly 10-minute two-node soak with RSS/overrun verdict and the CSV attached.
 - Docker job loads the built images into the daemon before the Trivy scan; the Godot
   GDExtension step builds `libaurix_net` first.
-
-## [0.1.0] — first release candidate
-
-One game-agnostic networking service — relay, sync and lockstep rooms in the same node — plus a
-deterministic simulation toolkit, SDKs for Web/Unity/C++/Godot, an operator console and a
-self-host deployment. Everything below is verified locally (see [docs/testing.md](docs/testing.md)).
 
 ### Node (`aurix-net-server`)
 - Transport: QUIC datagrams natively, WebTransport (HTTP/3) with a WebSocket binary fallback in
