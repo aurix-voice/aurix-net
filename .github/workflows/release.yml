@@ -74,6 +74,8 @@ jobs:
       - uses: actions/setup-node@v7
         with: { node-version: 22 }
       - run: cargo build --release --target wasm32-unknown-unknown -p net-sim-wasm
+      - name: licence text into the SDK folders
+        run: for d in web unity godot cpp; do cp LICENSE-APACHE "sdk/$d/LICENSE"; done
       - name: web package
         working-directory: sdk/web
         run: |

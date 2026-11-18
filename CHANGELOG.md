@@ -12,6 +12,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   SDK files in the `sdk` artifact, and the image job no longer uploads Docker build records. The
   0.1.0 run stopped at the checksum step on the `sdk/` folder; its GitHub Release was created by
   hand from the artifacts of that run.
+- `release.yml`: the Web npm package and the Unity, Godot and C++ archives now carry the Apache-2.0
+  licence text as `LICENSE`. The 0.1.0 SDK files were published without it.
 
 ## [0.1.0] - 2026-11-18
 
