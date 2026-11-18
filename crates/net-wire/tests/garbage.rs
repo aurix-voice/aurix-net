@@ -1,62 +1,36 @@
 //! Schema text and component codecs never panic on random input.
+
 use net_wire::bits::BitReader;
 use net_wire::schema::Schema;
 use net_wire::value::ComponentValue;
-fn rng(seed: u64) -> impl FnMut() -> u64 {
-    let mut s = seed | 1;
-    move || {
-        s ^= s << 13;
-        s ^= s >> 7;
-        s ^= s << 17;
-        s
-    }
-}
-fn garbage(r: &mut impl FnMut() -> u64, max: usize) -> Vec<u8> {
-    let n = (r() as usize) % (max + 1);
-    (0..n).map(|_| r() as u8).collect()
-}
-#[allow(dead_code)]
-fn mutate(r: &mut impl FnMut() -> u64, v: &[u8]) -> Vec<u8> {
-    let mut m = v.to_vec();
-    let k = 1 + (r() % 4) as usize;
-    for _ in 0..k {
-        if m.is_empty() {
-            break;
-        }
-        let i = (r() as usize) % m.len();
-        match r() % 3 {
-            0 => m[i] ^= 1 << (r() % 8),
-            1 => {
-                m.remove(i);
-            }
-            _ => m.insert(i, r() as u8),
-        }
-    }
-    m
-}
+use proptest::collection::vec;
+use proptest::prelude::*;
+use proptest::sample::select;
+
 const SCHEMA: &str = "component T {\n  pos: vec3 @range(-4096, 4096, 0.01)\n  rot: quat\n  name: string(16)\n  hp: u8\n  flags: bits(5)\n  blob: bytes(8)\n  f: f32\n  i: i32\n  b: bool\n  v2: vec2 @range(-10, 10, 0.1)\n}\n";
-#[test]
-fn schema_parse_survives_garbage_text() {
-    let mut r = rng(3);
-    let alphabet: &[u8] = b"component T{}:@range(),-.0123456789 \n\tabcxyz_vec3quatstringbitsbytesf32u8i16bool@owner_only@global";
-    for _ in 0..20_000 {
-        let n = (r() as usize) % 120;
-        let t: String = (0..n)
-            .map(|_| alphabet[(r() as usize) % alphabet.len()] as char)
-            .collect();
-        let _ = Schema::parse(&t);
-        let _ = Schema::parse(&String::from_utf8_lossy(&garbage(&mut r, 60)));
+
+/// Characters a schema is written with, so the text gets past the first token.
+const SCHEMA_CHARS: &[u8] = b"component T{}:@range(),-.0123456789 \n\tabcxyz_vec3quatstringbitsbytesf32u8i16bool@owner_only@global";
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(20_000))]
+
+    #[test]
+    fn schema_parse_survives_schema_like_text(text in vec(select(SCHEMA_CHARS), 0..120)) {
+        let _ = Schema::parse(&String::from_utf8_lossy(&text));
     }
-}
-#[test]
-fn component_codecs_survive_garbage_bits() {
-    let s = Schema::parse(SCHEMA).unwrap();
-    let c = s.component("T").unwrap();
-    let base = ComponentValue::zero(c);
-    let mut r = rng(5);
-    for _ in 0..20_000 {
-        let g = garbage(&mut r, 48);
-        let _ = ComponentValue::decode_full(c, &mut BitReader::new(&g));
-        let _ = ComponentValue::decode_delta(&base, c, &mut BitReader::new(&g));
+
+    #[test]
+    fn schema_parse_survives_garbage_text(bytes in vec(any::<u8>(), 0..=60)) {
+        let _ = Schema::parse(&String::from_utf8_lossy(&bytes));
+    }
+
+    #[test]
+    fn component_codecs_survive_garbage_bits(bits in vec(any::<u8>(), 0..=48)) {
+        let schema = Schema::parse(SCHEMA).unwrap();
+        let component = schema.component("T").unwrap();
+        let base = ComponentValue::zero(component);
+        let _ = ComponentValue::decode_full(component, &mut BitReader::new(&bits));
+        let _ = ComponentValue::decode_delta(&base, component, &mut BitReader::new(&bits));
     }
 }

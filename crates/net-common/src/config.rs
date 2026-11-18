@@ -306,9 +306,28 @@ impl NetConfig {
             }
         }
         for p in &self.server.trusted_proxies {
-            if crate::ipnet::IpNet::parse(p).is_none() {
+            if crate::ipnet::parse_net(p).is_none() {
                 return Err(NetError::Config(format!(
                     "server.trusted_proxies: bad entry {p}"
+                )));
+            }
+        }
+        for (name, limit) in [
+            ("http_rps_per_ip", self.limits.http_rps_per_ip),
+            (
+                "ws_connects_per_min_per_ip",
+                self.limits.ws_connects_per_min_per_ip,
+            ),
+            (
+                "auth_failures_per_min_per_ip",
+                self.limits.auth_failures_per_min_per_ip,
+            ),
+            ("writes_per_sec_per_key", self.limits.writes_per_sec_per_key),
+            ("grants_per_sec_per_key", self.limits.grants_per_sec_per_key),
+        ] {
+            if limit == 0 {
+                return Err(NetError::Config(format!(
+                    "limits.{name} must be at least 1"
                 )));
             }
         }

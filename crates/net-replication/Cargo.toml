@@ -13,3 +13,6 @@ net-common = { path = "../net-common" }
 net-wire = { path = "../net-wire" }
 net-sim = { path = "../net-sim" }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

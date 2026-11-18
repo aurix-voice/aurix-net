@@ -42,7 +42,7 @@ pub async fn ws_handler(
     if st.is_draining() {
         return (axum::http::StatusCode::SERVICE_UNAVAILABLE, "node draining").into_response();
     }
-    if !st.guards.ws_connects.allow(ip) || !st.guards.acquire_session(ip) {
+    if st.guards.ws_connects.check_key(&ip).is_err() || !st.guards.acquire_session(ip) {
         st.metrics.errors.with_label_values(&["rate_limited"]).inc();
         return (
             axum::http::StatusCode::TOO_MANY_REQUESTS,
@@ -231,7 +231,7 @@ impl Session {
                 let g = match self.st.grants.verify(&grant) {
                     Ok(g) => g,
                     Err(e) => {
-                        return Err(if self.st.guards.auth_fail.allow(self.ip) {
+                        return Err(if self.st.guards.auth_fail.check_key(&self.ip).is_ok() {
                             e
                         } else {
                             NetError::RateLimited

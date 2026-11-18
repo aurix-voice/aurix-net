@@ -1,67 +1,80 @@
 //! Attacker-facing decoders never panic on random or mutated input.
+
 use bytes::Bytes;
 use net_common::ActorId;
 use net_rooms::event::{CacheOp, EventFrame, EventTarget};
-fn rng(seed: u64) -> impl FnMut() -> u64 {
-    let mut s = seed | 1;
-    move || {
-        s ^= s << 13;
-        s ^= s >> 7;
-        s ^= s << 17;
-        s
-    }
+use proptest::collection::vec;
+use proptest::prelude::*;
+use proptest::sample::Index;
+
+fn event_frame() -> impl Strategy<Value = EventFrame> {
+    let target = prop_oneof![
+        Just(EventTarget::All),
+        Just(EventTarget::Others),
+        Just(EventTarget::Master),
+        vec(any::<u16>().prop_map(ActorId), 0..8).prop_map(EventTarget::Actors),
+    ];
+    let cache = prop_oneof![
+        Just(CacheOp::None),
+        Just(CacheOp::Add),
+        Just(CacheOp::Remove)
+    ];
+    (
+        any::<u8>(),
+        target,
+        cache,
+        any::<Option<u16>>(),
+        any::<u16>(),
+        vec(any::<u8>(), 0..=40),
+    )
+        .prop_map(|(code, target, cache, group, from, payload)| EventFrame {
+            code,
+            target,
+            cache,
+            group,
+            from: ActorId(from),
+            payload: Bytes::from(payload),
+        })
 }
-fn garbage(r: &mut impl FnMut() -> u64, max: usize) -> Vec<u8> {
-    let n = (r() as usize) % (max + 1);
-    (0..n).map(|_| r() as u8).collect()
+
+/// One to four single-byte edits of an encoding: a bit flip, a dropped byte or an inserted one.
+fn edits() -> impl Strategy<Value = Vec<(Index, u8, u8)>> {
+    vec((any::<Index>(), 0u8..3, any::<u8>()), 1..=4)
 }
-#[allow(dead_code)]
-fn mutate(r: &mut impl FnMut() -> u64, v: &[u8]) -> Vec<u8> {
-    let mut m = v.to_vec();
-    let k = 1 + (r() % 4) as usize;
-    for _ in 0..k {
-        if m.is_empty() {
+
+fn apply(edits: &[(Index, u8, u8)], encoded: &[u8]) -> Vec<u8> {
+    let mut bytes = encoded.to_vec();
+    for (at, kind, byte) in edits {
+        if bytes.is_empty() {
             break;
         }
-        let i = (r() as usize) % m.len();
-        match r() % 3 {
-            0 => m[i] ^= 1 << (r() % 8),
+        let i = at.index(bytes.len());
+        match kind {
+            0 => bytes[i] ^= 1 << (byte % 8),
             1 => {
-                m.remove(i);
+                bytes.remove(i);
             }
-            _ => m.insert(i, r() as u8),
+            _ => bytes.insert(i, *byte),
         }
     }
-    m
+    bytes
 }
-#[test]
-fn event_frame_decode_survives_garbage() {
-    let mut r = rng(7);
-    for _ in 0..20_000 {
-        let _ = EventFrame::decode(Bytes::from(garbage(&mut r, 64)));
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(20_000))]
+
+    #[test]
+    fn event_frame_decode_survives_garbage(bytes in vec(any::<u8>(), 0..=64)) {
+        let _ = EventFrame::decode(Bytes::from(bytes));
     }
-}
-#[test]
-fn event_frame_roundtrip_then_mutations() {
-    let mut r = rng(9);
-    for i in 0..2_000u32 {
-        let f = EventFrame {
-            code: i as u8,
-            target: EventTarget::Others,
-            cache: CacheOp::None,
-            group: if i.is_multiple_of(3) {
-                Some(i as u16)
-            } else {
-                None
-            },
-            from: ActorId((i % 7) as u16),
-            payload: Bytes::from(garbage(&mut r, 40)),
-        };
-        let enc = f.encode();
-        let back = EventFrame::decode(enc.clone()).expect("own encoding decodes");
-        assert_eq!((back.code, back.from), (f.code, f.from));
-        for _ in 0..5 {
-            let _ = EventFrame::decode(Bytes::from(mutate(&mut r, &enc)));
-        }
+
+    #[test]
+    fn event_frame_roundtrips(frame in event_frame()) {
+        prop_assert_eq!(EventFrame::decode(frame.encode()), Ok(frame));
+    }
+
+    #[test]
+    fn event_frame_decode_survives_a_mutated_encoding(frame in event_frame(), edits in edits()) {
+        let _ = EventFrame::decode(Bytes::from(apply(&edits, &frame.encode())));
     }
 }

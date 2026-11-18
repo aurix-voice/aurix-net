@@ -1,49 +1,19 @@
-//! Tiny IP/CIDR matcher (no extra dependency) for trusted proxies and SSRF checks.
+//! IP ranges for trusted proxies, API key allow-lists and SSRF checks.
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IpNet {
-    pub addr: IpAddr,
-    pub prefix: u8,
+pub use ::ipnet::IpNet;
+
+/// `"10.0.0.0/8"`, `"fd00::/8"`, or a single address such as `"192.168.1.5"`.
+pub fn parse_net(s: &str) -> Option<IpNet> {
+    let s = s.trim();
+    s.parse()
+        .ok()
+        .or_else(|| s.parse::<IpAddr>().ok().map(IpNet::from))
 }
 
-impl IpNet {
-    /// `"10.0.0.0/8"`, `"192.168.1.5"` (a /32), `"fd00::/8"`.
-    pub fn parse(s: &str) -> Option<Self> {
-        let (a, p) = match s.split_once('/') {
-            Some((a, p)) => (a.trim(), Some(p.trim().parse::<u8>().ok()?)),
-            None => (s.trim(), None),
-        };
-        let addr: IpAddr = a.parse().ok()?;
-        let max = if addr.is_ipv4() { 32 } else { 128 };
-        let prefix = p.unwrap_or(max);
-        (prefix <= max).then_some(Self { addr, prefix })
-    }
-
-    pub fn contains(&self, ip: IpAddr) -> bool {
-        match (self.addr, ip) {
-            (IpAddr::V4(n), IpAddr::V4(a)) => {
-                let m = if self.prefix == 0 {
-                    0
-                } else {
-                    u32::MAX << (32 - self.prefix)
-                };
-                (u32::from(n) & m) == (u32::from(a) & m)
-            }
-            (IpAddr::V6(n), IpAddr::V6(a)) => {
-                let m = if self.prefix == 0 {
-                    0
-                } else {
-                    u128::MAX << (128 - self.prefix)
-                };
-                (u128::from(n) & m) == (u128::from(a) & m)
-            }
-            (IpAddr::V4(_), IpAddr::V6(a)) => a
-                .to_ipv4_mapped()
-                .is_some_and(|v4| self.contains(IpAddr::V4(v4))),
-            _ => false,
-        }
-    }
+/// Whether `ip` is in `net`. An IPv4-mapped IPv6 address counts as the IPv4 address it carries.
+pub fn net_contains(net: &IpNet, ip: IpAddr) -> bool {
+    net.contains(&ip.to_canonical())
 }
 
 /// True for addresses a server may legitimately be asked to call: not loopback, private,
@@ -92,13 +62,14 @@ mod tests {
     use super::*;
     #[test]
     fn cidr_and_public() {
-        let n = IpNet::parse("10.0.0.0/8").unwrap();
-        assert!(n.contains("10.3.4.5".parse().unwrap()));
-        assert!(!n.contains("11.0.0.1".parse().unwrap()));
-        assert!(IpNet::parse("1.2.3.4")
-            .unwrap()
-            .contains("1.2.3.4".parse().unwrap()));
-        assert!(IpNet::parse("1.2.3.4/33").is_none());
+        let n = parse_net("10.0.0.0/8").unwrap();
+        assert!(net_contains(&n, "10.3.4.5".parse().unwrap()));
+        assert!(net_contains(&n, "::ffff:10.3.4.5".parse().unwrap()));
+        assert!(!net_contains(&n, "11.0.0.1".parse().unwrap()));
+        let one = parse_net("1.2.3.4").unwrap();
+        assert!(net_contains(&one, "1.2.3.4".parse().unwrap()));
+        assert!(!net_contains(&one, "1.2.3.5".parse().unwrap()));
+        assert!(parse_net("1.2.3.4/33").is_none());
         for bad in [
             "127.0.0.1",
             "10.1.1.1",

@@ -1,56 +1,43 @@
 //! Datagram headers, fragments, links and tickets never panic on garbage.
+
 use bytes::Bytes;
 use net_transport::fragment::Reassembler;
 use net_transport::link::Link;
 use net_transport::packet::Header;
 use net_transport::TicketSigner;
+use proptest::collection::vec;
+use proptest::prelude::*;
 use std::time::Instant;
-fn rng(seed: u64) -> impl FnMut() -> u64 {
-    let mut s = seed | 1;
-    move || {
-        s ^= s << 13;
-        s ^= s >> 7;
-        s ^= s << 17;
-        s
+
+fn datagram() -> impl Strategy<Value = Vec<u8>> {
+    vec(any::<u8>(), 0..=96)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(20_000))]
+
+    #[test]
+    fn header_and_ticket_decoders_survive_garbage(datagram in datagram()) {
+        let _ = Header::decode(Bytes::from(datagram.clone()));
+        let _ = TicketSigner::new(b"secret").verify(&datagram);
     }
 }
-fn garbage(r: &mut impl FnMut() -> u64, max: usize) -> Vec<u8> {
-    let n = (r() as usize) % (max + 1);
-    (0..n).map(|_| r() as u8).collect()
-}
-#[allow(dead_code)]
-fn mutate(r: &mut impl FnMut() -> u64, v: &[u8]) -> Vec<u8> {
-    let mut m = v.to_vec();
-    let k = 1 + (r() % 4) as usize;
-    for _ in 0..k {
-        if m.is_empty() {
-            break;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(200))]
+
+    /// One link and one reassembler take the whole burst, so state left by one datagram meets
+    /// the next.
+    #[test]
+    fn link_and_reassembler_survive_a_garbage_burst(burst in vec(datagram(), 0..200)) {
+        let now = Instant::now();
+        let mut link = Link::new(now);
+        let mut reassembler = Reassembler::default();
+        for datagram in burst {
+            let _ = reassembler.accept(Bytes::from(datagram.clone()), now);
+            let _ = link.receive(Bytes::from(datagram), now);
+            let _ = link.poll(now);
+            while link.next_outgoing().is_some() {}
         }
-        let i = (r() as usize) % m.len();
-        match r() % 3 {
-            0 => m[i] ^= 1 << (r() % 8),
-            1 => {
-                m.remove(i);
-            }
-            _ => m.insert(i, r() as u8),
-        }
-    }
-    m
-}
-#[test]
-fn transport_decoders_survive_garbage() {
-    let mut r = rng(29);
-    let now = Instant::now();
-    let mut link = Link::new(now);
-    let mut re = Reassembler::default();
-    let signer = TicketSigner::new(b"secret");
-    for _ in 0..20_000 {
-        let g = garbage(&mut r, 96);
-        let _ = Header::decode(Bytes::from(g.clone()));
-        let _ = re.accept(Bytes::from(g.clone()), now);
-        let _ = link.receive(Bytes::from(g.clone()), now);
-        let _ = signer.verify(&g);
-        let _ = link.poll(now);
-        while link.next_outgoing().is_some() {}
     }
 }

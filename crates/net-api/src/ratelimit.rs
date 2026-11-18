@@ -7,60 +7,33 @@ use axum::http::{HeaderMap, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use dashmap::DashMap;
+use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
 use net_common::config::LimitsConfig;
-use net_common::ipnet::IpNet;
-use std::hash::Hash;
+use net_common::ipnet::{net_contains, parse_net, IpNet};
 use std::net::{IpAddr, SocketAddr};
-use std::time::Instant;
+use std::num::NonZeroU32;
 
-pub struct Buckets<K: Eq + Hash> {
-    map: DashMap<K, (f64, Instant)>,
-    per_sec: f64,
-    burst: f64,
+pub type Limiter<K> = DefaultKeyedRateLimiter<K>;
+
+fn at_least_one(n: u32) -> NonZeroU32 {
+    NonZeroU32::new(n).unwrap_or(NonZeroU32::MIN)
 }
 
-impl<K: Eq + Hash + Clone> Buckets<K> {
-    pub fn new(per_sec: f64, burst: f64) -> Self {
-        Self {
-            map: DashMap::new(),
-            per_sec,
-            burst,
-        }
-    }
+/// `n` a second, in bursts of up to twice that.
+fn per_second(n: u32) -> Quota {
+    Quota::per_second(at_least_one(n)).allow_burst(at_least_one(n.saturating_mul(2)))
+}
 
-    /// Takes one token for `k`; false when the bucket is empty.
-    pub fn allow(&self, k: K) -> bool {
-        let now = Instant::now();
-        let mut e = self.map.entry(k).or_insert((self.burst, now));
-        let (tokens, last) = *e;
-        let t = (tokens + last.elapsed().as_secs_f64() * self.per_sec).min(self.burst);
-        if t >= 1.0 {
-            *e = (t - 1.0, now);
-            true
-        } else {
-            *e = (t, now);
-            false
-        }
-    }
-
-    /// Drops buckets idle long enough to be full again.
-    pub fn sweep(&self) {
-        let full_after = if self.per_sec > 0.0 {
-            self.burst / self.per_sec
-        } else {
-            600.0
-        };
-        self.map
-            .retain(|_, (_, last)| last.elapsed().as_secs_f64() < full_after + 1.0);
-    }
+fn per_minute(n: u32) -> Quota {
+    Quota::per_minute(at_least_one(n))
 }
 
 pub struct Guards {
-    pub http: Buckets<IpAddr>,
-    pub ws_connects: Buckets<IpAddr>,
-    pub auth_fail: Buckets<IpAddr>,
-    pub key_writes: Buckets<uuid::Uuid>,
-    pub key_grants: Buckets<uuid::Uuid>,
+    pub http: Limiter<IpAddr>,
+    pub ws_connects: Limiter<IpAddr>,
+    pub auth_fail: Limiter<IpAddr>,
+    pub key_writes: Limiter<uuid::Uuid>,
+    pub key_grants: Limiter<uuid::Uuid>,
     sessions: DashMap<IpAddr, u32>,
     max_sessions_per_ip: u32,
     pub trusted_proxies: Vec<IpNet>,
@@ -69,26 +42,14 @@ pub struct Guards {
 impl Guards {
     pub fn new(l: &LimitsConfig, trusted: &[String]) -> Self {
         Self {
-            http: Buckets::new(l.http_rps_per_ip as f64, 2.0 * l.http_rps_per_ip as f64),
-            ws_connects: Buckets::new(
-                l.ws_connects_per_min_per_ip as f64 / 60.0,
-                l.ws_connects_per_min_per_ip as f64,
-            ),
-            auth_fail: Buckets::new(
-                l.auth_failures_per_min_per_ip as f64 / 60.0,
-                l.auth_failures_per_min_per_ip as f64,
-            ),
-            key_writes: Buckets::new(
-                l.writes_per_sec_per_key as f64,
-                2.0 * l.writes_per_sec_per_key as f64,
-            ),
-            key_grants: Buckets::new(
-                l.grants_per_sec_per_key as f64,
-                2.0 * l.grants_per_sec_per_key as f64,
-            ),
+            http: RateLimiter::keyed(per_second(l.http_rps_per_ip)),
+            ws_connects: RateLimiter::keyed(per_minute(l.ws_connects_per_min_per_ip)),
+            auth_fail: RateLimiter::keyed(per_minute(l.auth_failures_per_min_per_ip)),
+            key_writes: RateLimiter::keyed(per_second(l.writes_per_sec_per_key)),
+            key_grants: RateLimiter::keyed(per_second(l.grants_per_sec_per_key)),
             sessions: DashMap::new(),
             max_sessions_per_ip: l.max_sessions_per_ip.max(1),
-            trusted_proxies: trusted.iter().filter_map(|p| IpNet::parse(p)).collect(),
+            trusted_proxies: trusted.iter().filter_map(|p| parse_net(p)).collect(),
         }
     }
 
@@ -113,15 +74,16 @@ impl Guards {
     }
 
     pub fn sweep(&self) {
-        self.http.sweep();
-        self.ws_connects.sweep();
-        self.auth_fail.sweep();
-        self.key_writes.sweep();
+        self.http.retain_recent();
+        self.ws_connects.retain_recent();
+        self.auth_fail.retain_recent();
+        self.key_writes.retain_recent();
+        self.key_grants.retain_recent();
     }
 
     /// Peer address, or the first `X-Forwarded-For` hop when the peer is a trusted proxy.
     pub fn client_ip(&self, peer: IpAddr, headers: &HeaderMap) -> IpAddr {
-        if self.trusted_proxies.iter().any(|n| n.contains(peer)) {
+        if self.trusted_proxies.iter().any(|n| net_contains(n, peer)) {
             if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
                 if let Some(ip) = xff.split(',').next().and_then(|s| s.trim().parse().ok()) {
                     return ip;
@@ -149,7 +111,7 @@ pub async fn http_guard(
     next: Next,
 ) -> Response {
     let ip = st.guards.client_ip(peer.ip(), req.headers());
-    if !st.guards.http.allow(ip) {
+    if st.guards.http.check_key(&ip).is_err() {
         st.metrics.errors.with_label_values(&["rate_limited"]).inc();
         return (StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
     }
@@ -161,7 +123,7 @@ pub async fn http_guard(
     // Failed REST auth (bad API key / operator token) shares the per-IP auth-failure budget
     // with WebSocket grant failures; once it is spent the caller sees 429 instead of 401,
     // so credential guessing cannot run at the general HTTP rate. Valid requests are untouched.
-    if resp.status() == StatusCode::UNAUTHORIZED && !st.guards.auth_fail.allow(ip) {
+    if resp.status() == StatusCode::UNAUTHORIZED && st.guards.auth_fail.check_key(&ip).is_err() {
         st.metrics
             .errors
             .with_label_values(&["auth_rate_limited"])
@@ -179,13 +141,13 @@ pub async fn http_guard(
 mod tests {
     use super::*;
     #[test]
-    fn bucket_refills() {
-        let b = Buckets::new(1000.0, 2.0);
-        assert!(b.allow(1u8));
-        assert!(b.allow(1u8));
-        assert!(!b.allow(1u8));
+    fn burst_is_twice_the_rate_per_second() {
+        let b: Limiter<u8> = RateLimiter::keyed(per_second(500));
+        assert!((0..1000).all(|_| b.check_key(&1).is_ok()));
+        assert!(b.check_key(&1).is_err());
+        assert!(b.check_key(&2).is_ok());
         std::thread::sleep(std::time::Duration::from_millis(5));
-        assert!(b.allow(1u8));
+        assert!(b.check_key(&1).is_ok());
     }
     #[test]
     fn xff_only_from_trusted_proxy() {

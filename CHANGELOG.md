@@ -7,6 +7,18 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 
 ## [Unreleased]
 
+### Changed
+- Dates: the node reads and writes dates as strict RFC 3339 through the `time` crate; its own
+  parser and formatter are gone. What clients see:
+  - webhook `at`, the usage and audit CSV exports and ban messages end in `Z`, as JSON already
+    did, and no longer in `+00:00`;
+  - the fraction of a second has as many digits as it needs (`.12`, not `.120`);
+  - request dates must be RFC 3339. `UTC` for the offset, an offset without the colon (`+0200`)
+    and unpadded numbers (`2026-1-5`) are refused.
+- Limits: a rate limit of `0` (`http_rps_per_ip`, `ws_connects_per_min_per_ip`,
+  `auth_failures_per_min_per_ip`, `writes_per_sec_per_key`, `grants_per_sec_per_key`) is refused
+  at start. It used to start a node that refused every request of that kind.
+
 ### Fixed
 - Unreal plugin: first build and run with an engine (UE 5.8.2, Linux). `RunUAT BuildPlugin` passes
   for the editor and the game (Development, Shipping), the packaged plugin loads, and a listen

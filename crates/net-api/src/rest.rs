@@ -9,6 +9,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use net_auth::api_key::{hash_key, looks_like_key, ApiKeyMaterial, Scope};
+use net_common::ipnet::{net_contains, parse_net};
 use net_common::{NetError, ProjectId, Result, RoomId};
 use net_db::models::ApiKeyRow;
 use net_db::queries;
@@ -17,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::net::IpAddr;
 use std::sync::{Arc, LazyLock};
+use time::macros::format_description;
 use uuid::Uuid;
 
 pub struct ApiError(NetError);
@@ -537,44 +539,31 @@ async fn op_billing(
         )
         .into_response()),
         Some("csv") => {
-            let mut csv = String::from(
-                "project_id,name,plan,player_minutes,room_minutes,bytes_in,bytes_out,rooms_created,cap_player_minutes,cap_bytes,deleted_at\n",
-            );
-            for r in &rows {
-                let cell = |k: &str| match &r[k] {
-                    Value::Null => String::new(),
-                    Value::String(s) => csv_cell(s),
-                    v => v.to_string(),
-                };
-                csv.push_str(&format!(
-                    "{},{},{},{},{},{},{},{},{},{},{}\n",
-                    cell("project_id"),
-                    cell("name"),
-                    cell("plan"),
-                    cell("player_minutes"),
-                    cell("room_minutes"),
-                    cell("bytes_in"),
-                    cell("bytes_out"),
-                    cell("rooms_created"),
-                    cell("cap_player_minutes"),
-                    cell("cap_bytes"),
-                    cell("deleted_at"),
-                ));
-            }
-            Ok((
-                [
-                    (
-                        axum::http::header::CONTENT_TYPE,
-                        "text/csv; charset=utf-8".to_string(),
-                    ),
-                    (
-                        axum::http::header::CONTENT_DISPOSITION,
-                        format!("attachment; filename=\"aurix-net-billing-{month}.csv\""),
-                    ),
-                ],
-                csv,
-            )
-                .into_response())
+            const COLUMNS: [&str; 11] = [
+                "project_id",
+                "name",
+                "plan",
+                "player_minutes",
+                "room_minutes",
+                "bytes_in",
+                "bytes_out",
+                "rooms_created",
+                "cap_player_minutes",
+                "cap_bytes",
+                "deleted_at",
+            ];
+            let records = rows.iter().map(|r| {
+                COLUMNS
+                    .iter()
+                    .map(|k| match &r[*k] {
+                        Value::Null => String::new(),
+                        Value::String(s) => s.clone(),
+                        v => v.to_string(),
+                    })
+                    .collect()
+            });
+            let file = format!("aurix-net-billing-{month}.csv");
+            Ok(csv_file(&file, &COLUMNS, records)?)
         }
         _ => Err(NetError::Invalid("format: json or csv".into()).into()),
     }
@@ -654,7 +643,7 @@ async fn audit_log(
 
 /// Per-key write budget (`limits.writes_per_sec_per_key`).
 fn key_write(st: &Shared, key: &ApiKeyRow) -> Result<()> {
-    if st.guards.key_writes.allow(key.id) {
+    if st.guards.key_writes.check_key(&key.id).is_ok() {
         Ok(())
     } else {
         reject(st, ProjectId::from_uuid(key.project_id), "rate_limited");
@@ -777,7 +766,7 @@ async fn op_rejections(
 
 /// Per-key grant budget (`limits.grants_per_sec_per_key`): one grant per player login.
 fn key_grant(st: &Shared, key: &ApiKeyRow) -> Result<()> {
-    if st.guards.key_grants.allow(key.id) {
+    if st.guards.key_grants.check_key(&key.id).is_ok() {
         Ok(())
     } else {
         reject(st, ProjectId::from_uuid(key.project_id), "rate_limited");
@@ -2090,31 +2079,15 @@ fn usage_out(
             Ok(Json(json!({"from": from, "to": to, "usage": rows})).into_response())
         }
         Some("csv") => {
-            let mut csv = String::with_capacity(rows.len() * 48 + 32);
-            csv.push_str("hour,metric,quantity\n");
-            for r in &rows {
-                csv.push_str(&format!(
-                    "{},{},{}\n",
+            let records = rows.iter().map(|r| {
+                vec![
                     r.hour.to_rfc3339(),
-                    r.metric,
-                    r.quantity
-                ));
-            }
+                    r.metric.to_string(),
+                    r.quantity.to_string(),
+                ]
+            });
             let file = format!("aurix-net-usage-{name}-{}-{}.csv", ymd(from), ymd(to));
-            Ok((
-                [
-                    (
-                        axum::http::header::CONTENT_TYPE,
-                        "text/csv; charset=utf-8".to_string(),
-                    ),
-                    (
-                        axum::http::header::CONTENT_DISPOSITION,
-                        format!("attachment; filename=\"{file}\""),
-                    ),
-                ],
-                csv,
-            )
-                .into_response())
+            csv_file(&file, &["hour", "metric", "quantity"], records)
         }
         Some(other) => Err(NetError::Invalid(format!("unknown format {other:?}"))),
     }
@@ -2160,11 +2133,9 @@ fn parse_cidrs(v: &[String]) -> Result<Vec<String>> {
                 let bits = if ip.is_ipv4() { 32 } else { 128 };
                 return Ok(format!("{ip}/{bits}"));
             }
-            net_common::ipnet::IpNet::parse(c)
-                .map(|_| c.to_string())
-                .ok_or_else(|| {
-                    NetError::Invalid(format!("allowed_cidrs: {c:?} is not an IP or CIDR"))
-                })
+            parse_net(c).map(|_| c.to_string()).ok_or_else(|| {
+                NetError::Invalid(format!("allowed_cidrs: {c:?} is not an IP or CIDR"))
+            })
         })
         .collect()
 }
@@ -2172,7 +2143,7 @@ fn parse_cidrs(v: &[String]) -> Result<Vec<String>> {
 fn cidr_allows(cidrs: &[String], ip: IpAddr) -> bool {
     cidrs
         .iter()
-        .any(|c| net_common::ipnet::IpNet::parse(c).is_some_and(|n| n.contains(ip)))
+        .any(|c| parse_net(c).is_some_and(|n| net_contains(&n, ip)))
 }
 
 fn key_expiry(secs: Option<u64>) -> Option<Timestamp> {
@@ -3445,26 +3416,51 @@ struct AuditQuery {
 
 /// `YYYYMMDD`, for file names.
 fn ymd(t: Timestamp) -> String {
-    format!("{:04}{:02}{:02}", t.year(), u8::from(t.month()), t.day())
+    t.format(format_description!("[year][month][day]"))
+        .expect("a UTC instant with a four-digit year")
 }
 
 /// `YYYYMMDDTHHMMSSZ`, for file names.
 fn compact(t: Timestamp) -> String {
-    format!(
-        "{}T{:02}{:02}{:02}Z",
-        ymd(t),
-        t.hour(),
-        t.minute(),
-        t.second()
-    )
+    t.format(format_description!(
+        "[year][month][day]T[hour][minute][second]Z"
+    ))
+    .expect("a UTC instant with a four-digit year")
 }
 
-fn csv_cell(s: &str) -> String {
-    if s.contains([',', '"', '\n', '\r']) {
-        format!("\"{}\"", s.replace('"', "\"\""))
-    } else {
-        s.to_string()
+/// The header, then one line per record.
+fn csv_bytes(header: &[&str], records: impl IntoIterator<Item = Vec<String>>) -> Result<Vec<u8>> {
+    let failed = |e: csv::Error| NetError::Internal(e.to_string());
+    let mut out = csv::Writer::from_writer(Vec::new());
+    out.write_record(header).map_err(failed)?;
+    for record in records {
+        out.write_record(&record).map_err(failed)?;
     }
+    out.into_inner()
+        .map_err(|e| NetError::Internal(e.to_string()))
+}
+
+/// A CSV download.
+fn csv_file(
+    file: &str,
+    header: &[&str],
+    records: impl IntoIterator<Item = Vec<String>>,
+) -> Result<Response> {
+    let body = csv_bytes(header, records)?;
+    Ok((
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/csv; charset=utf-8".to_string(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{file}\""),
+            ),
+        ],
+        body,
+    )
+        .into_response())
 }
 
 fn audit_out(
@@ -3475,34 +3471,28 @@ fn audit_out(
     match q.format.as_deref() {
         None | Some("json") => Ok(Json(json!({"audit": rows})).into_response()),
         Some("csv") => {
-            let mut csv = String::from("id,created_at,project_id,actor,action,target,details\n");
-            for r in &rows {
-                csv.push_str(&format!(
-                    "{},{},{},{},{},{},{}\n",
-                    r.id,
+            const HEADER: [&str; 7] = [
+                "id",
+                "created_at",
+                "project_id",
+                "actor",
+                "action",
+                "target",
+                "details",
+            ];
+            let records = rows.iter().map(|r| {
+                vec![
+                    r.id.to_string(),
                     r.created_at.to_rfc3339(),
                     r.project_id.map(|p| p.to_string()).unwrap_or_default(),
-                    csv_cell(&r.actor),
-                    csv_cell(&r.action),
-                    csv_cell(&r.target),
-                    csv_cell(&r.details.to_string()),
-                ));
-            }
+                    r.actor.clone(),
+                    r.action.clone(),
+                    r.target.clone(),
+                    r.details.to_string(),
+                ]
+            });
             let file = format!("aurix-net-audit-{}.csv", compact(Timestamp::now()));
-            Ok((
-                [
-                    (
-                        axum::http::header::CONTENT_TYPE,
-                        "text/csv; charset=utf-8".to_string(),
-                    ),
-                    (
-                        axum::http::header::CONTENT_DISPOSITION,
-                        format!("attachment; filename=\"{file}\""),
-                    ),
-                ],
-                csv,
-            )
-                .into_response())
+            csv_file(&file, &HEADER, records)
         }
         Some(other) => Err(NetError::Invalid(format!("unknown format {other:?}"))),
     }
@@ -3833,6 +3823,28 @@ async fn op_rooms(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_names_carry_compact_dates() {
+        let t = Timestamp::from_unix(1_767_582_247).expect("a date");
+        assert_eq!(ymd(t), "20260105");
+        assert_eq!(compact(t), "20260105T030407Z");
+    }
+
+    #[test]
+    fn csv_quotes_only_the_cells_that_need_it() {
+        let record = vec![
+            "7".to_string(),
+            String::new(),
+            "say \"hi\", ok".to_string(),
+            "{\"room\":\"a\"}".to_string(),
+        ];
+        let csv = csv_bytes(&["id", "project_id", "target", "details"], [record]).unwrap();
+        assert_eq!(
+            String::from_utf8(csv).unwrap(),
+            "id,project_id,target,details\n7,,\"say \"\"hi\"\", ok\",\"{\"\"room\"\":\"\"a\"\"}\"\n"
+        );
+    }
 
     #[test]
     fn node_is_stale_after_two_of_its_own_heartbeats() {

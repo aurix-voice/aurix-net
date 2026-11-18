@@ -156,3 +156,23 @@ async fn cancel_holds_against_a_matching_pass_already_running() {
         }
     }
 }
+
+#[tokio::test]
+async fn key_writes_are_cut_off_past_the_burst_and_come_back() {
+    let node = Node::start_with(&[("NET__LIMITS__WRITES_PER_SEC_PER_KEY", "2")]).await;
+    let p = node.project("mm-limit").await;
+    let ticket = |i: usize| {
+        p.api.post(
+            "/v1/matchmaking/tickets",
+            json!({"player_id": format!("p{i}"), "max_players": 8, "min_players": 8}),
+        )
+    };
+    // The burst is twice the rate.
+    for i in 0..4 {
+        assert_eq!(ticket(i).await.0, 200, "write {i}");
+    }
+    assert_eq!(ticket(4).await.0, 429);
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(ticket(5).await.0, 200);
+    assert_eq!(ticket(6).await.0, 429);
+}

@@ -43,12 +43,15 @@ pub fn redis_client(url: &str, ca_cert: &str) -> Result<redis::Client> {
     .map_err(|e| NetError::Redis(e.to_string()))
 }
 
-/// `redis://user:pw@host/` -> `redis://***@host/` for logs and errors.
+/// `redis://user:pw@host/` -> `redis://user:***@host/` for logs and errors.
 pub fn redact_url(url: &str) -> String {
-    match (url.find("//"), url.rfind('@')) {
-        (Some(i), Some(j)) if j > i + 2 => format!("{}***{}", &url[..i + 2], &url[j..]),
-        _ => url.to_string(),
+    let Some(mut url) = redis::parse_redis_url(url) else {
+        return "an address that is not a Redis URL".into();
+    };
+    if url.password().is_some() {
+        let _ = url.set_password(Some("***"));
     }
+    url.into()
 }
 
 impl RedisStore {
@@ -407,8 +410,13 @@ mod redact_tests {
     fn redacts_userinfo() {
         assert_eq!(
             super::redact_url("rediss://:secret@h:6390/"),
-            "rediss://***@h:6390/"
+            "rediss://:***@h:6390/"
+        );
+        assert_eq!(
+            super::redact_url("redis://app:p%40ss@h/"),
+            "redis://app:***@h/"
         );
         assert_eq!(super::redact_url("redis://h:6379/"), "redis://h:6379/");
+        assert!(!super::redact_url("h:6379 secret").contains("secret"));
     }
 }
