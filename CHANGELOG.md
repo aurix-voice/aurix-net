@@ -41,6 +41,20 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   players or changing room properties.
 - Node: a player who joins the room again with `spectator: true` keeps the player role in sync
   and lockstep rooms. Before this their inputs were dropped for the rest of the match.
+- Web and Unity SDKs: a reliable burst longer than 32 packets (a message over about 35 KB, or many
+  reliable sends in one frame) no longer ends the connection when one packet of it is lost. The
+  send window counted unacked packets instead of the span of their sequence numbers, so the node
+  could not acknowledge the retransmit and the client reported `link dead`.
+- Web and Unity SDKs: a client that leaves a room can join another one without reconnecting. The
+  second join reused the link state of the first room: in Web it failed with `data path timeout`,
+  in Unity it returned normally and reliable messages were then silently lost.
+- C++ SDK (and the copy the Godot extension builds with): a moved `Client` keeps its callbacks.
+  Moving one, for example into a `std::vector`, dropped `onData`, `onControl` and the rest, so the
+  game stopped receiving anything without an error.
+- Web SDK: `client.on("notice", ...)` compiles in TypeScript. The event was emitted but missing
+  from the type of `on`.
+- Godot SDK: the `event` signal no longer fires for sync and lockstep frames in rooms of those
+  modes. Only relay events reach it, as in the Web SDK.
 - Node: `create` on the control channel holds the seats listed in `reserved`, as REST room
   creation and `join_or_create` do. The field was ignored there.
 

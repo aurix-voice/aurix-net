@@ -17,7 +17,7 @@ namespace Aurix.Net.Managed
     public sealed class ManagedClient : IDisposable
     {
         ClientWebSocket _ws;
-        readonly Link _link = new Link();
+        Link _link = new Link();
         readonly ConcurrentQueue<object> _inbox = new ConcurrentQueue<object>();
         readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
         CancellationTokenSource _cts;
@@ -132,6 +132,8 @@ namespace Aurix.Net.Managed
             JoinedJson = joined;
             Actor = (int)Json.Num(joined, "actor");
             RoomMode = Json.Str(joined, "mode");
+            // Every join gets its own data path, and the node starts a fresh link on it.
+            _link = new Link(); _dataReady = false;
             var data = Json.Obj(joined, "data");
             if (Json.Bool(data, "ws_tunnel") == false) throw new NetException("node has the WebSocket tunnel disabled");
             var ticket = Convert.FromBase64String(Json.Str(data, "ticket"));

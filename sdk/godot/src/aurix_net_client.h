@@ -9,6 +9,8 @@ namespace godot {
 class AurixNetClient : public Node {
     GDCLASS(AurixNetClient, Node)
     aurix::net::Client client_;
+    bool relay_ = true; // mode of the joined room: sync and lockstep frames are not relay events
+    void note_mode();
     String last_error_;
     bool hooked_ = false;
     void hook();

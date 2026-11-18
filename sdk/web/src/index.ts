@@ -33,13 +33,13 @@ export interface RegionPick { region: string; endpoint: string; rttMs: number; c
 
 export class Client {
   private ws!: WebSocket; private link = new Link(); private timer?: ReturnType<typeof setInterval>;
-  private path?: DataPath; forceTunnel = false;
+  private path?: DataPath; private onReady?: () => void; forceTunnel = false;
   /** Which data path is in use after join(). */
   get dataPath() { return this.path?.kind; }
   private listeners = new Map<string, Listener[]>(); private waiters: ((m: any) => boolean)[] = []; private rpcSeq = 0;
   joined?: Joined; actor = -1;
 
-  on(ev: "control" | "data" | "event" | "ready" | "closed" | "rehost", fn: Listener) { (this.listeners.get(ev) ?? this.listeners.set(ev, []).get(ev)!).push(fn); return this; }
+  on(ev: "control" | "data" | "event" | "ready" | "closed" | "rehost" | "notice", fn: Listener) { (this.listeners.get(ev) ?? this.listeners.set(ev, []).get(ev)!).push(fn); return this; }
   private emit(ev: string, ...a: any[]) { for (const f of this.listeners.get(ev) ?? []) f(...a); }
 
   /** URL given to connect(), the grant and the last join message: what rejoin() needs. */
@@ -149,7 +149,9 @@ export class Client {
     this.joined = j; this.actor = j.actor;
     // open the data path: ticket as the first datagram/frame, wait for the server's empty ack
     const ticket = Uint8Array.from(atob(j.data.ticket), (c) => c.charCodeAt(0));
-    const ready = new Promise<void>((res, rej) => { const t = setTimeout(() => rej(new Error("data path timeout")), 10000); this.on("ready", () => { clearTimeout(t); res(); }); });
+    // every join gets its own data path, and the node starts a fresh link on it
+    this.stop(); const old = this.path; this.path = undefined; old?.close(); this.link = new Link();
+    const ready = new Promise<void>((res, rej) => { const t = setTimeout(() => { this.onReady = undefined; rej(new Error("data path timeout")); }, 10000); this.onReady = () => { clearTimeout(t); res(); }; });
     this.path = await this.openPath(j.data);
     this.path.send(ticket);
     this.timer = setInterval(() => { if (!this.link.poll()) { this.stop(); this.emit("closed", "link dead"); } this.flushLink(); }, 5);
@@ -161,7 +163,7 @@ export class Client {
     const recv: Received[] = this.link.receive(bytes);
     this.flushLink();
     for (const r of recv) {
-      if (r.payload.length === 0) { this.emit("ready"); continue; }
+      if (r.payload.length === 0) { const f = this.onReady; this.onReady = undefined; f?.(); this.emit("ready"); continue; }
       this.emit("data", r.channel, r.tick, r.payload);
       if (this.joined?.mode === "relay" || (r.payload[0] & 0xf0) !== 0x10 && (r.payload[0] & 0xf0) !== 0x20) {
         const f = decodeEvent(r.payload); if (f) this.emit("event", f);
@@ -179,8 +181,10 @@ export class Client {
         const writer = wt.datagrams.writable.getWriter();
         const reader = wt.datagrams.readable.getReader();
         (async () => { try { for (;;) { const { value, done } = await reader.read(); if (done) break; this.onDatagram(value); } } catch { /* closed */ } })();
-        wt.closed.then(() => { this.stop(); this.emit("closed", "webtransport closed"); }, () => { this.stop(); this.emit("closed", "webtransport error"); });
-        return { kind: "webtransport", send: (b) => { writer.write(b).catch(() => {}); }, close: () => wt.close() };
+        const path: DataPath = { kind: "webtransport", send: (b) => { writer.write(b).catch(() => {}); }, close: () => wt.close() };
+        const gone = (why: string) => { if (this.path === path) { this.stop(); this.emit("closed", why); } };
+        wt.closed.then(() => gone("webtransport closed"), () => gone("webtransport error"));
+        return path;
       } catch (e) {
         // fall through to the tunnel
       }

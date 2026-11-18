@@ -8,11 +8,12 @@ using namespace aurix::net;
 int main() {
     const char* key = std::getenv("NET_API_KEY"); if (!key) { std::fprintf(stderr, "NET_API_KEY missing\n"); return 2; }
     const char* env = std::getenv("NET_HTTP"); std::string http = env ? env : "http://127.0.0.1:8090";
-    Client a, b; a.connect(http, Client::issueGrant(http, key, "cpp-a", "A")); b.connect(http, Client::issueGrant(http, key, "cpp-b", "B"), true);
+    Client a, b0; a.connect(http, Client::issueGrant(http, key, "cpp-a", "A")); b0.connect(http, Client::issueGrant(http, key, "cpp-b", "B"), true);
+    int hello = 0, ticks = 0;
+    b0.onData = [&](Channel, uint16_t, const uint8_t* d, size_t n) { EventFrame f; if (EventFrame::decode(d, n, f)) { if (f.code == 1) hello++; else if (f.code == 2) ticks++; } };
+    Client b(std::move(b0)); // a moved client keeps its callbacks
     std::string room = "cpp-echo-" + std::to_string(getpid());
     a.joinOrCreate(room, Mode::Relay, 4); b.joinOrCreate(room, Mode::Relay, 4);
-    int hello = 0, ticks = 0;
-    b.onData = [&](Channel, uint16_t, const uint8_t* d, size_t n) { EventFrame f; if (EventFrame::decode(d, n, f)) { if (f.code == 1) hello++; else if (f.code == 2) ticks++; } };
     const uint8_t hi[] = "hello"; a.sendEvent(1, hi, 5, Target::Others, true);
     for (uint8_t i = 0; i < 10; i++) { a.sendEvent(2, &i, 1); a.flush(); std::this_thread::sleep_for(std::chrono::milliseconds(16)); }
     for (int s = 0; s < 300 && !(hello && ticks == 10); s++) { b.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }

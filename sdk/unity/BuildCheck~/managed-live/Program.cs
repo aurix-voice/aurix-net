@@ -108,7 +108,21 @@ class P
         Console.WriteLine($"lockstep: A ticks={journals[0].Count} B ticks={journals[1].Count} C ticks={journals[2].Count} from {cStart} (restores={restores}, checkpoint reqs answered={ckReqs}) A==B on {cmpAB}: {sameAB}, A==C on {cmpAC}: {sameAC}, C contiguous: {contiguousC}, dropped={ls[0].Dropped + ls[1].Dropped + ls[2].Dropped}");
         bool lsOk = journals[0].Count > 150 && sameAB && sameAC && contiguousC && cmpAC > 60 && restores >= 1;
         foreach (var c in clients) { await c.LeaveAsync(); c.Dispose(); }
-        bool ok = lsOk && schemaOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60;
+        // leave a room and join another one on the same client
+        var ra = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-ra"));
+        var rb = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-rb"));
+        await ra.JoinOrCreateAsync(room + "-first", "relay", 8);
+        for (int i = 0; i < 5; i++) ra.SendEvent(1, new byte[] { (byte)i }, Target.All, reliable: true);
+        until = DateTime.UtcNow.AddMilliseconds(300); while (DateTime.UtcNow < until) { ra.Poll(); await Task.Delay(5); }
+        await ra.LeaveAsync();
+        until = DateTime.UtcNow.AddMilliseconds(300); while (DateTime.UtcNow < until) { ra.Poll(); await Task.Delay(5); }
+        int again = 0; rb.OnEvent += f => { if (f.Code == 2) again++; };
+        await ra.JoinOrCreateAsync(room + "-second", "relay", 8); await rb.JoinAsync(room + "-second");
+        for (int i = 0; i < 5; i++) ra.SendEvent(2, new byte[] { (byte)i }, Target.Others, reliable: true);
+        until = DateTime.UtcNow.AddSeconds(3); while (DateTime.UtcNow < until && again < 5) { ra.Poll(); rb.Poll(); await Task.Delay(5); }
+        Console.WriteLine($"second room on the same client: reliable={again}/5");
+        ra.Dispose(); rb.Dispose();
+        bool ok = lsOk && schemaOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");
         return ok ? 0 : 1;
     }

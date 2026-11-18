@@ -60,7 +60,10 @@ public:
 
     Client() = default;
     Client(const Client&) = delete; Client& operator=(const Client&) = delete;
-    Client(Client&& o) noexcept : h_(o.h_), actor_(o.actor_) { o.h_ = nullptr; }
+    Client(Client&& o) noexcept
+        : onControl(std::move(o.onControl)), onNotice(std::move(o.onNotice)), onRehost(std::move(o.onRehost)),
+          onData(std::move(o.onData)), onDataReady(std::move(o.onDataReady)), onClosed(std::move(o.onClosed)),
+          h_(o.h_), actor_(o.actor_) { o.h_ = nullptr; o.actor_ = -1; }
     ~Client() { destroy(); }
 
     static std::string version() { return aurix_net_version(); }

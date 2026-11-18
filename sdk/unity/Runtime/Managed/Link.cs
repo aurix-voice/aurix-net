@@ -103,7 +103,8 @@ namespace Aurix.Net.Managed
         void Pump(double now)
         {
             foreach (var s in _streams.Values)
-                while (s.Pending.Count > 0 && s.InFlight.Count < Window)
+                // Bound the span of unacked seqs, not their count: the peer can only ack 32 seqs behind the newest it has seen.
+                while (s.Pending.Count > 0 && (ushort)(s.TxSeq - (s.InFlight.Count > 0 ? s.InFlight[0].Seq : s.TxSeq)) < Window)
                 {
                     var payload = s.Pending.Dequeue(); ushort seq = s.TxSeq++;
                     s.InFlight.Add(new InFlight { Seq = seq, Payload = payload, SentAt = now, Retries = 0 });

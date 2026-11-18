@@ -76,7 +76,8 @@ export class Link {
   }
   private pump(now: number) {
     for (const s of this.streams.values()) {
-      while (s.tx.pending.length && s.tx.inFlight.length < WINDOW) {
+      // bound the span of unacked seqs, not their count: the peer can only ack 32 seqs behind the newest it has seen
+      while (s.tx.pending.length && ((s.tx.seq - (s.tx.inFlight[0]?.seq ?? s.tx.seq)) & 0xffff) < WINDOW) {
         const payload = s.tx.pending.shift()!; const seq = s.tx.seq; s.tx.seq = (s.tx.seq + 1) & 0xffff;
         s.tx.inFlight.push({ seq, payload, sentAt: now, retries: 0 });
         this.push(this.header(s.kind, seq), payload);

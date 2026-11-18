@@ -298,8 +298,32 @@ static class Program
         Check(Math.Sqrt((st.X - 7.5) * (st.X - 7.5) + (st.Y - 0.5) * (st.Y - 0.5)) < 0.5, "nav: agent reached the goal (" + st.X.ToString("F2") + "," + st.Y.ToString("F2") + ")");
     }
 
+    // One packet of a 60 KB message is lost: the retransmit must still be acked and the message arrive.
+    static void LinkTests()
+    {
+        var a = new Link(); var b = new Link();
+        var msg = new byte[60000]; for (int i = 0; i < msg.Length; i++) msg[i] = (byte)(i % 251);
+        bool lost = false, alive = true; byte[] got = null;
+        a.Send(Channel.Reliable, msg);
+        var until = DateTime.UtcNow.AddSeconds(8);
+        while (got == null && alive && DateTime.UtcNow < until)
+        {
+            while (a.TryDequeueOutgoing(out var d))
+            {
+                // lose the first transmission of the first fragment packet (kind 3, not ack-only)
+                if (!lost && (d[1] & 0x1f) == 3 && (d[1] & 0x80) == 0) { lost = true; continue; }
+                foreach (var r in b.Receive(d)) got = r.Payload;
+            }
+            while (b.TryDequeueOutgoing(out var d)) a.Receive(d);
+            System.Threading.Thread.Sleep(5);
+            alive = a.Poll();
+        }
+        Check(lost && alive && got != null && got.SequenceEqual(msg), "link: a lost packet in a burst longer than the ack window is retransmitted");
+    }
+
     static int Main()
     {
+        LinkTests();
         try { SimTests(); }
         catch (DllNotFoundException)
         {

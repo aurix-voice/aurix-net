@@ -44,7 +44,8 @@ void AurixNetClient::hook() {
     client_.onData = [this](aurix::net::Channel ch, uint16_t tick, const uint8_t *d, size_t n) {
         emit_signal("data", (int)ch, (int)tick, to_pba(d, n));
         aurix::net::EventFrame f;
-        if (aurix::net::EventFrame::decode(d, n, f)) emit_signal("event", (int)f.code, (int)f.from, to_pba(f.payload, f.len));
+        const bool service = n > 0 && ((d[0] & 0xf0) == 0x10 || (d[0] & 0xf0) == 0x20);
+        if ((relay_ || !service) && aurix::net::EventFrame::decode(d, n, f)) emit_signal("event", (int)f.code, (int)f.from, to_pba(f.payload, f.len));
     };
 }
 
@@ -53,11 +54,17 @@ void AurixNetClient::hook() {
 bool AurixNetClient::connect_to(const String &http_url, const String &grant, bool force_tunnel) {
     AURIX_TRY(client_.connect(to_std(http_url), to_std(grant), force_tunnel); hook(); return true, false);
 }
+void AurixNetClient::note_mode() {
+    const std::string j = client_.joinedJson();
+    const size_t at = j.find("\"mode\"");
+    const std::string mode = at == std::string::npos ? std::string() : j.substr(at + 6, 16);
+    relay_ = mode.find("sync") == std::string::npos && mode.find("lockstep") == std::string::npos;
+}
 int AurixNetClient::join_or_create(const String &room, int mode, int max_players, const String &props_json) {
-    AURIX_TRY(return client_.joinOrCreate(to_std(room), (aurix::net::Mode)mode, max_players, to_std(props_json)), -1);
+    AURIX_TRY(const int actor = client_.joinOrCreate(to_std(room), (aurix::net::Mode)mode, max_players, to_std(props_json)); note_mode(); return actor, -1);
 }
 int AurixNetClient::join(const String &room, const String &schema_hash) {
-    AURIX_TRY(return client_.join(to_std(room), to_std(schema_hash)), -1);
+    AURIX_TRY(const int actor = client_.join(to_std(room), to_std(schema_hash)); note_mode(); return actor, -1);
 }
 bool AurixNetClient::send_control(const String &json) { AURIX_TRY(client_.sendControl(to_std(json)); return true, false); }
 bool AurixNetClient::send_event(int code, const PackedByteArray &payload, int target, bool reliable) {

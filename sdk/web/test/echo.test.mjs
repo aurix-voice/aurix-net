@@ -40,3 +40,22 @@ test("relay echo over ws tunnel", { skip: !key }, async () => {
   assert.ok(bData.some((d) => d.channel === 2) && got.some((f) => f.code === 4 && f.payload[0] === 9), "reliable-unordered event");
   a.leave(); a.close(); b.close();
 });
+
+test("leave and join another room on the same client", { skip: !key }, async () => {
+  const a = await Client.connect(http, await grant("web-a"));
+  const b = await Client.connect(http, await grant("web-b"));
+  await a.joinOrCreate(`web-first-${process.pid}`, "relay", 4);
+  for (let i = 0; i < 5; i++) a.sendEvent(1, new Uint8Array([i]), "all", true);
+  await new Promise((r) => setTimeout(r, 300));
+  a.leave();
+  await new Promise((r) => setTimeout(r, 300));
+  const room = `web-second-${process.pid}`;
+  await a.joinOrCreate(room, "relay", 4);
+  await b.joinOrCreate(room, "relay", 4);
+  const got = []; b.on("event", (f) => got.push(f));
+  for (let i = 0; i < 5; i++) a.sendEvent(2, new Uint8Array([i]), "others", true);
+  const t0 = Date.now();
+  while (Date.now() - t0 < 3000 && got.length < 5) await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(got.map((f) => f.payload[0]), [0, 1, 2, 3, 4]);
+  a.close(); b.close();
+});
