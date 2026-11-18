@@ -24,6 +24,25 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   - `build_native.sh` stages `libaurix_net.so` next to the module binaries on Linux, so a packaged
     plugin loads.
   Still beta: other engine versions and platforms are not built.
+- Node: when an offline player's slot expired (`player_ttl_secs`, 30 s by default), the sweep
+  removed the sessions of the players who stayed instead of the one who left. The rest of the room
+  got `session_replaced` and `bad data ticket`, and `player.left` webhooks named the wrong actors.
+  Present in 0.1.0.
+- Node: a banned player (by id, IP or device) and a player of a suspended project are refused on
+  every way into a room. Before this the checks ran only on `create`, so `join` let them in.
+- Node: `rejoin_actor` no longer skips the `join.validate` webhook and the concurrent player cap
+  for a player who holds no slot in the room.
+- Node: a grant limited to one room is held to it by `create` and `join_random` too, not only by
+  `join` and `join_or_create`.
+- Node: after a kick the player's next command no longer fails with `session_replaced`; after a
+  room is closed its players can create or join another room, and their disconnect no longer puts
+  the closed room back into the room list.
+- Rooms: `set_master` refuses a spectator (`forbidden`), so a spectator cannot end up kicking
+  players or changing room properties.
+- Node: a player who joins the room again with `spectator: true` keeps the player role in sync
+  and lockstep rooms. Before this their inputs were dropped for the rest of the match.
+- Node: `create` on the control channel holds the seats listed in `reserved`, as REST room
+  creation and `join_or_create` do. The field was ignored there.
 
 ### CI
 - `release.yml`: the Web npm tarball is packed to the workspace root, so it sits beside the other
@@ -32,6 +51,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   hand from the artifacts of that run.
 - `release.yml`: the Web npm package and the Unity, Godot and C++ archives now carry the Apache-2.0
   licence text as `LICENSE`. The 0.1.0 SDK files were published without it.
+- `cargo test` starts a real node (`crates/net-server/tests`) and checks who may enter a room and
+  what a kick, a closed room and an expired offline slot do to the other sessions: the seven node
+  fixes above each have a test that fails without the fix. Needs the development Postgres and
+  Redis, which the `rust` job already runs.
 
 ## [0.1.0] - 2026-11-18
 

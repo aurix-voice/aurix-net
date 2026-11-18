@@ -32,3 +32,9 @@ serde_json = { workspace = true }
 futures = { workspace = true }
 uuid = { workspace = true }
 mimalloc = "0.1"
+
+[dev-dependencies]
+net-client = { path = "../net-client" }
+tokio-tungstenite = { workspace = true }
+reqwest = { workspace = true }
+bytes = { workspace = true }

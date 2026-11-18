@@ -150,6 +150,8 @@ pub enum RoomError {
     PlayerEventRate,
     #[error("spectators cannot send")]
     Spectator,
+    #[error("a spectator cannot be the master client")]
+    SpectatorMaster,
     #[error("properties too large")]
     PropsTooLarge,
     #[error("expected values did not match")]
@@ -221,6 +223,13 @@ impl Room {
     }
     pub fn player(&self, a: ActorId) -> Option<&Player> {
         self.players.get(&a)
+    }
+    /// Actor of `player_id` if that player holds a slot in this room, online or not.
+    pub fn actor_of(&self, player_id: &str) -> Option<ActorId> {
+        self.by_player
+            .get(player_id)
+            .copied()
+            .filter(|a| self.players.contains_key(a))
     }
     /// Actor of `player_id` if that player is currently online in this room.
     pub fn online_actor(&self, player_id: &str) -> Option<ActorId> {
@@ -682,8 +691,10 @@ impl Room {
         if self.master != Some(by) {
             return Err(RoomError::NotMaster);
         }
-        if !self.players.contains_key(&target) {
-            return Err(RoomError::NoActor);
+        match self.players.get(&target) {
+            None => return Err(RoomError::NoActor),
+            Some(p) if p.spectator => return Err(RoomError::SpectatorMaster),
+            Some(_) => {}
         }
         self.master = Some(target);
         Ok(self.broadcast_all(ServerMsg::MasterChanged { actor: target }))
@@ -937,9 +948,12 @@ mod tests {
             .unwrap();
         assert_eq!(a, a2);
         r.leave(a, true, t);
+        assert_eq!(r.actor_of("p1"), Some(a));
+        assert_eq!(r.online_actor("p1"), None);
         assert!(r.expire(t + Duration::from_secs(5)).is_empty());
         r.expire(t + Duration::from_secs(11));
         assert!(r.is_empty());
+        assert_eq!(r.actor_of("p1"), None);
         assert!(r.should_close(t + Duration::from_secs(17)));
     }
 
@@ -1067,6 +1081,8 @@ mod tests {
             .unwrap_err(),
             RoomError::Spectator
         );
+        assert_eq!(r.set_master(a, s).unwrap_err(), RoomError::SpectatorMaster);
+        assert_eq!(r.master(), Some(a));
         r.leave(a, false, t);
         assert_ne!(r.master(), Some(s));
     }

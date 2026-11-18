@@ -8,6 +8,7 @@ Redis). Build once: `cargo build --release`. Create a project and key with the o
 | What | Command | Expect |
 |---|---|---|
 | unit + integration | `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings` | green |
+| join and session rules on a real node | `cargo test -p net-server` (starts its own nodes on free ports; needs the dev Postgres + Redis) | green |
 | relay load | `aurix-net-loadtest --mode relay --rooms 100 --players 10 --rate 20` | loss < 1%, p99 < 10 ms (release) |
 | relay via WebSocket tunnel / WebTransport | add `--tunnel` / `--webtransport` | same, slightly higher latency |
 | sync (built-in arena) | `--mode sync --rooms 4 --players 64 --tick-hz 60` | server tick p99 <= 8 ms, ~60 deltas/s/player |

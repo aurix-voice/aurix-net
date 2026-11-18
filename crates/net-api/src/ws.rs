@@ -208,7 +208,22 @@ impl Session {
         if let Some(r) = &self.room {
             let mine = self.owns_slot(&r.hosted.lock(), r.actor);
             if !mine {
-                return Err(self.replaced());
+                // The slot is gone (taken over, kicked, room closed). Only a message meant for
+                // that room is refused; the session is free to create or join another one.
+                let e = self.replaced();
+                if matches!(
+                    msg,
+                    ClientMsg::SetRoomProps { .. }
+                        | ClientMsg::SetPlayerProps { .. }
+                        | ClientMsg::Event { .. }
+                        | ClientMsg::SetGroups { .. }
+                        | ClientMsg::CacheSlice { .. }
+                        | ClientMsg::SetView { .. }
+                        | ClientMsg::SetMaster { .. }
+                        | ClientMsg::Kick { .. }
+                ) {
+                    return Err(e);
+                }
             }
         }
         match msg {
@@ -311,10 +326,12 @@ impl Session {
                 lobby_props,
                 region,
                 player_props,
+                reserved,
             } => {
                 let g = self.grant()?.clone();
                 self.ensure_not_in_room()?;
                 let name = name.unwrap_or_else(short_id);
+                self.check_room_scope(&g, &name)?;
                 let h = self
                     .create_room(
                         &g,
@@ -326,7 +343,7 @@ impl Session {
                         props,
                         lobby_props,
                         region,
-                        Vec::new(),
+                        reserved,
                     )
                     .await?;
                 self.join_hosted(h, player_props, None, false).await
@@ -448,11 +465,14 @@ impl Session {
                     filter.iter().all(|(k, v)| props.get(k) == Some(v))
                         && expr.as_ref().is_none_or(|f| f.matches(lobby))
                 };
+                // A grant limited to one room may only land in that room.
+                let in_scope = |name: &str| g.room.as_deref().is_none_or(|r| r == name);
                 // Local rooms first (no redirect), then the region-wide list from Redis.
                 let mut local: Vec<net_control::LiveRoom> = Vec::new();
                 for h in self.st.host.all() {
                     let r = h.lock();
-                    if r.project != g.project || !r.room.is_listed() {
+                    if r.project != g.project || !r.room.is_listed() || !in_scope(&r.room.cfg.name)
+                    {
                         continue;
                     }
                     let lobby: Map<String, Value> = r.room.summary().props.into_iter().collect();
@@ -492,6 +512,7 @@ impl Session {
                             && r.open
                             && r.visible
                             && r.players < r.max_players
+                            && in_scope(&r.name)
                             && filter.is_empty()
                             && expr
                                 .as_ref()
@@ -709,6 +730,56 @@ impl Session {
         Ok(())
     }
 
+    /// Refuses suspended projects and banned players (by id, IP or device) and records where the
+    /// player was last seen. Every way into a room goes through here.
+    async fn admit(&self, g: &Grant) -> Result<net_db::models::ProjectRow> {
+        let project = queries::get_project(&self.st.pool, g.project.0).await?;
+        if project.disabled_at.is_some() {
+            crate::rest::reject(&self.st, g.project, "suspended");
+            return Err(NetError::Forbidden("project disabled".into()));
+        }
+        if let Some(b) = queries::get_ban(&self.st.pool, g.project.0, &g.player_id).await? {
+            crate::rest::reject(&self.st, g.project, "banned");
+            return Err(NetError::Forbidden(crate::rest::ban_message(&b)));
+        }
+        let device: String = g
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("device"))
+            .and_then(|d| d.as_str())
+            .unwrap_or("")
+            .chars()
+            .take(128)
+            .collect();
+        let ip = if self.ip.is_unspecified() {
+            String::new()
+        } else {
+            self.ip.to_string()
+        };
+        for (kind, value) in [("ip", ip.as_str()), ("device", device.as_str())] {
+            if value.is_empty() {
+                continue;
+            }
+            if let Some(m) = queries::active_mark(&self.st.pool, g.project.0, kind, value).await? {
+                crate::rest::reject(&self.st, g.project, "banned");
+                return Err(NetError::Forbidden(crate::rest::mark_message(&m)));
+            }
+        }
+        if let Err(e) = queries::touch_player_seen(
+            &self.st.pool,
+            g.project.0,
+            &g.player_id,
+            &ip,
+            &device,
+            &g.name,
+        )
+        .await
+        {
+            tracing::warn!(error = %e, "player_seen update failed");
+        }
+        Ok(project)
+    }
+
     async fn lobby_rooms(&self, project: ProjectId) -> Vec<RoomSummary> {
         match self.st.redis.list_rooms(project).await {
             Ok(live) => live
@@ -817,50 +888,7 @@ impl Session {
                 )));
             }
         }
-        let project = queries::get_project(&self.st.pool, g.project.0).await?;
-        if project.disabled_at.is_some() {
-            crate::rest::reject(&self.st, g.project, "suspended");
-            return Err(NetError::Forbidden("project disabled".into()));
-        }
-        if let Some(b) = queries::get_ban(&self.st.pool, g.project.0, &g.player_id).await? {
-            crate::rest::reject(&self.st, g.project, "banned");
-            return Err(NetError::Forbidden(crate::rest::ban_message(&b)));
-        }
-        let device: String = g
-            .meta
-            .as_ref()
-            .and_then(|m| m.get("device"))
-            .and_then(|d| d.as_str())
-            .unwrap_or("")
-            .chars()
-            .take(128)
-            .collect();
-        let ip = if self.ip.is_unspecified() {
-            String::new()
-        } else {
-            self.ip.to_string()
-        };
-        for (kind, value) in [("ip", ip.as_str()), ("device", device.as_str())] {
-            if value.is_empty() {
-                continue;
-            }
-            if let Some(m) = queries::active_mark(&self.st.pool, g.project.0, kind, value).await? {
-                crate::rest::reject(&self.st, g.project, "banned");
-                return Err(NetError::Forbidden(crate::rest::mark_message(&m)));
-            }
-        }
-        if let Err(e) = queries::touch_player_seen(
-            &self.st.pool,
-            g.project.0,
-            &g.player_id,
-            &ip,
-            &device,
-            &g.name,
-        )
-        .await
-        {
-            tracing::warn!(error = %e, "player_seen update failed");
-        }
+        let project = self.admit(g).await?;
         let limits = ProjectLimits::from_json(&project.limits).effective(&self.st.cfg.limits);
         if let Some(allowed) = &limits.allowed_regions {
             if !allowed.iter().any(|r| r == self.st.region.as_str()) {
@@ -968,7 +996,11 @@ impl Session {
         spectator: bool,
     ) -> Result<()> {
         let g = self.grant()?.clone();
-        if rejoin.is_none() {
+        let project = self.admit(&g).await?;
+        // A player coming back to a slot they still hold was validated and counted when they
+        // first joined; anyone else is a new arrival, whatever `rejoin_actor` says.
+        let returning = h.lock().room.actor_of(&g.player_id).is_some();
+        if !returning {
             let (room_id, room_name, mode, props) = {
                 let hr = h.lock();
                 if hr.project != g.project {
@@ -999,8 +1031,7 @@ impl Session {
                 }
             }
         }
-        if rejoin.is_none() && !spectator {
-            let project = queries::get_project(&self.st.pool, g.project.0).await?;
+        if !returning && !spectator {
             let limits = ProjectLimits::from_json(&project.limits).effective(&self.st.cfg.limits);
             if let Some(cap) = limits.max_concurrent_players {
                 let online: u64 = self
@@ -1062,6 +1093,9 @@ impl Session {
                 "player.joined",
                 serde_json::json!({"room": hr.room.id().to_string(), "actor": actor.0}),
             );
+            // The room decides: someone back in the slot they hold keeps the role they first
+            // joined with, whatever this request asked for.
+            let spectator = hr.room.player(actor).is_some_and(|p| p.spectator);
             if let Some(sy) = hr.sync.as_mut() {
                 sy.on_join_as(actor, spectator);
             }
@@ -1997,13 +2031,15 @@ pub async fn handoff_all(st: &Shared) -> usize {
     }
     let n = rooms.len();
     for h in rooms {
+        // Taking the sessions out detaches every player: a later leave or disconnect must not
+        // touch (or republish) a room this node no longer hosts.
         let (id, sessions) = {
-            let g = h.lock();
+            let mut g = h.lock();
             (
                 g.room.id(),
-                g.sessions
-                    .values()
-                    .map(|s| s.control.clone())
+                std::mem::take(&mut g.sessions)
+                    .into_values()
+                    .map(|s| s.control)
                     .collect::<Vec<_>>(),
             )
         };
@@ -2086,10 +2122,11 @@ pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {
                 .as_ref()
                 .filter(|l| !l.journal.is_empty())
                 .map(|l| l.replay(""));
+            // Detach every player (see `handoff_all`): the room is gone for them too.
             (
-                g.sessions
-                    .values()
-                    .map(|s| s.control.clone())
+                std::mem::take(&mut g.sessions)
+                    .into_values()
+                    .map(|s| s.control)
                     .collect::<Vec<mpsc::Sender<ServerMsg>>>(),
                 replay,
             )
@@ -2155,7 +2192,9 @@ fn room_err(e: RoomError) -> NetError {
         RoomError::Full => NetError::RoomFull { max: 0 },
         RoomError::Closed => NetError::RoomClosed,
         RoomError::NotMember | RoomError::NoActor => NetError::NotFound(e.to_string()),
-        RoomError::NotMaster | RoomError::Spectator => NetError::Forbidden(e.to_string()),
+        RoomError::NotMaster | RoomError::Spectator | RoomError::SpectatorMaster => {
+            NetError::Forbidden(e.to_string())
+        }
         RoomError::EventRate | RoomError::PlayerEventRate => NetError::RateLimited,
         RoomError::EventTooLarge | RoomError::PropsTooLarge | RoomError::CasFailed => {
             NetError::Invalid(e.to_string())
@@ -2195,24 +2234,35 @@ pub async fn reaper(st: Shared) {
                 let mut g = h.lock();
                 let out = g.room.expire(Instant::now());
                 let changed = !out.is_empty();
+                // `PlayerLeft` goes to every player who stays, so the first field of `Control`
+                // is a recipient. The player whose slot expired is the `actor` of the message.
+                let mut expired = Vec::new();
                 for o in out.iter() {
                     if let net_rooms::Outgoing::Control(
-                        a,
-                        ServerMsg::PlayerLeft { offline: false, .. },
+                        _,
+                        ServerMsg::PlayerLeft {
+                            actor,
+                            offline: false,
+                        },
                     ) = o
                     {
-                        g.sessions.remove(a);
-                        st.webhooks.emit(
-                            g.project,
-                            "player.left",
-                            serde_json::json!({"room": g.room.id().to_string(), "actor": a.0}),
-                        );
-                        if let Some(sy) = g.sync.as_mut() {
-                            sy.on_leave(*a);
+                        if !expired.contains(actor) {
+                            expired.push(*actor);
                         }
-                        if let Some(ls) = g.lockstep.as_mut() {
-                            ls.on_leave(*a);
-                        }
+                    }
+                }
+                for a in expired.iter() {
+                    g.sessions.remove(a);
+                    st.webhooks.emit(
+                        g.project,
+                        "player.left",
+                        serde_json::json!({"room": g.room.id().to_string(), "actor": a.0}),
+                    );
+                    if let Some(sy) = g.sync.as_mut() {
+                        sy.on_leave(*a);
+                    }
+                    if let Some(ls) = g.lockstep.as_mut() {
+                        ls.on_leave(*a);
                     }
                 }
                 dispatch(&g, out, &st.metrics);

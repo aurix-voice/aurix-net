@@ -30,6 +30,9 @@ pub enum ClientMsg {
         region: Option<String>,
         #[serde(default)]
         player_props: serde_json::Map<String, serde_json::Value>,
+        /// Player ids whose seats are held for a short while (party slots).
+        #[serde(default)]
+        reserved: Vec<String>,
     },
     Join {
         name: String,
