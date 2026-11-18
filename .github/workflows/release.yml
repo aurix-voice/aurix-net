@@ -2,7 +2,8 @@
 # have a CHANGELOG entry — docs/release-checklist.md). Produces: server bundles (node, CLI, loadtest,
 # libaurix_net + C headers) for linux x86_64/aarch64, the aurix-sim wasm, the Web npm tarball, the
 # Unity/Godot/C++ SDK archives, SBOM, SHA-256 sums, GHCR images `ghcr.io/<org>/aurix-net:<tag>` and
-# `aurix-net-console:<tag>`, and a GitHub Release with everything attached.
+# `aurix-net-console:<tag>`, and a GitHub Release with everything attached. A tag with a pre-release
+# suffix (`v0.2.0-beta.1`) is published as a GitHub pre-release and leaves the `latest` images alone.
 name: release
 on:
   push:
@@ -129,12 +130,24 @@ jobs:
         with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
       - name: image names
         run: echo "REPO=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+      # `latest` moves only on a stable version; a pre-release tag (v0.2.0-beta.1) gets its own tag only.
+      - uses: docker/metadata-action@v6
+        id: node
+        with:
+          images: ${{ env.REPO }}/aurix-net
+          tags: type=semver,pattern={{raw}},value=${{ env.TAG }}
+      - uses: docker/metadata-action@v6
+        id: console
+        with:
+          images: ${{ env.REPO }}/aurix-net-console
+          tags: type=semver,pattern={{raw}},value=${{ env.TAG }}
       - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ env.REPO }}/aurix-net:${{ env.TAG }},${{ env.REPO }}/aurix-net:latest
+          tags: ${{ steps.node.outputs.tags }}
+          labels: ${{ steps.node.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - uses: docker/build-push-action@v7
@@ -143,7 +156,8 @@ jobs:
           file: dashboard/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ env.REPO }}/aurix-net-console:${{ env.TAG }},${{ env.REPO }}/aurix-net-console:latest
+          tags: ${{ steps.console.outputs.tags }}
+          labels: ${{ steps.console.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # The published node image must be free of CRITICAL vulnerabilities with a fix (same gate as CI).
@@ -171,5 +185,6 @@ jobs:
           tag_name: ${{ env.TAG }}
           name: Aurix Net ${{ env.TAG }}
           body_path: notes.md
+          prerelease: ${{ contains(env.TAG, '-') }}
           files: dist/*
           fail_on_unmatched_files: true

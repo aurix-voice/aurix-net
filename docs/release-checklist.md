@@ -22,6 +22,8 @@ Each step points at the document that explains it; nothing here is optional unle
    (node, CLI, loadtest, `libaurix_net` + headers), the Web npm tarball, the Unity/Godot/C++
    archives, the SBOM, multi-arch `ghcr.io/<org>/aurix-net:<tag>` and `aurix-net-console:<tag>`
    images (CRITICAL-with-fix gate) and attaches everything with SHA-256 sums to a GitHub Release.
+   A version with a pre-release suffix (`0.2.0-beta.1`) becomes a GitHub pre-release and does not
+   move the `latest` image tags.
 4. **Compose** — copy `deploy/docker-compose.prod.yml`, set `PUBLIC_HOST` per node and
    `REGION`, point the console's `NET_API_URL` at the load balancer, keep `read_only`,
    `cap_drop`, `no-new-privileges`, `nofile`, log rotation and `stop_grace_period: 30s`.

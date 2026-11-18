@@ -51,6 +51,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   hand from the artifacts of that run.
 - `release.yml`: the Web npm package and the Unity, Godot and C++ archives now carry the Apache-2.0
   licence text as `LICENSE`. The 0.1.0 SDK files were published without it.
+- `ci.yml` runs on pushes to `next` as well: work lands there before it is moved to `main`.
+- `release.yml`: a tag with a pre-release suffix (`v0.2.0-beta.1`) is published as a GitHub
+  pre-release, and its images get the version tag only. `latest` moves on stable versions.
 - `cargo test` starts a real node (`crates/net-server/tests`) and checks who may enter a room and
   what a kick, a closed room and an expired offline slot do to the other sessions: the seven node
   fixes above each have a test that fails without the fix. Needs the development Postgres and
