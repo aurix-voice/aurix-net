@@ -76,7 +76,7 @@ export function NodesPage() {
     {
       key: "status",
       header: t("nodes.status"),
-      cell: (n) => (n.draining ? <Badge tone="warn" dot>{t("nodes.status.draining")}</Badge> : nodeStale(n.last_heartbeat) ? <Badge tone="danger" dot>{t("nodes.status.stale")}</Badge> : <Badge tone="ok" dot>{t("nodes.status.live")}</Badge>),
+      cell: (n) => (n.draining ? <Badge tone="warn" dot>{t("nodes.status.draining")}</Badge> : nodeStale(n) ? <Badge tone="danger" dot>{t("nodes.status.stale")}</Badge> : <Badge tone="ok" dot>{t("nodes.status.live")}</Badge>),
     },
     {
       key: "hb",
@@ -95,10 +95,10 @@ export function NodesPage() {
       align: "right",
       cell: (n) => (
         <span className="flex justify-end gap-1">
-          <Button variant="ghost" size="sm" disabled={nodeStale(n.last_heartbeat)} onClick={() => setInspecting(n)}>
+          <Button variant="ghost" size="sm" disabled={nodeStale(n)} onClick={() => setInspecting(n)}>
             {t("nodes.stats")}
           </Button>
-          <Button variant="ghost" size="sm" disabled={nodeStale(n.last_heartbeat)} onClick={() => setDrainingNode(n)}>
+          <Button variant="ghost" size="sm" disabled={nodeStale(n)} onClick={() => setDrainingNode(n)}>
             {n.draining ? t("nodes.undrain") : t("nodes.drain")}
           </Button>
         </span>

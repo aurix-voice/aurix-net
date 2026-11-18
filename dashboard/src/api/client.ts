@@ -174,6 +174,8 @@ export interface NodeRow {
   draining: boolean;
   started_at: string;
   last_heartbeat: string;
+  /** Absent on the key-scoped list (`/v1/nodes`). */
+  heartbeat_secs?: number;
 }
 /** `/v1/nodes`: the public, key-scoped projection of a live node. */
 export interface PublicNode {

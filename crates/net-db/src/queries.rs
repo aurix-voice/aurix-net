@@ -259,7 +259,17 @@ pub async fn list_live_nodes(pool: &DbPool) -> Result<Vec<NodeRow>> {
     .map_err(db_err)
 }
 
-/// Every registered node, live or not.
+/// Ids of the nodes that missed three of their own heartbeats: the complement of
+/// `list_live_nodes`, taken in one statement so a node that registers meanwhile is never in it.
+pub async fn list_stale_nodes(pool: &DbPool) -> Result<Vec<Uuid>> {
+    sqlx::query_scalar(
+        "SELECT id FROM nodes WHERE last_heartbeat <= now() - make_interval(secs => 3 * heartbeat_secs)",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
 pub async fn set_node_draining(pool: &DbPool, id: Uuid, draining: bool) -> Result<bool> {
     let r = sqlx::query("UPDATE nodes SET draining = $2 WHERE id = $1")
         .bind(id)
@@ -278,6 +288,7 @@ pub async fn get_node(pool: &DbPool, id: Uuid) -> Result<Option<NodeRow>> {
         .map_err(db_err)
 }
 
+/// Every registered node, live or not.
 pub async fn list_all_nodes(pool: &DbPool) -> Result<Vec<NodeRow>> {
     sqlx::query_as::<_, NodeRow>("SELECT id, region, public_host, quic_port, http_url, cert_sha256, version, rooms, players, load_factor, draining, started_at, last_heartbeat, heartbeat_secs FROM nodes ORDER BY region, load_factor")
         .fetch_all(pool)
@@ -437,6 +448,33 @@ pub async fn adopt_room(pool: &DbPool, room_id: Uuid, node_id: Uuid, region: &st
     .await
     .map_err(db_err)?;
     Ok(r.rows_affected() == 1)
+}
+
+/// A node that was reaped while it was only stalled takes back the rooms it still hosts and
+/// nobody adopted in the meantime.
+pub async fn reclaim_rooms(pool: &DbPool, node_id: Uuid, rooms: &[Uuid]) -> Result<u64> {
+    let r = sqlx::query(
+        "UPDATE rooms SET state = 'open', node_id = $1, closed_at = NULL WHERE id = ANY($2) AND state = 'orphaned'",
+    )
+    .bind(node_id)
+    .bind(rooms)
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(r.rows_affected())
+}
+
+/// Of `rooms`, the ones whose row no longer belongs to `node_id`: adopted by another node or
+/// closed.
+pub async fn rooms_lost(pool: &DbPool, node_id: Uuid, rooms: &[Uuid]) -> Result<Vec<Uuid>> {
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM rooms WHERE id = ANY($2) AND (state <> 'open' OR node_id IS DISTINCT FROM $1)",
+    )
+    .bind(node_id)
+    .bind(rooms)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
 }
 
 /// Orphaned rooms nobody adopted within `max_age_secs` (closed_at = when they were

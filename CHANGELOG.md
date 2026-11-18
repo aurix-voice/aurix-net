@@ -41,6 +41,22 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   players or changing room properties.
 - Node: a player who joins the room again with `spectator: true` keeps the player role in sync
   and lockstep rooms. Before this their inputs were dropped for the rest of the match.
+- Node: a node that was silent for three heartbeats (a stalled host, a database outage) and then
+  carried on kept hosting rooms the fleet had already put up for adoption, so a join through
+  another node started a second copy of the same room. With every heartbeat a node now takes back
+  its rooms nobody adopted and drops the ones another node runs (`left` with reason `rehost`).
+- Operator: a node counts as stale after it misses two of its own heartbeats, not after a fixed
+  30 s. With `server.heartbeat_secs` above 30 a healthy node was listed in `stale_nodes`, raised
+  the `node.stale` alert and showed as stale in the dashboard, where its buttons were disabled.
+- Multi-node: a room on a node that registered within the last heartbeat is found from the other
+  nodes. Before this a join by name through a node that had not listed the host yet answered
+  `not_found` and closed the room's record, so nobody could reach the running room by name.
+- Multi-node: a notice, a kick, a replay request and `join_random` reach a room whose node
+  registered within the last heartbeat. Before this they answered `hosting node unknown` or
+  `no matching room` until the node list was next refreshed.
+- Multi-node: `DELETE /v1/rooms/{id}` with a project key closes the room on the node that hosts
+  it. Sent to another node it used to close only the room's record: the players stayed in a
+  room that no listing showed.
 - Web and Unity SDKs: a reliable burst longer than 32 packets (a message over about 35 KB, or many
   reliable sends in one frame) no longer ends the connection when one packet of it is lost. The
   send window counted unacked packets instead of the span of their sequence numbers, so the node

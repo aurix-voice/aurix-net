@@ -70,10 +70,32 @@ impl Node {
         panic!("the node did not come up in 30 s\n{}", node.log_tail());
     }
 
+    /// Freezes the node process (SIGSTOP) for `time`: what a stalled host or a long pause of
+    /// the database connection looks like to the rest of the fleet.
+    pub async fn freeze(&self, time: Duration) {
+        let pid = self.child.id().to_string();
+        let _ = Command::new("kill").args(["-STOP", &pid]).status();
+        tokio::time::sleep(time).await;
+        let _ = Command::new("kill").args(["-CONT", &pid]).status();
+    }
+
     pub fn log_tail(&self) -> String {
         let text = std::fs::read_to_string(&self.log).unwrap_or_default();
         let lines: Vec<&str> = text.lines().collect();
         lines[lines.len().saturating_sub(40)..].join("\n")
+    }
+
+    /// The same project reached through this node.
+    pub fn same_project(&self, p: &Project) -> Project {
+        let at = |api: &Api| Api {
+            http: self.http.clone(),
+            token: api.token.clone(),
+        };
+        Project {
+            id: p.id.clone(),
+            api: at(&p.api),
+            operator: at(&p.operator),
+        }
     }
 
     /// A new project with its API key.

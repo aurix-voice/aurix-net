@@ -7,7 +7,6 @@ use net_db::{queries, DbPool};
 use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::Duration;
-use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct NodeInfo {
@@ -70,6 +69,16 @@ impl NodeRegistry {
         self.cache.read().iter().find(|n| n.id == id).cloned()
     }
 
+    /// [`Self::get`] that re-reads the node list on a miss: the cache is up to one heartbeat
+    /// old, so a node that registered since then is not in it yet.
+    pub async fn resolve(&self, id: NodeId) -> Result<Option<NodeInfo>> {
+        if let Some(node) = self.get(id) {
+            return Ok(Some(node));
+        }
+        self.refresh().await?;
+        Ok(self.get(id))
+    }
+
     /// Regions that currently have at least one live, non-draining node.
     pub fn live_regions(&self) -> Vec<RegionId> {
         let mut v: Vec<RegionId> = self
@@ -108,24 +117,17 @@ impl NodeRegistry {
 
     /// Removes nodes that missed three of their own heartbeats and closes their rooms. Returns removed ids.
     pub async fn reap_stale(&self) -> Result<Vec<NodeId>> {
-        let live: Vec<Uuid> = queries::list_live_nodes(&self.pool)
-            .await?
-            .into_iter()
-            .map(|r| r.id)
-            .collect();
-        let all = queries::list_all_nodes(&self.pool).await?;
+        let stale = queries::list_stale_nodes(&self.pool).await?;
         let expired = queries::close_stale_orphans(&self.pool, ORPHAN_TTL_SECS).await?;
         if expired > 0 {
             tracing::info!(rooms = expired, "closed orphaned rooms nobody adopted");
         }
         let mut removed = Vec::new();
-        for n in all {
-            if !live.contains(&n.id) {
-                let orphaned = queries::orphan_rooms_of_node(&self.pool, n.id).await?;
-                queries::delete_node(&self.pool, n.id).await?;
-                tracing::warn!(node = %n.id, orphaned_rooms = orphaned, "node reaped after missed heartbeats");
-                removed.push(NodeId::from_uuid(n.id));
-            }
+        for id in stale {
+            let orphaned = queries::orphan_rooms_of_node(&self.pool, id).await?;
+            queries::delete_node(&self.pool, id).await?;
+            tracing::warn!(node = %id, orphaned_rooms = orphaned, "node reaped after missed heartbeats");
+            removed.push(NodeId::from_uuid(id));
         }
         Ok(removed)
     }

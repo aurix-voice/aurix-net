@@ -80,7 +80,7 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | DELETE | `/v1/operator/tokens/:id` | operator | revoke (audited `operator_token.revoke`) |
 | GET/POST/DELETE | `/v1/operator/webhooks[/:id]` · `GET /:id/deliveries` · `POST /:id/test` | operator | fleet alert webhooks (`{url, events[]}`, secret shown once; events in [webhooks.md](webhooks.md#operator-alerts-fleet-level)); audited `operator_webhook.create/delete/test` |
 | GET | `/v1/audit?format=csv` · `/v1/operator/audit?format=csv` | read / operator | same filters (`action`, `actor`, `limit`, operator `project`) as CSV attachment: id, created_at, project_id, actor, action, target, details (JSON) |
-| GET | `/v1/operator/attention` | operator | what needs a look now: `stale_nodes` (no heartbeat > 30 s), `draining_nodes`, `suspended_projects`, `failing_webhooks` (failed deliveries in the last hour), `rejections` (projects with rejections this hour, by reason) |
+| GET | `/v1/operator/attention` | operator | what needs a look now: `stale_nodes` (two of the node's own heartbeats missed), `draining_nodes`, `suspended_projects`, `failing_webhooks` (failed deliveries in the last hour), `rejections` (projects with rejections this hour, by reason) |
 | GET | `/v1/operator/nodes` | operator | all nodes incl. draining |
 | GET | `/v1/operator/rooms` | operator | every live room in the region, across projects; one project: `GET /v1/operator/projects/:id/rooms` |
 | GET | `/v1/operator/projects/:id/audit` | operator | audit trail of one project, same filters as `/v1/operator/audit` |

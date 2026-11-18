@@ -13,8 +13,11 @@ export function modeTone(mode: string): Tone {
   }
 }
 
-/** Heartbeats are every few seconds; 30 s of silence means the node is gone or partitioned. */
-export function nodeStale(lastHeartbeat: string, now = Date.now()): boolean {
-  const t = Date.parse(lastHeartbeat);
-  return !Number.isFinite(t) || now - t > 30_000;
+/**
+ * A node is stale once it has missed two of its own heartbeats in a row (the interval is per
+ * node, `server.heartbeat_secs`, 30 s by default); after the third its peers remove it.
+ */
+export function nodeStale(node: { last_heartbeat: string; heartbeat_secs?: number }, now = Date.now()): boolean {
+  const t = Date.parse(node.last_heartbeat);
+  return !Number.isFinite(t) || now - t > 2 * (node.heartbeat_secs ?? 30) * 1000;
 }

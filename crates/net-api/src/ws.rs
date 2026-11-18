@@ -522,9 +522,8 @@ impl Session {
                 let refs: Vec<&net_control::LiveRoom> = remote.iter().collect();
                 let pick = crate::matchmaking::pick_room(&refs, match_type.as_deref())
                     .ok_or_else(|| NetError::NotFound("no matching room".into()))?;
-                let node = uuid::Uuid::parse_str(&pick.node)
-                    .ok()
-                    .and_then(|n| self.st.registry.get(net_common::NodeId::from_uuid(n)))
+                let node = room_host(&self.st, pick)
+                    .await?
                     .ok_or_else(|| NetError::NotFound("no matching room".into()))?;
                 Err(NetError::Conflict(format!(
                     "room_elsewhere:{}#{}",
@@ -802,9 +801,11 @@ impl Session {
             None => Err(NetError::NotFound(format!("room {name}"))),
             Some(row) if row.state == "orphaned" => adopt_room(&self.st, row).await,
             Some(row) => {
-                let node = row
-                    .node_id
-                    .and_then(|n| self.st.registry.get(net_common::NodeId::from_uuid(n)));
+                let host = row.node_id.map(net_common::NodeId::from_uuid);
+                let node = match host {
+                    Some(n) => self.st.registry.resolve(n).await?,
+                    None => None,
+                };
                 match node {
                     Some(n) if n.id != self.st.node_id => {
                         Err(NetError::Conflict(format!("room_elsewhere:{}", n.http_url)))
@@ -818,6 +819,11 @@ impl Session {
                     _ if row.node_id == Some(self.st.node_id.0)
                         && (net_db::Timestamp::now() - row.created_at).whole_seconds() < 10 =>
                     {
+                        Err(NetError::Conflict("room_pending".into()))
+                    }
+                    // The host is gone and its peers have not reaped it yet; once they do the
+                    // room is adopted by the next join.
+                    _ if host.is_some_and(|n| n != self.st.node_id) => {
                         Err(NetError::Conflict("room_pending".into()))
                     }
                     _ => {
@@ -2053,6 +2059,46 @@ pub async fn handoff_all(st: &Shared) -> usize {
     n
 }
 
+/// Runs with every heartbeat. A node that missed three heartbeats is reaped by its peers and
+/// its rooms become adoptable, but the node may only have been stalled and still host them. It
+/// takes back the rooms nobody adopted and lets go of the ones another node now runs, so a room
+/// never lives on two nodes. Returns (reclaimed, dropped).
+pub async fn reconcile_rooms(st: &Shared) -> Result<(u64, usize)> {
+    if st.is_draining() {
+        return Ok((0, 0));
+    }
+    let hosted: Vec<uuid::Uuid> = st.host.all().iter().map(|h| h.lock().room.id().0).collect();
+    if hosted.is_empty() {
+        return Ok((0, 0));
+    }
+    let reclaimed = queries::reclaim_rooms(&st.pool, st.node_id.0, &hosted).await?;
+    let lost = queries::rooms_lost(&st.pool, st.node_id.0, &hosted).await?;
+    let mut dropped = 0;
+    for id in lost {
+        let Some(h) = st.host.remove(net_common::RoomId(id)) else {
+            continue;
+        };
+        dropped += 1;
+        let sessions: Vec<_> = std::mem::take(&mut h.lock().sessions)
+            .into_values()
+            .map(|s| s.control)
+            .collect();
+        for s in sessions {
+            let _ = s.try_send(ServerMsg::Left {
+                reason: "rehost".into(),
+            });
+        }
+    }
+    if reclaimed > 0 || dropped > 0 {
+        tracing::warn!(
+            reclaimed,
+            dropped,
+            "rooms reconciled after this node was reaped"
+        );
+    }
+    Ok((reclaimed, dropped))
+}
+
 /// Upper bound for one stored replay; longer matches keep their most recent ticks.
 pub const MAX_REPLAY_BYTES: usize = 16 << 20;
 
@@ -2101,6 +2147,17 @@ fn closed_payload(g: &mut HostedRoom, id: RoomId) -> Value {
         }
     }
     p
+}
+
+/// The live node hosting `room`, if there is one.
+pub(crate) async fn room_host(
+    st: &Shared,
+    room: &net_control::LiveRoom,
+) -> Result<Option<net_control::NodeInfo>> {
+    match uuid::Uuid::parse_str(&room.node) {
+        Ok(id) => st.registry.resolve(net_common::NodeId::from_uuid(id)).await,
+        Err(_) => Ok(None),
+    }
 }
 
 pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {

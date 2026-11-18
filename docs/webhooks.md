@@ -79,7 +79,7 @@ Operators can register their own receivers under **Settings → Alert webhooks**
 
 | Event | `data` | Fires when |
 |---|---|---|
-| `node.stale` | node row (`id`, `region`, `last_heartbeat`, …) | a node missed heartbeats for 30 s |
+| `node.stale` | node row (`id`, `region`, `last_heartbeat`, …) | a node missed two of its own heartbeats in a row (60 s at the default `server.heartbeat_secs`) |
 | `node.draining` | node row + `rooms` | a node is draining for a rolling restart |
 | `project.suspended` | `{id, name, since}` | a project is suspended |
 | `project.usage_cap` | `{project_id, project_name, metric, used, cap, hard}` | ≥80 % of a monthly cap (`hard: false`) and again at 100 % (`hard: true`) |
@@ -87,4 +87,4 @@ Operators can register their own receivers under **Settings → Alert webhooks**
 | `webhook.failing` | `{project_id, project_name, webhook_id, url, failed, total}` | a project webhook failed in the last hour |
 | `test` | `{webhook}` | `POST /v1/operator/webhooks/:id/test` |
 
-One node (Redis leader lock) evaluates the conditions every minute; each subject fires at most once per hour while the condition persists, so a stuck node produces one alert an hour, not sixty. Deliveries are logged like project webhooks (`retention.webhook_deliveries_days`).
+One node (Redis leader lock) evaluates the conditions every 30 s; each subject fires at most once per hour while the condition persists, so a stuck node produces one alert an hour, not sixty. Deliveries are logged like project webhooks (`retention.webhook_deliveries_days`).

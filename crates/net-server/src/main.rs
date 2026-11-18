@@ -356,6 +356,7 @@ async fn heartbeat(st: &Arc<AppState>, http_url: &str, draining: bool) -> anyhow
         },
     )
     .await?;
+    net_api::ws::reconcile_rooms(st).await?;
     Ok(())
 }
 

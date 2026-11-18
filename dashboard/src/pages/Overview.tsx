@@ -25,7 +25,7 @@ export function OverviewPage() {
   const rooms = useRooms();
   const h = health.data;
   const attention = useAttention();
-  const live = (nodes.data ?? []).filter((n) => !nodeStale(n.last_heartbeat) || !operator);
+  const live = (nodes.data ?? []).filter((n) => !nodeStale(n) || !operator);
   const players = (rooms.data ?? []).reduce((a, r) => a + r.players, 0);
   const day = useMemo(() => presetRange("24h"), []);
   const usage = useUsage(day.from, day.to);
@@ -43,7 +43,7 @@ export function OverviewPage() {
     {
       key: "status",
       header: t("nodes.status"),
-      cell: (n) => (n.draining ? <Badge tone="warn" dot>{t("nodes.status.draining")}</Badge> : nodeStale(n.last_heartbeat) ? <Badge tone="danger" dot>{t("nodes.status.stale")}</Badge> : <Badge tone="ok" dot>{t("nodes.status.live")}</Badge>),
+      cell: (n) => (n.draining ? <Badge tone="warn" dot>{t("nodes.status.draining")}</Badge> : nodeStale(n) ? <Badge tone="danger" dot>{t("nodes.status.stale")}</Badge> : <Badge tone="ok" dot>{t("nodes.status.live")}</Badge>),
     },
   ];
 

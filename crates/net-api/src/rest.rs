@@ -16,7 +16,7 @@ use net_db::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use uuid::Uuid;
 
 pub struct ApiError(NetError);
@@ -1354,9 +1354,8 @@ async fn notice_anywhere(
         .get_room(project, room)
         .await?
         .ok_or_else(|| NetError::NotFound("room is not live".into()))?;
-    let node = Uuid::parse_str(&live.node)
-        .ok()
-        .and_then(|n| st.registry.get(net_common::NodeId::from_uuid(n)))
+    let node = crate::ws::room_host(st, &live)
+        .await?
         .ok_or_else(|| NetError::NotFound("hosting node unknown".into()))?;
     let v = internal_post(
         st,
@@ -1513,20 +1512,35 @@ async fn internal_project_notice(
     Ok(Json(json!({"rooms": rooms, "players": players})))
 }
 
-pub(crate) async fn internal_get(st: &Shared, http_url: &str, path: &str) -> Result<Value> {
-    if st.cfg.auth.admin_token.is_empty() {
-        return Err(NetError::Internal(
-            "admin_token unset; cannot query hosting node".into(),
-        ));
-    }
-    let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
+/// One client for every call to another node of the fleet, so their connections are pooled.
+static PEERS: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|e| NetError::Internal(e.to_string()))?;
-    let resp = http
-        .get(format!("{http_url}{path}"))
-        .bearer_auth(&st.cfg.auth.admin_token)
+        .expect("reqwest")
+});
+
+/// A request to the internal API of another node, authorised with the fleet's admin token.
+fn peer(
+    st: &Shared,
+    method: reqwest::Method,
+    http_url: &str,
+    path: &str,
+    timeout_secs: u64,
+) -> Result<reqwest::RequestBuilder> {
+    if st.cfg.auth.admin_token.is_empty() {
+        return Err(NetError::Internal(
+            "admin_token unset; cannot reach other nodes".into(),
+        ));
+    }
+    Ok(PEERS
+        .request(method, format!("{}{path}", http_url.trim_end_matches('/')))
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .bearer_auth(&st.cfg.auth.admin_token))
+}
+
+pub(crate) async fn internal_get(st: &Shared, http_url: &str, path: &str) -> Result<Value> {
+    let resp = peer(st, reqwest::Method::GET, http_url, path, 3)?
         .send()
         .await
         .map_err(|e| NetError::Internal(e.to_string()))?;
@@ -1698,12 +1712,17 @@ async fn room_detail(st: &Shared, row: net_db::models::RoomRow) -> Result<Value>
         .redis
         .get_room(ProjectId::from_uuid(row.project_id), RoomId::from_uuid(id))
         .await?;
+    let host = match row.node_id {
+        Some(n) => {
+            st.registry
+                .resolve(net_common::NodeId::from_uuid(n))
+                .await?
+        }
+        None => None,
+    };
     let (players, source): (Vec<Value>, &str) = match local_players(st, id) {
         Some(p) => (p, "local"),
-        None => match row
-            .node_id
-            .and_then(|n| st.registry.get(net_common::NodeId::from_uuid(n)))
-        {
+        None => match host {
             Some(n) if n.id != st.node_id && live.is_some() => {
                 match remote_players(st, &n.http_url, id).await {
                     Ok(p) => (p, "remote"),
@@ -1726,23 +1745,8 @@ async fn room_detail(st: &Shared, row: net_db::models::RoomRow) -> Result<Value>
 }
 
 async fn remote_players(st: &Shared, http_url: &str, id: Uuid) -> Result<Vec<Value>> {
-    if st.cfg.auth.admin_token.is_empty() {
-        return Err(NetError::Internal(
-            "admin_token unset; cannot query hosting node".into(),
-        ));
-    }
-    let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| NetError::Internal(e.to_string()))?;
-    let url = format!(
-        "{}/v1/internal/rooms/{id}/players",
-        http_url.trim_end_matches('/')
-    );
-    let res = http
-        .get(url)
-        .bearer_auth(&st.cfg.auth.admin_token)
+    let path = format!("/v1/internal/rooms/{id}/players");
+    let res = peer(st, reqwest::Method::GET, http_url, &path, 3)?
         .send()
         .await
         .map_err(|e| NetError::Internal(e.to_string()))?;
@@ -1853,10 +1857,7 @@ async fn replay_anywhere(
     }
     let room = RoomId::from_uuid(id);
     if let Some(live) = st.redis.get_room(project, room).await? {
-        if let Some(node) = Uuid::parse_str(&live.node)
-            .ok()
-            .and_then(|n| st.registry.get(net_common::NodeId::from_uuid(n)))
-        {
+        if let Some(node) = crate::ws::room_host(st, &live).await? {
             let mut path = format!(
                 "/v1/internal/rooms/{id}/replay?from={}",
                 q.from.unwrap_or(0)
@@ -2066,12 +2067,7 @@ async fn delete_room(
     if row.project_id != key.project_id {
         return Err(NetError::NotFound("room".into()).into());
     }
-    close_room(
-        &st,
-        ProjectId::from_uuid(key.project_id),
-        RoomId::from_uuid(id),
-    )
-    .await;
+    close_room_anywhere(&st, ProjectId::from_uuid(key.project_id), id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2676,12 +2672,12 @@ async fn close_room_anywhere(st: &Shared, project: ProjectId, id: Uuid) {
         return;
     }
     let live = st.redis.get_room(project, room).await.ok().flatten();
-    let node = live
-        .as_ref()
-        .and_then(|l| Uuid::parse_str(&l.node).ok())
-        .and_then(|n| st.registry.get(net_common::NodeId::from_uuid(n)));
+    let node = match &live {
+        Some(live) => crate::ws::room_host(st, live).await.ok().flatten(),
+        None => None,
+    };
     if let Some(n) = node.filter(|n| n.id != st.node_id) {
-        match internal_delete(st, &n.http_url, &format!("/v1/internal/rooms/{id}")).await {
+        match internal_delete(st, &n.http_url, &format!("/v1/internal/rooms/{id}"), &[]).await {
             Ok(_) => return,
             Err(e) => {
                 tracing::warn!(room = %id, node = %n.http_url, error = %e, "remote close failed; closing locally")
@@ -2993,15 +2989,11 @@ async fn kick_anywhere(
         .get_room(project, room)
         .await?
         .ok_or_else(|| NetError::NotFound("room is not live".into()))?;
-    let node = Uuid::parse_str(&live.node)
-        .ok()
-        .and_then(|n| st.registry.get(net_common::NodeId::from_uuid(n)))
+    let node = crate::ws::room_host(st, &live)
+        .await?
         .ok_or_else(|| NetError::NotFound("hosting node unknown".into()))?;
-    let path = format!(
-        "/v1/internal/rooms/{id}/players/{actor}?reason={}",
-        reason.replace(' ', "%20")
-    );
-    let v = internal_delete(st, &node.http_url, &path).await?;
+    let path = format!("/v1/internal/rooms/{id}/players/{actor}");
+    let v = internal_delete(st, &node.http_url, &path, &[("reason", reason)]).await?;
     Ok(v["player_id"].as_str().unwrap_or_default().to_string())
 }
 
@@ -3101,20 +3093,14 @@ async fn internal_close_room(
 }
 
 /// DELETE on another node with the fleet token; returns the JSON body (Null for 204).
-async fn internal_delete(st: &Shared, http_url: &str, path: &str) -> Result<Value> {
-    if st.cfg.auth.admin_token.is_empty() {
-        return Err(NetError::Internal(
-            "admin_token unset; cannot reach other nodes".into(),
-        ));
-    }
-    let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| NetError::Internal(e.to_string()))?;
-    let res = http
-        .delete(format!("{}{path}", http_url.trim_end_matches('/')))
-        .bearer_auth(&st.cfg.auth.admin_token)
+async fn internal_delete(
+    st: &Shared,
+    http_url: &str,
+    path: &str,
+    query: &[(&str, &str)],
+) -> Result<Value> {
+    let res = peer(st, reqwest::Method::DELETE, http_url, path, 5)?
+        .query(query)
         .send()
         .await
         .map_err(|e| NetError::Internal(e.to_string()))?;
@@ -3218,19 +3204,7 @@ async fn op_drain_node(
 
 /// Node-to-node call with the fleet admin token: short timeout, no redirects.
 async fn internal_post(st: &Shared, http_url: &str, path: &str, body: Value) -> Result<Value> {
-    if st.cfg.auth.admin_token.is_empty() {
-        return Err(NetError::Internal(
-            "admin_token unset; cannot reach other nodes".into(),
-        ));
-    }
-    let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| NetError::Internal(e.to_string()))?;
-    let res = http
-        .post(format!("{}{path}", http_url.trim_end_matches('/')))
-        .bearer_auth(&st.cfg.auth.admin_token)
+    let res = peer(st, reqwest::Method::POST, http_url, path, 10)?
         .json(&body)
         .send()
         .await
@@ -3253,6 +3227,13 @@ async fn op_attention(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<
     Ok(Json(attention_value(&st).await?))
 }
 
+/// A node is stale once it has missed two of its own heartbeats in a row; after the third its
+/// peers reap it. The interval is per node (`server.heartbeat_secs`), so a slow, healthy node is
+/// not reported.
+fn node_stale(n: &net_db::models::NodeRow, now: Timestamp) -> bool {
+    (now - n.last_heartbeat).whole_seconds() > 2 * i64::from(n.heartbeat_secs.max(1))
+}
+
 /// Everything that deserves an operator's eye right now; shared by `/v1/operator/attention`
 /// and the alert loop.
 pub(crate) async fn attention_value(st: &Shared) -> Result<Value> {
@@ -3260,12 +3241,12 @@ pub(crate) async fn attention_value(st: &Shared) -> Result<Value> {
     let nodes = queries::list_all_nodes(&st.pool).await?;
     let stale: Vec<Value> = nodes
         .iter()
-        .filter(|n| (now - n.last_heartbeat).whole_seconds() > 30)
+        .filter(|n| node_stale(n, now))
         .map(|n| json!({"id": n.id, "public_host": n.public_host, "quic_port": n.quic_port, "region": n.region, "last_heartbeat": n.last_heartbeat}))
         .collect();
     let draining: Vec<Value> = nodes
         .iter()
-        .filter(|n| n.draining && (now - n.last_heartbeat).whole_seconds() <= 30)
+        .filter(|n| n.draining && !node_stale(n, now))
         .map(|n| json!({"id": n.id, "public_host": n.public_host, "quic_port": n.quic_port, "region": n.region, "rooms": n.rooms}))
         .collect();
     let projects = queries::list_projects(&st.pool).await?;
@@ -3849,4 +3830,38 @@ async fn op_rooms(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Valu
         }
     }
     Ok(Json(json!({"rooms": out})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_is_stale_after_two_of_its_own_heartbeats() {
+        let at = |secs: i64| Timestamp::from_unix(1_700_000_000 + secs).expect("timestamp");
+        let node = |heartbeat_secs: i32| net_db::models::NodeRow {
+            id: Uuid::nil(),
+            region: "local".into(),
+            public_host: "127.0.0.1".into(),
+            quic_port: 7000,
+            http_url: "http://127.0.0.1:8090".into(),
+            cert_sha256: String::new(),
+            version: "0.1.0".into(),
+            rooms: 0,
+            players: 0,
+            load_factor: 0.0,
+            draining: false,
+            started_at: at(0),
+            last_heartbeat: at(0),
+            heartbeat_secs,
+        };
+        // A healthy node between two 40 s heartbeats.
+        assert!(!node_stale(&node(40), at(34)));
+        assert!(!node_stale(&node(40), at(80)));
+        assert!(node_stale(&node(40), at(81)));
+        // The default interval: one late heartbeat is not an alert, two missed are.
+        assert!(!node_stale(&node(30), at(45)));
+        assert!(node_stale(&node(30), at(61)));
+        assert!(node_stale(&node(2), at(5)));
+    }
 }

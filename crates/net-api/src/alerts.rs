@@ -1,5 +1,7 @@
 //! Fleet alerts: one node (Redis leader lock) re-evaluates the operator attention list every
-//! minute and emits each item to the operator webhooks at most once per hour per subject.
+//! 30 s and emits each item to the operator webhooks at most once per hour per subject. The
+//! period is short enough to see a dead node between its second missed heartbeat (stale) and the
+//! moment its peers remove its row (after the third).
 
 use crate::state::Shared;
 use std::time::Duration;
@@ -9,7 +11,7 @@ const LEADER_TTL_MS: u64 = 90_000;
 const REPEAT_SECS: u64 = 3600;
 
 pub async fn run(st: Shared) {
-    let mut iv = tokio::time::interval(Duration::from_secs(60));
+    let mut iv = tokio::time::interval(Duration::from_secs(30));
     loop {
         iv.tick().await;
         if let Err(e) = cycle(&st).await {
