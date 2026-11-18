@@ -3,7 +3,7 @@
 //! A project uploads a `.wasm` module (any language; the ABI is plain integers/floats) and
 //! references it from room props as `{"logic": "<name>"}`. The node instantiates one
 //! instance per room with a fuel budget per call and a memory cap, so a buggy or hostile
-//! module can only burn its own budget — never stall the node. Guest memory is *not*
+//! module can only burn its own budget, never stall the node. Guest memory is *not*
 //! persisted across node failover; keep game state in components (they are checkpointed).
 //!
 //! Guest exports (functions the module provides):

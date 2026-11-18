@@ -1,5 +1,5 @@
 //! QUIC data plane: the first datagram of a connection is the data ticket; everything after
-//! runs through the session's [`Link`].
+//! runs through the session's [`net_transport::Link`].
 
 use crate::host::{handle_data_frame, DataSession, DataSink};
 use crate::state::Shared;

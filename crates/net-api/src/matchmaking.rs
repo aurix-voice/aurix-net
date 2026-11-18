@@ -40,8 +40,8 @@ pub struct TicketReq {
     #[serde(default)]
     pub fill_existing: bool,
     /// When `max_wait_secs` runs out with fewer than `max_players`, hand the group a room anyway
-    /// and report the empty seats as `bots` so the game (master or WASM logic) fills them with AI —
-    /// bot backfill; without it the group simply starts short-handed.
+    /// and report the empty seats as `bots` so the game (master or WASM logic) fills them with AI
+    /// (bot backfill); without it the group starts short-handed.
     #[serde(default)]
     pub bots: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -127,10 +127,6 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Pure matching pass over every searching ticket (all projects): groups per project+bucket,
-/// starts full groups, or groups past the oldest ticket's wait with enough players. Mutates
-/// states in place (waiting counts, matches) and returns the ids that changed plus the room
-/// names started.
 /// Picks one room out of `rooms` (already filtered to acceptable ones) by `match_type`.
 pub fn pick_room<'a>(rooms: &[&'a LiveRoom], match_type: Option<&str>) -> Option<&'a LiveRoom> {
     match match_type.unwrap_or("fill") {
@@ -173,7 +169,7 @@ pub fn fill_existing(
             .filter
             .as_deref()
             .and_then(|f| crate::mmfilter::Filter::parse(f).ok());
-        let mode = format!("{:?}", t.req.mode).to_lowercase();
+        let mode = t.req.mode.as_str();
         let candidates: Vec<&LiveRoom> = live
             .iter()
             .filter(|r| {
@@ -208,6 +204,10 @@ pub fn fill_existing(
     changed
 }
 
+/// Pure matching pass over every searching ticket (all projects): groups per project+bucket,
+/// starts full groups, or groups past the oldest ticket's wait with enough players. Mutates
+/// states in place (waiting counts, matches) and returns the ids that changed plus the room
+/// names started.
 pub fn match_tickets(tickets: &mut [Ticket], now_ms: u64) -> (Vec<Uuid>, Vec<String>) {
     let mut groups: HashMap<(ProjectId, String), Vec<usize>> = HashMap::new();
     for (i, t) in tickets.iter().enumerate() {

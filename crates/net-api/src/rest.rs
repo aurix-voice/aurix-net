@@ -662,8 +662,6 @@ fn key_write(st: &Shared, key: &ApiKeyRow) -> Result<()> {
     }
 }
 
-/// Records why a project's player/key was turned away (hourly Redis buckets, see
-/// `RedisStore::incr_rejection`). Off the request path; failures are only logged.
 /// First instant of the current UTC calendar month.
 pub(crate) fn month_start() -> Timestamp {
     let now = Timestamp::now();
@@ -719,6 +717,8 @@ pub(crate) async fn check_usage_cap(
     Ok(())
 }
 
+/// Records why a project's player/key was turned away (hourly Redis buckets, see
+/// `RedisStore::incr_rejection`). Off the request path; failures are only logged.
 pub(crate) fn reject(st: &Shared, project: ProjectId, reason: &'static str) {
     let redis = st.redis.clone();
     tokio::spawn(async move {
@@ -1157,9 +1157,7 @@ fn local_stats(st: &Shared) -> Value {
     let mut spectators = 0usize;
     for r in st.host.all() {
         let g = r.lock();
-        *by_mode
-            .entry(format!("{:?}", g.room.cfg.mode).to_lowercase())
-            .or_default() += 1;
+        *by_mode.entry(g.room.cfg.mode.to_string()).or_default() += 1;
         players += g.room.online_count() as usize;
         spectators += g.room.player_infos().iter().filter(|p| p.spectator).count();
     }
@@ -1809,8 +1807,8 @@ struct ReplayQuery {
     to: Option<u32>,
 }
 
-/// Replay of a lockstep room: the stored journal for a closed room (24 h), or — while the room is
-/// live — the confirmed inputs the hosting node still holds, optionally windowed with
+/// Replay of a lockstep room: the stored journal for a closed room (24 h), or, while the room is
+/// live, the confirmed inputs the hosting node still holds, optionally windowed with
 /// `?from=&to=` (kill cams, spectator rewinds, bug reports).
 async fn get_replay(
     State(st): State<Shared>,
@@ -2444,8 +2442,8 @@ struct SuspendReq {
 }
 
 /// Suspend (or resume) a project. While suspended: no grants, no joins, no room creation, no
-/// writes with its keys; reads keep working. Live rooms are not torn down — they drain as players
-/// leave — so the response carries the current live count for the console to show.
+/// writes with its keys; reads keep working. Live rooms are not torn down (they drain as players
+/// leave), so the response carries the current live count for the console to show.
 async fn op_set_suspended(
     State(st): State<Shared>,
     h: HeaderMap,
@@ -3567,7 +3565,6 @@ async fn op_delete_webhook(
     }
 }
 
-/// Operator removes a project's WASM module; audited.
 /// Operator view of one project's API keys (same shape as the key-authenticated list).
 async fn op_list_keys(
     State(st): State<Shared>,
@@ -3697,6 +3694,7 @@ async fn op_put_module(
     ))
 }
 
+/// Operator removes a project's WASM module; audited.
 async fn op_delete_module(
     State(st): State<Shared>,
     h: HeaderMap,

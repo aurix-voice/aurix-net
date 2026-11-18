@@ -1,8 +1,8 @@
 //! `physics-arena`: a room-logic module (see `net-game` for the host ABI) whose avatars are
 //! deterministic fixed-point circles in a walled `net-sim-physics` world. Input = i8 move_x,
 //! i8 move_z, u8 buttons; the module sets the avatar's velocity, steps the world and writes
-//! `Transform.pos` (x, 0, z) for replication, so the node's frame hash — the lockstep referee's
-//! truth — is driven by the same physics clients run through `net-sim-wasm`.
+//! `Transform.pos` (x, 0, z) for replication, so the node's frame hash (the lockstep referee's
+//! truth) is driven by the same physics clients run through `net-sim-wasm`.
 //!
 //! Build: `cargo build --release --target wasm32-unknown-unknown -p net-sim-guest`, upload with
 //! `aurix-net module-put physics-arena target/wasm32-unknown-unknown/release/net_sim_guest.wasm`,

@@ -1,5 +1,5 @@
 //! C ABI for sync rooms: a client-side replicated world (`net_sim::Frame` + the delta decoder the
-//! node itself uses), acks, redundant input frames and owner-authoritative component writes —
+//! node itself uses), acks, redundant input frames and owner-authoritative component writes:
 //! the same shape as the Web `SyncWorld`/`SyncSession` and the Unity `SyncWorld`.
 use crate::{cstr, set_error, AurixNetClient};
 use bytes::{BufMut, Bytes, BytesMut};
@@ -90,7 +90,7 @@ pub unsafe extern "C" fn aurix_net_sync_destroy(s: *mut AurixNetSync) {
     }
 }
 
-/// Feeds one data-path payload. 1 = delta applied and `ack` (9 bytes, may be NULL) filled — send it
+/// Feeds one data-path payload. 1 = delta applied and `ack` (9 bytes, may be NULL) filled, send it
 /// on the unreliable channel; 0 = not a delta; -1 = error (`aurix_net_last_error`).
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_sync_receive(

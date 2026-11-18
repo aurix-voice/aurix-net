@@ -531,7 +531,7 @@ impl FxMat3 {
     pub fn mul_vec(self, v: FxVec3) -> FxVec3 {
         self.cols[0].scale(v.x) + self.cols[1].scale(v.y) + self.cols[2].scale(v.z)
     }
-    /// R · self · Rᵀ — a body-space tensor expressed in world space.
+    /// R · self · Rᵀ: a body-space tensor expressed in world space.
     pub fn rotated(self, r: FxMat3) -> FxMat3 {
         r * self * r.transpose()
     }

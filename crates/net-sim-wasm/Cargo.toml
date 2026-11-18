@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "Flat ABI over net-sim-physics for WASM (Web/Unity) and native FFI consumers"
 license = "Apache-2.0"
+repository.workspace = true
+authors.workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]

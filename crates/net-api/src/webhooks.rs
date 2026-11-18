@@ -129,7 +129,7 @@ impl RpcOutcome {
 
 impl Dispatcher {
     /// Starts the worker; returns the handle used to enqueue events.
-    /// `allow_private`: development only — lets webhooks target loopback/private addresses.
+    /// `allow_private`: development only, lets webhooks target loopback/private addresses.
     pub fn start(pool: DbPool, allow_private: bool) -> Self {
         let (tx, rx) = mpsc::channel(4096);
         let dirty = Arc::new(std::sync::Mutex::new(HashSet::new()));
@@ -274,7 +274,7 @@ impl Dispatcher {
     }
     /// Client-initiated call into the game's backend (WebRPC): the first webhook of the
     /// project subscribed to `rpc` is POSTed `payload`; its JSON answer (≤ 16 KiB, within 5 s)
-    /// goes back to the caller. One attempt — RPCs are not assumed idempotent. Lands in the
+    /// goes back to the caller. One attempt: RPCs are not assumed idempotent. Lands in the
     /// delivery log like every other webhook call.
     pub async fn rpc(&self, project: ProjectId, payload: serde_json::Value) -> RpcOutcome {
         let Some(pool) = &self.pool else {
@@ -466,8 +466,6 @@ impl Dispatcher {
         });
     }
 
-    /// Sends a `test` event to one webhook only (ignores its event filter); the outcome lands in
-    /// the delivery log like any other emission.
     /// Fleet-level alert: delivered to operator webhooks, `project` is null in the body.
     pub fn emit_fleet(&self, event: &'static str, payload: serde_json::Value) {
         self.emit(ProjectId::from_uuid(Uuid::nil()), event, payload);
@@ -477,6 +475,8 @@ impl Dispatcher {
         self.test(ProjectId::from_uuid(Uuid::nil()), webhook);
     }
 
+    /// Sends a `test` event to one webhook only (ignores its event filter); the outcome lands in
+    /// the delivery log like any other emission.
     pub fn test(&self, project: ProjectId, webhook: Uuid) {
         let _ = self.tx.try_send(WebhookEvent {
             project,

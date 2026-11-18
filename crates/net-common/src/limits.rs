@@ -1,6 +1,5 @@
 //! Hard protocol limits. Project quotas live in the control plane; these never move.
 
-/// Maximum datagram payload we emit (QUIC/WebTransport safe on the public internet).
 /// Whole packet (header + payload) budget. QUIC starts at a 1200-byte MTU and its own
 /// framing takes ~50 bytes before PMTU discovery raises the limit, so stay well below 1200
 /// or the first datagrams of a connection fail with TooLarge (no retransmit helps).

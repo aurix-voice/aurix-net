@@ -607,7 +607,7 @@ static class Program
             hostS.Stop(); await Pump(300, hostS);
         }
 
-        // interest management: DistanceRule — c1's avatar at x=100 sees a server object at x=110 but not one at x=500
+        // interest management: DistanceRule, c1's avatar at x=100 sees a server object at x=110 but not one at x=500
         {
             var hostV = Make("hostV"); var cV = Make("cV"); var roomV = room + "-vis"; hostV.roomName = roomV; cV.roomName = roomV;
             hostV.visibilityRules.Add(new DistanceRule(hostV, 50f)); hostV.visibilityIntervalTicks = 2;

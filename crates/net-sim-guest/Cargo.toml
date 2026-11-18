@@ -5,6 +5,8 @@ edition = "2021"
 description = "Reference room-logic WASM module: aurix-sim fixed-point 2D physics arena run by the node as lockstep referee"
 license = "Apache-2.0"
 publish = false
+repository.workspace = true
+authors.workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]

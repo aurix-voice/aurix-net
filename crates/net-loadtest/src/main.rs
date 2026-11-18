@@ -386,11 +386,7 @@ async fn player(
     let room_name = format!("lt-{}-{room}", cli.run);
     tx.send(send(&ClientMsg::JoinOrCreate {
         name: room_name,
-        mode: match cli.mode.as_str() {
-            "sync" => net_common::types::RoomMode::Sync,
-            "lockstep" => net_common::types::RoomMode::Lockstep,
-            _ => net_common::types::RoomMode::Relay,
-        },
+        mode: cli.mode.parse().unwrap_or_default(),
         max_players: Some(cli.players as u16 + u16::from(cli.late_join_secs > 0)),
         props: {
             let mut m: serde_json::Map<String, serde_json::Value> =
@@ -407,7 +403,6 @@ async fn player(
     }))
     .await?;
 
-    // Wait for Joined.
     let (data, tick_hz) = loop {
         let Some(m) = rx.next().await else {
             anyhow::bail!("ws closed before join")
@@ -493,7 +488,6 @@ async fn player(
 
     let sync = cli.mode == "sync" || cli.mode == "lockstep";
     let server_tick = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
-    // Lockstep catch-up tracking (see `Catchup`).
     let catchup = Arc::new(Mutex::new(Catchup::default()));
     let acks = Arc::new(Mutex::new(net_replication::AckTracker::default()));
     let drop_in = cli.drop_in;
@@ -706,7 +700,6 @@ async fn player(
         })
     };
 
-    // Send loop.
     let period = if sync {
         Duration::from_secs_f64(1.0 / tick_hz.unwrap_or(cli.tick_hz).max(1) as f64)
     } else {

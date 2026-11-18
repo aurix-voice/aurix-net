@@ -936,7 +936,7 @@ pub extern "C" fn sim3_hull_golden_hash() -> u64 {
             x ^= (sim3_ray_get(i) as u64).rotate_left(i * 7);
         }
     }
-    // capsule and box sweeps through the same scene (r40: were unimplemented)
+    // capsule and box sweeps through the same scene
     let tilt = FxQuat::from_axis_angle(
         FxVec3::new(Fx::ZERO, Fx::ZERO, Fx::ONE),
         Fx::HALF_PI * Fx::HALF,

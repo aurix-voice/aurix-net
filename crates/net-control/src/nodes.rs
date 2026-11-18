@@ -39,7 +39,7 @@ impl From<NodeRow> for NodeInfo {
     }
 }
 
-/// Orphaned rooms (node died) stay adoptable this long — matches the checkpoint TTL.
+/// Orphaned rooms (node died) stay adoptable this long; matches the checkpoint TTL.
 pub const ORPHAN_TTL_SECS: i64 = 600;
 
 pub struct NodeRegistry {

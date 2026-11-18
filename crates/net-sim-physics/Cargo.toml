@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "Deterministic fixed-point 2D rigid-body physics for lockstep games (aurix-sim phase 1)"
 license = "Apache-2.0"
+repository.workspace = true
+authors.workspace = true
 
 [dependencies]
 net-fpmath = { path = "../net-fpmath" }

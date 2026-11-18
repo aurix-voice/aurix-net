@@ -126,9 +126,6 @@ impl EventFrame {
         } else {
             CacheOp::None
         };
-        if flags & 0x03 == 3 && matches!(target, EventTarget::Actors(_)) {
-            // fine
-        }
         Ok(Self {
             code,
             target,

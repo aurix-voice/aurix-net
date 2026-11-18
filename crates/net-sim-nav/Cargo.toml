@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "Deterministic fixed-point navmesh: polygon graph, A* over portals, funnel smoothing, mesh raycast"
 license = "Apache-2.0"
+repository.workspace = true
+authors.workspace = true
 
 [dependencies]
 net-fpmath = { path = "../net-fpmath" }

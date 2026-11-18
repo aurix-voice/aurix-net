@@ -96,7 +96,7 @@ impl NavMesh {
     }
 
     /// Axis-aligned grid of `cols × rows` cells of size `cell` from `origin`, with `blocked`
-    /// cells removed — handy for tests and tile-based games.
+    /// cells removed, for tests and tile-based games.
     pub fn grid(origin: FxVec2, cell: Fx, cols: u32, rows: u32, blocked: &[(u32, u32)]) -> NavMesh {
         let blocked: BTreeSet<(u32, u32)> = blocked.iter().copied().collect();
         let mut verts = Vec::new();
@@ -204,7 +204,7 @@ impl NavMesh {
                 cost: (to - from).length(),
             });
         }
-        // (f, g, poly, parent, entry edge of parent) — BTreeSet gives a deterministic frontier
+        // (f, g, poly, parent, entry edge of parent); BTreeSet gives a deterministic frontier
         let mut open: BTreeSet<(Fx, Fx, PolyId)> = BTreeSet::new();
         let mut g: BTreeMap<PolyId, Fx> = BTreeMap::new();
         let mut came: BTreeMap<PolyId, (PolyId, u32)> = BTreeMap::new();
@@ -321,7 +321,7 @@ impl NavMesh {
         serde_json::from_slice(b).ok()
     }
 
-    /// FNV-1a over vertices and polygons — equal meshes hash equal on every platform.
+    /// FNV-1a over vertices and polygons: equal meshes hash equal on every platform.
     pub fn hash(&self) -> u64 {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         let mut mix = |v: i64| {

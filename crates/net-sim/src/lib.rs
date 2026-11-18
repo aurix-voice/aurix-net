@@ -165,7 +165,7 @@ impl Frame {
     }
 
     /// Client side: makes sure `id` exists exactly as the server numbered it.
-    /// Creates (or re-owns) an entity with a server-chosen id — delta/checkpoint application.
+    /// Creates (or re-owns) an entity with a server-chosen id (delta/checkpoint application).
     /// Ids beyond `cfg.max_entities` are rejected instead of growing the slot table (a crafted
     /// id must not make a peer allocate gigabytes).
     pub fn ensure_entity(&mut self, id: EntityId, owner: Option<ActorId>) -> Result<(), SimError> {

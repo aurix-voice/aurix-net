@@ -4,7 +4,7 @@
 Unreal Engine is not available on the CI hosts, so this validates what can be validated without
 it: the .uplugin descriptor, packaging files (FilterPlugin.ini, icon), module layout, the UHT
 conventions every reflected header must follow, and the dependency direction between modules.
-It does NOT compile anything — `RunUAT BuildPlugin` runs separately when engine images are
+It does NOT compile anything: `RunUAT BuildPlugin` runs separately when engine images are
 available (see Docs/Packaging.md). ABI drift against the C headers is covered by the Rust test
 `unreal_plugin_uses_only_existing_abi`.
 """

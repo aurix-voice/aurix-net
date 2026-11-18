@@ -61,10 +61,10 @@ impl GameLogic for net_game::WasmLogic {
     }
 }
 
-/// Arena: input = i8 move_x, i8 move_z, u8 buttons; server integrates velocity.
 /// Entities one client may force into view with `set_view`.
 pub const MAX_INTEREST: usize = 64;
 
+/// Arena: input = i8 move_x, i8 move_z, u8 buttons; server integrates velocity.
 pub struct ArenaLogic {
     pub speed: f32,
 }
@@ -139,7 +139,7 @@ impl GameLogic for ArenaLogic {
 }
 
 /// Owner-authoritative: every actor gets one entity (its avatar) and may spawn more. The input
-/// body is either the plain form — `u8 n, n × (cid, encode_full)` applied to the avatar — or,
+/// body is either the plain form (`u8 n, n × (cid, encode_full)` applied to the avatar) or,
 /// when the first byte is `OPS_MARKER`, a list of ops: `u8 n_ops`, each `u8 op` followed by
 /// `OP_WRITE: u48 entity, u8 n, writes` · `OP_SPAWN: u8 n, writes` (new entity owned by the
 /// actor, at most `MAX_OWNED` per actor) · `OP_DESPAWN: u48 entity` · `OP_TRANSFER: u48 entity,

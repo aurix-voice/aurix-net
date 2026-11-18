@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct FlowField {
     pub goal: FxVec2,
     pub goal_poly: PolyId,
-    /// For every polygon: (next polygon, point to steer towards) — the goal itself in its polygon.
+    /// For every polygon: (next polygon, point to steer towards); the goal itself in its polygon.
     pub next: Vec<Option<(PolyId, FxVec2)>>,
     pub dist: Vec<Fx>,
 }

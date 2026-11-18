@@ -319,7 +319,7 @@ impl LockstepRoom {
             .is_some_and(|n| *n >= UNTRUSTED_AFTER)
     }
 
-    /// The bundle produced by the last [`tick`]: one input-journal entry for Redis, so a node
+    /// The bundle produced by the last [`Self::tick`]: one input-journal entry for Redis, so a node
     /// that adopts this room after a crash loses no inputs between checkpoints.
     pub fn last_bundle(&self) -> Option<Bytes> {
         self.recent.back().cloned()
@@ -412,7 +412,7 @@ impl LockstepRoom {
         (self.hz as u32 * CHECKPOINT_EVERY_SECS).max(1)
     }
 
-    /// Called once per tick after [`tick`]: a `CheckpointReq` frame for the master, if due.
+    /// Called once per tick after [`Self::tick`]: a `CheckpointReq` frame for the master, if due.
     pub fn checkpoint_request(&mut self) -> Option<Bytes> {
         if self.sim.is_some() {
             return None;

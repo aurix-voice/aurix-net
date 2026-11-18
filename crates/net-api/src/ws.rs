@@ -481,7 +481,7 @@ impl Session {
                             room: r.room.id(),
                             node: self.st.node_id.to_string(),
                             name: r.room.cfg.name.clone(),
-                            mode: format!("{:?}", r.room.cfg.mode).to_lowercase(),
+                            mode: r.room.cfg.mode.to_string(),
                             players: r.room.players().count() as u16,
                             max_players: r.room.cfg.max_players,
                             open: true,
@@ -1015,7 +1015,7 @@ impl Session {
                 (
                     hr.room.cfg.id,
                     hr.room.cfg.name.clone(),
-                    format!("{:?}", hr.room.cfg.mode).to_lowercase(),
+                    hr.room.cfg.mode.as_str(),
                     hr.room.cfg.props.clone(),
                 )
             };
@@ -1789,11 +1789,7 @@ pub async fn adopt_room(
     };
     let proj = queries::get_project(&st.pool, row.project_id).await?;
     let limits = ProjectLimits::from_json(&proj.limits).effective(&st.cfg.limits);
-    let mode = match row.mode.as_str() {
-        "sync" => RoomMode::Sync,
-        "lockstep" => RoomMode::Lockstep,
-        _ => RoomMode::Relay,
-    };
+    let mode = row.mode.parse().unwrap_or_default();
     let props = row.props.as_object().cloned().unwrap_or_default();
     let cfg = RoomConfig {
         id: room_id,
@@ -1909,7 +1905,7 @@ pub async fn publish_room(st: &Shared, h: &Arc<Mutex<HostedRoom>>) {
                 room: g.room.id(),
                 node: st.node_id.to_string(),
                 name: g.room.cfg.name.clone(),
-                mode: format!("{:?}", g.room.cfg.mode).to_lowercase(),
+                mode: g.room.cfg.mode.to_string(),
                 players: g.room.players().count() as u16,
                 max_players: g.room.cfg.max_players,
                 open: g.room.cfg.open,
@@ -1936,12 +1932,6 @@ pub async fn publish_room(st: &Shared, h: &Arc<Mutex<HostedRoom>>) {
     }
 }
 
-/// Shutdown: every hosted room gets a fresh checkpoint in Redis and becomes `orphaned` in the
-/// DB, so the next node a player reaches adopts it (same path as a crashed node, minus the
-/// heartbeat wait). Players get `left{reason:"rehost"}` and rejoin by room name.
-/// Server-side kick (REST): removes the actor from a room hosted on this node, tells the client
-/// `left{reason}`, updates sync/lockstep membership and republishes the room.
-/// Removes `actor` from a room hosted here; returns the kicked player's id for the audit trail.
 /// Pushes a system notice to every online player of a room hosted here; returns the player count.
 pub fn notice_room(st: &Shared, room: RoomId, text: &str, level: &str) -> Result<usize> {
     let hr = st
@@ -1972,6 +1962,9 @@ pub fn notice_project(st: &Shared, project: ProjectId, text: &str, level: &str) 
     (rooms, players)
 }
 
+/// Server-side kick (REST): removes the actor from a room hosted on this node, tells the client
+/// `left{reason}`, updates sync/lockstep membership and republishes the room. Returns the kicked
+/// player's id for the audit trail.
 pub async fn kick_player(
     st: &Shared,
     room: RoomId,
@@ -2014,6 +2007,9 @@ pub async fn kick_player(
     Ok(player_id)
 }
 
+/// Shutdown: every hosted room gets a fresh checkpoint in Redis and becomes `orphaned` in the
+/// DB, so the next node a player reaches adopts it (same path as a crashed node, minus the
+/// heartbeat wait). Players get `left{reason:"rehost"}` and rejoin by room name.
 pub async fn handoff_all(st: &Shared) -> usize {
     let rooms = st.host.all();
     for h in &rooms {
@@ -2124,13 +2120,13 @@ pub fn fit_replay(r: &mut net_rollback::Replay, max_bytes: usize) -> Option<Vec<
 
 /// `room.closed` payload: name/mode/props always; with room prop `export_state_on_close` the
 /// final checkpoint (players, master, sync state or lockstep snapshot) as base64 so a backend can
-/// persist the match — the "persist room state via webhooks" pattern. Capped at 256 KiB.
+/// persist the match (the "persist room state via webhooks" pattern). Capped at 256 KiB.
 fn closed_payload(g: &mut HostedRoom, id: RoomId) -> Value {
     const MAX_EXPORT: usize = 256 * 1024;
     let mut p = serde_json::json!({
         "room": id.to_string(),
         "name": g.room.cfg.name,
-        "mode": format!("{:?}", g.room.cfg.mode).to_lowercase(),
+        "mode": g.room.cfg.mode.as_str(),
         "props": g.room.cfg.props,
     });
     if prop_bool(&g.room.cfg.props, "export_state_on_close", false) {
@@ -2229,11 +2225,7 @@ pub fn live_to_summary(r: LiveRoom) -> RoomSummary {
     RoomSummary {
         id: r.room.to_string(),
         name: r.name,
-        mode: match r.mode.as_str() {
-            "sync" => RoomMode::Sync,
-            "lockstep" => RoomMode::Lockstep,
-            _ => RoomMode::Relay,
-        },
+        mode: r.mode.parse().unwrap_or_default(),
         players: r.players,
         max_players: r.max_players,
         open: r.open && r.players < r.max_players,

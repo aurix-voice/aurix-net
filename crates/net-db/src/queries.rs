@@ -686,7 +686,7 @@ pub struct UsageRow {
     pub quantity: f64,
 }
 
-/// (player_minutes, bytes_in + bytes_out) since `since` — the monthly usage-cap check.
+/// (player_minutes, bytes_in + bytes_out) since `since`: the monthly usage-cap check.
 pub async fn usage_totals_since(
     pool: &DbPool,
     project_id: Uuid,
@@ -729,7 +729,7 @@ pub struct ProjectMetricRow {
     pub quantity: f64,
 }
 
-/// Per-project metric totals in [from, to) — the monthly billing report.
+/// Per-project metric totals in [from, to): the monthly billing report.
 pub async fn usage_by_project_between(
     pool: &DbPool,
     from: Timestamp,
@@ -882,7 +882,7 @@ pub async fn failing_webhooks_last_hour(pool: &DbPool) -> Result<Vec<FailingWebh
     .map_err(db_err)
 }
 
-/// (failed, total) deliveries of one project in the last hour — the project health card.
+/// (failed, total) deliveries of one project in the last hour: the project health card.
 pub async fn webhook_delivery_stats_last_hour(pool: &DbPool, project: Uuid) -> Result<(i64, i64)> {
     sqlx::query_as::<_, (i64, i64)>(
         "SELECT COUNT(*) FILTER (WHERE NOT ok), COUNT(*) FROM webhook_deliveries \
@@ -1291,9 +1291,6 @@ pub async fn purge_usage(pool: &DbPool, days: u32) -> Result<u64> {
     Ok(r.rows_affected())
 }
 
-/// Newest audit rows first; `project` = None lists every project (operator view).
-/// Audit rows, newest first. `action` / `actor` are prefix filters (`key.` matches every key
-/// action; `operator` matches the operator actor).
 /// Audit rows whose target is exactly `target` (e.g. a player id), newest first.
 pub async fn list_audit_for_target(
     pool: &DbPool,
@@ -1371,6 +1368,9 @@ pub async fn find_operator_token(
     .map_err(db_err)
 }
 
+/// Audit rows, newest first; `project` = None lists every project (operator view). `action` /
+/// `actor` are prefix filters (`key.` matches every key action; `operator` matches the operator
+/// actor).
 pub async fn list_audit(
     pool: &DbPool,
     project: Option<Uuid>,

@@ -26,7 +26,7 @@ struct Cli {
     config: Option<String>,
     #[arg(long)]
     migrate_only: bool,
-    /// Probe this node's own `/healthz` and exit 0 on 200 — the container HEALTHCHECK for images
+    /// Probe this node's own `/healthz` and exit 0 on 200: the container HEALTHCHECK for images
     /// without a shell or curl (distroless).
     #[arg(long)]
     healthcheck: bool,
@@ -215,7 +215,7 @@ async fn main() -> anyhow::Result<()> {
                                 "match.found",
                                 serde_json::json!({
                                     "room": m.room,
-                                    "mode": format!("{:?}", m.mode).to_lowercase(),
+                                    "mode": m.mode.as_str(),
                                     "players": m.players,
                                     "tickets": m.tickets,
                                     "bots": m.bots,

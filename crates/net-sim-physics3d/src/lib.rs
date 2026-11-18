@@ -1632,7 +1632,6 @@ fn box_box(a: &Body, ha: FxVec3, b: &Body, hb: FxVec3) -> Vec<(FxVec3, FxVec3, F
     out
 }
 
-/// Contact of a probe sphere against any body: (point on body, normal sphere→body, depth).
 /// Contact points of `a` against `b`: (point, normal from a to b, depth); empty when apart.
 fn contact_points(a: &Body, b: &Body) -> Vec<(FxVec3, FxVec3, Fx)> {
     match (&a.shape, &b.shape) {
@@ -1700,6 +1699,7 @@ fn contact_points(a: &Body, b: &Body) -> Vec<(FxVec3, FxVec3, Fx)> {
     }
 }
 
+/// Contact of a probe sphere against any body: (point on body, normal sphere→body, depth).
 fn sphere_vs(c: FxVec3, r: Fx, b: &Body) -> Option<(FxVec3, FxVec3, Fx)> {
     match &b.shape {
         Shape::Sphere { .. } => sphere_sphere(c, r, b.position, b.radius()),

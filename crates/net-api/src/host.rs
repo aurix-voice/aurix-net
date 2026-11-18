@@ -143,7 +143,7 @@ pub struct RoomHost {
     by_name: DashMap<(ProjectId, String), RoomId>,
     /// Lobby subscribers per project on this node.
     lobby: DashMap<ProjectId, Vec<mpsc::Sender<ServerMsg>>>,
-    /// Authenticated control sessions per (project, player) — presence for `find_friends`.
+    /// Authenticated control sessions per (project, player): presence for `find_friends`.
     presence: DashMap<(ProjectId, String), u32>,
 }
 

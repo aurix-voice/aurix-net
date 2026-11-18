@@ -91,6 +91,47 @@ pub enum RoomMode {
     Lockstep,
 }
 
+impl RoomMode {
+    /// The name used on the wire, in the database and in room listings.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Relay => "relay",
+            Self::Sync => "sync",
+            Self::Lockstep => "lockstep",
+        }
+    }
+}
+
+impl fmt::Display for RoomMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for RoomMode {
+    type Err = UnknownRoomMode;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "relay" => Ok(Self::Relay),
+            "sync" => Ok(Self::Sync),
+            "lockstep" => Ok(Self::Lockstep),
+            _ => Err(UnknownRoomMode),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnknownRoomMode;
+
+impl fmt::Display for UnknownRoomMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("unknown room mode")
+    }
+}
+
+impl std::error::Error for UnknownRoomMode {}
+
 /// Delivery guarantees of a data channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -133,4 +174,19 @@ pub struct Region {
     pub display_name: String,
     pub dns_label: String,
     pub enabled: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn room_mode_name_matches_its_serde_name() {
+        for mode in [RoomMode::Relay, RoomMode::Sync, RoomMode::Lockstep] {
+            let json = serde_json::to_value(mode).unwrap();
+            assert_eq!(json, mode.as_str());
+            assert_eq!(mode.to_string().parse(), Ok(mode));
+        }
+        assert_eq!("Relay".parse::<RoomMode>(), Err(UnknownRoomMode));
+    }
 }

@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Deterministic bot kit for Aurix Sim: behavior trees, hierarchical state machines, blackboard, navmesh steering glue"
+repository.workspace = true
+authors.workspace = true
 
 [dependencies]
 net-fpmath = { path = "../net-fpmath" }
