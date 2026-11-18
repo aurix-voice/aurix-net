@@ -2,7 +2,7 @@
 // and a STATE struct, implement Simulate(input, ref state, dt) deterministically from those alone:
 //   owner    : samples input every tick (GetInput), simulates at once, keeps a history, sends inputs
 //              to the server (redundantly), and on each verified state compares it with its own for
-//              that tick — on a mismatch it rewinds and re-simulates the inputs after it;
+//              that tick; on a mismatch it rewinds and re-simulates the inputs after it;
 //   server   : simulates the owner's input for each tick (repeats the last one when it is late),
 //              sends the verified state to observers every stateSendInterval ticks;
 //   observers: interpolate between verified states (UpdateView).

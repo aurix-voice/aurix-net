@@ -1,4 +1,4 @@
-// Aurix Net Unity SDK — replicate skeleton bones (local pose) for ragdolls / procedural animation.
+// Replicate skeleton bones (local pose) for ragdolls / procedural animation.
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections.Generic;

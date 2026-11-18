@@ -1,4 +1,4 @@
-// Lag compensation (PurrNet ColliderRollback-style): the server keeps a per-tick history of this object's
+// Lag compensation: the server keeps a per-tick history of this object's
 // pose; NetworkManager.Rollback(shooter, body) rewinds every ColliderRollback to the tick the shooter was
 // looking at (its reported view tick), runs body (raycasts, overlaps…), then restores the live pose.
 using System;

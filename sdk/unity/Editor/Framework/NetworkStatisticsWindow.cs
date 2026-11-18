@@ -1,4 +1,4 @@
-// Aurix Net Unity SDK — editor window showing live NetworkStatistics of the running NetworkManager.
+// Editor window showing live NetworkStatistics of the running NetworkManager.
 // SPDX-License-Identifier: Apache-2.0
 using UnityEditor;
 using UnityEngine;

@@ -257,7 +257,7 @@ void UAurixNetDriver::OnMasterChanged(int32 Master)
 
 // The master left. Everyone stays in the room: the new master reloads the current map as a listen
 // server on the same room, the others reconnect to it a moment later. Game state is the game's job
-// (Starting → save to room props, Done → restore), exactly like Fusion's host-migration callbacks.
+// (save it to the room props on Starting, restore it on Done).
 void UAurixNetDriver::BeginHostMigration(int32 NewMaster)
 {
 	UAurixNetSubsystem* S = Subsystem();

@@ -1,5 +1,5 @@
 // Inspector for NetworkIdentity: scene objects get a stable sceneId (hash of scene + hierarchy path),
-// play mode shows object id, owner and observers. Not yet exercised in a Unity Editor.
+// play mode shows object id, owner and observers. Not yet run in a Unity editor.
 using System.Linq;
 using Aurix.Net.Unity.Framework;
 using UnityEditor;

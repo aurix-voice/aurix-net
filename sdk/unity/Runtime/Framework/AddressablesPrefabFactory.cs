@@ -1,4 +1,4 @@
-// Aurix Net Unity SDK — network prefabs loaded through Addressables (compiled only when com.unity.addressables is present).
+// Network prefabs loaded through Addressables (compiled only when com.unity.addressables is present).
 // SPDX-License-Identifier: Apache-2.0
 #if AURIX_ADDRESSABLES
 using System;

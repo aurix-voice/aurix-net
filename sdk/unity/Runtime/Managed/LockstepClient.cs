@@ -190,7 +190,7 @@ namespace Aurix.Net.Managed
             _send(Channel.Reliable, b);
         }
 
-        /// <summary>Answer to OnDumpRequested: your state at `tick` (≤ 60 KiB) — stored by the node for 24 h next to
+        /// <summary>Answer to OnDumpRequested: your state at `tick` (≤ 60 KiB), stored by the node for 24 h next to
         /// the master's, so the two can be diffed offline.</summary>
         public void SendDump(uint tick, ulong hash, byte[] state)
         {

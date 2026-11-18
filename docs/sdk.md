@@ -6,10 +6,10 @@
 | C ABI | `crates/net-ffi` (`libaurix_net`, `include/aurix_net.h`) | via Rust client | verified (`ctest/echo.c`) |
 | C ABI, aurix-sim | `libaurix_net` also exports `sim_*`/`sim3_*` (`include/aurix_sim.h`, copies in `sdk/cpp`, `sdk/godot/src`) | native | verified (`ctest/sim.c`: six golden hashes) |
 | C++ (header-only) | `sdk/cpp/aurix_net.hpp` | via C ABI: relay, sync (`aurix::net::Sync`), lockstep | verified (`echo_test.cpp`, `sync_test.cpp`) |
-| Unity (UPM) | `sdk/unity` | pure C# (WebSocket control + tunnel), optional P/Invoke QUIC | managed core live-tested with dotnet; `NetRunner`/`NetView`/`NetTransform`/`[Sync]`/`[Rpc]`, `LockstepClient` + editor window written, real editor build pending; `NetRigidbody`/`NetAnimator`/`TickTimer`/`ISpawned`/`IDespawned` compile-checked (BuildCheck), editor run pending a license |
+| Unity (UPM) | `sdk/unity` | pure C# (WebSocket control + tunnel), optional P/Invoke QUIC | managed core live-tested with dotnet; `NetRunner`/`NetView`/`NetTransform`/`[Sync]`/`[Rpc]`, `LockstepClient` + editor window written, not yet built in an editor; `NetRigidbody`/`NetAnimator`/`TickTimer`/`ISpawned`/`IDespawned` compile-checked (BuildCheck) |
 | Unreal Engine (beta) | `sdk/unreal` | C++ plugin over C ABI: NetDriver over relay rooms + Blueprint subsystem | beta: written for UE 5.3-5.8, engine-free checks in CI (`sdk/unreal/scripts/check_plugin.py`); built and run with UE 5.8.2 on Linux only |
-| Godot 4 GDExtension | `sdk/godot` | C++ wrapper over C ABI | verified (godot-cpp 4.2 build, headless Godot 4.2.2 relay + sync replication: `sdk/godot/check~`) |
-| Web (`@aurix/net`) | `sdk/web` | WS control + WS tunnel (WebTransport next) | verified (`npm test`) |
+| Godot 4 GDExtension | `sdk/godot` | C++ wrapper over C ABI | verified (godot-cpp 4.2 build; headless Godot 4.2.2 and 4.4.1: relay, sync and lockstep in `sdk/godot/check~`) |
+| Web (`@aurix/net`) | `sdk/web` | WS control + WebTransport or WS tunnel | verified over the tunnel (`npm test`) |
 
 All SDKs share one shape: `connect(http, grant)` → `joinOrCreate/join` → per frame `poll()`,
 `sendEvent/sendData`, `flush()`; events `control` (JSON), `event` (relay frame), `data` (raw
@@ -17,7 +17,7 @@ sync/lockstep frames), `closed`. Grants always come from the developer's backend
 
 ## Rehost
 
-When a node shuts down (deploy) it hands its rooms to another node and sends `left{reason:"rehost"}`. Clients rejoin the same room with the same grant: Rust `client.rejoin(&[fallback_urls])`, Web `client.rejoin(fallbackUrls)` (or listen to the `rehost` event), C# `ManagedClient.RejoinAsync(fallbacks)`; Unity `NetRunner` does it automatically (`FallbackUrls`). Actor ids are preserved by player id.
+When a node shuts down (deploy) it hands its rooms to another node and sends `left{reason:"rehost"}`. Clients rejoin the same room with the same grant: Rust `client.rejoin(&[fallback_urls])`, Web `client.rejoin(fallbackUrls)` (or listen to the `rehost` event), C# `ManagedClient.RejoinAsync(fallbacks)`; Unity `NetRunner` does it automatically (`FallbackUrls`). C++ and Godot have no `rejoin` call: connect again with the same grant and join the same room. Actor ids are preserved by player id.
 
 ## Lobby statistics and presence
 
@@ -61,12 +61,18 @@ for (auto e = ls.poll(); e.kind != aurix::net::Lockstep::Kind::None; e = ls.poll
   switch (e.kind) {
     case aurix::net::Lockstep::Kind::Tick:    sim.step(e.tick, e.inputs); aurix::net::Lockstep::reportHash(c, e.tick, sim.hash()); break;
     case aurix::net::Lockstep::Kind::Restore: sim.restore(e.state, e.stateLen); break;
-    case aurix::net::Lockstep::Kind::CheckpointReq: aurix::net::Lockstep::sendCheckpoint(c, e.tick, sim.hash(), sim.bytes(), sim.size()); break;
+    case aurix::net::Lockstep::Kind::CheckpointReq: aurix::net::Lockstep::sendCheckpoint(c, sim.tick(), sim.hash(), sim.bytes(), sim.size()); break;
     case aurix::net::Lockstep::Kind::DumpReq: aurix::net::Lockstep::sendDump(c, e.tick, sim.hashAt(e.tick), sim.bytesAt(e.tick), sim.sizeAt(e.tick)); break;
     default: break;
   }
 }
 ```
+
+A checkpoint is labelled with the tick the simulation runs next (`sim.tick()` above: the last `Tick`
+it stepped, plus one), not with the tick in the request: the room can be ahead of the client, and a
+late joiner restored from a mislabelled state desyncs. `Restore` with tick 0 and an empty state means
+"start from the initial state". `sendInput` returns the stamped tick, or -1 when this room tick
+already has your input (the room takes one per tick).
 
 ## Sync rooms from C++ and Godot
 
@@ -92,7 +98,7 @@ world.begin(tr).write(pos, mine, 3).end().spawn(c);        // a second entity yo
 // Web: session.spawn(writes) / writeEntity(id, writes) / despawn(id) / transfer(id, actor); C#: SyncWorld.EncodeOps(SyncOp[...])
 ```
 
-Godot: `AurixNetSync` (RefCounted) — `setup(schema)`, feed the client's `data` signal to
+Godot: `AurixNetSync` (RefCounted): `setup(schema)`, feed the client's `data` signal to
 `receive(client, payload)`, listen to `spawn(entity, owner)` / `change` / `despawn`, read
 `get_field(entity, "Transform", "pos")` as Vector3/Quaternion/float/String, write with
 `begin_write("Transform")`, `write_field("pos", Vector3(...))`, `end_write()`, `send_writes(client)`.
@@ -126,13 +132,13 @@ render(game);                                                 // predicted state
 Rollback counters (`rollbacks`, `resimulatedTicks`, `predictedTicks`) tell you how often remote
 players change their input unexpectedly; a high ratio means lower `maxPrediction` or smoothing in
 the view. Hash reports must be computed on the *confirmed* state (`confirmedSnapshot()` after `confirm`),
-never on the predicted head — the head is speculative and differs between players.
+never on the predicted head: the head is speculative and differs between players.
 
 ## Instant replay (kill cam)
 
 Two ways to rewind a lockstep match:
 
-- **Locally, no round trip** — `ReplayRing` (Rust `net_client::rollback::ReplayRing`, Web/C# `ReplayRing`)
+- **Locally, no round trip**: `ReplayRing` (Rust `net_client::rollback::ReplayRing`, Web/C# `ReplayRing`)
   keeps the last `keep` confirmed ticks' inputs and a snapshot of the confirmed state every `every`
   ticks. Record from the confirmed path, then `window(from)` gives the nearest snapshot at or before
   `from` and the inputs to step from it:
@@ -145,13 +151,13 @@ Two ways to rewind a lockstep match:
   if (w) { cam.restore(w.snapshot); let t = w.start; for (const i of w.inputs) cam.step(t++, i); }
   ```
 
-- **From the node** — `GET /v1/rooms/:id/replay?from=&to=` returns the confirmed inputs of a *live*
+- **From the node**: `GET /v1/rooms/:id/replay?from=&to=` returns the confirmed inputs of a *live*
   room from whichever node hosts it (and windows the stored replay after close). Use it for
   spectators who arrived late, bug reports and server-side highlight generation; the payload is the
   same `Replay` JSON as the post-match replay (`from_tick`, `inputs`, `hashes`).
 
 
-## Aurix Sim — deterministic physics in every SDK
+## Aurix Sim: deterministic physics in every SDK
 
 `net-sim-physics` (fixed-point Q32.32, no floats) is exposed through one flat ABI crate,
 `net-sim-wasm`, built both as `net_sim_wasm.wasm` (browsers, Unity WebGL, node referee) and as a
@@ -232,7 +238,7 @@ w3.setRotation(crate, Sim3World.axisAngle({ x: 0, y: 0, z: 1 }, 0.3));
 
 3D joints and characters: `jointBall`, `jointHinge` (local axes, optional limits + motor,
 `hingeAngle`, `setMotor`), `jointDistance` (rope when `minLength < length`), `removeJoint`;
-`character(body)` wraps a kinematic capsule in a controller — `moveCharacter(k, delta)` before
+`character(body)` wraps a kinematic capsule in a controller: `moveCharacter(k, delta)` before
 `step()` slides along geometry, steps over ledges up to `stepHeight`, snaps to the ground and
 reports `characterState(k).grounded`. C#: `JointBall/JointHinge/JointDistance/HingeAngle/
 Character/MoveCharacter/CharacterState`. Reference hash `sim3_joint_golden_hash()` =
@@ -240,12 +246,12 @@ Character/MoveCharacter/CharacterState`. Reference hash `sim3_joint_golden_hash(
 
 Bot kit ports: Web `BehaviorTree/StateMachine/Blackboard` (`sdk/web/src/bots.ts`) and C#
 `Aurix.Net.Sim.Bots` load the same JSON as the Rust `net-sim-bots` crate and produce identical
-per-tick statuses and hashes — verified against `crates/net-sim-bots/fixtures/vectors.json`
+per-tick statuses and hashes, verified against `crates/net-sim-bots/fixtures/vectors.json`
 (regenerate with `BOTS_WRITE_VECTORS=1 cargo test -p net-sim-bots vectors`).
 
 3D convex hulls and sweeps: `addConvex(kind, pos, verts, faces)` / C# `AddConvex` build a convex
 polyhedron from <= 32 body-space vertices and faces given as index loops (winding is normalised,
-author vertices around the centre of mass; mass is exact volume, inertia the bounding box) — hulls
+author vertices around the centre of mass; mass is exact volume, inertia the bounding box); hulls
 collide with spheres, capsules, boxes and each other via SAT over face normals and edge crosses with
 reference-face clipping. `sphereCast(from, dir, radius)` / `SphereCast` sweeps a sphere and reports
 the first body, the centre's stop fraction and the surface point/normal. Reference hash
@@ -262,16 +268,16 @@ the same numbers the Web/Unity wrappers pass through. A GDExtension can call it 
 `aurix_net_client.cpp`'s neighbourhood (header copied to `sdk/godot/src`); `crates/net-ffi/ctest/sim.c`
 is the offline check (golden hashes + a resting ball in 2D and 3D + a sphere cast).
 
-## Best region (Photon `GetRegions`)
+## Best region
 
 Every SDK can pick the closest live node before connecting: it reads `GET /v1/regions` from the catalog (or any
-node), probes each endpoint's `/healthz` a few times and returns the fastest — Rust `best_region(catalog, probes)`,
+node), probes each endpoint's `/healthz` a few times and returns the fastest: Rust `best_region(catalog, probes)`,
 C `aurix_net_best_region` (JSON, free with `aurix_net_string_free`), C++ `Client::bestRegionEndpoint`, Godot
 `AurixNetClient.best_region`, Web `Client.bestRegion`, Unity `RegionPicker.BestRegionAsync`, Unreal
 `UAurixNetSubsystem::BestRegionAsync`. Use the returned endpoint as the cell URL; every candidate with its RTT comes
 back too, so a region picker UI is one call.
 
-## Chat (Photon Chat)
+## Chat
 
 No separate chat service: `Chat` (Web), `ChatClient` (Unity) and `aurix::net::Chat` (C++) run on a relay room.
 Channels are interest groups (`join` = subscribe, chat groups live at `groupBase + channel`, default 60000), messages
@@ -280,11 +286,11 @@ room's cache limits and `cleanup_cache_on_leave` apply), whispers are events to 
 Payload: `u8 kind (0 channel, 1 whisper), u16 channel, UTF-8 text` on a reserved event code (default 240). Chat
 stays inside the room, so moderation (kick, bans), rate limits and GDPR export/erase cover it for free.
 
-## Lockstep commands (Quantum `DeterministicCommand`)
+## Lockstep commands
 
-`SendCommand(bytes)` (Unity `LockstepClient`, Web `LockstepSession`, C `aurix_net_lockstep_send_command`, C++
+`SendCommand(bytes)` (Unity `LockstepClient`, Web `LockstepClient`, C `aurix_net_lockstep_send_command`, C++
 `Lockstep::sendCommand`, Unreal `UAurixLockstepComponent::SendCommand`) sends a reliable message outside the input
-stream; the cell stamps it onto the next tick and everyone (and the referee) receives it at that tick —
+stream; the cell stamps it onto the next tick and everyone (and the referee) receives it at that tick:
 `OnCommand(tick, actor, bytes)` right before `OnTick`, or as the input of pseudo-actor 65535 where the SDK exposes
 raw bundles (C/C++). Commands are journaled, so replays and late-join catch-ups include them.
 
@@ -299,4 +305,4 @@ peer and raises `onSceneLoadDone` only when all players reported ready (or `scen
 
 Room props `replay_every` (ticks, default hz/2) and `replay_secs` (default 30, 0 off) keep full-world delta frames on
 the node; `GET /v1/rooms/{id}/replay?from=&to=` returns them (`mode: "sync"`). Feed the frames, in order, to a fresh
-sync world in any SDK to play back a kill cam — no extra client state needed.
+sync world in any SDK to play back a kill cam, with no extra client state.

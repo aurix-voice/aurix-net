@@ -1,4 +1,4 @@
-// Deterministic bot kit — port of `net-sim-bots`: data-driven behavior trees, hierarchical state
+// Deterministic bot kit, a port of `net-sim-bots`: data-driven behavior trees, hierarchical state
 // machines and an integer blackboard. Node JSON is serde's externally tagged form, so trees
 // authored for Rust/WASM run unchanged here; hashes match the Rust crate bit for bit.
 

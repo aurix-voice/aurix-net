@@ -15,11 +15,11 @@ DECLARE_DYNAMIC_DELEGATE_RetVal(int64, FAurixRollbackHash);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixRollbackResimulated, int64, FromTick, int32, Ticks);
 
 /**
- * Predict-and-rollback over AurixLockstepComponent (Quantum-style): the local player's input is
+ * Predict-and-rollback over AurixLockstepComponent: the local player's input is
  * applied immediately with the other players' last known inputs; when the cell confirms a tick the
  * runner restores the last confirmed state, applies the confirmed inputs, re-simulates the predicted
  * ticks, reports the hash, and records a replay. Bind Simulate / Save / Load (and Hash for custom
- * state) to your deterministic game code — an AurixSimWorld2D/3D fits directly (Snapshot/Restore/Hash).
+ * state) to your deterministic game code; an AurixSimWorld2D/3D fits directly (Snapshot/Restore/Hash).
  */
 UCLASS(ClassGroup = (AurixNet), meta = (BlueprintSpawnableComponent))
 class AURIXNET_API UAurixRollbackRunner : public UActorComponent

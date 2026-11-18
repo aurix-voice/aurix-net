@@ -2,7 +2,7 @@ using System;
 
 namespace Aurix.Net.Unity.Framework
 {
-    /// <summary>Tick-based timer that every peer evaluates identically (Fusion TickTimer): store it in a SyncVar or a
+    /// <summary>Tick-based timer that every peer evaluates identically: store it in a SyncVar or a
     /// predicted state and ask <see cref="Expired"/> against the manager's tick instead of using wall-clock time.</summary>
     [Serializable]
     public struct TickTimer : IEquatable<TickTimer>

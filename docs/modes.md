@@ -19,7 +19,7 @@ reliable-unordered), rooms/lobby/properties/master client, grants and quotas.
 ## Topologies
 
 A mode says who simulates; a topology says where that runs and how players reach it. Aurix
-covers the four that Fusion and Quantum list, on one protocol and one SDK surface:
+covers four of them on one protocol and one SDK surface:
 
 | | Dedicated server | Client host | Shared authority | Deterministic |
 |---|---|---|---|---|
@@ -59,7 +59,7 @@ cached from then on — `increase` opens the next slice, `set` picks one, `purge
 one slice, `purge_up_to` every slice up to and including `index` (e.g. per-round state a late
 joiner no longer needs). Late joiners receive the remaining slices in original order.
 
-Room flags (room props, Photon `RoomOptions` equivalents): `publish_user_id` (default true; false hides other players' `player_id` from clients — actor numbers, names and props only; operators still see ids), `suppress_room_events` (default false; true drops `player_joined` / `player_left` broadcasts for very large rooms — master changes still go out), `suppress_player_info` (default false; true sends a joiner only their own roster entry), `broadcast_props_to_all` (default true; false skips the setter when a props change is broadcast). `CheckUserOnJoin` is always on: one session per player id per room is enforced by the grant.
+Room flags (room props): `publish_user_id` (default true; false hides other players' `player_id` from clients — actor numbers, names and props only; operators still see ids), `suppress_room_events` (default false; true drops `player_joined` / `player_left` broadcasts for very large rooms — master changes still go out), `suppress_player_info` (default false; true sends a joiner only their own roster entry), `broadcast_props_to_all` (default true; false skips the setter when a props change is broadcast). `CheckUserOnJoin` is always on: one session per player id per room is enforced by the grant.
 
 Rate limits: a room takes `max_events_per_sec_per_room` events (default 2000) and each player
 `max_events_per_sec_per_player` (default 60, burst of 2 s worth); over the limit the event is
@@ -164,7 +164,7 @@ report it (`Hash` frame). The server compares hashes per tick; a minority is rep
 everyone as `desync`. The server keeps the canonical input journal, which is also the replay
 format (`net-rollback::Replay`): seed + schema hash + inputs per tick reproduces the game.
 
-**Commands** (Quantum `DeterministicCommand`): a reliable message outside the per-tick input stream — buy, surrender, pause. The server stamps it onto the next tick and ships it inside that tick's bundle as the input of pseudo-actor 65535, so it is in the journal, in catch-ups, in replays and in the referee's input stream; every client sees it at the same tick (`SendCommand` / `OnCommand` in the SDKs). Up to 1 KB per command, 4 KB per tick.
+**Commands**: a reliable message outside the per-tick input stream — buy, surrender, pause. The server stamps it onto the next tick and ships it inside that tick's bundle as the input of pseudo-actor 65535, so it is in the journal, in catch-ups, in replays and in the referee's input stream; every client sees it at the same tick (`SendCommand` / `OnCommand` in the SDKs). Up to 1 KB per command, 4 KB per tick.
 
 **Instant replay for sync rooms**: room props `replay_every` (ticks between snapshots, default hz/2) and `replay_secs` (window, default 30; 0 off) keep full-world delta frames on the node; `GET /v1/rooms/{id}/replay?from=&to=` returns them (`mode: "sync"`) and any SDK sync client replays them by feeding the frames, in order, to a fresh world.
 

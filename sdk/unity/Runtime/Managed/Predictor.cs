@@ -1,7 +1,7 @@
 // Client-side prediction for server-authoritative entities (sync rooms with a WASM `logic` module).
 // The local player applies its own input immediately with the same step function the server runs,
 // keeps the inputs it has not seen confirmed yet, and when the server's state for tick T arrives it
-// re-simulates every later input on top of it — so a mismatch (hit a wall the client did not know
+// re-simulates every later input on top of it, so a mismatch (hit a wall the client did not know
 // about, got pushed) is corrected without waiting a round trip, and a correct guess costs nothing.
 using System;
 using System.Collections.Generic;

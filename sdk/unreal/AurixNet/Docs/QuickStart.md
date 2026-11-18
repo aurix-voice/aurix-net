@@ -75,7 +75,7 @@ new master, that player reloads the current map as the listen server on the same
 reconnect to it about a second later. Game state is yours to carry: on `OnHostMigration(Starting)`
 save what matters (room props are kept by the cell — `SetRoomProps`), on `OnHostMigration(Done,
 bNewHost = true)` restore it in the new host's world. Turn the setting off to get the classic
-"host left → everyone disconnects" behaviour.
+"host left, everyone disconnects" behaviour.
 
 ## 4. Standard session nodes (optional)
 
@@ -98,7 +98,7 @@ Relay is what the NetDriver uses. The other two room modes are exposed as compon
 
 - **`AurixSyncWorld`** — client of a cell-authoritative world (`sync` rooms): set the schema JSON,
   read entities/components/fields each tick (`OnSpawn` / `OnChange` / `OnDespawn`), send inputs for the
-  room's server logic, or owner-authoritative writes (`WriteBegin` → `WriteVector`… → `WriteEnd` →
+  room's server logic, or owner-authoritative writes (`WriteBegin`, `WriteVector`…, `WriteEnd`, then
   `SendWrites`).
 - **`AurixLockstepComponent`** — deterministic lockstep (`lockstep` rooms): `SendInput` each tick,
   simulate on `OnTick(Tick, Inputs)`, `ReportHash` so the cell catches desyncs; `OnRestore` and
@@ -126,7 +126,7 @@ others extrapolate with the received velocities and blend corrections over `Corr
 
 Console: `aurix.net.status`, `aurix.net.rooms [expr]`, `aurix.net.leave`. In the editor, **Window → Developer Tools → Aurix Net Debugger** shows every PIE instance: state, room, players, props, lockstep statistics, with Request rooms / Leave / Project Settings buttons.
 
-## 6. Deterministic simulation and rollback (Quantum-style)
+## 6. Deterministic simulation and rollback
 
 - **`AurixSimWorld2D` / `AurixSimWorld3D`** — aurix-sim in Blueprint/C++: fixed-point (Q32.32) rigid
   bodies, joints, raycasts and sweeps, kinematic character controllers, grid navmesh + flow fields +
@@ -141,11 +141,11 @@ Console: `aurix.net.status`, `aurix.net.rooms [expr]`, `aurix.net.leave`. In the
 
 ## Engine versions
 
-Beta: the plugin has not been built with an engine yet, so the range below is what the source is
-written for, not a tested one.
+Beta: built and run with UE 5.8.2 on Linux only. The range below is what the source is written
+for; the other engine versions and platforms have not been built.
 
-5.3 – 5.8; Win64, Linux, Mac, Android, iOS (static `libaurix_net.a`). One source tree; the module compiles with `CppStandardVersion.Default` (5.6+ needs
-C++20). Package per engine with `RunUAT BuildPlugin -Plugin=…/AurixNet.uplugin -Package=…`.
+5.3 – 5.8; Win64, Linux, Mac, Android, iOS (static `libaurix_net.a`). One source tree.
+Package per engine with `RunUAT BuildPlugin -Plugin=…/AurixNet.uplugin -Package=…`.
 
 ## Dedicated server with a public IP
 

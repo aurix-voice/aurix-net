@@ -1,4 +1,4 @@
-// Aurix Net Unity SDK — replicate fields/properties and call methods of any plain component by name (PurrNet-style NetworkReflection).
+// Replicate fields/properties and call methods of any plain component by name.
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections.Generic;

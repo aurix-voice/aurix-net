@@ -1,4 +1,4 @@
-// Tick-based timer (Fusion's TickTimer): created against the current server tick, compared against it
+// Tick-based timer: created against the current server tick, compared against it
 // later, so every peer agrees on when it expires. Pure C#, serializable as two ticks.
 using System;
 

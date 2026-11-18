@@ -610,7 +610,7 @@ pub struct RegionPick {
     pub candidates: Vec<RegionCandidate>,
 }
 
-/// Photon `GetRegions` + best-region ping in one call: reads `GET {catalog}/v1/regions` (any node or the
+/// Region list and best-region ping in one call: reads `GET {catalog}/v1/regions` (any node or the
 /// catalog answers), probes every live endpoint `probes` times over HTTP(S) `/healthz` and returns the
 /// fastest. Use the chosen `endpoint` as the cell URL for `connect`. Nodes that do not answer are kept
 /// in `candidates` with `rtt_ms = -1`.

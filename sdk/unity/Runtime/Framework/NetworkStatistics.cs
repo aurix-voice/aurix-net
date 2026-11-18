@@ -1,4 +1,4 @@
-// Aurix Net Unity SDK — connection statistics (ping, jitter, throughput, stall detection).
+// Connection statistics (ping, jitter, throughput, stall detection).
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections.Generic;

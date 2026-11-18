@@ -4,7 +4,7 @@ import type { EventFrame } from "./event.js";
 /** A chat message as delivered to `onMessage`: `channel` is undefined for whispers. */
 export interface ChatMessage { from: number; channel?: number; text: string; cached: boolean }
 
-/** Photon Chat on top of a relay room, no extra service: channels are interest groups (join = subscribe),
+/** Chat on top of a relay room, no extra service: channels are interest groups (join = subscribe),
  *  messages are reliable events to the group with `cache: "add"` so late joiners get the history the room
  *  still holds, whispers are events to one actor. Everything stays inside the room (and its moderation,
  *  rate limits and GDPR tooling). */

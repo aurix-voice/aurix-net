@@ -123,7 +123,7 @@ pub unsafe extern "C" fn aurix_net_issue_grant(
     }
 }
 
-/// Photon GetRegions + best-region ping: JSON `{region, endpoint, rtt_ms, candidates:[...]}` or NULL
+/// Region list and best-region ping: JSON `{region, endpoint, rtt_ms, candidates:[...]}` or NULL
 /// (see aurix_net_last_error). Blocks for up to a few seconds; free with aurix_net_string_free.
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_best_region(

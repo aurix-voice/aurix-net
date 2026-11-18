@@ -61,12 +61,13 @@ mismatch is corrected by replaying the unconfirmed inputs on the server state (`
 Owner-authoritative rooms (no `logic`) do not need prediction: the owner's `[Sync]` values are the truth.
 
 Relay rooms (no simulation): `Runner.SendEvent(code, bytes, Target.All, reliable: true)` and
-`Runner.OnEvent`. Event codes `0x10–0x13` and `0x20–0x24` are reserved for sync/lockstep frames.
+`Runner.OnEvent`. In sync and lockstep rooms event codes `0x10–0x2F` belong to the room's own frames:
+an event sent with one of them is not delivered.
 
 Lockstep rooms (deterministic, every client simulates): `Runner.Lockstep` delivers confirmed inputs
 per tick in order (`OnTick`), restores state on late join / rehost (`OnRestore`), uploads the master's
 checkpoint when the node asks (`OnCheckpointRequested` → `SendCheckpoint`); you send `SendInput(bytes)`
-every tick and `ReportHash(tick, hash)` so the node can flag desyncs. Keep the simulation integer or
+every tick (the room takes one input per tick, extra calls send nothing) and `ReportHash(tick, hash)` so the node can flag desyncs. Keep the simulation integer or
 fixed-point; see `Samples~/LockstepDuel/DuelSim.cs`.
 
 Samples (`Samples~`): `SyncArena/PlayerController.cs`, `RelayChat/ChatSample.cs`, `LockstepDuel/DuelSim.cs`.
@@ -89,11 +90,10 @@ c.SendEvent(1, Encoding.UTF8.GetBytes("hi"), Target.Others, reliable: true);
 void Update() { c.Poll(); }  void LateUpdate() { c.Flush(); }
 ```
 
-## Gameplay framework (host-authoritative, PurrNet-style)
+## Gameplay framework (host-authoritative)
 
 `Runtime/Framework/` is a complete netcode layer for games that want a Unity host (or a headless
-Unity server) to own the simulation, with Aurix Net as the relay, lobby and hosting underneath —
-the model PurrNet, Mirror and FishNet users know:
+Unity server) to own the simulation, with Aurix Net as the relay, lobby and hosting underneath:
 
 ```csharp
 using Aurix.Net.Unity.Framework;
@@ -121,7 +121,7 @@ public class Player : NetworkBehaviour
 `NetworkIdentity` on each prefab root; its `behaviours` list (auto-filled from children) fixes the
 replication order; objects placed in the scene get a non-zero `sceneId` and are bound, not instantiated. Drop-in components: `NetworkTransform`, `NetworkRigidbody`, `NetworkAnimator`, `PlayerSpawner` (`Runtime/Framework/Components/`). `PlayerID` is the Aurix actor id. Modules and RPC methods are bound by reflection
 in declaration order, so host and clients must run the same build. RPC methods are rewritten after
-compilation by the weaver in `Editor/CodeGen` (an `ILPostProcessor`, like Mirror/PurrNet/NGO): calling
+compilation by the weaver in `Editor/CodeGen` (an `ILPostProcessor`): calling
 `CmdHit(10)` sends the RPC and the body runs where it should; without the weaver (or from code you do
 not own) use `Rpc(nameof(CmdHit), 10)` / `RpcTo(player, …)`. Interest management: add `INetworkVisibilityRule`s to `NetworkManager.visibilityRules` (e.g. `new DistanceRule(manager, 50f)`) or set `NetworkIdentity.visibilityRule`; clients only hold objects they can see. Client-side prediction: derive from `PredictedBehaviour<INPUT, STATE>`, implement `GetInput`, a deterministic `Simulate(input, ref state, dt)` and `SetUnityState`; the owner predicts and reconciles, the server verifies, observers interpolate. Static RPCs work too: put `[ServerRpc]`/`[ObserversRpc]`/`[TargetRpc]` on a static method of any class (no NetworkIdentity needed); they route through `NetworkManager.main`. Lag compensation: add `ColliderRollback` to hittable objects and wrap server-side hit checks in `networkManager.Rollback(info.sender, () => Physics.Raycast(...))`. `StartAuto()` is quick match: join a random open room (`matchFilterJson`, `matchExpr`) or host a new one with `roomPropsJson`. Host migration is on by default: if the host leaves, the new room master becomes the server with the world it can see and the others re-attach.
 

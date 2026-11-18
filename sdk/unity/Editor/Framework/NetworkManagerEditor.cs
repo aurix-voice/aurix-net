@@ -1,5 +1,5 @@
 // Inspector for NetworkManager: settings when editing, live role/players/objects and Start/Stop buttons in play mode.
-// Not yet exercised in a Unity Editor (no licence on the build machine); kept to plain IMGUI APIs.
+// Not yet run in a Unity editor; kept to plain IMGUI APIs.
 using System.Linq;
 using Aurix.Net.Unity.Framework;
 using UnityEditor;

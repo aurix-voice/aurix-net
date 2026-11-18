@@ -199,7 +199,7 @@ namespace Aurix.Net.Managed
         }
 
         public Task LeaveAsync() => SendControlAsync("{\"t\":\"leave\"}");
-        /// <summary>Sync rooms: steer area-of-interest — extra viewpoints (camera, scope target) and entities forced into view (team mates, objectives). Entity ids as in deltas.</summary>
+        /// <summary>Sync rooms: steer area-of-interest: extra viewpoints (camera, scope target) and entities forced into view (team mates, objectives). Entity ids as in deltas.</summary>
         /// <summary>Project-wide live rooms/players grouped by the room prop "lobby" (JSON: {rooms, players, lobbies:[{lobby, rooms, players}]}); one per second.</summary>
         public async Task<string> StatsAsync(int timeoutMs = 10000)
         {

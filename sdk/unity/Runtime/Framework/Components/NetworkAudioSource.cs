@@ -1,4 +1,4 @@
-// Aurix Net Unity SDK — replicated AudioSource (settings + playback commands).
+// Replicated AudioSource (settings + playback commands).
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections.Generic;

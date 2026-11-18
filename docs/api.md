@@ -36,6 +36,7 @@ The grant is bound to the project; `room` restricts the player to one room name.
 |---|---|---|---|
 | GET | `/healthz` | none | node id, region, rooms, players |
 | GET | `/metrics` | none | Prometheus |
+| GET | `/v1/me` | key or operator | who the bearer is: the operator, or an API key with its project and scopes; the console signs in with it |
 | GET | `/v1/regions` | key | regions with live nodes |
 | GET | `/v1/nodes` | key | nodes visible to the project |
 | POST | `/v1/grants` | `rooms` | issue a join grant |
@@ -61,8 +62,11 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | POST | `/v1/rooms/:id/notice` | rooms | push a system notice `{text (≤512), level: info|warn}` to every online player of the room (any node); clients get `{"t":"notice","text","level"}`; audited `room.notice` |
 | POST | `/v1/notice` | rooms | same to every live room of the project on every node → `{rooms, players}`; audited `project.notice`; operators: `POST /v1/operator/rooms/:id/notice`, `POST /v1/operator/projects/:id/notice` |
 | GET | `/v1/players/:player_id` | read | where a player is right now across every live node (`rooms[]` with room id/name/mode/node/actor), `ban` (or null), last 20 `audit` rows targeting them, `unreachable_nodes`; operators: `GET /v1/operator/projects/:id/players/:player_id` |
-| GET/POST | `/v1/bans` | read / rooms | project deny-list; POST `{player_id, reason?, duration_secs?}` (omit duration = permanent). Banned players get 403 `banned…` at `/v1/grants` and at join; counted as rejection reason `banned` |
+| GET/POST | `/v1/bans` | read / rooms | project deny-list; POST `{player_id, scope?, reason?, duration_secs?}` (omit duration = permanent; `scope` is `player` (default), `player_ip`, `player_device` or `player_ip_device` and also bans the IP and/or device the player was last seen with). Banned players get 403 `banned…` at `/v1/grants` and at join; counted as rejection reason `banned` |
 | DELETE | `/v1/bans/:player_id` | rooms | lift a ban |
+| DELETE | `/v1/bans/marks/:kind/:value` | rooms | lift one IP or device ban (`kind` is `ip` or `device`) left by a ban with `scope` |
+| GET | `/v1/players/:player_id/export` | admin | everything stored about a player, as JSON; operators: `GET /v1/operator/projects/:id/players/:player_id/export` |
+| DELETE | `/v1/players/:player_id/data` | admin | forget a player: identity, IP and device bans and the ban go, audit rows lose the target; operators: `DELETE /v1/operator/projects/:id/players/:player_id/data` |
 | GET/POST/DELETE | `/v1/operator/projects/:id/bans[/:player_id]` | operator | same for operators |
 | GET | `/v1/rejections` | read | why this project's players/keys were turned away in the last `?hours=` (≤26, default 24): hourly `series` + `total` by reason — `rate_limited`, `quota`, `usage_cap`, `ip_denied`, `capacity`, `room_full`, `suspended`, `banned`, `region`, `grant`. Counted on every node (Redis), 26 h retention |
 | GET | `/v1/operator/projects/:id/rejections` | operator | same for operators |
@@ -78,24 +82,26 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | GET | `/v1/audit?format=csv` · `/v1/operator/audit?format=csv` | read / operator | same filters (`action`, `actor`, `limit`, operator `project`) as CSV attachment: id, created_at, project_id, actor, action, target, details (JSON) |
 | GET | `/v1/operator/attention` | operator | what needs a look now: `stale_nodes` (no heartbeat > 30 s), `draining_nodes`, `suspended_projects`, `failing_webhooks` (failed deliveries in the last hour), `rejections` (projects with rejections this hour, by reason) |
 | GET | `/v1/operator/nodes` | operator | all nodes incl. draining |
+| GET | `/v1/operator/rooms` | operator | every live room in the region, across projects; one project: `GET /v1/operator/projects/:id/rooms` |
+| GET | `/v1/operator/projects/:id/audit` | operator | audit trail of one project, same filters as `/v1/operator/audit` |
 | GET | `/v1/operator/nodes/:id/stats` | operator | live process stats of one node (answered by that node): uptime, rooms by mode, players/spectators, control sessions, datagram/byte counters, sync tick avg/p99 ms, overruns, lost deltas, resyncs, desyncs, adopted rooms, RSS |
 | GET | `/v1/internal/rooms/:id/players` | operator | node-to-node: players of a room hosted on this node (used by room detail on other nodes) |
 | DELETE | `/v1/internal/rooms/:id` | operator | node-to-node: close a room hosted on this node |
 | POST | `/v1/internal/drain` | operator | node-to-node: drain/undrain this node |
 | POST | `/v1/operator/nodes/:id/drain` | operator | `{draining}`: proxied to the target node; `true` refuses joins, hands every room off through checkpoints and answers 503 on `/healthz` without stopping the process; `false` puts it back in rotation |
-| DELETE | `/v1/operator/nodes/:id` | operator | forget a node |
 
-Errors: `{"error": {"code": "...", "message": "..."}}` with codes `unauthorized, forbidden,
-not_found, conflict, invalid, room_full, room_closed, schema_mismatch, quota_exceeded,
-rate_limited`.
+Errors: `{"error": "<code>", "message": "..."}` with codes `unauthorized, forbidden,
+not_found, conflict, invalid_request, room_full, room_closed, schema_mismatch, quota_exceeded,
+rate_limited`; a failure inside the node answers 500 with `internal`, `database`, `redis`,
+`transport` or `config`.
 
 ## WebSocket control channel `/ws`
 
 JSON messages, `"t"` is the type (snake_case). Client → server: `auth{grant}`,
 `create{...}`, `join{name, player_props, rejoin_actor?, schema_hash?, spectator?}`,
 `join_or_create{name, mode, max_players, props, lobby_props, region, player_props}`,
-`join_random{...}`, `leave`, `set_room_props{props, expected?}`,
-`set_player_props{props, expected?}`, `event{code, data(base64), target, reliable, cache, group}`,
+`join_random{...}`, `leave`, `set_room_props{props, expected?, visible?, open?}`,
+`set_player_props{props, expected?}`, `event{code, data(base64), target, channel, cache, group}` (`target` is `{"kind": "all" | "others" | "master"}` or `{"kind": "actors", "actors": [..]}`, default others; `channel` is `unreliable_sequenced`, `reliable_ordered` (default) or `reliable_unordered`),
 `set_groups{join, leave}`, `cache_slice{op, index?}` (relay event-cache slices), `set_view{viewpoints, interest}` (sync AOI: extra viewpoints, forced entities),
 `set_master{actor}`, `kick{actor, reason}`, `lobby{subscribe}`,
 `stats` (live rooms/players per lobby), `find_friends{players}` (presence of ≤ 64 players; `stats`/`find_friends` at most once per second per session),
@@ -107,7 +113,7 @@ Server → client: `hello{session, version, region}`, `authed{player_id, name}`,
 `player_props`, `event{code, from, data}` (control fallback), `master_changed{actor}`,
 `lobby_rooms{rooms}`, `lobby_update{room, removed}`, `stats{rooms, players, lobbies[{lobby, rooms, players}]}`,
 `friends{friends[{player, online, room?{id, name, mode, node}}]}`, `rooms{rooms[{id, name, mode, players, max_players, open, props}]}`, `rpc_result{id, ok, status?, body, error?}`, `pong{ts, server_ms}`,
-`error{code, message}`, `desync{tick, actor}`.
+`notice{text, level}`, `error{code, message}`, `desync{tick, actor, strikes, untrusted}`.
 
 `joined.data` = `{host, port, cert_sha256, ticket(base64), ws_tunnel, webtransport_url?}`: connect QUIC
 (ALPN `aurix-net/1`, pin `cert_sha256`), send the ticket as the first datagram, wait for the
@@ -244,8 +250,8 @@ CLI: `aurix-net modules | module-put <name> <file> | module-delete <name>`.
 | WebSocket connects per IP | 600/min | 429 |
 | Concurrent sessions/data connections per IP | 512 | 429 / connection refused |
 | Failed `auth` per IP | 20/min | `rate_limited`, connection closed |
-| Room name | 1..=64 chars, no control characters | `invalid` |
-| `lobby_props` per room | ≤32 keys, each 1..=64 chars | `invalid` |
+| Room name | 1..=64 chars, no control characters | `invalid_request` |
+| `lobby_props` per room | ≤32 keys, each 1..=64 chars | `invalid_request` |
 | Control message (post-auth) | 68 KiB; 8 KiB before `auth` | connection closed |
 | Write calls per API key (rooms, tickets, keys, webhooks, modules) | 20/s | 429 `rate_limited` |
 | Grants per API key (`POST /v1/grants`) | 500/s | 429 `rate_limited` |

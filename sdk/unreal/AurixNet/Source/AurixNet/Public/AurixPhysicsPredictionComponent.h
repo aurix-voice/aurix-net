@@ -17,7 +17,7 @@ enum class EAurixPhysicsMode : uint8
 
 /**
  * Physics prediction for relay rooms. EngineReplication selects the engine's own client prediction
- * for replicated rigid bodies (what Fusion's PhysicsReplication does by hand); RelayEvents is a
+ * for replicated rigid bodies; RelayEvents is a
  * stand-alone path for rooms without a NetDriver: the owning player sends position / rotation /
  * velocities at SendHz (event code 201, optional interest group), everyone else integrates
  * velocities between snapshots and blends the error away over CorrectionTime.

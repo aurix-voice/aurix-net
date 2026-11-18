@@ -25,7 +25,7 @@ The envelope is always `event`, `project`, `at` (RFC 3339, UTC) and `data`. Veri
 | `room.closed` | `{"room":"<uuid>","name":"ranked-7","mode":"sync","props":{...},"state":"<base64>"}` | `state` only with room prop `export_state_on_close: true`: the final checkpoint JSON (players, master, sync state or lockstep snapshot), ≤ 256 KiB (`state_too_large: <bytes>` otherwise) — persist matches on your side |
 | `room.closed` (minimal) | `{"room":"<uuid>"}` | the room ended: last player left and `empty_ttl` passed, or it was closed by the game / an operator |
 | `room.rehosted` | `{"room":"<uuid>","name":"lobby-1","mode":"sync","node":"<node-uuid>","restored":true}` | the room was adopted by another node after a drain or node loss; `restored` is false when no checkpoint was found and the room started fresh |
-| `player.joined` | `{"room":"<uuid>","actor":3}` | a player finished auth + join; `actor` is the per-room id (0..N) |
+| `player.joined` | `{"room":"<uuid>","actor":3}` | a player finished auth + join; `actor` is the per-room id, counted from 1 |
 | `player.left` | `{"room":"<uuid>","actor":3,"kicked":true}` | a player left or timed out (`player_ttl`); `kicked` is present only for kicks |
 | `match.found` | `{"room":"lobby-7f3a","mode":"sync","players":["p1","p2"],"tickets":["<uuid>","<uuid>"],"bots":2}` | matchmaking grouped tickets; `room` is the room name the players will join with their grants (`tickets` lists the matched ticket ids) |
 | `test` | `{"webhook":"<uuid>"}` | sent by `POST /v1/webhooks/:id/test` or the console; ignores the event filter |

@@ -53,6 +53,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   game stopped receiving anything without an error.
 - Web SDK: `client.on("notice", ...)` compiles in TypeScript. The event was emitted but missing
   from the type of `on`.
+- SDK docs: the Godot and C++ lockstep examples labelled a checkpoint with the tick from the
+  request, so a late joiner desynced; they now use the simulation's own tick. The Godot README no
+  longer points to a `rejoin()` that does not exist, and the event codes taken by sync and lockstep
+  rooms are stated as they are (`0x10–0x2F`, in those rooms only).
 - Godot SDK: the `event` signal no longer fires for sync and lockstep frames in rooms of those
   modes. Only relay events reach it, as in the Web SDK.
 - Node: `create` on the control channel holds the seats listed in `reserved`, as REST room
@@ -86,7 +90,7 @@ engine yet.
   objects per delta), the `movers.wat` example logic and `scripts/objects.sh`; results for 100, 250
   and 500 objects at 20 Hz in [testing.md](docs/testing.md).
 - Unity gameplay framework (`Aurix.Net.Unity.Framework`, `Runtime/Framework/`): host-authoritative
-  netcode in the PurrNet/Mirror/FishNet mould over an Aurix relay room — `NetworkManager`
+  netcode over an Aurix relay room — `NetworkManager`
   (`StartHost`/`StartServer`/`StartClient`, prefab registry, `Spawn`/`Despawn`, ownership, tick),
   `NetworkIdentity` (objectId, owner, isServer/isClient/isOwner/isController, despawn on owner
   leave), `NetworkBehaviour` with `SyncVar<T>`, `SyncList<T>`, `SyncDictionary<K,V>` (server- or
@@ -104,8 +108,8 @@ engine yet.
 - IL weaver for the framework (`Editor/CodeGen/RpcWeaver.cs`, Mono.Cecil): `[ServerRpc]` /
   `[ObserversRpc]` / `[TargetRpc]` methods become direct call sites (`CmdHit(10)` routes the call,
   the original body moves to `CmdHit__Impl`; `[TargetRpc]` takes the target `PlayerID` as its first
-  parameter). Runs in Unity through an `ILPostProcessor` (`Aurix.Net.CodeGen`, editor-only, same
-  layout as Netcode for GameObjects — not yet exercised in an editor) and on plain .NET through
+  parameter). Runs in Unity through an `ILPostProcessor` (`Aurix.Net.CodeGen`, editor-only,
+  not yet exercised in an editor) and on plain .NET through
   `sdk/unity/Weaver/Aurix.Net.Weaver.Cli` (`aurix-weave <assembly.dll>`), which `framework-check`
   applies to its own test assembly before running the live scenario.
 - Interest management: per-object observer sets on the server, `INetworkVisibilityRule`

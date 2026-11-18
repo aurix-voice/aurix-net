@@ -6,7 +6,8 @@ in the repo root, then `scons target=template_debug` (`SConstruct` builds godot-
 `addons/aurix_net/` together with `libaurix_net.so` / `aurix_net.dll`.
 
 Smoke test without the editor: `check~/` is a minimal project (classes load, sync schema parses, two relay
-clients exchange an event, then two more replicate a `Transform` through `AurixNetSync` with 0 gaps).
+clients exchange an event, two more replicate a `Transform` through `AurixNetSync` with 0 gaps, then run a
+lockstep room; the `event` signal stays quiet in both).
 `cp -r bin ../../target/release/libaurix_net.so check~/addons/aurix_net/bin/`, then
 `GRANT_A=... GRANT_B=... GRANT_C=... GRANT_D=... godot --headless --path check~` (grants from
 `POST /v1/grants`; without them only the offline part runs). Godot discovers `.gdextension` files when the
@@ -22,8 +23,8 @@ net.send_event(1, "hi".to_utf8_buffer()); net.flush()
 
 ## Signals added for operator messages
 
-- `notice(text: String, level: String)` — system message pushed by the operator console or the game backend (`level` is `info` or `warn`). Show it in the HUD; it is not a chat message.
-- `rehost()` — the room moved to another node during a rolling deploy. Call `rejoin()` with the same grant (the node list from `/v1/regions` works as fallback).
+- `notice(text: String, level: String)`: system message pushed by the operator console or the game backend (`level` is `info` or `warn`). Show it in the HUD; it is not a chat message.
+- `rehost()`: the room moved to another node during a rolling deploy. Come back with the same grant: `disconnect_from()`, `connect_to()` (the same URL, or another node from `/v1/regions` when it no longer answers), then `join()` the same room. Your actor id is kept.
 
 The C++ header exposes the same as `onNotice` / `onRehost` callbacks.
 
@@ -48,11 +49,13 @@ func _process(dt):
     world.begin_write("Transform"); world.write_field("pos", position); world.end_write(); world.send_writes(client)
     # more entities you own: queue writes, then world.spawn_entity(client); world.write_entity(client, id); world.despawn_entity(client, id); world.transfer_entity(client, id, other_actor)
 ```
-`send_input(client, bytes)` is the raw input for rooms with server-side `logic`.
+`send_input(client, bytes)` is the raw input for rooms with server-side `logic`. The room takes one
+input per tick, so `send_writes` and `send_input` can be called every frame: the newest of a tick is
+the one sent.
 
 ## Lockstep rooms
 
-`AurixNetLockstep` is the client side of a lockstep room (Quantum-style): the game owns the deterministic
+`AurixNetLockstep` is the client side of a lockstep room: the game owns the deterministic
 simulation (use `AurixSim` worlds or your own fixed-point code), steps it on every confirmed tick and reports a
 hash; the cell compares hashes, serves late joiners from the master's checkpoints and keeps the input journal
 for replays.
@@ -65,11 +68,18 @@ ls.tick.connect(func(tick: int, inputs: Array):
     sim.step()
     ls.report_hash(client, tick, sim.hash()))
 ls.command.connect(func(tick, actor, data): game.on_command(actor, data))     # SendCommand from any peer
-ls.restore.connect(func(tick, hash, state): sim.restore(state))               # late join / resync
-ls.checkpoint_requested.connect(func(tick): ls.send_checkpoint(client, tick, sim.hash(), sim.snapshot()))
+ls.restore.connect(func(tick, hash, state): sim.restore(state))               # on join / resync
+ls.checkpoint_requested.connect(func(_tick): ls.send_checkpoint(client, ls.get_confirmed_tick(), sim.hash(), sim.snapshot()))
 ls.dump_requested.connect(func(tick): ls.send_dump(client, tick, sim.hash(), sim.snapshot()))
 func _physics_process(_dt): ls.send_input(client, encode_local_input())
 ```
+
+`restore` fires on every join. In a room that has no checkpoint yet it carries tick 0 and an empty
+`state`: start from your initial state. Label a checkpoint with `get_confirmed_tick()`, the tick your
+simulation runs next, not with the tick in the request: the room can be a tick ahead of you, and a
+late joiner restored from a mislabelled state desyncs. `send_input` returns the tick the input is
+stamped with, or -1 when this room tick already has your input (the room takes one per tick), so it
+is safe to call every frame.
 
 `send_command(client, bytes)` is a reliable message outside the input stream (buy, surrender, pause): the cell
 stamps it onto the next tick and every peer gets `command` right before that tick. `set_input_delay(d, min, max,

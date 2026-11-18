@@ -1,4 +1,4 @@
-// Spawn/despawn callbacks on any component of a replicated prefab (Fusion's ISpawned/IDespawned).
+// Spawn/despawn callbacks on any component of a replicated prefab.
 namespace Aurix.Net.Unity
 {
     /// <summary>Called right after the view is bound: entity id, owner and [Sync] fields are valid.</summary>

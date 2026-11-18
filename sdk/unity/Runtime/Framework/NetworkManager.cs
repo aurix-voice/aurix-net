@@ -134,7 +134,7 @@ namespace Aurix.Net.Unity.Framework
         public bool isSceneLoading => loadingScene != null;
         ushort _sceneLoadId; readonly HashSet<PlayerID> _sceneReady = new HashSet<PlayerID>(); HashSet<PlayerID> _sceneWaitFor; float _sceneDeadline;
 
-        /// <summary>Server only: load a scene on every peer in lock step (Fusion LoadScene). Clients pause their view until the server says done; late joiners get the current scene name in Welcome.</summary>
+        /// <summary>Server only: load a scene on every peer in lock step. Clients pause their view until the server says done; late joiners get the current scene name in Welcome.</summary>
         public void LoadScene(string sceneName)
         {
             if (!isServer || string.IsNullOrEmpty(sceneName)) return;

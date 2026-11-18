@@ -5,7 +5,7 @@
 //   void CmdHit__Impl(int dmg, RpcInfo info) { /* original body */ }
 //
 // IDX is the index the runtime assigns in NetworkBehaviour.Reflect (declaring type full name, method
-// name, parameter count) — both sides must agree, so the ordering here mirrors it exactly. Runs inside
+// name, parameter count): both sides must agree, so the ordering here mirrors it exactly. Runs inside
 // Unity through the ILPostProcessor in Editor/CodeGen, or from the CLI for plain .NET builds.
 using System;
 using System.Collections.Generic;

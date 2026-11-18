@@ -1,5 +1,5 @@
 // Replicates Animator parameters through a schema component (default "Animator"): every field of the
-// component maps to the Animator parameter of the same name — f32/quantized → float, int/uint →
+// component maps to the Animator parameter of the same name: f32/quantized → float, int/uint →
 // integer, bool → bool. Triggers are not state: fire them with a [Rpc] on the owner.
 using Aurix.Net.Managed;
 using UnityEngine;

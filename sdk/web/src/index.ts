@@ -44,7 +44,7 @@ export class Client {
 
   /** URL given to connect(), the grant and the last join message: what rejoin() needs. */
   entryUrl = ""; grant = ""; lastJoin: object | null = null; private opts: { timeoutMs?: number } = {};
-  /** Photon GetRegions + best-region ping: reads `/v1/regions` from the catalog (or any node), probes every
+  /** Region list and best-region ping: reads `/v1/regions` from the catalog (or any node), probes every
    *  live endpoint's `/healthz` and returns the fastest; pass `endpoint` to `connect`. */
   static async bestRegion(catalogHttp: string, probes = 3): Promise<RegionPick> {
     const base = catalogHttp.replace(/\/$/, "");
@@ -119,7 +119,7 @@ export class Client {
     }
   }
   /** `reserved`: player ids whose seats are held for 60 s when this call creates the room (a party
-   *  arriving together — pass the `players` list from a matchmaking ticket). */
+   *  arriving together: pass the `players` list from a matchmaking ticket). */
   async joinOrCreate(name: string, mode: RoomMode = "relay", maxPlayers = 8, props: Record<string, unknown> = {}, reserved: string[] = []): Promise<Joined> {
     return this.join({ t: "join_or_create", name, mode, max_players: maxPlayers, props, reserved });
   }
@@ -207,7 +207,7 @@ export class Client {
   get stats() { return this.link.stats; }
 
   leave() { this.send({ t: "leave" }); }
-  /** Sync rooms: steer area-of-interest — extra viewpoints (camera, scope target) and entities forced into view (team mates, objectives). Entity ids as in deltas. */
+  /** Sync rooms: steer area-of-interest: extra viewpoints (camera, scope target) and entities forced into view (team mates, objectives). Entity ids as in deltas. */
   /** Project-wide room/player counts per lobby (lobby statistics); at most one per second. */
   async lobbyStats(): Promise<Stats> {
     this.send({ t: "stats" });

@@ -1,5 +1,5 @@
 // Sync rooms for the browser: schema IDL, MSB-first bit codec, delta decoding, acks, owner inputs and
-// an interpolation buffer — a port of the managed C# core (mirrors net-wire::{bits,schema,value}).
+// an interpolation buffer: a port of the managed C# core (mirrors net-wire::{bits,schema,value}).
 
 export type SyncOp =
   | { op: "write"; entity: number; writes: Array<[ComponentDef, ComponentValue]> }
@@ -341,7 +341,7 @@ export class SyncSession {
   sendOps(ops: SyncOp[]): number { return this.sendInput(this.world.encodeOps(ops)); }
   spawn(writes: Array<[ComponentDef, ComponentValue]> = []): number { return this.sendOps([{ op: "spawn", writes }]); }
   despawn(entity: number): number { return this.sendOps([{ op: "despawn", entity }]); }
-  /** Hands an entity you own to another actor in the room (Fusion: RequestStateAuthority, but owner-initiated). */
+  /** Hands an entity you own to another actor in the room. */
   transfer(entity: number, to: number): number { return this.sendOps([{ op: "transfer", entity, to }]); }
   /** Owner only: ownership policy for an entity (see OwnerPolicy). */
   setPolicy(entity: number, policy: OwnerPolicy): number { return this.sendOps([{ op: "set_policy", entity, policy }]); }

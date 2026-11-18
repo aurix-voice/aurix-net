@@ -1,4 +1,4 @@
-# Aurix Net — C++ (header-only over the C ABI)
+# Aurix Net: C++ (header-only over the C ABI)
 
 `aurix_net.hpp` wraps `libaurix_net` (crate `net-ffi`): relay rooms, `aurix::net::Sync` (replicated world),
 `aurix::net::Lockstep`, plus aurix-sim (`aurix_sim.h`). Build the library once from the repo root:

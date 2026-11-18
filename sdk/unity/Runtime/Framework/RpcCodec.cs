@@ -1,4 +1,4 @@
-// Aurix Net Unity SDK — optional RPC payload packing: delta against the last call per peer, Deflate compression.
+// Optional RPC payload packing: delta against the last call per peer, Deflate compression.
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections.Generic;

@@ -9,8 +9,8 @@ client.sendEvent(1, new TextEncoder().encode("hi"));   // unreliable
 client.flush();                                        // once per frame
 ```
 
-Control over WebSocket, data over the WebSocket tunnel with the same channels/acks as the native
-transport (WebTransport datagrams are the next step). `sendData(Channel.Unreliable, bytes)` for
+Control over WebSocket, data over WebTransport or the WebSocket tunnel (see Data path) with the same
+channels/acks as the native transport. `sendData(Channel.Unreliable, bytes)` for
 sync inputs / lockstep frames; raw frames arrive on `"data"`. Build: `npm i && npm run build`,
 test against a local node: `NET_API_KEY=an_... npm test` (the `sim wasm` tests need
 `cargo build --release --target wasm32-unknown-unknown -p net-sim-wasm` first and are skipped without it).
@@ -36,6 +36,8 @@ function frame(dt: number) { const t = s.advance(dt); for (const [, b] of remote
 
 With a WASM `logic` module driving entities, send raw inputs (`s.sendInput(bytes)` returns the tick) and
 reconcile your own entity when its server state arrives (`onChange` where `e.owner === joined.actor`).
+The room takes one input per tick, so `sendWrites` and `sendInput` can be called every frame: the
+newest of a tick is the one sent.
 
 ## Data path
 
@@ -52,7 +54,7 @@ WebTransport.
 ## Lockstep rooms
 
 `LockstepClient` (same frames as the managed core): feed data-path payloads to `receive`, get confirmed
-inputs tick by tick in `onTick`, restore from `onRestore` on late join, `sendInput` each tick, `reportHash`
+inputs tick by tick in `onTick`, restore from `onRestore` on late join, `sendInput` each tick (-1 when this tick already has one), `reportHash`
 every N ticks; `inputDelay` adapts to the node's margin reports between `inputDelayMin`/`inputDelayMax`,
 `inputRedundancy` sets the per-datagram repeat; answer `onDumpRequested` with `sendDump` so a desync leaves
 two comparable state blobs on the node.

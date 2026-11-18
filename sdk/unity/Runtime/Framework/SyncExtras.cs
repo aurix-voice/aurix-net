@@ -1,4 +1,4 @@
-// Aurix Net Unity SDK — ValidatedSyncVar (owner proposes, server validates) and SyncBigData (chunked large payloads).
+// ValidatedSyncVar (owner proposes, server validates) and SyncBigData (chunked large payloads).
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using UnityEngine;

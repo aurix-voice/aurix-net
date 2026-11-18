@@ -1,4 +1,4 @@
-// Aurix Net Unity SDK — replicated state machine (PurrNet-style StateMachine / StateNode).
+// Replicated state machine.
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections.Generic;

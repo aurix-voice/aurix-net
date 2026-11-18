@@ -68,7 +68,7 @@ public:
 
 	/** Non-blocking variants (the native connect/join wait for the cell): the work runs on a worker thread, Done fires on the game thread. */
 	void ConnectAsync(const FString& CellUrl, const FString& Grant, bool bTunnel, FAurixNetAsyncResult Done);
-	/** Photon GetRegions + best-region ping off the game thread: reads /v1/regions from the catalog, probes every live node, hands back the fastest endpoint to use as the cell URL. */
+	/** Region list and best-region ping off the game thread: reads /v1/regions from the catalog, probes every live node, hands back the fastest endpoint to use as the cell URL. */
 	void BestRegionAsync(const FString& CatalogUrl, int32 Probes, FAurixNetRegionResult Done);
 	void JoinAsync(const FString& JoinJson, FAurixNetAsyncResult Done);
 	/** Connect with the project settings cell URL and this grant. */
@@ -107,7 +107,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Aurix Net|Room") FString GetRoomPropsJson() const { return RoomPropsJson; }
 	UFUNCTION(BlueprintPure, Category = "Aurix Net|Room") FString GetPlayerPropsJson(int32 Actor) const { const FString* P = PlayerProps.Find(Actor); return P ? *P : FString(); }
 
-	/** Relay NetDriver host migration (see Project Settings → Host migration). */
+	/** Relay NetDriver host migration (see Project Settings > Plugins > Aurix Net). */
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Room") FAurixNetHostMigration OnHostMigration;
 	/** Set by the NetDriver across the migration reload so the new world knows it is resuming. */
 	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net|Room") bool bResumingAfterMigration = false;

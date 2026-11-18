@@ -166,7 +166,7 @@ void UAurixNetSubsystem::ConnectWithDevGrantAsync(const FString& PlayerName, FAu
 {
 	const UAurixNetEditorSettings* E = GetDefault<UAurixNetEditorSettings>();
 	const UAurixNetSettings* S = UAurixNetSettings::Get();
-	if (E->DevApiKey.IsEmpty()) { Done.ExecuteIfBound(-1, TEXT("Aurix Net (Editor) → DevApiKey is empty")); return; }
+	if (E->DevApiKey.IsEmpty()) { Done.ExecuteIfBound(-1, TEXT("the DevApiKey of the Aurix Net (Editor) settings is empty")); return; }
 	const UWorld* W = GetWorld();
 	const int32 Pie = (W && W->GetOutermost()) ? W->GetOutermost()->GetPIEInstanceID() : -1;
 	const FString PlayerId = FString::Printf(TEXT("%s-%d-%s"), *E->DevPlayerPrefix, FMath::Max(0, Pie), *FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8));

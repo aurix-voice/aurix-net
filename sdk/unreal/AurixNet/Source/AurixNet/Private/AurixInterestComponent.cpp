@@ -14,7 +14,7 @@ UAurixNetSubsystem* UAurixInterestComponent::Net() const
 }
 float UAurixInterestComponent::Cell() const { return CellSize > 0.f ? CellSize : UAurixNetSettings::Get()->InterestCellSize; }
 
-// 2D grid (X, Y) → 1..65535. Cells wrap on a 255x255 torus, so far-apart positions can share a group; that only
+// Maps the 2D grid cell (X, Y) to a group in 1..65535. Cells wrap on a 255x255 torus, so far-apart positions can share a group; that only
 // costs a few extra events, never drops one. Interest groups are per room and 0 means "everyone".
 int32 UAurixInterestComponent::GroupFor(FVector L) const
 {

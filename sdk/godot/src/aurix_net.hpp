@@ -84,7 +84,7 @@ public:
     int actor() const { return actor_; }
 
     /// Protocol JSON, e.g. {"t":"set_room_props","props":{...}}.
-    /// Photon GetRegions + best-region ping: JSON {region, endpoint, rtt_ms, candidates} from the catalog or any node.
+    /// Region list and best-region ping: JSON {region, endpoint, rtt_ms, candidates} from the catalog or any node.
     static std::string bestRegionJson(const std::string& catalogHttp, int probes = 3) {
         char* j = aurix_net_best_region(catalogHttp.c_str(), probes);
         if (!j) { const char* e = aurix_net_last_error(); throw Error(e ? e : "best_region failed"); }
@@ -232,8 +232,8 @@ private:
     AurixNetLockstep* ls_;
 };
 
-/// Sync room helper (mirrors the Web `SyncSession`): feed every Data payload to receive() — it applies
-/// the delta and sends the ack — then poll() spawn/change/despawn, read fields by name, and send raw
+/// Sync room helper (mirrors the Web `SyncSession`): feed every Data payload to receive(), which applies
+/// the delta and sends the ack, then poll() spawn/change/despawn, read fields by name, and send raw
 /// inputs (rooms with `logic`) or owner-authoritative component writes. renderTick() lags the server by
 /// `interpolationTicks` for smoothing remote entities.
 class Sync {
@@ -299,7 +299,7 @@ public:
     Sync& write(int field, const uint8_t* p, size_t n) { check(aurix_net_sync_write_bytes(s_, field, p, n)); return *this; }
     Sync& end() { check(aurix_net_sync_write_end(s_)); return *this; }
     int64_t sendWrites(Client& c) { return aurix_net_sync_send_writes(s_, c.handle()); }
-    /// Owner-authoritative ops on entities you own (queued writes feed write/spawn): Fusion-style Spawn/Despawn/authority hand-off.
+    /// Owner-authoritative ops on entities you own (queued writes feed write/spawn): spawn, despawn and ownership hand-off.
     int64_t writeEntity(Client& c, uint64_t entity) { return aurix_net_sync_send_op(s_, c.handle(), 0, entity, 0); }
     int64_t spawn(Client& c) { return aurix_net_sync_send_op(s_, c.handle(), 1, 0, 0); }
     int64_t despawn(Client& c, uint64_t entity) { return aurix_net_sync_send_op(s_, c.handle(), 2, entity, 0); }
@@ -317,7 +317,7 @@ private:
 };
 
 
-/// Photon Chat on top of a relay room: channels are interest groups (join = subscribe, groups at groupBase + channel),
+/// Chat on top of a relay room: channels are interest groups (join = subscribe, groups at groupBase + channel),
 /// messages are reliable cached events to the group (late joiners get the history the room still holds), whispers
 /// are events to one actor. Feed every received event frame to `onEventFrame` (from your onData handler) and
 /// read messages from `onMessage`.

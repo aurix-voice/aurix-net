@@ -1,4 +1,4 @@
-// Aurix Net Unity SDK — per-player level-of-detail for replication traffic.
+// Per-player level-of-detail for replication traffic.
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections.Generic;

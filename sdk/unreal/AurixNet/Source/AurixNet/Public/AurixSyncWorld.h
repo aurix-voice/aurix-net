@@ -46,7 +46,7 @@ public:
 	/** Raw input for server logic (rooms with a WASM module). Returns the stamped tick or -1. */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Sync") int64 SendInput(const TArray<uint8>& Data);
 
-	/** Owner-authoritative writes: Begin(component) → Write* → End; then SendWrites or SpawnEntity / WriteEntity. */
+	/** Owner-authoritative writes: Begin(component), Write*, End; then SendWrites or SpawnEntity / WriteEntity. */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Sync") bool WriteBegin(int32 Component);
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Sync") bool WriteNumber(int32 Field, double Value);
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Sync") bool WriteVector(int32 Field, FVector Value);

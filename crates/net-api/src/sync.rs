@@ -171,14 +171,14 @@ pub const MAX_OWNED: usize = 32;
 /// may take the entity over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OwnerPolicy {
-    /// Despawned with its owner (Fusion "transaction + destroy").
+    /// Despawned with its owner.
     #[default]
     DestroyOnLeave = 0,
-    /// Handed to the oldest remaining player when the owner leaves (Fusion "master client").
+    /// Handed to the oldest remaining player when the owner leaves.
     ToMaster = 1,
-    /// Stays alive without an owner; anyone may request it (Fusion "manual" / "transaction").
+    /// Stays alive without an owner; anyone may request it.
     Orphan = 2,
-    /// Anyone may take it at any time, owner or not (Fusion "dynamic", physics hand-offs).
+    /// Anyone may take it at any time, owner or not (physics hand-offs).
     Dynamic = 3,
 }
 

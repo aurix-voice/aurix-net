@@ -6,7 +6,7 @@
 class UAurixSyncWorld;
 class UAurixNetSubsystem;
 
-/** Per-entity ownership policy: what the cell does when the owner leaves and who may take the entity (Fusion ownership modes). */
+/** Per-entity ownership policy: what the cell does when the owner leaves and who may take the entity. */
 UENUM(BlueprintType)
 enum class EAurixOwnerPolicy : uint8
 {
@@ -53,9 +53,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Sync") TArray<FName> Properties;
 	/** Also map the root component's location/rotation to fields named `position` / `rotation` when the schema has them. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Sync") bool bSyncTransform = true;
-	/** Spawn a new entity we own on BeginPlay (the typical "my pawn" case). Otherwise call BindEntity. */
 	/** Applied to our entity once spawned (owner only); change later with SetPolicy. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Sync") EAurixOwnerPolicy OwnershipPolicy = EAurixOwnerPolicy::DestroyOnLeave;
+	/** Spawn a new entity we own on BeginPlay (the typical "my pawn" case). Otherwise call BindEntity. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Sync") bool bSpawnOnBeginPlay = false;
 	/** Despawn our entity when the component ends play (owner only); remote despawn destroys the actor. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Sync") bool bDespawnOnEndPlay = true;

@@ -10,7 +10,7 @@ namespace Aurix.Net
     public struct RegionCandidate { public string Region, DisplayName, Endpoint; public int RttMs; }
     public struct RegionPick { public string Region, Endpoint; public int RttMs; public List<RegionCandidate> Candidates; }
 
-    /// <summary>Photon GetRegions + best-region ping: reads /v1/regions from the catalog (or any node), probes every live
+    /// <summary>Region list and best-region ping: reads /v1/regions from the catalog (or any node), probes every live
     /// endpoint's /healthz and returns the fastest; pass Endpoint to ManagedClient.ConnectAsync.</summary>
     /// <summary>Just enough JSON for /v1/regions (flat objects with string fields and string arrays).</summary>
     static class RegionJson

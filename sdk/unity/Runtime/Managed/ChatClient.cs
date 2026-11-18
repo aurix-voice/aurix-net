@@ -8,7 +8,7 @@ namespace Aurix.Net
 {
     public struct ChatMessage { public ushort From; public ushort? Channel; public string Text; }
 
-    /// <summary>Photon Chat on top of a relay room, no extra service: channels are interest groups (Join = subscribe),
+    /// <summary>Chat on top of a relay room, no extra service: channels are interest groups (Join = subscribe),
     /// messages are reliable events to the group cached for late joiners (history the room still holds), whispers are
     /// events to one player. Stays inside the room's moderation, rate limits and GDPR tooling.</summary>
     public sealed class ChatClient

@@ -1,4 +1,4 @@
-// Deterministic bot kit — port of `net-sim-bots`: behavior trees, hierarchical state machines and
+// Deterministic bot kit, a port of `net-sim-bots`: behavior trees, hierarchical state machines and
 // an integer blackboard. Trees/machines load from the same JSON the Rust crate emits (serde's
 // externally tagged enums); tick hashes match Rust bit for bit.
 using System;
