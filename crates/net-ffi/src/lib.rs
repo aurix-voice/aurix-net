@@ -640,7 +640,9 @@ pub unsafe extern "C" fn aurix_net_lockstep_send_input(
     } else {
         Bytes::copy_from_slice(std::slice::from_raw_parts(data, len))
     };
-    let (tick, f) = ls.inner.lock().send_input(input);
+    let Some((tick, f)) = ls.inner.lock().send_input(input) else {
+        return -1;
+    };
     if send_frame(h, f) != 0 {
         return -1;
     }

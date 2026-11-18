@@ -255,6 +255,7 @@ public:
         if (r < 0) throw Error(lastError());
         if (r != 1) return false;
         c.sendData(Channel::Unreliable, ack, sizeof ack);
+        aurix_net_sync_pump(s_, c.handle());
         double lag = double(serverTick()) - interp_;
         if (lag > renderTick_) renderTick_ = lag;
         gotDelta_ = true;

@@ -44,7 +44,7 @@ namespace Aurix.Net.Unity
         const byte RpcEventCode = 0xF0;
         readonly List<(ComponentDef, ComponentValue)> _writes = new List<(ComponentDef, ComponentValue)>();
         readonly List<byte[]> _recentInputs = new List<byte[]>();
-        uint _lastInputTick; float _tickTimer; float _lastDeltaTime;
+        uint _lastInputTick; float _tickTimer; float _lastDeltaTime; byte[] _heldInput;
 
         void Awake() { Instance = this; }
 
@@ -117,6 +117,7 @@ namespace Aurix.Net.Unity
         }
         void AfterJoin()
         {
+            _lastInputTick = 0; _recentInputs.Clear(); _heldInput = null; // input ticks belong to the room just left
             if (Mode == RoomMode.Sync)
             {
                 Schema = Schema.Parse(string.IsNullOrEmpty(Settings.Schema) ? ArenaSchema : Settings.Schema);
@@ -183,6 +184,7 @@ namespace Aurix.Net.Unity
         void LateUpdate()
         {
             if (Client == null || !IsJoined) return;
+            if (World != null) SendHeldInput();
             if (World != null && Settings.TickHz > 0)
             {
                 _tickTimer += Time.unscaledDeltaTime; float dt = 1f / Settings.TickHz;
@@ -203,14 +205,25 @@ namespace Aurix.Net.Unity
         }
 
         /// <summary>Sends a raw input frame for the current tick to the server logic (`props.logic`); returns the
-        /// tick it was stamped with. Resent with the next two inputs for loss tolerance.</summary>
+        /// tick it is stamped with. Resent with the next two inputs for loss tolerance. The room takes one input
+        /// per tick: call this every frame, the newest input of a tick is the one sent.</summary>
         public uint SendInput(byte[] body)
         {
             if (World == null || Client == null) return 0;
-            uint tick = Math.Max(World.ServerTick + 2, _lastInputTick + 1); _lastInputTick = tick;
-            _recentInputs.Add(body ?? Array.Empty<byte>()); while (_recentInputs.Count > 3) _recentInputs.RemoveAt(0);
+            _heldInput = body ?? Array.Empty<byte>();
+            return SendHeldInput() ? _lastInputTick : _lastInputTick + 1;
+        }
+
+        // An input stamped far ahead of the room is applied that much later, so it waits for the room instead.
+        bool SendHeldInput()
+        {
+            if (_heldInput == null) return false;
+            uint tick = Math.Max(World.ServerTick + 2, _lastInputTick + 1);
+            if (tick > World.ServerTick + 3) return false;
+            _lastInputTick = tick;
+            _recentInputs.Add(_heldInput); _heldInput = null; while (_recentInputs.Count > 3) _recentInputs.RemoveAt(0);
             Client.SendData(Channel.Unreliable, SyncWorld.EncodeInput(tick - (uint)(_recentInputs.Count - 1), _recentInputs));
-            return tick;
+            return true;
         }
 
         // ---- events / RPC (relay channel) ----

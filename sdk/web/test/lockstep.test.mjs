@@ -41,6 +41,7 @@ test("adaptive input delay follows the node's margin reports; redundancy window 
   ls.onInputStats(1, 0); ls.onInputStats(3, 0); ls.onInputStats(3, 0); ls.onInputStats(3, 0); assert.equal(ls.inputDelay, 2);
   ls.inputDelay = ls.inputDelayMax; ls.onInputStats(-9, 1); assert.equal(ls.inputDelay, ls.inputDelayMax);
   assert.ok(ls.receive(Uint8Array.of(0x25, 0, 0, 0, 10, 0xff, 1))); assert.equal(ls.lastMargin, -1);
-  ls.inputRedundancy = 2; ls.sendInput(Uint8Array.of(1)); ls.sendInput(Uint8Array.of(2)); const t = ls.sendInput(Uint8Array.of(3));
+  ls.inputRedundancy = 2; ls.sendInput(Uint8Array.of(1)); const t = ls.sendInput(Uint8Array.of(2));
+  const frames = sent.length; assert.equal(ls.sendInput(Uint8Array.of(3)), -1, "one input per tick"); assert.equal(sent.length, frames);
   const last = sent.at(-1)[1]; assert.equal(last[0], 0x10); assert.equal(last[5], 2); assert.equal(((last[1] << 24) | (last[2] << 16) | (last[3] << 8) | last[4]) >>> 0, t - 1);
 });

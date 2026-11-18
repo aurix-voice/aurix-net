@@ -69,7 +69,7 @@ void aurix_net_lockstep_destroy(AurixNetLockstep *ls);
 int32_t aurix_net_lockstep_receive(AurixNetLockstep *ls, const uint8_t *data, size_t len); /* 1 = lockstep frame */
 int32_t aurix_net_lockstep_poll(AurixNetLockstep *ls, AurixNetLsEvent *out);               /* 1 = event filled */
 int32_t aurix_net_lockstep_input(AurixNetLockstep *ls, uint16_t index, uint16_t *actor, const uint8_t **data, size_t *len);
-int64_t aurix_net_lockstep_send_input(AurixNetLockstep *ls, AurixNetClient *h, const uint8_t *data, size_t len); /* stamped tick or -1 */
+int64_t aurix_net_lockstep_send_input(AurixNetLockstep *ls, AurixNetClient *h, const uint8_t *data, size_t len); /* stamped tick; -1 on error or when this tick's input is already sent (one per room tick) */
 int32_t aurix_net_lockstep_report_hash(AurixNetClient *h, uint32_t tick, uint64_t hash);
 /* Reliable command outside the input stream: arrives in the next tick's inputs for every client under
    actor AURIX_NET_COMMAND_ACTOR as [u16 actor, u16 len, bytes]*; journaled, replayed, seen by the referee. */
@@ -106,6 +106,7 @@ int32_t aurix_net_sync_write_vector(const AurixNetSync *s, int32_t field, const 
 int32_t aurix_net_sync_write_bytes(const AurixNetSync *s, int32_t field, const uint8_t *p, size_t n);
 int32_t aurix_net_sync_write_end(const AurixNetSync *s);
 int64_t aurix_net_sync_send_writes(const AurixNetSync *s, AurixNetClient *h);           /* queued writes as this tick's input (owner-authoritative rooms); stamped tick or -1 */
+int32_t aurix_net_sync_pump(const AurixNetSync *s, AurixNetClient *h);                  /* sends inputs that were waiting for a tick; call after every applied delta */
 int64_t aurix_net_sync_send_op(const AurixNetSync *s, AurixNetClient *h, int32_t op, uint64_t entity, int32_t to); /* 0 write entity (queued writes), 1 spawn (queued writes), 2 despawn, 3 transfer to actor `to`, 4 set ownership policy `to` (0 destroy_on_leave, 1 to_master, 2 orphan, 3 dynamic), 5 request ownership, 6 release; stamped tick or -1 */
 
 #ifdef __cplusplus

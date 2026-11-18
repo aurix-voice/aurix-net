@@ -7,13 +7,15 @@ var grant_c := ""; var grant_d := ""; var net_http := ""
 var c: AurixNetClient; var d: AurixNetClient
 var wc: AurixNetSync; var wd: AurixNetSync
 var sync_on := false; var acc := 0.0; var writes := 0; var updates := 0; var x := 0.0; var last := Vector3.ZERO; var drain := 0
+var lc: AurixNetLockstep; var ld: AurixNetLockstep
+var ls_on := false; var ls_frames := 0; var ticks_c := 0; var ticks_d := 0; var actors := {}; var stray := 0
 
 func fail(msg: String) -> void:
 	printerr("GODOT FAIL: ", msg)
 	get_tree().quit(1)
 
 func _ready() -> void:
-	for c in ["AurixNetClient", "AurixNetSync"]:
+	for c in ["AurixNetClient", "AurixNetSync", "AurixNetLockstep"]:
 		if not ClassDB.class_exists(c):
 			fail("class missing: " + c); return
 	var http := OS.get_environment("NET_HTTP")
@@ -39,6 +41,7 @@ func _ready() -> void:
 
 func _process(dt: float) -> void:
 	if sync_on: _sync_step(dt); return
+	if ls_on: _lockstep_step(); return
 	if t0 == 0: return
 	var a := get_child(0) as AurixNetClient
 	if (Time.get_ticks_msec() - t0) % 200 < 20:
@@ -60,8 +63,15 @@ func _start_sync() -> void:
 	if d.join_or_create(room, AurixNetClient.MODE_SYNC, 4, props) < 0: fail("d join: " + d.get_last_error()); return
 	wc = AurixNetSync.new(); wd = AurixNetSync.new()
 	if not wc.setup(SCHEMA, 20, 2) or not wd.setup(SCHEMA, 20, 2): fail("sync setup: " + wd.get_last_error()); return
-	c.data.connect(func(_ch, _tick, payload): wc.receive(c, payload))
-	d.data.connect(func(_ch, _tick, payload): wd.receive(d, payload))
+	c.data.connect(func(_ch, _tick, payload):
+		if ls_on: lc.receive(payload)
+		else: wc.receive(c, payload))
+	d.data.connect(func(_ch, _tick, payload):
+		if ls_on: ld.receive(payload)
+		else: wd.receive(d, payload))
+	# sync and lockstep frames are not relay events: the event signal must stay quiet in both rooms
+	c.event.connect(func(_code, _from, _payload): stray += 1)
+	d.event.connect(func(_code, _from, _payload): stray += 1)
 	wd.change.connect(func(entity, owner):
 		if owner == c.get_actor():
 			updates += 1; last = wd.get_field(entity, "Transform", "pos"))
@@ -81,7 +91,36 @@ func _sync_step(dt: float) -> void:
 	drain += 1
 	if drain < 20: return
 	sync_on = false
-	var ok: bool = wd.get_server_tick() > 30 and wd.get_gaps() == 0 and updates >= 20 and abs(last.x - x) < 3 and abs(last.y - 1) < 0.02 and abs(last.z + 2) < 0.02 and wd.get_entities().size() >= 1
+	var ok: bool = wd.get_server_tick() > 30 and wd.get_gaps() == 0 and updates >= 20 and abs(last.x - x) < 0.02 and abs(last.y - 1) < 0.02 and abs(last.z + 2) < 0.02 and wd.get_entities().size() >= 1
 	print("godot sync: serverTick=%d gaps=%d updates=%d last=%s x=%.1f entities=%d renderTick=%.1f -> %s" % [wd.get_server_tick(), wd.get_gaps(), updates, last, x, wd.get_entities().size(), wd.get_render_tick(), "ok" if ok else "FAIL"])
+	if not ok: fail("sync replication"); return
+	if stray > 0: fail("%d event signals from sync frames" % stray); return
+	_start_lockstep()
+
+func _start_lockstep() -> void:
+	c.leave(); d.leave()
+	var room := "godot-ls-%d" % (Time.get_ticks_msec() % 100000)
+	var props := JSON.stringify({"tick_hz": 30})
+	if c.join_or_create(room, AurixNetClient.MODE_LOCKSTEP, 4, props) < 0: fail("c lockstep join: " + c.get_last_error()); return
+	if d.join_or_create(room, AurixNetClient.MODE_LOCKSTEP, 4, props) < 0: fail("d lockstep join: " + d.get_last_error()); return
+	lc = AurixNetLockstep.new(); ld = AurixNetLockstep.new()
+	lc.tick.connect(func(_tick, inputs):
+		ticks_c += 1
+		for i in inputs: actors[i["actor"]] = true)
+	ld.tick.connect(func(_tick, _inputs): ticks_d += 1)
+	ls_on = true
+
+func _lockstep_step() -> void:
+	ls_frames += 1
+	if ls_frames <= 240:
+		# every frame, more often than the 30 Hz room ticks: extra calls return -1 and send nothing
+		lc.send_input(c, PackedByteArray([ls_frames % 200])); ld.send_input(d, PackedByteArray([ls_frames % 200]))
+		c.flush(); d.flush()
+		return
+	if ls_frames < 270: return
+	ls_on = false
+	var ahead: int = lc.get_server_tick() - lc.get_confirmed_tick()
+	var ok: bool = ticks_c > 20 and ticks_d > 20 and actors.size() == 2 and stray == 0 and ahead < 10
+	print("godot lockstep: ticks=%d/%d actors=%d event signals=%d confirmed=%d server=%d -> %s" % [ticks_c, ticks_d, actors.size(), stray, lc.get_confirmed_tick(), lc.get_server_tick(), "ok" if ok else "FAIL"])
 	if ok: print("GODOT OK"); get_tree().quit(0)
-	else: fail("sync replication")
+	else: fail("lockstep")

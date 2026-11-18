@@ -247,9 +247,13 @@ impl LockstepClient {
     }
 
     /// Queues this tick's local input (sent together with the previous ones for redundancy).
-    /// Returns the tick it was stamped with and the unreliable frame to send.
-    pub fn send_input(&mut self, input: Bytes) -> (u32, Outgoing) {
+    /// Returns the tick it was stamped with and the unreliable frame to send. The room takes
+    /// one input per tick: called more often than that it returns `None` and sends nothing.
+    pub fn send_input(&mut self, input: Bytes) -> Option<(u32, Outgoing)> {
         let tick = (self.server_tick + self.input_delay).max(self.last_input + 1);
+        if tick > self.server_tick + self.input_delay + 1 {
+            return None;
+        }
         self.last_input = tick;
         self.recent_inputs.push(input);
         let keep = self.input_redundancy.clamp(1, 8);
@@ -271,13 +275,13 @@ impl LockstepClient {
             b.put_u8(i.len().min(255) as u8);
             b.extend_from_slice(&i[..i.len().min(255)]);
         }
-        (
+        Some((
             tick,
             Outgoing {
                 reliable: false,
                 payload: b.freeze(),
             },
-        )
+        ))
     }
 
     /// Hash of the confirmed state after `tick`; the node compares it across players (and the
@@ -417,9 +421,11 @@ mod tests {
         let mut c = LockstepClient::new();
         c.input_redundancy = 2;
         c.server_tick = 10;
-        let (t1, _) = c.send_input(Bytes::from_static(b"A"));
+        let (t1, _) = c.send_input(Bytes::from_static(b"A")).unwrap();
         assert_eq!(t1, 12);
-        let (t2, f) = c.send_input(Bytes::from_static(b"BB"));
+        let (t2, f) = c.send_input(Bytes::from_static(b"BB")).unwrap();
+        // a third input before the room moves on would be stamped too far ahead
+        assert!(c.send_input(Bytes::from_static(b"C")).is_none());
         assert_eq!(t2, 13);
         assert!(!f.reliable);
         assert_eq!(

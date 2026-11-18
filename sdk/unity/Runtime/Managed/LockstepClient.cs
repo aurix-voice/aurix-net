@@ -133,10 +133,13 @@ namespace Aurix.Net.Managed
             }
         }
 
-        /// <summary>Queues this tick's local input (sent with the previous two for redundancy).</summary>
+        /// <summary>Queues this tick's local input (sent with the previous two for redundancy). The room takes one
+        /// input per tick: called more often than that it sends nothing, so sample the input again next time.</summary>
         public void SendInput(byte[] input)
         {
-            uint tick = Math.Max(ServerTick + InputDelay, _lastInput + 1); _lastInput = tick;
+            uint tick = Math.Max(ServerTick + InputDelay, _lastInput + 1);
+            if (tick > ServerTick + InputDelay + 1) return;
+            _lastInput = tick;
             _recentInputs.Add(input); int keep = Math.Max(1, Math.Min(8, InputRedundancy)); while (_recentInputs.Count > keep) _recentInputs.RemoveAt(0);
             _send(Channel.Unreliable, SyncWorld.EncodeInput(tick - (uint)(_recentInputs.Count - 1), _recentInputs));
         }

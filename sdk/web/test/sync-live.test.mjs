@@ -41,6 +41,27 @@ test("sync room: owner writes replicate to a second web client", { skip: !key },
   a.close(); b.close();
 });
 
+test("sync room: writes sent every frame in a slower room are not delayed", { skip: !key }, async () => {
+  const a = await Client.connect(http, await grant("web-rate-a"));
+  const b = await Client.connect(http, await grant("web-rate-b"));
+  const room = `web-rate-${process.pid}`;
+  const ja = await a.joinOrCreate(room, "sync", 4, { schema: SCHEMA, tick_hz: 20 });
+  await b.joinOrCreate(room, "sync", 4, { schema: SCHEMA, tick_hz: 20 });
+  const sa = new SyncSession(a, SCHEMA, 20, 2), sb = new SyncSession(b, SCHEMA, 20, 2);
+  const tr = sa.world.schema.byName("Transform");
+  let x = 0, seen = 0, behind = 0;
+  sb.world.onChange = (e) => { if (e.owner === ja.actor) seen = sb.world.get(e, tr)?.fields[0][0]; };
+  sb.world.onSpawn = sb.world.onChange;
+  await sleep(300);
+  const timer = setInterval(() => { x += 1; sa.sendWrites([[tr, new ComponentValue([[x, 1, -2], [0, 0, 0, 1]])]]); }, 1000 / 60);
+  for (let i = 0; i < 6; i++) { await sleep(500); behind = Math.max(behind, x - seen); }
+  clearInterval(timer);
+  await sleep(500);
+  assert.ok(behind < 30, `b fell ${behind} writes (of 60 a second) behind a`);
+  assert.equal(Math.round(seen), x, "the last write arrives");
+  a.close(); b.close();
+});
+
 async function until(what, cond, ms = 4000) {
   const t0 = Date.now(); while (Date.now() - t0 < ms) { if (cond()) return; await sleep(20); }
   throw new Error(`timed out waiting for ${what}`);

@@ -107,8 +107,10 @@ public class ManagedCoreTests
         var d = sent[sent.Count - 1];
         Assert.That(d.Item1 == Channel.Reliable && Hex(d.Item2) == "27000001001122334455667788" + "0707", "dump frame layout");
         // input redundancy window
-        ls.InputRedundancy = 2; ls.SendInput(new byte[] { 1 }); ls.SendInput(new byte[] { 2 }); ls.SendInput(new byte[] { 3 });
+        ls.InputRedundancy = 2; ls.SendInput(new byte[] { 1 }); ls.SendInput(new byte[] { 2 });
         Assert.That(sent[sent.Count - 1].Item2[5] == 2, "two inputs per datagram");
+        int frames = sent.Count; ls.SendInput(new byte[] { 3 });
+        Assert.That(sent.Count == frames, "one input per tick");
     }
 
 

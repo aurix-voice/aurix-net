@@ -319,26 +319,40 @@ import type { Client } from "./index.js";
 export class SyncSession {
   readonly world: SyncWorld;
   renderTick = 0; private lastInputTick = 0; private recent: Uint8Array[] = []; private lastDeltaAt = 0;
+  private held: { body: Uint8Array; keep: boolean }[] = [];
   constructor(readonly client: Client, schema: Schema | string, readonly tickHz = 60, readonly interpolationTicks = 2) {
     this.world = new SyncWorld(typeof schema === "string" ? Schema.parse(schema) : schema);
     client.on("data", (_ch: Channel, _tick: number, payload: Uint8Array) => {
       const ack = this.world.receive(payload);
-      if (ack) { client.sendData(Channel.Unreliable, ack); this.renderTick = Math.max(this.renderTick, this.world.serverTick - this.interpolationTicks); this.lastDeltaAt = performance.now(); }
+      if (ack) { client.sendData(Channel.Unreliable, ack); this.renderTick = Math.max(this.renderTick, this.world.serverTick - this.interpolationTicks); this.lastDeltaAt = performance.now(); this.pump(); }
     });
   }
   /** Call once per animation frame: advances the render tick between deltas. */
   advance(dtSeconds: number): number { if (this.lastDeltaAt > 0) this.renderTick += dtSeconds * this.tickHz; return this.renderTick; }
-  /** Raw input for server logic (`props.logic`); returns the tick it was stamped with. Resent with the next two inputs. */
-  sendInput(body: Uint8Array): number {
-    const tick = Math.max(this.world.serverTick + 2, this.lastInputTick + 1); this.lastInputTick = tick;
-    this.recent.push(body); while (this.recent.length > 3) this.recent.shift();
-    this.client.sendData(Channel.Unreliable, SyncWorld.encodeInput(tick - (this.recent.length - 1), this.recent));
-    return tick;
-  }
+  /** Raw input for server logic (`props.logic`); returns the tick it is stamped with. Resent with the next two inputs.
+   *  The room takes one input per tick: call this every frame, the newest input of a tick is the one sent. */
+  sendInput(body: Uint8Array): number { return this.queue(body, false); }
   /** Owner-authoritative writes of your avatar's components (rooms without `logic`). */
-  sendWrites(writes: Array<[ComponentDef, ComponentValue]>): number { return this.sendInput(this.world.encodeWrites(writes)); }
+  sendWrites(writes: Array<[ComponentDef, ComponentValue]>): number { return this.queue(this.world.encodeWrites(writes), false); }
   /** Owner-authoritative ops on entities you own: at most 32 spawned per actor, owner is in every delta. */
-  sendOps(ops: SyncOp[]): number { return this.sendInput(this.world.encodeOps(ops)); }
+  sendOps(ops: SyncOp[]): number { return this.queue(this.world.encodeOps(ops), true); }
+  // An input stamped far ahead of the room is applied that much later, so only one tick of lead is used:
+  // the rest waits for the next delta. Waiting writes and raw inputs are replaced by newer ones, ops are kept.
+  private queue(body: Uint8Array, keep: boolean): number {
+    const tail = this.held[this.held.length - 1];
+    if (tail && !tail.keep && !keep) tail.body = body; else this.held.push({ body, keep });
+    this.pump();
+    return this.lastInputTick + this.held.length;
+  }
+  private pump(): void {
+    while (this.held.length) {
+      const tick = Math.max(this.world.serverTick + 2, this.lastInputTick + 1);
+      if (tick > this.world.serverTick + 3) return;
+      this.lastInputTick = tick;
+      this.recent.push(this.held.shift()!.body); while (this.recent.length > 3) this.recent.shift();
+      this.client.sendData(Channel.Unreliable, SyncWorld.encodeInput(tick - (this.recent.length - 1), this.recent));
+    }
+  }
   spawn(writes: Array<[ComponentDef, ComponentValue]> = []): number { return this.sendOps([{ op: "spawn", writes }]); }
   despawn(entity: number): number { return this.sendOps([{ op: "despawn", entity }]); }
   /** Hands an entity you own to another actor in the room. */

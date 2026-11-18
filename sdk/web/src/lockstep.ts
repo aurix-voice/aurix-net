@@ -106,8 +106,12 @@ export class LockstepClient {
       this.onCommand?.(tick, actor, cmds.slice(i, i + len)); i += len;
     }
   }
+  /** Sends this tick's input and returns the tick it is stamped with. The room takes one input per tick:
+   *  called more often than that it sends nothing and returns -1, so sample the input again next time. */
   sendInput(input: Uint8Array): number {
-    const tick = Math.max(this.serverTick + this.inputDelay, this.lastInput + 1); this.lastInput = tick;
+    const tick = Math.max(this.serverTick + this.inputDelay, this.lastInput + 1);
+    if (tick > this.serverTick + this.inputDelay + 1) return -1;
+    this.lastInput = tick;
     this.recentInputs.push(input); const keep = Math.max(1, Math.min(8, this.inputRedundancy)); while (this.recentInputs.length > keep) this.recentInputs.shift();
     this.send(Channel.Unreliable, SyncWorld.encodeInput(tick - (this.recentInputs.length - 1), this.recentInputs));
     return tick;
@@ -169,7 +173,7 @@ export class LockstepRollback<S = unknown> {
     this.confirmed = this.head = tick;
   }
   /** Remember the input sent stamped with `tick` (what LockstepClient.sendInput returned) so our own prediction uses exactly it. */
-  localInput(tick: number, input: Uint8Array): void { this.lastLocal = input; this.localInputs.set(tick, input); }
+  localInput(tick: number, input: Uint8Array): void { this.lastLocal = input; if (tick >= 0) this.localInputs.set(tick, input); }
 
   /** Runs the simulation ahead to `target` (exclusive), bounded by maxPrediction. */
   predict(target: number): void {

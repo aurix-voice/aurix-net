@@ -39,6 +39,8 @@ struct State {
     server_tick: u32,
     last_input_tick: u32,
     recent: VecDeque<Vec<u8>>,
+    /// Inputs waiting for a tick: (body, keep). Writes and raw inputs are replaced by newer ones.
+    held: VecDeque<(Vec<u8>, bool)>,
     events: VecDeque<AurixNetSyncEvent>,
     /// Component write under construction (`write_begin` .. `write_end`).
     current: Option<(u16, ComponentValue)>,
@@ -76,6 +78,7 @@ pub unsafe extern "C" fn aurix_net_sync_new(schema: *const c_char) -> *mut Aurix
             server_tick: 0,
             last_input_tick: 0,
             recent: VecDeque::new(),
+            held: VecDeque::new(),
             events: VecDeque::new(),
             current: None,
             writes: Vec::new(),
@@ -406,26 +409,61 @@ fn encode_input(first_tick: u32, inputs: &VecDeque<Vec<u8>>) -> Bytes {
     b.freeze()
 }
 
-unsafe fn send_input_inner(st: &mut State, h: *mut AurixNetClient, body: Vec<u8>) -> i64 {
-    let Some(h) = h.as_ref() else { return -1 };
-    let tick = (st.server_tick + 2).max(st.last_input_tick + 1);
-    st.last_input_tick = tick;
-    st.recent.push_back(body);
-    while st.recent.len() > INPUT_REDUNDANCY {
-        st.recent.pop_front();
+/// The room takes one input per tick, and an input stamped far ahead is applied that much later.
+/// So only one tick of lead is used; the rest waits in `held` for the next delta.
+unsafe fn send_input_inner(
+    st: &mut State,
+    h: *mut AurixNetClient,
+    body: Vec<u8>,
+    keep: bool,
+) -> i64 {
+    match st.held.back_mut() {
+        Some(tail) if !tail.1 && !keep => tail.0 = body,
+        _ => st.held.push_back((body, keep)),
     }
-    let first = tick - (st.recent.len() as u32 - 1);
-    let frame = encode_input(first, &st.recent);
-    let Some(ch) = Channel::from_u8(0) else {
+    if pump(st, h) < 0 {
         return -1;
-    };
-    match h.inner.lock().send_data(ch, frame) {
-        Ok(()) => i64::from(tick),
-        Err(e) => {
+    }
+    i64::from(st.last_input_tick) + st.held.len() as i64
+}
+
+unsafe fn pump(st: &mut State, h: *mut AurixNetClient) -> i32 {
+    let Some(h) = h.as_ref() else { return -1 };
+    while !st.held.is_empty() {
+        let tick = (st.server_tick + 2).max(st.last_input_tick + 1);
+        if tick > st.server_tick + 3 {
+            break;
+        }
+        let Some((body, _)) = st.held.pop_front() else {
+            break;
+        };
+        st.last_input_tick = tick;
+        st.recent.push_back(body);
+        while st.recent.len() > INPUT_REDUNDANCY {
+            st.recent.pop_front();
+        }
+        let first = tick - (st.recent.len() as u32 - 1);
+        let frame = encode_input(first, &st.recent);
+        let Some(ch) = Channel::from_u8(0) else {
+            return -1;
+        };
+        if let Err(e) = h.inner.lock().send_data(ch, frame) {
             set_error(e);
-            -1
+            return -1;
         }
     }
+    0
+}
+
+/// Sends the inputs that were waiting for a tick. Call after every delta
+/// (`aurix_net_sync_receive` returned 1). 0 on success, -1 on error.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_sync_pump(
+    s: *const AurixNetSync,
+    h: *mut AurixNetClient,
+) -> i32 {
+    let Some(s) = s.as_ref() else { return -1 };
+    pump(&mut s.inner.lock(), h)
 }
 
 /// Raw input for server-side logic (rooms with `props.logic`): stamped two ticks ahead of the last
@@ -444,7 +482,7 @@ pub unsafe extern "C" fn aurix_net_sync_send_input(
         std::slice::from_raw_parts(data, len).to_vec()
     };
     let mut st = s.inner.lock();
-    send_input_inner(&mut st, h, body)
+    send_input_inner(&mut st, h, body, false)
 }
 
 /// Starts a full write of `component` (fields default to zero until written).
@@ -611,7 +649,7 @@ pub unsafe extern "C" fn aurix_net_sync_send_writes(
         return -1;
     }
     let body = w.finish();
-    send_input_inner(&mut st, h, body)
+    send_input_inner(&mut st, h, body, false)
 }
 
 /// One owner-authoritative op as this tick's input (rooms with a schema and no `logic`):
@@ -652,7 +690,7 @@ pub unsafe extern "C" fn aurix_net_sync_send_op(
         _ => {}
     }
     let body = w.finish();
-    send_input_inner(&mut st, h, body)
+    send_input_inner(&mut st, h, body, true)
 }
 
 #[cfg(test)]

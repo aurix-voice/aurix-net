@@ -92,6 +92,13 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   game stopped receiving anything without an error.
 - Web SDK: `client.on("notice", ...)` compiles in TypeScript. The event was emitted but missing
   from the type of `on`.
+- Web, C++ and Godot SDKs: a sync room takes one input per tick, and the SDKs now send it that way.
+  A game that sent writes every frame in a slower room (60 frames a second, 20 Hz room) had them
+  stamped further and further ahead, so other players saw it seconds late and the last writes never
+- Web, Unity, C++ and Godot SDKs: lockstep `sendInput` sends one input per room tick. Called more
+  often (every frame at 60 frames a second in a 30 Hz room) it stamped inputs further and further
+  ahead until the node dropped them, and the player's input stopped reaching the game. Extra calls
+  now send nothing and return -1 (`None` in `net-client`).
 - SDK docs: the Godot and C++ lockstep examples labelled a checkpoint with the tick from the
   request, so a late joiner desynced; they now use the simulation's own tick. The Godot README no
   longer points to a `rejoin()` that does not exist, and the event codes taken by sync and lockstep

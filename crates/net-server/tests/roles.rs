@@ -29,8 +29,9 @@ async fn ticks_seen(
                 ls.receive(&payload);
             }
         }
-        let (_, out) = ls.send_input(Bytes::from_static(input));
-        let _ = sender.send_data(Channel::UnreliableSequenced, out.payload);
+        if let Some((_, out)) = ls.send_input(Bytes::from_static(input)) {
+            let _ = sender.send_data(Channel::UnreliableSequenced, out.payload);
+        }
         sender.flush();
         while let Some(ev) = watcher.try_next_event() {
             if let Event::Data { payload, .. } = ev {
