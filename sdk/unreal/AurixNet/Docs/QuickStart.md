@@ -41,11 +41,15 @@ Blueprint (or C++) once per game instance:
 Get Game Instance → Get Subsystem (Aurix Net) → Connect (Cell Url, Grant)
 ```
 
-Host: `Open Level` with `aurix://my-room?listen` (joins or creates the relay room and becomes the
-master / listen server). Clients: `Open Level` with `aurix://my-room`. A dedicated server works the
-same way with `?listen`; it is just a player that only hosts.
+Host: `Open Level` with a map and `?listen?Room=my-room`, for example
+`/Game/Maps/Arena?listen?Room=my-room` (joins or creates the relay room and becomes the master /
+listen server). Clients: `Open Level` with `my-room.aurix`. A dedicated server works the same way
+with `?listen`; it is just a player that only hosts.
 
-Room name, `MaxPlayers=` and props come from the URL; matchmaking and the room list are on the
+The engine listens only on a local map URL and reads a host only from a name with a dot, so the room
+is the `Room=` option for the host and the `<room>.aurix` host name for a client (`?Room=` works for
+a client too, for room names that are not valid host names). `aurix://<room>` is not a URL the
+engine accepts. `MaxPlayers=` comes from the URL; matchmaking and the room list are on the
 subsystem (`Join Random`, `Send Control` with lobby requests from docs/api.md).
 
 ## 3b. Async nodes, settings, PIE
@@ -84,7 +88,7 @@ DefaultPlatformService=Aurix
 
 Create Session creates (or joins as host) a relay room named after the session — set the
 `AURIXROOM` extra setting to pick the room name — Find Sessions lists open relay rooms of the
-cell, Join Session joins one; the resolved connect string is `aurix://<room>`, which the
+cell, Join Session joins one; the resolved connect string is `<room>.aurix`, which the
 AurixNetDriver understands, so `Client Travel` after Join works unchanged. Friends, invites
 and presence are not implemented (return false).
 

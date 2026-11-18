@@ -377,7 +377,7 @@ void UAurixNetSubsystem::HandleControl(const FString& Json)
 	}
 	else if (T == TEXT("master_changed"))
 	{
-		Room.Master = (int32)O->GetNumberField(TEXT("master"));
+		Room.Master = (int32)O->GetNumberField(TEXT("actor"));
 		OnMasterChanged.Broadcast(Room.Master);
 	}
 	else if (T == TEXT("notice"))

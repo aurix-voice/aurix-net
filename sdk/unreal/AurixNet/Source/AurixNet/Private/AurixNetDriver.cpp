@@ -8,11 +8,33 @@
 #include "AurixNetSettings.h"
 #include "Engine/Engine.h"
 #include "UObject/Package.h"
+#include "PacketHandler.h"
+#include "PacketHandlers/StatelessConnectHandlerComponent.h"
+#include "Net/Common/Packets/PacketView.h"
+#include "SocketTypes.h"
+
+UClass* UAurixNetDriver::ConnectionClass() const
+{
+	UClass* Configured = NetConnectionClass;
+	return Configured && Configured->IsChildOf(UAurixNetConnection::StaticClass()) ? Configured : UAurixNetConnection::StaticClass();
+}
 
 UAurixNetSubsystem* UAurixNetDriver::Subsystem() const
 {
 	const UWorld* W = GetWorld();
 	const UGameInstance* GI = W ? W->GetGameInstance() : nullptr;
+	// A connecting client's driver has no world until the travel completes; its world context has the game instance.
+	if (!GI && GEngine)
+	{
+		for (const FWorldContext& Ctx : GEngine->GetWorldContexts())
+		{
+			if (Ctx.ActiveNetDrivers.ContainsByPredicate([this](const FNamedNetDriver& N) { return N.NetDriver == this; }))
+			{
+				GI = Ctx.OwningGameInstance;
+				break;
+			}
+		}
+	}
 	return GI ? GI->GetSubsystem<UAurixNetSubsystem>() : nullptr;
 }
 
@@ -20,15 +42,38 @@ bool UAurixNetDriver::IsAvailable() const { return true; }
 
 bool UAurixNetDriver::InitBase(bool bInitAsClient, FNetworkNotify* InNotify, const FURL& URL, bool bReuseAddressAndPort, FString& Error)
 {
+	// These are per-class config and the engine ships values only for its own drivers. Left at zero, a
+	// connection times out on its first tick. The values are the IpNetDriver ones; config still overrides.
+	if (InitialConnectTimeout <= 0.f) InitialConnectTimeout = 60.f;
+	if (ConnectionTimeout <= 0.f) ConnectionTimeout = 60.f;
+	if (TimeoutMultiplierForUnoptimizedBuilds <= 0.f) TimeoutMultiplierForUnoptimizedBuilds = 1.f;
+	if (RecentlyDisconnectedTrackingTime <= 0) RecentlyDisconnectedTrackingTime = 120;
+	if (KeepAliveTime <= 0.f) KeepAliveTime = 0.2f;
+	if (RelevantTimeout <= 0.f) RelevantTimeout = 5.f;
+	if (SpawnPrioritySeconds <= 0.f) SpawnPrioritySeconds = 1.f;
+	if (ServerTravelPause <= 0.f) ServerTravelPause = 4.f;
+	if (MaxClientRate <= 0) MaxClientRate = 100000;
+	if (MaxInternetClientRate <= 0) MaxInternetClientRate = 100000;
+	if (GetNetServerMaxTickRate() <= 0) SetNetServerMaxTickRate(30);
+	if (MaxNetTickRate <= 0) MaxNetTickRate = 120;
+
 	if (!Super::InitBase(bInitAsClient, InNotify, URL, bReuseAddressAndPort, Error)) return false;
 	UAurixNetSubsystem* S = Subsystem();
 	if (!S || !S->HasClient())
 	{
-		Error = TEXT("Aurix Net: connect the UAurixNetSubsystem to a cell with a grant before travelling to aurix://");
+		Error = TEXT("Aurix Net: connect the UAurixNetSubsystem to a cell with a grant before travelling to a room");
 		return false;
 	}
-	// The room is the URL host; join or create it (listen) / join it (client) when not already inside.
-	const FString RoomName = URL.Host;
+	// The room is the Room= option. A client URL may also carry it as its host, "<room>.aurix": the
+	// engine reads a host only from a name with a dot. A listen URL is a local map, so it has no host;
+	// without Room= the driver hosts the room this player is already in.
+	FString RoomName = URL.GetOption(TEXT("Room="), TEXT(""));
+	if (RoomName.IsEmpty() && bInitAsClient) { RoomName = URL.Host; RoomName.RemoveFromEnd(TEXT(".aurix")); }
+	if (RoomName.IsEmpty() && S->GetState() != EAurixNetState::InRoom)
+	{
+		Error = TEXT("Aurix Net: no room to host; add ?Room=<name> to the listen URL or join a room first");
+		return false;
+	}
 	if (S->GetState() != EAurixNetState::InRoom || (!RoomName.IsEmpty() && S->GetRoom().Name != RoomName))
 	{
 		if (S->GetState() == EAurixNetState::InRoom) S->Leave();
@@ -54,7 +99,7 @@ bool UAurixNetDriver::InitConnect(FNetworkNotify* InNotify, const FURL& ConnectU
 	if (!InitBase(true, InNotify, ConnectURL, false, Error)) return false;
 	UAurixNetSubsystem* S = Subsystem();
 	ServerActor = uint16(S->GetRoom().Master);
-	UAurixNetConnection* C = NewObject<UAurixNetConnection>(NetConnectionClass ? NetConnectionClass : UAurixNetConnection::StaticClass());
+	UAurixNetConnection* C = NewObject<UAurixNetConnection>(GetTransientPackage(), ConnectionClass());
 	ServerConnection = C;
 	C->InitLocalConnection(this, nullptr, ConnectURL, USOCK_Pending);
 	Remotes.Add(ServerActor, C);
@@ -74,17 +119,59 @@ bool UAurixNetDriver::InitListen(FNetworkNotify* InNotify, FURL& LocalURL, bool 
 	return true;
 }
 
-UAurixNetConnection* UAurixNetDriver::FindOrAddRemote(uint16 Actor)
+UAurixNetConnection* UAurixNetDriver::AcceptRemote(uint16 Actor, TArray<uint8>& Packet)
 {
-	if (TWeakObjectPtr<UAurixNetConnection>* Found = Remotes.Find(Actor)) { if (Found->IsValid()) return Found->Get(); }
-	if (!bListening) return nullptr;
-	UAurixNetConnection* C = NewObject<UAurixNetConnection>(NetConnectionClass ? NetConnectionClass : UAurixNetConnection::StaticClass());
-	const FInternetAddrAurix Addr(Actor);
-	C->InitRemoteConnection(this, nullptr, FURL(), Addr, USOCK_Pending);
-	Notify->NotifyAcceptedConnection(C);
-	AddClientConnection(C);
-	Remotes.Add(Actor, C);
-	UE_LOG(LogAurixNet, Log, TEXT("listen: new client connection from actor %u"), Actor);
+	// Same order as UIpNetDriver::ProcessConnectionlessPacket: the stateless handshake runs on the
+	// connectionless handler, and a connection exists only after the challenge is passed.
+	const TSharedPtr<StatelessConnectHandlerComponent> Stateless = StatelessConnectComponent.Pin();
+	if (!Notify || !ConnectionlessHandler.IsValid() || !Stateless.IsValid()) return nullptr;
+	if (Notify->NotifyAcceptingConnection() != EAcceptConnection::Accept) return nullptr;
+	const TSharedRef<FInternetAddrAurix> Addr = MakeShared<FInternetAddrAurix>(Actor);
+	FReceivedPacketView View;
+	View.DataView = { Packet.GetData(), Packet.Num(), ECountUnits::Bytes };
+	View.Address = Addr;
+	View.Error = SE_NO_ERROR;
+	bool bRestarted = false;
+	if (ConnectionlessHandler->IncomingConnectionless(View) != EIncomingResult::Success || !Stateless->HasPassedChallenge(Addr, bRestarted)) return nullptr;
+
+	UAurixNetConnection* C = nullptr;
+	if (bRestarted)
+	{
+		// A client we already know came back under another actor id; its connection moves to that id.
+		for (UNetConnection* Cur : ClientConnections)
+		{
+			const TSharedPtr<StatelessConnectHandlerComponent> Comp = Cur ? Cur->StatelessConnectComponent.Pin() : nullptr;
+			if (!Comp.IsValid() || !Stateless->DoesRestartedHandshakeMatch(*Comp)) continue;
+			C = Cast<UAurixNetConnection>(Cur);
+			if (C)
+			{
+				Remotes.Remove(C->RemoteActor);
+				C->RemoteActor = Actor;
+				C->RemoteAddr = Addr;
+				Remotes.Add(Actor, C);
+				Comp->InitFromConnectionless(Stateless.Get());
+			}
+			break;
+		}
+	}
+	else
+	{
+		const UWorld* W = GetWorld();
+		C = NewObject<UAurixNetConnection>(GetTransientPackage(), ConnectionClass());
+		C->InitRemoteConnection(this, nullptr, W ? W->URL : FURL(), *Addr, USOCK_Open);
+		int32 ServerSequence = 0, ClientSequence = 0;
+		Stateless->GetChallengeSequence(ServerSequence, ClientSequence);
+		C->InitSequence(ClientSequence, ServerSequence);
+		if (C->Handler.IsValid()) C->Handler->BeginHandshaking();
+		Notify->NotifyAcceptedConnection(C);
+		AddClientConnection(C);
+		Remotes.Add(Actor, C);
+		UE_LOG(LogAurixNet, Log, TEXT("listen: new client connection from actor %u"), Actor);
+	}
+	Stateless->ResetChallengeData();
+	// What the handshake left of the packet belongs to the connection.
+	TArray<uint8> Rest(View.DataView.GetData(), View.DataView.NumBytes());
+	Packet = MoveTemp(Rest);
 	return C;
 }
 
@@ -104,8 +191,11 @@ void UAurixNetDriver::TickDispatch(float DeltaTime)
 	Inbox.Reset();
 	for (TPair<uint16, TArray<uint8>>& P : Batch)
 	{
-		UAurixNetConnection* C = bListening ? FindOrAddRemote(P.Key) : (P.Key == ServerActor ? Cast<UAurixNetConnection>(ServerConnection) : nullptr);
-		if (!C || C->GetConnectionState() == USOCK_Closed) continue;
+		UAurixNetConnection* C = nullptr;
+		if (!bListening) { if (P.Key == ServerActor) C = Cast<UAurixNetConnection>(ServerConnection); }
+		else if (const TWeakObjectPtr<UAurixNetConnection>* Found = Remotes.Find(P.Key); Found && Found->IsValid()) C = Found->Get();
+		else C = AcceptRemote(P.Key, P.Value);
+		if (!C || C->GetConnectionState() == USOCK_Closed || P.Value.Num() == 0) continue;
 		C->ReceivedRawPacket(P.Value.GetData(), P.Value.Num());
 	}
 }
@@ -147,6 +237,9 @@ void UAurixNetDriver::HandleClosed(const FString& Reason) { OnClosed(Reason); }
 void UAurixNetDriver::OnPlayerLeft(int32 Actor, bool bOffline)
 {
 	if (bOffline) return; // a reconnecting player keeps the slot; UE's own timeout decides
+	// With host migration master_changed follows the server leaving. A closed server connection makes
+	// the engine raise ConnectionLost and drop to the default map before the migration travel.
+	if (!bListening && Actor == ServerActor && (bMigrating || UAurixNetSettings::Get()->bHostMigration)) return;
 	if (TWeakObjectPtr<UAurixNetConnection>* Found = Remotes.Find(uint16(Actor)))
 	{
 		if (Found->IsValid()) Found->Get()->Close();
@@ -175,8 +268,8 @@ void UAurixNetDriver::BeginHostMigration(int32 NewMaster)
 	UE_LOG(LogAurixNet, Log, TEXT("host migration: new master %d, we %s"), NewMaster, bMigrateAsHost ? TEXT("host") : TEXT("rejoin"));
 	S->OnHostMigration.Broadcast(EAurixNetMigration::Starting, bMigrateAsHost);
 	S->OnHostMigration.Broadcast(bMigrateAsHost ? EAurixNetMigration::BecomingHost : EAurixNetMigration::Rejoining, bMigrateAsHost);
-	// Stop talking to the old server without raising a network failure.
-	if (ServerConnection) { ServerConnection->SetConnectionState(USOCK_Closed); }
+	// The server connection stays open until the travel replaces this driver (see OnPlayerLeft);
+	// TickDispatch drops incoming packets while bMigrating is set.
 }
 
 FString UAurixNetDriver::CurrentMapPath() const
@@ -191,18 +284,11 @@ void UAurixNetDriver::TravelForMigration()
 	UAurixNetSubsystem* S = Subsystem();
 	if (!W || !S || !GEngine) return;
 	S->bResumingAfterMigration = true;
-	const FString Url = FString::Printf(TEXT("aurix://%s%s%s"), *MigrationRoom, *CurrentMapPath(), bMigrateAsHost ? TEXT("?listen") : TEXT(""));
-	if (bMigrateAsHost)
-	{
-		FWorldContext* Ctx = GEngine->GetWorldContextFromWorld(W);
-		FString Err;
-		if (Ctx) GEngine->Browse(*Ctx, FURL(nullptr, *Url, TRAVEL_Absolute), Err);
-		if (!Err.IsEmpty()) UE_LOG(LogAurixNet, Error, TEXT("host migration browse failed: %s"), *Err);
-	}
-	else
-	{
-		GEngine->SetClientTravel(W, *Url, TRAVEL_Absolute);
-	}
+	const FString Url = bMigrateAsHost
+		? FString::Printf(TEXT("%s?listen?Room=%s"), *CurrentMapPath(), *MigrationRoom)
+		: FString::Printf(TEXT("%s.aurix%s"), *MigrationRoom, *CurrentMapPath());
+	// Deferred travel: this runs inside the driver's own tick, and the travel destroys the driver.
+	GEngine->SetClientTravel(W, *Url, TRAVEL_Absolute);
 }
 
 void UAurixNetDriver::OnClosed(const FString& Reason)

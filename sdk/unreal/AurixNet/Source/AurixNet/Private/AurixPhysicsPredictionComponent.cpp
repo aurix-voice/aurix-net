@@ -19,12 +19,12 @@ uint32 UAurixPhysicsPredictionComponent::EffectiveId() const { return BodyId > 0
 
 void UAurixPhysicsPredictionComponent::ApplyEngineMode()
 {
-	UPrimitiveComponent* P = Body();
-	if (!P) return;
+	AActor* O = GetOwner();
+	if (!O || !Body()) return;
 #if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
-	P->SetPhysicsReplicationMode(bPreferResimulation ? EPhysicsReplicationMode::Resimulation : EPhysicsReplicationMode::PredictiveInterpolation);
+	O->SetPhysicsReplicationMode(bPreferResimulation ? EPhysicsReplicationMode::Resimulation : EPhysicsReplicationMode::PredictiveInterpolation);
 #elif ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION == 4
-	P->SetPhysicsReplicationMode(EPhysicsReplicationMode::PredictiveInterpolation);
+	O->SetPhysicsReplicationMode(EPhysicsReplicationMode::PredictiveInterpolation);
 #else
 	// 5.3: no per-body replication mode; the engine's default physics replication applies.
 	UE_LOG(LogAurixNet, Verbose, TEXT("physics prediction modes need UE 5.4+; using default replication for %s"), *GetNameSafe(GetOwner()));

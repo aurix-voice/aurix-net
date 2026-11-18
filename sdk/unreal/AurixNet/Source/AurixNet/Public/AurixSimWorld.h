@@ -1,6 +1,7 @@
 #pragma once
 #include "CoreMinimal.h"
 #include "UObject/Object.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
 #include "AurixSimWorld.generated.h"
 
 /** Body kind for aurix-sim: 0 static, 1 kinematic, 2 dynamic. */

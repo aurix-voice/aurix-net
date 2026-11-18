@@ -65,6 +65,7 @@ public:
 	/** Deltas missed since join (resyncs); non-zero means a snapshot was requested. */
 	UFUNCTION(BlueprintPure, Category = "Aurix Net|Sync") int64 Gaps() const;
 
+	bool IsValidWorld() const { return S != nullptr; }
 private:
 	UAurixNetSubsystem* Net() const;
 	void OnRawData(uint8 Channel, TArrayView<const uint8> Data);

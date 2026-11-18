@@ -138,7 +138,8 @@ def check_packaging() -> None:
                 fail(f"Config/FilterPlugin.ini: entry {line!r} must start with /")
                 continue
             base = line[1:].split("...")[0].split("*")[0].split("?")[0].rstrip("/")
-            if base and not (PLUGIN / base).exists():
+            # Binaries/ is build output of the host platform, so its entries may match nothing here.
+            if base and not base.startswith("Binaries/") and not (PLUGIN / base).exists():
                 fail(f"Config/FilterPlugin.ini: {line!r} matches nothing")
 
     icon = PLUGIN / "Resources" / "Icon128.png"

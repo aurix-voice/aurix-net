@@ -8,5 +8,7 @@
    -Package=<out>/AurixNet-5.x -TargetPlatforms=Win64+Linux+Mac+Android`; set `EngineVersion` in the packaged
    descriptor. Staged `include/` and `lib/` are built per host and are not committed.
 
-Step 3 has not been run for any engine version yet; until it passes the plugin stays beta
-(`IsBetaVersion` in the descriptor).
+Step 3 has passed for UE 5.8.2 on Linux only (`-TargetPlatforms=Linux`); the plugin stays beta
+(`IsBetaVersion` in the descriptor) until the other engine versions and platforms are built. On
+Linux `build_native.sh` also copies `libaurix_net.so` into `Binaries/Linux`: BuildPlugin does not
+copy runtime dependencies, and a packaged module finds the library only in its own folder.

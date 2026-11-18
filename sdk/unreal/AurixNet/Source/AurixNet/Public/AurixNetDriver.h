@@ -12,8 +12,8 @@ class UAurixNetConnection;
  * master; every other player is a client connection. Unreal's replication, RPCs and the login
  * handshake are untouched: packets ride as relay events addressed to one actor.
  *
- * Travel URLs: a host opens `aurix://<room>?listen` (joins or creates the room), a client opens
- * `aurix://<room>` (joins it; the master is the server). The game instance's UAurixNetSubsystem
+ * Travel URLs: a host opens `<map>?listen?Room=<room>` (joins or creates the room), a client opens
+ * `<room>.aurix` (joins it; the master is the server). The game instance's UAurixNetSubsystem
  * must already be connected to a cell with a grant.
  */
 UCLASS(transient, config = Engine)
@@ -43,11 +43,12 @@ public:
 
 private:
 	UAurixNetSubsystem* Subsystem() const;
+	UClass* ConnectionClass() const;
 	void OnRawEvent(const FAurixNetEventFrame& Frame);
 	void OnPlayerLeft(int32 Actor, bool bOffline);
 	void OnMasterChanged(int32 Master);
 	void OnClosed(const FString& Reason);
-	UAurixNetConnection* FindOrAddRemote(uint16 Actor);
+	UAurixNetConnection* AcceptRemote(uint16 Actor, TArray<uint8>& Packet);
 
 	UFUNCTION() void HandlePlayerLeft(int32 Actor, bool bOffline);
 	UFUNCTION() void HandleMasterChanged(int32 Master);

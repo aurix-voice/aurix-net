@@ -43,5 +43,11 @@ OUT="$ROOT/target/$TARGET/$PROFILE"
 DEST="$THIRD_PARTY/lib/$UE_PLATFORM"; [ -n "$NDK_ABI" ] && DEST="$DEST/$NDK_ABI"
 mkdir -p "$DEST" "$THIRD_PARTY/include"
 for f in "${ARTIFACTS[@]}"; do cp -f "$OUT/$f" "$DEST/$f"; done
+if [ "$UE_PLATFORM" = "Linux" ]; then
+  # RunUAT BuildPlugin does not copy RuntimeDependencies, and the module's only relocatable rpath is its
+  # own folder, so a packaged plugin needs the library next to the module binaries.
+  mkdir -p "$PLUGIN_DIR/Binaries/Linux"
+  cp -f "$OUT/libaurix_net.so" "$PLUGIN_DIR/Binaries/Linux/libaurix_net.so"
+fi
 cp -f "$ROOT/crates/net-ffi/include/aurix_net.h" "$ROOT/crates/net-ffi/include/aurix_sim.h" "$THIRD_PARTY/include/"
 echo "staged ${ARTIFACTS[*]} for $UE_PLATFORM into $DEST"

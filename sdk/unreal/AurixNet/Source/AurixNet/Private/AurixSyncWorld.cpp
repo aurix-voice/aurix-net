@@ -62,7 +62,7 @@ int64 UAurixSyncWorld::Gaps() const { return S ? (int64)aurix_net_sync_gaps(S) :
 int32 UAurixSyncWorld::EntityCount() const { return S ? aurix_net_sync_entity_count(S) : 0; }
 bool UAurixSyncWorld::EntityAt(int32 Index, int64& Entity, int32& Owner) const
 {
-	uint64 Id = 0; int32 O = -1;
+	uint64_t Id = 0; int32_t O = -1;
 	if (!S || aurix_net_sync_entity_at(S, Index, &Id, &O) != 1) return false;
 	Entity = (int64)Id; Owner = O; return true;
 }

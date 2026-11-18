@@ -2,6 +2,7 @@
 #include "OnlineSubsystemAurix.h"
 #include "AurixNetSubsystem.h"
 #include "OnlineSubsystemUtils.h"
+#include "Online/OnlineSessionNames.h"
 #include "Misc/ScopeLock.h"
 
 FOnlineSessionAurix::~FOnlineSessionAurix()
@@ -18,7 +19,7 @@ FString FOnlineSessionAurix::RoomNameFor(FName SessionName, const FOnlineSession
 	return SessionName.ToString();
 }
 
-FUniqueNetIdPtr FOnlineSessionAurix::CreateSessionIdFromString(const FString& S) { return S.IsEmpty() ? nullptr : FUniqueNetIdString::Create(S, AURIX_SUBSYSTEM); }
+FUniqueNetIdPtr FOnlineSessionAurix::CreateSessionIdFromString(const FString& S) { return S.IsEmpty() ? FUniqueNetIdPtr() : FUniqueNetIdPtr(FUniqueNetIdString::Create(S, AURIX_SUBSYSTEM)); }
 
 FNamedOnlineSession* FOnlineSessionAurix::GetNamedSession(FName SessionName)
 {
@@ -124,6 +125,14 @@ bool FOnlineSessionAurix::IsPlayerInSession(FName SessionName, const FUniqueNetI
 	return false;
 }
 
+bool FOnlineSessionAurix::StartMatchmaking(const TArray<FUniqueNetIdRef>& LocalPlayers, FName SessionName, const FOnlineSessionSettings& NewSettings, TSharedRef<FOnlineSessionSearch>& Search)
+{
+	TArray<FSessionMatchmakingUser> Users;
+	for (const FUniqueNetIdRef& Id : LocalPlayers) Users.Add(FSessionMatchmakingUser{ Id, {} });
+	if (StartMatchmaking(Users, SessionName, NewSettings, Search, FOnStartMatchmakingComplete())) return true;
+	TriggerOnMatchmakingCompleteDelegates(SessionName, false);
+	return false;
+}
 bool FOnlineSessionAurix::StartMatchmaking(const TArray<FSessionMatchmakingUser>&, FName SessionName, const FOnlineSessionSettings& NewSettings, TSharedRef<FOnlineSessionSearch>& Search, const FOnStartMatchmakingComplete& Done)
 {
 	// Server-side matchmaking: any open relay room with a free slot, else host one.
@@ -240,13 +249,13 @@ bool FOnlineSessionAurix::GetResolvedConnectString(FName SessionName, FString& C
 {
 	FNamedOnlineSession* S = GetNamedSession(SessionName);
 	if (!S || !S->SessionInfo.IsValid()) return false;
-	ConnectInfo = FString::Printf(TEXT("aurix://%s"), *StaticCastSharedPtr<FOnlineSessionInfoAurix>(S->SessionInfo)->RoomName);
+	ConnectInfo = FString::Printf(TEXT("%s.aurix"), *StaticCastSharedPtr<FOnlineSessionInfoAurix>(S->SessionInfo)->RoomName);
 	return true;
 }
 bool FOnlineSessionAurix::GetResolvedConnectString(const FOnlineSessionSearchResult& R, FName, FString& ConnectInfo)
 {
 	if (!R.Session.SessionInfo.IsValid()) return false;
-	ConnectInfo = FString::Printf(TEXT("aurix://%s"), *StaticCastSharedPtr<FOnlineSessionInfoAurix>(R.Session.SessionInfo)->RoomName);
+	ConnectInfo = FString::Printf(TEXT("%s.aurix"), *StaticCastSharedPtr<FOnlineSessionInfoAurix>(R.Session.SessionInfo)->RoomName);
 	return true;
 }
 FOnlineSessionSettings* FOnlineSessionAurix::GetSessionSettings(FName SessionName) { FNamedOnlineSession* S = GetNamedSession(SessionName); return S ? &S->SessionSettings : nullptr; }

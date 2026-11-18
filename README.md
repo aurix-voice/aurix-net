@@ -48,7 +48,7 @@ independently.
 > SDKs for Web, Unity, Rust, C/C++ and Godot; every piece is exercised by CI against a live node
 > ([docs/testing.md](docs/testing.md)). The Unreal Engine plugin in [`sdk/unreal`](sdk/unreal) (an
 > Unreal NetDriver over relay rooms plus a Blueprint subsystem) is beta: written for UE 5.3-5.8,
-> covered in CI by engine-free checks only and not yet built with an engine.
+> built and run with UE 5.8.2 on Linux only, and covered in CI by engine-free checks.
 
 **Documentation**: [room modes](docs/modes.md) · [API: keys, grants, REST, control channel, data
 path, webhooks, matchmaking, modules](docs/api.md) · [SDK guide](docs/sdk.md) ·

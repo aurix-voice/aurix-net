@@ -7,6 +7,24 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 
 ## [Unreleased]
 
+### Fixed
+- Unreal plugin: first build and run with an engine (UE 5.8.2, Linux). `RunUAT BuildPlugin` passes
+  for the editor and the game (Development, Shipping), the packaged plugin loads, and a listen
+  server with two clients goes through login, replication and host migration. Before this the
+  plugin did not compile (13 errors) and could not connect once it did:
+  - travel URLs: `aurix://<room>` is not a URL the engine accepts. A host now opens
+    `<map>?listen?Room=<room>` and a client opens `<room>.aurix`; session connect strings and the
+    host-migration travel use the same forms;
+  - the listen server runs the engine's stateless handshake before it creates a connection;
+  - a connecting client finds the subsystem through its world context (its driver has no world yet);
+  - the packet size follows the engine cap (`MAX_PACKET_SIZE`), and the driver sets the timeouts the
+    engine ships only for its own drivers;
+  - host migration reads `master_changed{actor}` and keeps the server connection open until the
+    travel, so the engine does not drop to the default map;
+  - `build_native.sh` stages `libaurix_net.so` next to the module binaries on Linux, so a packaged
+    plugin loads.
+  Still beta: other engine versions and platforms are not built.
+
 ### CI
 - `release.yml`: the Web npm tarball is packed to the workspace root, so it sits beside the other
   SDK files in the `sdk` artifact, and the image job no longer uploads Docker build records. The

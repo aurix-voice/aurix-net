@@ -1,5 +1,6 @@
 #include "AurixSimWorld.h"
 #include "AurixNetLog.h"
+#include "UObject/Package.h"
 #include "aurix_sim.h"
 
 static int64 F(double V) { return UAurixFixedPoint::Fx(V); }
@@ -8,7 +9,7 @@ static double D(int64 V) { return UAurixFixedPoint::Dx(V); }
 // ---------------------------------------------------------------- 2D
 UAurixSimWorld2D* UAurixSimWorld2D::CreateWorld2D(UObject* Outer, FVector2D G, int32 TickHz)
 {
-	UAurixSimWorld2D* W = NewObject<UAurixSimWorld2D>(Outer ? Outer : GetTransientPackage());
+	UAurixSimWorld2D* W = NewObject<UAurixSimWorld2D>(Outer ? Outer : (UObject*)GetTransientPackage());
 	W->Handle = sim_world_new(F(G.X), F(G.Y), (uint32)FMath::Clamp(TickHz, 1, 1000));
 	return W;
 }
@@ -110,7 +111,7 @@ bool UAurixSimWorld2D::CrowdRestore(const TArray<uint8>& S) { if (!Handle) retur
 // ---------------------------------------------------------------- 3D
 UAurixSimWorld3D* UAurixSimWorld3D::CreateWorld3D(UObject* Outer, FVector G, int32 TickHz)
 {
-	UAurixSimWorld3D* W = NewObject<UAurixSimWorld3D>(Outer ? Outer : GetTransientPackage());
+	UAurixSimWorld3D* W = NewObject<UAurixSimWorld3D>(Outer ? Outer : (UObject*)GetTransientPackage());
 	W->Handle = sim3_world_new(F(G.X), F(G.Y), F(G.Z), (uint32)FMath::Clamp(TickHz, 1, 1000));
 	return W;
 }

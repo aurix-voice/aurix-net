@@ -2,12 +2,12 @@
 #include "AurixNetDriver.h"
 #include "AurixNetLog.h"
 #include "PacketHandler.h"
-
-static const int32 AurixMaxPacket = 1200; // under one QUIC datagram after the relay frame header
+#include "Net/DataChannel.h"
 
 void UAurixNetConnection::InitBase(UNetDriver* InDriver, FSocket* InSocket, const FURL& InURL, EConnectionState InState, int32 InMaxPacket, int32 InPacketOverhead)
 {
-	Super::InitBase(InDriver, InSocket, InURL, InState, InMaxPacket == 0 ? AurixMaxPacket : InMaxPacket, InPacketOverhead == 0 ? 8 : InPacketOverhead);
+	// MAX_PACKET_SIZE is the engine cap; it also fits one QUIC datagram after the relay frame header.
+	Super::InitBase(InDriver, InSocket, InURL, InState, (InMaxPacket == 0 || InMaxPacket > MAX_PACKET_SIZE) ? MAX_PACKET_SIZE : InMaxPacket, InPacketOverhead == 0 ? 8 : InPacketOverhead);
 	// UE's own reliability runs on top of unreliable relay events, like a UDP socket.
 	InitSendBuffer();
 }
