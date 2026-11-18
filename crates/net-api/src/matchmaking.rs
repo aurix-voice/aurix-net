@@ -9,6 +9,7 @@ use net_control::{LiveRoom, RedisStore};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::LazyLock;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,12 +227,13 @@ pub fn match_tickets(tickets: &mut [Ticket], now_ms: u64) -> (Vec<Uuid>, Vec<Str
                 changed.push(tickets[*i].id);
             }
         }
-        let first = &tickets[idx[0]].req;
-        let (max, min, wait) = (
-            first.max_players as usize,
-            first.min_players as usize,
-            first.max_wait_secs,
-        );
+        // `max_players` is part of the bucket; `min_players` and `max_wait_secs` are each
+        // ticket's own.
+        let max = tickets[idx[0]].req.max_players as usize;
+        let mins: Vec<usize> = idx
+            .iter()
+            .map(|i| tickets[*i].req.min_players.max(1) as usize)
+            .collect();
         let filters: Vec<Option<crate::mmfilter::Filter>> = idx
             .iter()
             .map(|i| {
@@ -252,7 +254,8 @@ pub fn match_tickets(tickets: &mut [Ticket], now_ms: u64) -> (Vec<Uuid>, Vec<Str
         };
         // Greedy: the oldest unassigned ticket seeds a group, later tickets join when they are
         // mutually compatible with every member. A group fills a room when it reaches `max`, or
-        // when its seed has waited `wait` seconds and the group has `min` players.
+        // when its seed has waited its `max_wait_secs` and the group is large enough for every
+        // member's `min_players`; members who want more players than there are stay in the queue.
         let mut taken = vec![false; n];
         for seed in 0..n {
             if taken[seed] {
@@ -267,10 +270,21 @@ pub fn match_tickets(tickets: &mut [Ticket], now_ms: u64) -> (Vec<Uuid>, Vec<Str
                     group.push(cand);
                 }
             }
-            let seed_age = tickets[idx[seed]].age_secs(now_ms);
-            let ready = group.len() >= max || (group.len() >= min.max(1) && seed_age >= wait);
-            if !ready {
-                continue;
+            if group.len() < max {
+                let seed_ticket = &tickets[idx[seed]];
+                if seed_ticket.age_secs(now_ms) < seed_ticket.req.max_wait_secs {
+                    continue;
+                }
+                loop {
+                    let size = group.len();
+                    group.retain(|g| mins[*g] <= size);
+                    if group.len() == size {
+                        break;
+                    }
+                }
+                if group.first() != Some(&seed) {
+                    continue;
+                }
             }
             let room = format!("mm-{}", &Uuid::new_v4().simple().to_string()[..12]);
             let players: Vec<String> = group
@@ -309,6 +323,28 @@ fn ticket_key(id: Uuid) -> String {
 const SEARCHING_SET: &str = "net:mm:searching";
 const LEADER_KEY: &str = "net:mm:leader";
 
+/// `KEYS`: the searching set, then one ticket key each. `ARGV` per ticket: id, body, TTL in
+/// seconds, 1 if it stays searching.
+static REPLACE_SEARCHING: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+local n = #KEYS - 1
+for j = 1, n do
+  if redis.call('SISMEMBER', KEYS[1], ARGV[4 * j - 3]) == 0 or redis.call('EXISTS', KEYS[j + 1]) == 0 then
+    return 0
+  end
+end
+for j = 1, n do
+  redis.call('SET', KEYS[j + 1], ARGV[4 * j - 2], 'EX', ARGV[4 * j - 1])
+  if ARGV[4 * j] == '0' then
+    redis.call('SREM', KEYS[1], ARGV[4 * j - 3])
+  end
+end
+return 1
+",
+    )
+});
+
 fn stats_key(project: ProjectId, hour: u64) -> String {
     format!("net:mm:stats:{}:{hour}", project.0)
 }
@@ -338,6 +374,28 @@ impl Matchmaker {
             p.srem(SEARCHING_SET, t.id.to_string()).ignore();
         }
         p.query_async::<()>(&mut c).await.map_err(rerr)
+    }
+
+    /// Writes `tickets` over their stored copies if every one of them is still searching there,
+    /// and none of them otherwise. A cancel and the matching cycle both read a ticket before
+    /// they change it; this is what keeps the later of the two from undoing the earlier.
+    async fn replace_searching(&self, redis: &RedisStore, tickets: &[&Ticket]) -> Result<bool> {
+        let mut call = REPLACE_SEARCHING.key(SEARCHING_SET);
+        for t in tickets {
+            let body = serde_json::to_vec(t).map_err(|e| NetError::Internal(e.to_string()))?;
+            let ttl = if t.searching() {
+                SEARCH_TTL_SECS
+            } else {
+                RESULT_TTL_SECS
+            };
+            call.key(ticket_key(t.id))
+                .arg(t.id.to_string())
+                .arg(body)
+                .arg(ttl)
+                .arg(u8::from(t.searching()));
+        }
+        let mut c = redis.raw();
+        call.invoke_async(&mut c).await.map_err(rerr)
     }
 
     async fn load_many(&self, redis: &RedisStore, ids: &[String]) -> Result<Vec<Ticket>> {
@@ -392,7 +450,7 @@ impl Matchmaker {
         for mut t in self.load_many(redis, &ids).await? {
             if t.project == project && t.req.player_id == req.player_id && t.searching() {
                 t.state = TicketState::Cancelled;
-                self.put(redis, &t).await?;
+                self.replace_searching(redis, &[&t]).await?;
             }
         }
         let ticket = Ticket {
@@ -423,8 +481,7 @@ impl Matchmaker {
         match self.get(redis, project, id).await? {
             Some(mut t) if t.searching() => {
                 t.state = TicketState::Cancelled;
-                self.put(redis, &t).await?;
-                Ok(true)
+                self.replace_searching(redis, &[&t]).await
             }
             _ => Ok(false),
         }
@@ -463,25 +520,54 @@ impl Matchmaker {
         {
             live.insert(p, redis.list_rooms(p).await.unwrap_or_default());
         }
-        let mut changed = fill_existing(&mut tickets, &live);
+        let seated = fill_existing(&mut tickets, &live);
         let (grouped, _rooms) = match_tickets(&mut tickets, now);
-        changed.extend(grouped);
+        // The tickets of a new room are written together, so it starts with all of them or not
+        // at all; a ticket seated into a running room or still waiting is written on its own.
+        let mut writes: Vec<Vec<&Ticket>> = Vec::new();
+        let mut rooms: HashMap<(ProjectId, &str), usize> = HashMap::new();
+        for t in &tickets {
+            match &t.state {
+                TicketState::Matched { room, .. } if grouped.contains(&t.id) => {
+                    let i = *rooms.entry((t.project, room)).or_insert_with(|| {
+                        writes.push(Vec::new());
+                        writes.len() - 1
+                    });
+                    writes[i].push(t);
+                }
+                _ if seated.contains(&t.id) || grouped.contains(&t.id) => writes.push(vec![t]),
+                _ => {}
+            }
+        }
         let mut found: Vec<MatchFound> = Vec::new();
-        for t in tickets.iter().filter(|t| changed.contains(&t.id)) {
-            self.put(redis, t).await?;
-            if let TicketState::Matched {
-                room,
-                mode,
-                players,
-                bots,
-                ..
-            } = &t.state
-            {
+        for group in writes {
+            if !self.replace_searching(redis, &group).await? {
+                continue;
+            }
+            for t in group {
+                let TicketState::Matched {
+                    room,
+                    mode,
+                    players,
+                    bots,
+                    ..
+                } = &t.state
+                else {
+                    continue;
+                };
                 match found
                     .iter_mut()
                     .find(|m| m.project == t.project && m.room == *room)
                 {
-                    Some(m) => m.tickets.push(t.id),
+                    Some(m) => {
+                        m.tickets.push(t.id);
+                        // Tickets seated into a running room each list only their own player.
+                        for player in players {
+                            if !m.players.contains(player) {
+                                m.players.push(player.clone());
+                            }
+                        }
+                    }
                     None => found.push(MatchFound {
                         project: t.project,
                         room: room.clone(),
@@ -722,6 +808,37 @@ mod tests {
         let mut odd = vec![t("picky", 30, "rank > 100"), t("open", 30, "rank > 0")];
         let (_, rooms) = match_tickets(&mut odd, 1000);
         assert!(rooms.is_empty());
+    }
+
+    #[test]
+    fn short_group_respects_each_ticket_minimum_and_wait() {
+        let p = ProjectId::new();
+        let none = || serde_json::json!({});
+        // "a" accepts two players after 1 s, "b" wants four: nobody starts with two.
+        let mut ts = vec![
+            ticket(p, req("a", 4, 2, 1, none()), 0),
+            ticket(p, req("b", 4, 4, 60, none()), 100),
+        ];
+        assert!(match_tickets(&mut ts, 3_000).1.is_empty());
+        // "c" also accepts two: "a" and "c" start, "b" keeps waiting.
+        ts.push(ticket(p, req("c", 4, 2, 60, none()), 200));
+        assert_eq!(match_tickets(&mut ts, 3_000).1.len(), 1);
+        assert_eq!(room_of(&ts[0]), room_of(&ts[2]));
+        assert!(room_of(&ts[0]).is_some());
+        assert!(room_of(&ts[1]).is_none());
+
+        // The wait is the seed's own: "y" and "z" start after their 1 s, although the older
+        // "x", whose filter keeps it apart, asked to wait a minute.
+        let mut x = req("x", 4, 2, 60, none());
+        x.filter = Some("rank >= 50".into());
+        let mut ts = vec![
+            ticket(p, x, 0),
+            ticket(p, req("y", 4, 2, 1, none()), 100),
+            ticket(p, req("z", 4, 2, 1, none()), 200),
+        ];
+        assert_eq!(match_tickets(&mut ts, 3_000).1.len(), 1);
+        assert_eq!(room_of(&ts[1]), room_of(&ts[2]));
+        assert!(room_of(&ts[0]).is_none());
     }
 
     #[test]

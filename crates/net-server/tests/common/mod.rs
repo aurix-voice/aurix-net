@@ -295,3 +295,44 @@ pub fn refused(reply: &Value, code: &str) {
     assert_eq!(reply["t"], "error", "expected an error, got {reply}");
     assert_eq!(reply["code"], code, "{reply}");
 }
+
+/// Receives the node's webhook deliveries on a local port.
+pub struct Sink {
+    pub url: String,
+    rx: tokio::sync::mpsc::UnboundedReceiver<Value>,
+}
+
+impl Sink {
+    pub async fn start() -> Sink {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let app = axum::Router::new().fallback(axum::routing::post(
+            move |axum::Json(body): axum::Json<Value>| {
+                let tx = tx.clone();
+                async move {
+                    let _ = tx.send(body);
+                }
+            },
+        ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("webhook listener");
+        let url = format!("http://{}/hook", listener.local_addr().expect("address"));
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        Sink { url, rx }
+    }
+
+    /// The next delivery of `event`: the whole body (`event`, `project`, `at`, `data`).
+    pub async fn next(&mut self, event: &str) -> Value {
+        loop {
+            let body = tokio::time::timeout(WAIT, self.rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("no `{event}` webhook from the node"))
+                .expect("webhook sink closed");
+            if body["event"] == event {
+                return body;
+            }
+        }
+    }
+}

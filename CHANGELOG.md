@@ -45,9 +45,15 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   carried on kept hosting rooms the fleet had already put up for adoption, so a join through
   another node started a second copy of the same room. With every heartbeat a node now takes back
   its rooms nobody adopted and drops the ones another node runs (`left` with reason `rehost`).
+- Matchmaking: a group that starts short of `max_players` now needs to be large enough for every
+  member's `min_players`, and waits for its own oldest ticket's `max_wait_secs`. Before this both
+  values were taken from the oldest ticket of the whole queue, so a player who asked for four was
+  started in a room of two. A player who wants more than there are stays in the queue.
 - Operator: a node counts as stale after it misses two of its own heartbeats, not after a fixed
   30 s. With `server.heartbeat_secs` above 30 a healthy node was listed in `stale_nodes`, raised
   the `node.stale` alert and showed as stale in the dashboard, where its buttons were disabled.
+- Matchmaking: the `match.found` webhook for `fill_existing` tickets seated into the same running
+  room in one pass named only one of the players next to all the ticket ids.
 - Multi-node: a room on a node that registered within the last heartbeat is found from the other
   nodes. Before this a join by name through a node that had not listed the host yet answered
   `not_found` and closed the room's record, so nobody could reach the running room by name.
@@ -57,6 +63,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - Multi-node: `DELETE /v1/rooms/{id}` with a project key closes the room on the node that hosts
   it. Sent to another node it used to close only the room's record: the players stayed in a
   room that no listing showed.
+- Matchmaking: a ticket cancelled while a matching pass was running could be matched anyway. The
+  cancel answered 204, the ticket then read `matched`, and the other players of the room waited
+  for someone who had left. A ticket now leaves `searching` once: whichever of the cancel and the
+  pass comes second sees that and backs off, and a room that lost a player this way is not
+  started; its other tickets are matched again on the next pass.
 - Web and Unity SDKs: a reliable burst longer than 32 packets (a message over about 35 KB, or many
   reliable sends in one frame) no longer ends the connection when one packet of it is lost. The
   send window counted unacked packets instead of the span of their sequence numbers, so the node
