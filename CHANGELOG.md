@@ -7,6 +7,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 
 ## [Unreleased]
 
+### CI
+- `release.yml`: the Web npm tarball is packed to the workspace root, so it sits beside the other
+  SDK files in the `sdk` artifact, and the image job no longer uploads Docker build records. The
+  0.1.0 run stopped at the checksum step on the `sdk/` folder; its GitHub Release was created by
+  hand from the artifacts of that run.
+
 ## [0.1.0] - 2026-11-18
 
 One game-agnostic networking service (relay, sync and lockstep rooms in the same node) plus a

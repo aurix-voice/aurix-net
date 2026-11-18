@@ -78,7 +78,7 @@ jobs:
         working-directory: sdk/web
         run: |
           npm ci && npm run build && npm test
-          npm pack --pack-destination ..
+          npm pack --pack-destination ../..
       - name: sdk archives
         run: |
           cp target/wasm32-unknown-unknown/release/net_sim_wasm.wasm "aurix-sim-${TAG}.wasm"
@@ -91,7 +91,7 @@ jobs:
           name: sdk
           if-no-files-found: error
           path: |
-            sdk/aurix-net-*.tgz
+            aurix-net-*.tgz
             aurix-sim-*.wasm
             aurix-net-unity-*.zip
             aurix-net-godot-*.zip
@@ -116,6 +116,8 @@ jobs:
   images:
     needs: check-version
     runs-on: ubuntu-24.04
+    env:
+      DOCKER_BUILD_RECORD_UPLOAD: false
     steps:
       - uses: actions/checkout@v7
         with: { ref: "${{ env.TAG }}" }
