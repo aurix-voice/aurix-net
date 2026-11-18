@@ -48,6 +48,12 @@ updates:
     groups:
       nuget-deps: { patterns: ["*"] }
   - package-ecosystem: "nuget"
+    directory: "/sdk/unity/BuildCheck~/managed-tests"
+    schedule: { interval: "weekly", day: "monday" }
+    open-pull-requests-limit: 5
+    groups:
+      nuget-deps: { patterns: ["*"] }
+  - package-ecosystem: "nuget"
     directory: "/sdk/unity/BuildCheck~/framework-check"
     schedule: { interval: "weekly", day: "monday" }
     open-pull-requests-limit: 5

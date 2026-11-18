@@ -359,6 +359,6 @@ lockstep bots, RSS/overrun verdict, CSV attached). First run on a GitHub-hosted 
 | `rust` | fmt, clippy `-D warnings`, workspace tests, migrations on a fresh Postgres, `net-sim-wasm` wasm32 + native builds and `golden_check` (all six golden hashes native == wasm32), `libaurix_net` + `ctest/sim.c` (C ABI golden check) and the header generator diff; uploads the `.wasm`, `libnet_sim_wasm.so` and the debug `aurix-net-server` for the jobs below |
 | `supply-chain` | `cargo audit`, `cargo deny check` |
 | `sdk-web` | `tsc` build + node tests of the Web SDK (sim tests load the wasm artifact; live tests skip without `NET_API_KEY`) |
-| `sdk-csharp` | dotnet builds of the live/rehost checks and the managed test runner (P/Invokes the native artifact) |
+| `sdk-csharp` | dotnet builds of the live/rehost checks and `dotnet test` of the managed core (NUnit, P/Invokes the native artifact) |
 | `console` | dashboard `check`/`lint`/`test`/`build`, then the live Playwright suite against a node started from the artifact with Postgres/Redis services (`AURIX_NET_E2E_TOKEN` = that node's `auth.admin_token`) |
 | `docker` | buildx of the node image (`Dockerfile`) and the console image (`dashboard/Dockerfile`), no push |

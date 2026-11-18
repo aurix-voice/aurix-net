@@ -33,7 +33,8 @@ test("mispredicted remote input rolls back to the pure lockstep state", () => {
   const script = Array.from({ length: 8 }, () => inputs([[1, 1], [2, 2]]));
   script[4] = inputs([[1, 1], [2, 7]]); script[5] = inputs([[2, 7]]);
   for (let t = 0; t < 8; t++) { rb.localInput(t, Uint8Array.of(1)); rb.predict(t + 4); rb.confirm(t, script[t]); }
-  assert.equal(rb.rollbacks, 4); // ticks 0, 4, 5, 6 — same as the Rust/C# cores assert.ok(rb.resimulatedTicks > 0);
+  assert.equal(rb.rollbacks, 4); // ticks 0, 4, 5, 6: same as the Rust/C# cores
+  assert.ok(rb.resimulatedTicks > 0);
   assert.equal(rb.headTick, 11);
   // replay the same script on a second rollback instance up to the confirmed tick only
   const check = new Toy(); const rb2 = new LockstepRollback(check, 1, 0, 8);

@@ -1,5 +1,5 @@
 // Offline checks of the sync codec against golden vectors produced by the managed C# core
-// (sdk/unity/BuildCheck~/managed-tests prints them as `VECTOR ...`): node --test test/
+// (sdk/unity/BuildCheck~/managed-tests asserts the same bytes): node --test test/
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { BitWriter, BitReader, Schema, ComponentValue, SyncWorld, InterpolationBuffer, lerpVec, distVec } from "../dist/index.js";

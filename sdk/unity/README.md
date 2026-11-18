@@ -180,7 +180,7 @@ adapters that have it (compile-only without the key).
 
 ## Checks
 
-`BuildCheck~/managed-tests` (`dotnet run`): offline checks of the managed core; the sim/nav checks load
+`BuildCheck~/managed-tests` (`dotnet test`): offline NUnit tests of the managed core; the sim/nav tests load
 `target/release/libnet_sim_wasm.so` (`cargo build --release -p net-sim-wasm`) and are skipped when it is absent.
 
 `BuildCheck~/managed-live`: .NET console test of the managed core against a local node
