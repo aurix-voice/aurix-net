@@ -132,6 +132,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   `RejoinAsync` and the lookups waited out their 10 s timeout on a control channel that had
   closed, and a `ConnectAsync` that failed kept its socket. They fail with
   `control channel closed` as it closes, and the failed client is disposed.
+- All SDKs: a send on a connection the game had been told was `closed` was accepted and kept.
+  Nothing sent it any more, so a game that went on sending grew the queue without limit: 200 000
+  reliable events held 53 MB in the Web SDK and 28 MB in the native core. The send now fails with
+  `disconnected`, and the queue of the lost connection is dropped. The Web SDK and the managed
+  Unity client also accepted sends outside a room, before a join and after `leave`, and held
+  them until the next join threw them away; they refuse those too, as the native core did.
 - Unreal SDK: `SendEventEx` sent an event for `EAurixNetChannel::ReliableUnordered` on the
   reliable ordered channel. It goes on the channel it is given.
 - Lobby: a node that lost its Redis connection heard no room changes for about 2 s, and a room

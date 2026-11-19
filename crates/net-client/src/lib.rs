@@ -463,8 +463,8 @@ impl Client {
         Ok(joined)
     }
 
-    /// Stops the data path of the room the client is leaving. Left running, it would go on
-    /// resending what the room has not acknowledged, to a node that no longer expects it.
+    /// Stops the data path of the room the client is leaving or has lost. Left running, it would
+    /// go on resending what the room has not acknowledged, to a node that no longer expects it.
     fn close_data(&mut self) {
         for task in self.data_tasks.drain(..) {
             task.abort();
@@ -592,7 +592,8 @@ impl Client {
     /// Queues a data-path message; unreliable messages leave on the next timer tick (or
     /// immediately with `flush`).
     /// A message for [`Channel::UnreliableUnsequenced`] goes on the sequenced channel to a node
-    /// that does not take it.
+    /// that does not take it. Fails with [`ClientError::Disconnected`] outside a room and once
+    /// the connection is lost.
     pub fn send_data(&self, channel: Channel, payload: Bytes) -> Result<()> {
         let dp = self.data.as_ref().ok_or(ClientError::Disconnected)?;
         let channel = match channel {
@@ -720,6 +721,7 @@ impl Client {
                     self.avatar = Some(entity);
                 }
             }
+            Event::Closed(_) => self.close_data(),
             _ => {}
         }
     }

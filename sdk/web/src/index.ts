@@ -619,8 +619,12 @@ export class Client {
   }
 
   /** Queue a data message; unreliable ones leave on flush()/timer. A node that does not know the
-   *  unsequenced channel gets its messages on the sequenced one. */
+   *  unsequenced channel gets its messages on the sequenced one. Throws outside a room and once
+   *  the connection is lost. */
   sendData(channel: Channel, payload: Uint8Array) {
+    if (!this.path || this.isLost) {
+      throw new Error("disconnected");
+    }
     if (
       channel === Channel.UnreliableUnsequenced &&
       !this.nodeSupports.has("unsequenced")
@@ -756,7 +760,8 @@ export class Client {
       return;
     }
     this.isLost = true;
-    this.stop();
+    this.closePath();
+    this.link = new Link();
     this.failReady?.(new Error(why));
     this.emit("closed", why);
   }

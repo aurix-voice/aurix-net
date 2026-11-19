@@ -146,6 +146,26 @@ test("a connection that closes fails the call waiting on it at once", { skip: !k
   assert.deepEqual(sockets.map((socket) => socket.readyState === Real.OPEN), [false, false]);
 });
 
+test("a client outside a room or without its connection refuses what is sent", { skip: !key }, async (t) => {
+  const link = slowLink(http, 0);
+  t.after(() => link.close());
+  const a = await Client.connect(link.url, await grant("web-gone-a"));
+  t.after(() => a.close());
+  const send = () => a.sendEvent(1, Uint8Array.of(1), "others", true);
+  assert.throws(send, /disconnected/);
+  await a.joinOrCreate(`web-gone-${process.pid}`, "relay", 4);
+  send();
+  a.leave();
+  assert.throws(send, /disconnected/);
+  await a.joinOrCreate(`web-gone-${process.pid}`, "relay", 4);
+  send();
+  const closed = new Promise((resolve) => a.on("closed", resolve));
+  link.cut("ping");
+  a.send({ t: "ping" });
+  await closed;
+  assert.throws(send, /disconnected/);
+});
+
 test("a late joiner gets the cached events and the chat history", { skip: !key }, async () => {
   const a = await Client.connect(http, await grant("web-cache-a"));
   const b = await Client.connect(http, await grant("web-cache-b"));

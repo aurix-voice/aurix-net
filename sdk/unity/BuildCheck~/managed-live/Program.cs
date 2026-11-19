@@ -1,8 +1,10 @@
 using System.Collections.Generic;
 using System;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
@@ -10,6 +12,30 @@ using Aurix.Net;
 using Aurix.Net.Managed;
 using Aurix.Net.Unity;
 using UnityEngine;
+
+// A TCP relay to the node that a check can cut: disposing it closes every connection made through it.
+sealed class Relay : IDisposable
+{
+    readonly TcpListener _listener = new TcpListener(IPAddress.Loopback, 0);
+    readonly List<TcpClient> _ends = new List<TcpClient>();
+    public string Url => "http://127.0.0.1:" + ((IPEndPoint)_listener.LocalEndpoint).Port;
+    public Relay() { _listener.Start(); _ = Accept(); }
+    async Task Accept()
+    {
+        try
+        {
+            while (true)
+            {
+                var near = await _listener.AcceptTcpClientAsync(); var far = new TcpClient();
+                await far.ConnectAsync(IPAddress.Loopback, 8090);
+                lock (_ends) { _ends.Add(near); _ends.Add(far); }
+                _ = near.GetStream().CopyToAsync(far.GetStream()); _ = far.GetStream().CopyToAsync(near.GetStream());
+            }
+        }
+        catch (Exception error) when (error is SocketException || error is ObjectDisposedException) { }
+    }
+    public void Dispose() { _listener.Stop(); lock (_ends) foreach (var end in _ends) end.Close(); }
+}
 
 class P
 {
@@ -289,6 +315,38 @@ class P
             Console.WriteLine($"closed control channel: connect failed after {clock.ElapsedMilliseconds} ms: {failure} -> {(failedFast ? "ok" : "FAIL")}");
         }
         else failedFast = Skip("closed control channel: skipped (NET_CUT_HTTP not set)");
+        // outside a room and on a connection that is gone a send is refused, by the managed client and by the native core
+        bool refused;
+        using (var relay = new Relay())
+        {
+            string Refusal(Action send) { try { send(); return "sent"; } catch (NetException error) { return error.Message; } }
+            var one = new byte[] { 1 };
+            var managed = await ManagedClient.ConnectAsync(relay.Url, await Grant(h, key, "cs-lost-m"));
+            bool managedClosed = false; managed.OnClosed += _ => managedClosed = true;
+            Action viaManaged = () => managed.SendEvent(1, one, Target.Others, reliable: true);
+            string outside = Refusal(viaManaged);
+            await managed.JoinOrCreateAsync(room + "-lost", "relay", 4);
+            string inside = Refusal(viaManaged);
+            Client core = null; bool coreClosed = false; Action viaCore = null; string coreOutside = "skipped", coreInside = "skipped", coreGone = "skipped";
+            try
+            {
+                core = Client.Connect(relay.Url, await Grant(h, key, "cs-lost-c"));
+                core.OnClosed += _ => coreClosed = true;
+                viaCore = () => core.SendEvent(1, one, Target.Others, reliable: true);
+                coreOutside = Refusal(viaCore);
+                core.Join(room + "-lost");
+                coreInside = Refusal(viaCore);
+            }
+            catch (DllNotFoundException) { core = null; }
+            relay.Dispose();
+            var limit = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < limit && !(managedClosed && (core == null || coreClosed))) { managed.Poll(); core?.Poll(); await Task.Delay(5); }
+            string lost = Refusal(viaManaged);
+            if (core != null) coreGone = Refusal(viaCore);
+            managed.Dispose(); core?.Dispose();
+            Console.WriteLine($"send outside a room / in it / on a closed connection: managed={outside} / {inside} / {lost}, native core={coreOutside} / {coreInside} / {coreGone}");
+            refused = outside == "disconnected" && inside == "sent" && lost == "disconnected" && ((core == null && !Required) || (coreOutside == "disconnected" && coreInside == "sent" && coreGone == "disconnected"));
+        }
         // NetRunner over the slow link: every frame the owner sends reaches the room, the last move among them,
         // and it sends one a tick: the moves are a step of the stub's clock apart, so `moves * step * TickHz` of them
         bool runnerOk = true;
@@ -327,7 +385,7 @@ class P
             runnerOk = moves > 0 && Math.Abs(written.Count - ticks) <= 1 && reached.Contains(moves) && reached.SetEquals(written);
             runner.Client.Dispose(); watcher.Dispose();
         }
-        bool ok = lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && failedFast && runnerOk;
+        bool ok = refused && lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && failedFast && runnerOk;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");
         return ok ? 0 : 1;
     }

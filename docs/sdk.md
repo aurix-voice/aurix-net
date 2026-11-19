@@ -15,6 +15,9 @@ All SDKs share one shape: `connect(http, grant)` → `joinOrCreate/join` → per
 `sendEvent/sendData`, `flush()`; events `control` (JSON), `event` (relay frame), `data` (raw
 sync/lockstep frames), `closed`. Grants always come from the developer's backend.
 
+Outside a room and after `closed` a send fails with `disconnected` and nothing is queued: an
+exception in Web, C# and C++, a non-zero result in C, `false` in Godot.
+
 `sendEvent` chooses between reliable and unreliable; `sendEventOn` takes the channel, which is how an
 event goes on the unsequenced one (docs/modes.md):
 

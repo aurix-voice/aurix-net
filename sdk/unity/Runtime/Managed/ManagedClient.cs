@@ -364,6 +364,11 @@ namespace Aurix.Net.Managed
 
         public void SendData(Channel channel, byte[] payload)
         {
+            if (!_dataOpen)
+            {
+                throw new NetException("disconnected");
+            }
+
             if (channel == Channel.UnreliableUnsequenced && !_nodeTakesUnsequenced)
             {
                 channel = Channel.Unreliable;
@@ -556,6 +561,8 @@ namespace Aurix.Net.Managed
                         if (!_lost)
                         {
                             _lost = true;
+                            _dataOpen = false;
+                            _link = new Link();
                             OnClosed?.Invoke(closed.Reason);
                         }
                         break;
