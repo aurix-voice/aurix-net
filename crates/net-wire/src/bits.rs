@@ -72,10 +72,17 @@ impl BitWriter {
         self.write_bits(value.min(max), nbits);
     }
 
-    /// Signed integer via zigzag in `nbits`.
+    /// Signed integer in `[-2^(nbits-1), 2^(nbits-1))`, clamped, via zigzag.
     pub fn write_int(&mut self, value: i64, nbits: u32) {
+        let value = match nbits {
+            1..=63 => {
+                let half = 1i64 << (nbits - 1);
+                value.clamp(-half, half - 1)
+            }
+            _ => value,
+        };
         let zz = ((value << 1) ^ (value >> 63)) as u64;
-        self.write_uint(zz, nbits);
+        self.write_bits(zz, nbits);
     }
 
     /// Quantizes `value` into `[min, max]` with step `res`.
@@ -228,6 +235,25 @@ mod tests {
         let pad = buf.len() * 8 - bits;
         assert_eq!(reader.read_bits(pad as u32).unwrap(), 0);
         assert_eq!(reader.read_bits(1), Err(Eof));
+    }
+
+    #[test]
+    fn an_integer_out_of_range_is_written_as_the_nearest_end_of_it() {
+        let mut writer = BitWriter::new();
+        for value in [200, -200, 127, -128] {
+            writer.write_int(value, 8);
+        }
+        writer.write_uint(300, 8);
+        writer.write_int(i64::MAX, 64);
+        writer.write_int(i64::MIN, 64);
+        let buf = writer.finish();
+        assert_eq!(buf[..5], [0xfe, 0xff, 0xfe, 0xff, 0xff]);
+        let mut reader = BitReader::new(&buf);
+        let read: Vec<i64> = (0..4).map(|_| reader.read_int(8).unwrap()).collect();
+        assert_eq!(read, [127, -128, 127, -128]);
+        assert_eq!(reader.read_uint(8).unwrap(), 255);
+        assert_eq!(reader.read_int(64).unwrap(), i64::MAX);
+        assert_eq!(reader.read_int(64).unwrap(), i64::MIN);
     }
 
     #[test]

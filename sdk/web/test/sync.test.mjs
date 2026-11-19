@@ -26,6 +26,18 @@ test("bit writer matches the C# vector", () => {
   assert.equal(r.readF32(), 1.5); assert.equal(r.readBig(64), (1n << 64n) - 1n); assert.equal(r.readBool(), true);
 });
 
+test("an integer out of range is written as the nearest end of it, as in Rust and C#", () => {
+  const w = new BitWriter();
+  for (const value of [200, -200, 127, -128]) w.writeInt(value, 8);
+  w.writeUInt(300, 8); w.writeUInt(-1, 8); w.writeUInt(7.9, 8); w.writeInt(-7.9, 8);
+  w.writeInt((1n << 63n) - 1n, 64); w.writeInt(-(1n << 63n), 64);
+  assert.equal(hex(w.finish()).slice(0, 16), "fefffeffff00070d");
+  const r = new BitReader(w.finish());
+  assert.deepEqual([r.readInt(8), r.readInt(8), r.readInt(8), r.readInt(8)], [127n, -128n, 127n, -128n]);
+  r.readBits(32);
+  assert.deepEqual([r.readInt(64), r.readInt(64)], [(1n << 63n) - 1n, -(1n << 63n)]);
+});
+
 test("an entity is not given to an actor number cut down to another player", () => {
   const w = new SyncWorld(Schema.parse(SCHEMA));
   assert.throws(() => w.encodeOps([{ op: "transfer", entity: 1, to: 65537 }]), RangeError);

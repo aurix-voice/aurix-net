@@ -60,8 +60,17 @@ namespace Aurix.Net.Managed
             WriteBits(Math.Min(value, max), nbits);
         }
 
-        public void WriteInt(long value, int nbits) =>
-            WriteUInt((ulong)((value << 1) ^ (value >> 63)), nbits);
+        /// <summary>Signed integer in [-2^(nbits-1), 2^(nbits-1)), clamped, via zigzag.</summary>
+        public void WriteInt(long value, int nbits)
+        {
+            if (nbits < 64)
+            {
+                long half = 1L << (nbits - 1);
+                value = Math.Min(Math.Max(value, -half), half - 1);
+            }
+
+            WriteBits((ulong)((value << 1) ^ (value >> 63)), nbits);
+        }
 
         public void WriteQuantized(float value, float min, float max, float res)
         {

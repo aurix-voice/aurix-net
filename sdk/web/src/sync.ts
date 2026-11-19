@@ -39,6 +39,9 @@ export const KIND_INPUT_STATS = 0x25;
 export class SyncError extends Error {}
 
 // ---------------- bits ----------------
+const whole = (value: bigint | number): bigint =>
+  typeof value === "bigint" ? value : BigInt(Math.trunc(value));
+
 export class BitWriter {
   private buf: number[] = [];
   private scratch = 0n;
@@ -72,14 +75,18 @@ export class BitWriter {
   writeBool(value: boolean): void {
     this.writeBits(value ? 1 : 0, 1);
   }
+  /** Unsigned integer in `[0, 2^nbits)`, clamped; a fraction is dropped. */
   writeUInt(value: bigint | number, nbits: number): void {
-    const max = nbits >= 64 ? (1n << 64n) - 1n : (1n << BigInt(nbits)) - 1n;
-    const x = BigInt(value);
-    this.writeBits(x > max ? max : x, nbits);
+    const max = (1n << BigInt(Math.min(nbits, 64))) - 1n;
+    const x = whole(value);
+    this.writeBits(x < 0n ? 0n : x > max ? max : x, nbits);
   }
+  /** Signed integer in `[-2^(nbits-1), 2^(nbits-1))`, clamped, via zigzag; a fraction is dropped. */
   writeInt(value: bigint | number, nbits: number): void {
-    const x = BigInt.asIntN(64, BigInt(value));
-    this.writeUInt(BigInt.asUintN(64, (x << 1n) ^ (x >> 63n)), nbits);
+    const half = 1n << BigInt(Math.min(nbits, 64) - 1);
+    const given = whole(value);
+    const x = given < -half ? -half : given >= half ? half - 1n : given;
+    this.writeBits(BigInt.asUintN(64, (x << 1n) ^ (x >> 63n)), nbits);
   }
   writeQuantized(value: number, min: number, max: number, res: number): void {
     const { bits } = quantBits(min, max, res);

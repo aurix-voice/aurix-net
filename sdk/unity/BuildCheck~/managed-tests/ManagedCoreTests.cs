@@ -83,6 +83,9 @@ public class ManagedCoreTests
         Assert.That(Hex(world.EncodeWrites(new List<(ComponentDef, ComponentValue)> { (tr, pos), (st, stats) })), Is.EqualTo("023203eb1f8335abdf255296f442486f5875280c000000b50123456789abcdef"), "writes");
         var w = new BitWriter(); w.WriteBits(0x1ff, 9); w.WriteInt(-77, 12); w.WriteQuantized(12.345f, -100, 100, 0.001f); w.WriteF32(1.5f); w.WriteBits(ulong.MaxValue, 64); w.WriteBool(true);
         Assert.That(Hex(w.Finish()), Is.EqualTo("ff84cb6db27f800001ffffffffffffffff"), "bits");
+        w = new BitWriter(); foreach (long value in new long[] { 200, -200, 127, -128 }) w.WriteInt(value, 8);
+        w.WriteUInt(300, 8); w.WriteInt(long.MaxValue, 64); w.WriteInt(long.MinValue, 64);
+        Assert.That(Hex(w.Finish()), Is.EqualTo("fefffefffffffffffffffffffeffffffffffffffff"), "an integer out of range is the nearest end of it");
         Assert.That(Hex(SyncWorld.EncodeInput(0x01020304, new List<byte[]> { new byte[] { 1, 2 }, new byte[0], new byte[] { 9 } })), Is.EqualTo("100102030403020102000109"), "input");
         Assert.That(Hex(SyncWorld.EncodeAck(0xdeadbeef, 0x80000001)), Is.EqualTo("13deadbeef80000001"), "ack");
         Assert.That(SyncWorld.EncodeInput(1, new List<byte[]> { new byte[SyncWorld.MaxInput] }).Length, Is.EqualTo(6 + 1 + SyncWorld.MaxInput), "the longest input");

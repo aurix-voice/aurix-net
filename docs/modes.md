@@ -213,6 +213,9 @@ Types: `bool`, `u8..u64`, `i8..i64`, `bits(n)`, `f32`, `f32 @range(min,max,res)`
 canonical schema is returned in `joined.schema_hash`; a client that sends a different
 `schema_hash` on join is refused with `schema_mismatch`.
 
+A number outside the range of its field is written as the nearest end of the range: 300 in a
+`u8` is 255, -1 is 0, 200 in an `i8` is 127, and a quantized value is held to `min..max`.
+
 The input of one tick is at most 255 bytes: a raw input, the writes of a tick taken together,
 one batch of ops, and a lockstep input. A longer one is refused by the client that is asked to
 send it (`RangeError` in Web, `ArgumentException` in C#, `-1` with

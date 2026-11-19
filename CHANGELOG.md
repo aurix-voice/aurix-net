@@ -199,6 +199,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   strings stopped changing for the other players; a lockstep input reached everybody cut. The
   client now refuses such an input: `RangeError` in Web, `ArgumentException` in C#, `-1` with
   `AURIX_NET_ERR_INVALID_ARGUMENT` in the C ABI and the clients built on it.
+- Sync rooms, every client and the node: a signed field given a number above its range was
+  written as the lowest number of the range: 200 in an `i8` reached the room as -128. It is
+  now written as the highest, 127, as the unsigned and quantized fields already were. In
+  Web a negative number in an unsigned field was written as the highest (-1 in a `u8` as
+  255) and a number with a fraction threw; they are now written as 0 and without the
+  fraction, as the other clients write them.
 - Web, Godot, C ABI, Unreal: a number too wide for the wire was cut down and sent as another
   one. In Web and Godot the event code 300 reached the room as 44, in Web an actor 65538 as
   actor 2 and a group 65536 as group 0; Godot took channel 257 for the reliable channel and
