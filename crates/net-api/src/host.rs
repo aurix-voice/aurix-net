@@ -364,7 +364,10 @@ impl RoomHost {
     }
 
     pub fn subscribe_lobby(&self, project: ProjectId, tx: mpsc::Sender<ServerMsg>) {
-        self.lobby.entry(project).or_default().push(tx);
+        let mut watchers = self.lobby.entry(project).or_default();
+        if !watchers.iter().any(|watcher| watcher.same_channel(&tx)) {
+            watchers.push(tx);
+        }
     }
 
     pub fn unsubscribe_lobby(&self, project: ProjectId, tx: &mpsc::Sender<ServerMsg>) {

@@ -78,6 +78,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   refuses its new rooms and joins with `quota_exceeded` until an operator sets the limits
   again, lists the project under `invalid_limits` in `GET /v1/operator/attention`, and returns
   `limits_error` in the project detail. Rooms that are already running keep running.
+- Lobby: a client that subscribed to the room list more than once got every update as many
+  times as it had subscribed, until it unsubscribed. A session is now subscribed once.
 - Operator API: `POST /v1/operator/projects/:id/limits` stored any body and answered 204. One
   value of the wrong type or out of range, such as `max_players_per_room: 100000`, made the
   whole object unreadable, and the project then ran with no limits at all, the monthly caps
