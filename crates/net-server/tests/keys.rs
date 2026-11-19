@@ -3,7 +3,7 @@
 mod common;
 
 use common::{joined, Api, Node};
-use serde_json::json;
+use serde_json::{json, Value};
 
 #[tokio::test]
 async fn node_list_is_not_given_without_a_key() {
@@ -110,4 +110,94 @@ async fn player_named_in_128_letters_of_any_alphabet_gets_a_grant_and_a_room() {
             "{path}"
         );
     }
+}
+
+#[tokio::test]
+async fn query_that_does_not_parse_is_refused_the_way_the_api_refuses() {
+    let node = Node::start().await;
+    let project = node.project("keys-query").await;
+    let room = "01a1f4bd-985c-7460-8131-33049a5692bc";
+    for path in [
+        format!("/v1/rooms/{room}/replay?from=abc"),
+        format!("/v1/rooms/{room}/replay?to=-1"),
+        "/v1/audit?limit=abc".to_string(),
+        "/v1/usage?from=yesterday".to_string(),
+        "/v1/rejections?hours=many".to_string(),
+    ] {
+        let (status, body) = project.api.get(&path).await;
+        assert_eq!(status, 400, "{path}");
+        assert_eq!(body["error"], "invalid_request", "{path}: {body}");
+        assert!(body["message"].is_string(), "{path}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn request_refused_before_its_handler_is_refused_the_way_the_api_refuses() {
+    let node = Node::start().await;
+    let project = node.project("keys-refused").await;
+    let json = "application/json";
+    let cases = [
+        (
+            "GET",
+            "/v1/rooms/not-a-room",
+            json,
+            "",
+            400,
+            "invalid_request",
+        ),
+        ("POST", "/v1/grants", json, "{", 400, "invalid_request"),
+        (
+            "POST",
+            "/v1/grants",
+            json,
+            r#"{"player_id": 5}"#,
+            422,
+            "invalid_request",
+        ),
+        (
+            "POST",
+            "/v1/grants",
+            "text/plain",
+            "{}",
+            415,
+            "invalid_request",
+        ),
+        ("GET", "/v1/nothing", json, "", 404, "not_found"),
+        ("PUT", "/v1/rooms", json, "{}", 405, "invalid_request"),
+    ];
+    for (method, path, content_type, body, status, error) in cases {
+        let case = format!("{method} {path} {body}");
+        let reply = reqwest::Client::new()
+            .request(
+                method.parse().expect("method"),
+                format!("{}{path}", project.api.http),
+            )
+            .bearer_auth(&project.api.token)
+            .header("content-type", content_type)
+            .body(body)
+            .send()
+            .await
+            .expect("reply");
+        assert_eq!(reply.status(), status, "{case}");
+        if status == 405 {
+            assert_eq!(reply.headers()["allow"], "GET,HEAD,POST", "{case}");
+        }
+        let refusal: Value = reply.json().await.expect(&case);
+        assert_eq!(refusal["error"], error, "{case}: {refusal}");
+        assert!(refusal["message"].is_string(), "{case}: {refusal}");
+    }
+
+    let stranger = Api {
+        http: project.api.http.clone(),
+        token: "not-a-key".into(),
+    };
+    let mut refusal = (401, Value::Null);
+    for _ in 0..40 {
+        refusal = stranger.get("/v1/me").await;
+        if refusal.0 == 429 {
+            break;
+        }
+    }
+    assert_eq!(refusal.0, 429);
+    assert_eq!(refusal.1["error"], "rate_limited", "{}", refusal.1);
 }

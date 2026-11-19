@@ -97,7 +97,9 @@ not_found, conflict, invalid_request, room_full, room_closed, schema_mismatch, q
 rate_limited`; a failure inside the node answers 500 with `internal`, `database`, `redis`,
 `transport` or `config`. For `database`, `redis` and `internal` the `message` says only which
 of them failed, here and in `error` on the control channel; the cause is in the node's log,
-with the route or the message type and the project.
+with the route or the message type and the project. A request refused before its handler
+has the same body: one that does not parse (400, 415, 422), is too large (413) or names a
+method the path does not take (405) is `invalid_request`, an unknown path is `not_found`.
 
 ## WebSocket control channel `/ws`
 

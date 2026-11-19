@@ -263,6 +263,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/ws", axum::routing::get(net_api::ws::ws_handler))
         .with_state(st.clone())
         .merge(rest::router(st.clone()))
+        .fallback(rest::no_such_path)
+        .method_not_allowed_fallback(rest::no_such_method)
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
         .layer(axum::middleware::from_fn_with_state(
             st.clone(),

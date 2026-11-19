@@ -2,12 +2,13 @@
 
 use crate::state::Shared;
 use crate::ws::close_room;
+use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::DefaultBodyLimit;
-use axum::extract::{Path, Query, State};
+use axum::extract::{FromRequest, FromRequestParts, OptionalFromRequest, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
-use axum::{Json, Router};
+use axum::Router;
 use net_auth::api_key::{hash_key, looks_like_key, ApiKeyMaterial, Scope};
 pub(crate) use net_auth::grant::valid_player_id;
 use net_common::ipnet::{net_contains, parse_net};
@@ -43,6 +44,83 @@ impl IntoResponse for ApiError {
         )
             .into_response()
     }
+}
+
+/// A request refused before its handler: the status axum gives the refusal, in the body the
+/// API refuses with.
+pub struct Refused(pub(crate) StatusCode, pub(crate) String);
+
+impl IntoResponse for Refused {
+    fn into_response(self) -> Response {
+        let code = match self.0 {
+            StatusCode::NOT_FOUND => "not_found",
+            StatusCode::TOO_MANY_REQUESTS => "rate_limited",
+            _ => "invalid_request",
+        };
+        (self.0, Json(json!({"error": code, "message": self.1}))).into_response()
+    }
+}
+
+impl From<QueryRejection> for Refused {
+    fn from(rejection: QueryRejection) -> Self {
+        Refused(rejection.status(), rejection.body_text())
+    }
+}
+
+impl From<PathRejection> for Refused {
+    fn from(rejection: PathRejection) -> Self {
+        Refused(rejection.status(), rejection.body_text())
+    }
+}
+
+impl From<JsonRejection> for Refused {
+    fn from(rejection: JsonRejection) -> Self {
+        Refused(rejection.status(), rejection.body_text())
+    }
+}
+
+#[derive(FromRequestParts)]
+#[from_request(via(axum::extract::Query), rejection(Refused))]
+struct Query<T>(T);
+
+#[derive(FromRequestParts)]
+#[from_request(via(axum::extract::Path), rejection(Refused))]
+struct Path<T>(T);
+
+#[derive(FromRequest)]
+#[from_request(via(axum::Json), rejection(Refused))]
+struct Json<T>(T);
+
+impl<T: Serialize> IntoResponse for Json<T> {
+    fn into_response(self) -> Response {
+        axum::Json(self.0).into_response()
+    }
+}
+
+impl<T, S> OptionalFromRequest<S> for Json<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = Refused;
+
+    async fn from_request(req: Request, state: &S) -> std::result::Result<Option<Self>, Refused> {
+        let body = <axum::Json<T> as OptionalFromRequest<S>>::from_request(req, state).await?;
+        Ok(body.map(|axum::Json(body)| Json(body)))
+    }
+}
+
+/// The answer to a path the node does not serve.
+pub async fn no_such_path() -> Refused {
+    Refused(StatusCode::NOT_FOUND, "no such path".into())
+}
+
+/// The answer to a method a path does not take.
+pub async fn no_such_method() -> Refused {
+    Refused(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "the path does not take this method".into(),
+    )
 }
 
 type ApiResult<T> = std::result::Result<T, ApiError>;

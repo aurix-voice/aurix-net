@@ -1,6 +1,7 @@
 //! Per-IP and per-key guards: token buckets for HTTP, WebSocket connects, auth failures and
 //! API-key writes, plus concurrent session counts per IP. `X-Forwarded-For` is honoured only
 //! from `server.trusted_proxies`.
+use crate::rest::Refused;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, Request, StatusCode};
@@ -125,7 +126,7 @@ pub async fn http_guard(
     let ip = st.guards.client_ip(peer.ip(), req.headers());
     if st.guards.http.check_key(&ip).is_err() {
         st.metrics.errors.with_label_values(&["rate_limited"]).inc();
-        return (StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
+        return Refused(StatusCode::TOO_MANY_REQUESTS, "rate limited".into()).into_response();
     }
     req.extensions_mut().insert(ClientIp(ip));
     if let Ok(addr) = ip.to_string().parse() {
@@ -140,11 +141,11 @@ pub async fn http_guard(
             .errors
             .with_label_values(&["auth_rate_limited"])
             .inc();
-        return (
+        return Refused(
             StatusCode::TOO_MANY_REQUESTS,
-            "too many failed authentications",
+            "too many failed authentications".into(),
         )
-            .into_response();
+        .into_response();
     }
     resp
 }

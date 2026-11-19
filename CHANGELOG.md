@@ -198,6 +198,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - Lockstep replay: `schema_hash` was empty in every replay. The replay of a room with a
   `logic` module names the schema the node steps; a room without one has no schema the node
   knows, and the field stays empty.
+- REST: a request refused before its handler was answered in plain text or with an empty
+  body: a query string, a path identifier or a JSON body that did not parse, a body without
+  `Content-Type: application/json`, an unknown path, a method the path does not take and the
+  per-address request limit. Each is now refused with `{"error", "message"}` like every other
+  refusal; the status codes are the same.
 - Every client: a reliable message sent just before a leave could be lost without a word. The
   leave closed the data path at once, with what the node had not yet acknowledged. Of 40
   events each followed at once by a leave, over a link that loses data frames, the room got 36
