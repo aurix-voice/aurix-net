@@ -12,6 +12,8 @@ class UAurixNetSubsystem;
 
 /** Session setting key: room name (defaults to the session name). */
 #define SETTING_AURIX_ROOM FName(TEXT("AURIXROOM"))
+/** Session setting key: player ids, comma separated, whose seats the room holds when this session creates it. */
+#define SETTING_AURIX_RESERVED FName(TEXT("AURIXRESERVED"))
 
 class FOnlineSessionInfoAurix : public FOnlineSessionInfo
 {
@@ -85,6 +87,8 @@ private:
 	FNamedOnlineSession* AddNamedSession(FName SessionName, const FOnlineSession& Session) override;
 	UAurixNetSubsystem* Net() const;
 	FString RoomNameFor(FName SessionName, const FOnlineSessionSettings& Settings) const;
+	FString HostJsonFor(FName SessionName, const FOnlineSessionSettings& Settings, TArray<FString> Reserved) const;
+	void SetRoomOpen(const FNamedOnlineSession& Session, bool bOpen) const;
 	void OnRooms(const TArray<FAurixNetRoomSummary>& Rooms);
 	void FinishSearch(bool bOk);
 	void OnCreateJoined(int32 Actor, EAurixNetError Code, const FString& Error, FName SessionName, FString Room);
@@ -98,6 +102,7 @@ private:
 	TSharedPtr<FOnlineSessionSearch> CurrentSearch;
 	FDelegateHandle RoomsHandle;
 	double SearchStartedAt = 0.0;
+	int32 SearchMinSlots = 0;
 };
 
 typedef TSharedPtr<FOnlineSessionAurix, ESPMode::ThreadSafe> FOnlineSessionAurixPtr;

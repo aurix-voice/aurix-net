@@ -29,6 +29,10 @@ public:
 	/** Schema JSON (same text the room was created with). Set before BeginPlay or call Setup. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Sync", meta = (MultiLine = true)) FString SchemaJson;
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Sync") bool Setup(const FString& InSchemaJson);
+	/** A world for a room's replay (kill cam): it takes no frames from the room we are in, only those given to ReceiveReplayFrame. Set before BeginPlay or Setup. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Sync") bool bReplay = false;
+	/** Apply one frame of GET /v1/rooms/{id}/replay (the bytes of its `delta`), in order. False when it is not a sync frame. */
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Sync") bool ReceiveReplayFrame(const TArray<uint8>& Frame);
 
 	UFUNCTION(BlueprintPure, Category = "Aurix Net|Sync") int64 ServerTick() const;
 	UFUNCTION(BlueprintPure, Category = "Aurix Net|Sync") int32 EntityCount() const;

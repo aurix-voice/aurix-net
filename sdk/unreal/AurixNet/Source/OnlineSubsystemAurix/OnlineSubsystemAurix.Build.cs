@@ -6,5 +6,6 @@ public class OnlineSubsystemAurix : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "OnlineSubsystem", "OnlineSubsystemUtils", "AurixNet" });
+		PrivateDependencyModuleNames.Add("Json");
 	}
 }

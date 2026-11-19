@@ -17,8 +17,14 @@ bool UAurixSyncWorld::Setup(const FString& InSchema)
 	SchemaJson = InSchema;
 	S = aurix_net_sync_new(TCHAR_TO_UTF8(*SchemaJson));
 	if (!S) { UE_LOG(LogAurixNet, Error, TEXT("sync schema rejected: %s"), UTF8_TO_TCHAR(aurix_net_last_error())); return false; }
+	if (bReplay) return true;
 	if (UAurixNetSubsystem* N = Net()) DataHandle = N->OnRawData.AddUObject(this, &UAurixSyncWorld::OnRawData);
 	return true;
+}
+bool UAurixSyncWorld::ReceiveReplayFrame(const TArray<uint8>& Frame)
+{
+	uint8 Ack[9];
+	return S && aurix_net_sync_receive(S, Frame.GetData(), Frame.Num(), Ack) == 1;
 }
 void UAurixSyncWorld::BeginPlay() { Super::BeginPlay(); if (!SchemaJson.IsEmpty()) Setup(SchemaJson); }
 void UAurixSyncWorld::EndPlay(const EEndPlayReason::Type Reason) { Teardown(); Super::EndPlay(Reason); }

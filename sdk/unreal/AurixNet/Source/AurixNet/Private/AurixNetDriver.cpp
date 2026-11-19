@@ -60,7 +60,9 @@ bool UAurixNetDriver::InitBase(bool bInitAsClient, FNetworkNotify* InNotify, con
 	if (S->GetState() == EAurixNetState::InRoom) S->Leave();
 	const TCHAR* MaxPlayersOption = URL.GetOption(TEXT("MaxPlayers="), nullptr);
 	const int32 Max = MaxPlayersOption ? FCString::Atoi(MaxPlayersOption) : UAurixNetSettings::Get()->DefaultMaxPlayers;
-	const FString JoinJson = bInitAsClient ? UAurixNetSubsystem::JoinJsonFor(RoomName) : UAurixNetSubsystem::JoinOrCreateJson(RoomName, EAurixNetRoomMode::Relay, Max, FString());
+	const bool bVisible = FCString::Atoi(URL.GetOption(TEXT("Visible="), TEXT("1"))) != 0;
+	const bool bOpen = FCString::Atoi(URL.GetOption(TEXT("Open="), TEXT("1"))) != 0;
+	const FString JoinJson = bInitAsClient ? UAurixNetSubsystem::JoinJsonFor(RoomName) : UAurixNetSubsystem::JoinOrCreateJson(RoomName, EAurixNetRoomMode::Relay, Max, URL.GetOption(TEXT("Props="), TEXT("")), URL.GetOption(TEXT("LobbyProps="), TEXT("")), bVisible, bOpen);
 	bJoining = true;
 	bStartingJoin = true;
 	S->JoinAsync(JoinJson, FAurixNetAsyncResult::CreateUObject(this, &UAurixNetDriver::OnRoomJoined, RoomName));

@@ -69,6 +69,21 @@ public:
 		return *this;
 	}
 
+	/** A list of strings; nothing is written for an empty one. */
+	FControlMessage& Strings(const TCHAR* Name, const TArray<FString>& Values)
+	{
+		if (Values.Num() > 0)
+		{
+			Writer->WriteArrayStart(Name);
+			for (const FString& Element : Values)
+			{
+				Writer->WriteValue(Element);
+			}
+			Writer->WriteArrayEnd();
+		}
+		return *this;
+	}
+
 	FString Finish()
 	{
 		Writer->WriteObjectEnd();
@@ -89,6 +104,9 @@ static FAurixNetPlayer PlayerFrom(const TSharedPtr<FJsonObject>& O)
 	O->TryGetStringField(TEXT("player_id"), P.PlayerId);
 	O->TryGetStringField(TEXT("name"), P.Name);
 	O->TryGetBoolField(TEXT("online"), P.bOnline);
+	O->TryGetBoolField(TEXT("spectator"), P.bSpectator);
+	const TSharedPtr<FJsonObject>* Props = nullptr;
+	if (O->TryGetObjectField(TEXT("props"), Props)) P.PropsJson = ToJsonString(*Props);
 	return P;
 }
 static FAurixNetRoomSummary RoomSummaryFrom(const FJsonObject& Object)
@@ -175,12 +193,14 @@ int32 UAurixNetSubsystem::JoinJson(const FString& Json)
 void UAurixNetSubsystem::FinishJoin()
 {
 	ReadJoined();
-	RoomPropsJson.Reset(); PlayerProps.Reset();
+	RoomPropsJson = Room.PropsJson;
+	PlayerProps.Reset();
+	for (const FAurixNetPlayer& P : Room.Players) PlayerProps.Add(P.Actor, P.PropsJson);
 	SetState(EAurixNetState::InRoom);
 	OnJoined.Broadcast(Room);
 }
 
-FString UAurixNetSubsystem::JoinOrCreateJson(const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson, const FString& LobbyPropsJson, bool bVisible, bool bOpen)
+FString UAurixNetSubsystem::JoinOrCreateJson(const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson, const FString& LobbyPropsJson, bool bVisible, bool bOpen, const TArray<FString>& Reserved)
 {
 	return FControlMessage(TEXT("join_or_create"))
 		.Value(TEXT("name"), RoomName)
@@ -190,6 +210,21 @@ FString UAurixNetSubsystem::JoinOrCreateJson(const FString& RoomName, EAurixNetR
 		.Value(TEXT("open"), bOpen)
 		.Raw(TEXT("props"), PropsJson)
 		.Raw(TEXT("lobby_props"), LobbyPropsJson)
+		.Strings(TEXT("reserved"), Reserved)
+		.Finish();
+}
+
+FString UAurixNetSubsystem::JoinOrCreateJson(const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson, const TArray<FString>& LobbyProps, bool bVisible, bool bOpen, const TArray<FString>& Reserved)
+{
+	return FControlMessage(TEXT("join_or_create"))
+		.Value(TEXT("name"), RoomName)
+		.Value(TEXT("mode"), ModeName(Mode))
+		.Value(TEXT("max_players"), static_cast<int64>(FMath::Clamp(MaxPlayers, 1, 65535)))
+		.Value(TEXT("visible"), bVisible)
+		.Value(TEXT("open"), bOpen)
+		.Raw(TEXT("props"), PropsJson)
+		.Strings(TEXT("lobby_props"), LobbyProps)
+		.Strings(TEXT("reserved"), Reserved)
 		.Finish();
 }
 
@@ -397,9 +432,14 @@ bool UAurixNetSubsystem::SetMaster(int32 Actor)
 	return SendControl(FControlMessage(TEXT("set_master")).Value(TEXT("actor"), static_cast<int64>(Actor)).Finish());
 }
 
-int32 UAurixNetSubsystem::JoinOrCreate(const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson)
+int32 UAurixNetSubsystem::JoinOrCreate(const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson, const FString& LobbyPropsJson, bool bVisible, bool bOpen)
 {
-	return JoinJson(JoinOrCreateJson(RoomName, Mode, MaxPlayers, PropsJson));
+	return JoinJson(JoinOrCreateJson(RoomName, Mode, MaxPlayers, PropsJson, LobbyPropsJson, bVisible, bOpen));
+}
+
+int32 UAurixNetSubsystem::JoinOrCreateEx(const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson, const TArray<FString>& LobbyProps, bool bVisible, bool bOpen, const TArray<FString>& Reserved)
+{
+	return JoinJson(JoinOrCreateJson(RoomName, Mode, MaxPlayers, PropsJson, LobbyProps, bVisible, bOpen, Reserved));
 }
 
 int32 UAurixNetSubsystem::Join(const FString& RoomName)
@@ -407,9 +447,9 @@ int32 UAurixNetSubsystem::Join(const FString& RoomName)
 	return JoinJson(JoinJsonFor(RoomName));
 }
 
-int32 UAurixNetSubsystem::JoinRandom(const FString& FilterJson)
+int32 UAurixNetSubsystem::JoinRandom(const FString& FilterJson, const FString& Expr)
 {
-	return JoinJson(JoinRandomJson(FilterJson));
+	return JoinJson(JoinRandomJson(FilterJson, Expr));
 }
 
 void UAurixNetSubsystem::ReadJoined()
@@ -428,6 +468,18 @@ void UAurixNetSubsystem::ReadJoined()
 	double Max = 0; if (O->TryGetNumberField(TEXT("max_players"), Max)) Room.MaxPlayers = (int32)Max;
 	const TArray<TSharedPtr<FJsonValue>>* Players = nullptr;
 	if (O->TryGetArrayField(TEXT("players"), Players)) { for (const auto& V : *Players) { Room.Players.Add(PlayerFrom(V->AsObject())); } }
+	const TSharedPtr<FJsonObject>* Props = nullptr;
+	if (O->TryGetObjectField(TEXT("props"), Props)) Room.PropsJson = ToJsonString(*Props);
+	double Tick = 0; if (O->TryGetNumberField(TEXT("tick"), Tick)) Room.Tick = (int64)Tick;
+	double Tag = 0; if (O->TryGetNumberField(TEXT("next_spawn_tag"), Tag)) Room.NextSpawnTag = (int64)Tag;
+}
+
+bool UAurixNetSubsystem::GetSeed(int64& Seed) const
+{
+	uint64_t Value = 0;
+	const bool bHas = Client && aurix_net_joined_seed(Client, &Value) == 0;
+	Seed = (int64)Value;
+	return bHas;
 }
 
 void UAurixNetSubsystem::Leave()
@@ -537,6 +589,7 @@ void UAurixNetSubsystem::HandleControl(const FString& Json)
 		const FAurixNetPlayer P = PlayerFrom(O->GetObjectField(TEXT("player")));
 		Room.Players.RemoveAll([&](const FAurixNetPlayer& X) { return X.Actor == P.Actor; });
 		Room.Players.Add(P);
+		PlayerProps.Add(P.Actor, P.PropsJson);
 		OnPlayerJoined.Broadcast(P);
 	}
 	else if (T == TEXT("player_left"))
@@ -631,8 +684,19 @@ void UAurixNetSubsystem::HandleControl(const FString& Json)
 	}
 	else if (T == TEXT("left"))
 	{
-		Room = FAurixNetRoomInfo();
-		SetState(EAurixNetState::Connected);
+		FString Reason, RoomId; O->TryGetStringField(TEXT("reason"), Reason); O->TryGetStringField(TEXT("room"), RoomId);
+		// a left for an earlier room can arrive after the next join
+		char* Joined = Client ? aurix_net_joined_json(Client) : nullptr;
+		if (Joined)
+		{
+			aurix_net_string_free(Joined);
+		}
+		else
+		{
+			Room = FAurixNetRoomInfo();
+			SetState(EAurixNetState::Connected);
+		}
+		OnLeft.Broadcast(Reason, RoomId);
 	}
 }
 

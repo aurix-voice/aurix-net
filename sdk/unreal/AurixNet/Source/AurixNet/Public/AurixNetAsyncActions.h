@@ -23,10 +23,14 @@ public:
 
 	/** Connect (if needed) and join or create a room. */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net", meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Connect and Join Room"))
-	static UAurixNetAsyncAction* ConnectAndJoinRoom(UObject* WorldContextObject, const FString& Grant, const FString& RoomName, EAurixNetRoomMode Mode = EAurixNetRoomMode::Relay, int32 MaxPlayers = 0, const FString& PropsJson = TEXT(""));
+	static UAurixNetAsyncAction* ConnectAndJoinRoom(UObject* WorldContextObject, const FString& Grant, const FString& RoomName, EAurixNetRoomMode Mode = EAurixNetRoomMode::Relay, int32 MaxPlayers = 0, const FString& PropsJson = TEXT(""), const FString& LobbyPropsJson = TEXT(""), bool bVisible = true, bool bOpen = true);
 
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net", meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Join or Create Room"))
 	static UAurixNetAsyncAction* JoinOrCreateRoom(UObject* WorldContextObject, const FString& RoomName, EAurixNetRoomMode Mode = EAurixNetRoomMode::Relay, int32 MaxPlayers = 0, const FString& PropsJson = TEXT(""), const FString& LobbyPropsJson = TEXT(""), bool bVisible = true, bool bOpen = true);
+
+	/** Join or Create Room with the names of the published props as a list, and seats held for these player ids (the players of a matchmaking ticket). */
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net", meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Join or Create Room (Reserved Seats)"))
+	static UAurixNetAsyncAction* JoinOrCreateRoomEx(UObject* WorldContextObject, const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson, const TArray<FString>& LobbyProps, bool bVisible, bool bOpen, const TArray<FString>& Reserved);
 
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net", meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Join Room"))
 	static UAurixNetAsyncAction* JoinRoom(UObject* WorldContextObject, const FString& RoomName);

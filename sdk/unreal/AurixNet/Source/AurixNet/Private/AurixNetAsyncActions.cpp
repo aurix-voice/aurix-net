@@ -16,16 +16,22 @@ UAurixNetAsyncAction* UAurixNetAsyncAction::ConnectToAurix(UObject* Ctx, const F
 {
 	UAurixNetAsyncAction* A = Make(Ctx, EOp::Connect); A->Grant = Grant; A->CellUrl = CellUrl; return A;
 }
-UAurixNetAsyncAction* UAurixNetAsyncAction::ConnectAndJoinRoom(UObject* Ctx, const FString& Grant, const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson)
+UAurixNetAsyncAction* UAurixNetAsyncAction::ConnectAndJoinRoom(UObject* Ctx, const FString& Grant, const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson, const FString& LobbyPropsJson, bool bVisible, bool bOpen)
 {
 	UAurixNetAsyncAction* A = Make(Ctx, EOp::ConnectAndJoin); A->Grant = Grant;
-	A->JoinJson = UAurixNetSubsystem::JoinOrCreateJson(RoomName, Mode, MaxPlayers > 0 ? MaxPlayers : UAurixNetSettings::Get()->DefaultMaxPlayers, PropsJson);
+	A->JoinJson = UAurixNetSubsystem::JoinOrCreateJson(RoomName, Mode, MaxPlayers > 0 ? MaxPlayers : UAurixNetSettings::Get()->DefaultMaxPlayers, PropsJson, LobbyPropsJson, bVisible, bOpen);
 	return A;
 }
 UAurixNetAsyncAction* UAurixNetAsyncAction::JoinOrCreateRoom(UObject* Ctx, const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson, const FString& LobbyPropsJson, bool bVisible, bool bOpen)
 {
 	UAurixNetAsyncAction* A = Make(Ctx, EOp::Join);
 	A->JoinJson = UAurixNetSubsystem::JoinOrCreateJson(RoomName, Mode, MaxPlayers > 0 ? MaxPlayers : UAurixNetSettings::Get()->DefaultMaxPlayers, PropsJson, LobbyPropsJson, bVisible, bOpen);
+	return A;
+}
+UAurixNetAsyncAction* UAurixNetAsyncAction::JoinOrCreateRoomEx(UObject* Ctx, const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson, const TArray<FString>& LobbyProps, bool bVisible, bool bOpen, const TArray<FString>& Reserved)
+{
+	UAurixNetAsyncAction* A = Make(Ctx, EOp::Join);
+	A->JoinJson = UAurixNetSubsystem::JoinOrCreateJson(RoomName, Mode, MaxPlayers > 0 ? MaxPlayers : UAurixNetSettings::Get()->DefaultMaxPlayers, PropsJson, LobbyProps, bVisible, bOpen, Reserved);
 	return A;
 }
 UAurixNetAsyncAction* UAurixNetAsyncAction::JoinRoom(UObject* Ctx, const FString& RoomName)

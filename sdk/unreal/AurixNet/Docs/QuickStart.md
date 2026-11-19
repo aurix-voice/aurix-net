@@ -49,8 +49,17 @@ with `?listen`; it is just a player that only hosts.
 The engine listens only on a local map URL and reads a host only from a name with a dot, so the room
 is the `Room=` option for the host and the `<room>.aurix` host name for a client (`?Room=` works for
 a client too, for room names that are not valid host names). `aurix://<room>` is not a URL the
-engine accepts. `MaxPlayers=` comes from the URL; matchmaking and the room list are on the
-subsystem (`Join Random`, `Send Control` with lobby requests from docs/api.md).
+engine accepts. `MaxPlayers=`, `Visible=0`, `Open=0`, `Props=<JSON object>` and
+`LobbyProps=<JSON array>` of the room the host creates come from the URL. The lobby props are the
+names of the props that room listings show and filters match, their values are in the props:
+`PropsJson` `{"map":"dust","rank":3}` with `LobbyPropsJson` `["map","rank"]`; `Join Or Create Ex`
+takes the names as a list of strings instead. Matchmaking and the room list are on the subsystem
+(`Join Random`, `Request Rooms`, `Join Or Create Ex` with the player ids whose seats the room
+holds).
+
+`OnLeft(Reason, RoomId)` fires when the cell takes the player out of a room: a kick, the room
+closing, the same player joining from another connection, or `rehost`, when the room moved to
+another node; on `rehost` connect again with the same grant and join the same room.
 
 ## 3b. Async nodes, settings, PIE
 
@@ -91,6 +100,29 @@ Create Session creates (or joins as host) a relay room named after the session â
 cell, Join Session joins one; the resolved connect string is `<room>.aurix`, which the
 AurixNetDriver understands, so `Client Travel` after Join works unchanged. Friends, invites
 and presence are not implemented (return false).
+
+Session settings and search params reach the room:
+
+- A setting advertised via the online service (`ViaOnlineService`, `ViaOnlineServiceAndPing`)
+  becomes a room prop the room publishes, named by its key in lower case; strings, numbers and
+  booleans are carried. Find Sessions returns them in the settings of each result. An
+  integer setting comes back as `int32` when its value fits and as `uint64` above that; a
+  `float` or `double` setting comes back as `double`. The settings of the engine take no
+  signed 64-bit integer, so an integer below the `int32` range comes back as `double`, exact
+  down to -2^53.
+- `bShouldAdvertise` is the room's visibility. Start Session closes the room unless
+  `bAllowJoinInProgress` is set, End Session opens it again. Closed rooms are not listed.
+- Update Session with the refresh flag sends the advertised values to the room. Which props a
+  room publishes is fixed when it is created.
+- Search params with the comparisons equals, not equals, greater and less (with or without
+  equals) become the room filter of Find Sessions and of the random join of matchmaking.
+  `SEARCH_MINSLOTSAVAILABLE` is applied to the results; the other search options of the engine
+  are ignored. A param the filter cannot express (`Near`, `In`, `NotIn`, a name outside
+  letters, digits, `_` and `.`) fails the search, with the reason in the log.
+- Seats are held for the player ids listed, comma separated, in the `AURIXRESERVED` setting,
+  and for the users passed to Start Matchmaking after the first, when this session creates the
+  room. The ids are the players' ids on the cell.
+- The cell answers one room list a second, so Find Sessions called sooner fails.
 
 ## 5. Sync and lockstep rooms
 

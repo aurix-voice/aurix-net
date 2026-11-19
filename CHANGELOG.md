@@ -252,8 +252,29 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   next at once got no `left`, and a notice, a player joining or a change of props sent during
   the join was lost. They are handed to the game after the call, in the order they came, before
   the room's cached events. Web and the managed C# client were not affected.
+- Unreal SDK: a game was not told why it left a room: the plugin only cleared the room, so a
+  kick, a closed room and a room moved to another node looked the same. `OnLeft(Reason, RoomId)`
+  reports it. A `left` for an earlier room no longer clears the room joined after it.
+- Unreal SDK: `GetRoom()` now carries the room's props, the lockstep tick and the next spawn tag
+  from the join, and each player's props and spectator flag; `GetRoomPropsJson` and
+  `GetPlayerPropsJson` were empty until the first change. `GetSeed` gives the lockstep room's
+  seed, which the plugin did not expose.
+- Unreal SDK: `JoinOrCreate`, `Connect and Join Room` and the NetDriver host (`Props=`,
+  `LobbyProps=`, `Visible=`, `Open=`) take the room's props, the names of the props it publishes
+  and its visibility, `JoinRandom` takes a filter expression,
+  and `JoinOrCreateEx` / `Join or Create Room (Reserved Seats)` hold seats for the players of a
+  matchmaking ticket and take the published names as a list of strings, as the other SDKs do.
 - Unreal SDK: `SendCommand` checked for 1024 bytes; it refuses a command over 251 with the
   reason in `GetLastError`.
+- Unreal SDK: a sync world took frames only from the room the player is in. `UAurixSyncWorld`
+  with `bReplay` plays a room's replay frames given to `ReceiveReplayFrame`.
+- Unreal plugin, session interface: Create Session made a room with no props, always visible and
+  open, Find Sessions and Start Matchmaking ignored the search params, and the users of Start
+  Matchmaking got no seats. Advertised session settings are now the room's published props and
+  come back in search results, `bShouldAdvertise` is the visibility, Start Session closes the
+  room unless `bAllowJoinInProgress`, Update Session sends the values, search params are the
+  room filter, and seats are held for the `AURIXRESERVED` setting and the matchmaking users
+  ([QuickStart](sdk/unreal/AurixNet/Docs/QuickStart.md)).
 - Web and C# SDKs: their link gave the node up after 10 repeats of one packet, 3.3 s on a path
   with no round-trip sample yet, went on taking messages once it was dead and queued reliable
   messages without limit. It follows the rule of the node and the Rust client: lost when its

@@ -74,6 +74,9 @@ struct AURIXNET_API FAurixNetPlayer
 	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") FString PlayerId;
 	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") FString Name;
 	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") bool bOnline = true;
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") bool bSpectator = false;
+	/** The player's props at the join, as JSON text; later changes come with OnPlayerProps. */
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") FString PropsJson;
 };
 
 USTRUCT(BlueprintType)
@@ -89,6 +92,12 @@ struct AURIXNET_API FAurixNetRoomInfo
 	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") int32 Master = -1;
 	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") int32 MaxPlayers = 0;
 	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") TArray<FAurixNetPlayer> Players;
+	/** The room's props at the join, as JSON text; later changes come with OnRoomProps. */
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") FString PropsJson;
+	/** Lockstep rooms: the tick we entered at; -1 in other rooms. */
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") int64 Tick = -1;
+	/** Sync rooms with tagged spawns: the first spawn tag we have not used; -1 in other rooms. */
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") int64 NextSpawnTag = -1;
 };
 
 USTRUCT(BlueprintType)

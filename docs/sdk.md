@@ -53,7 +53,7 @@ from `get_last_error_code()` (`AurixNetClient.ERROR_*`).
 
 ## Rehost
 
-When a node shuts down (deploy) it hands its rooms to another node and sends `left{reason:"rehost"}`. Clients rejoin the same room with the same grant: Rust `client.rejoin(&[fallback_urls])`, Web `client.rejoin(fallbackUrls)` (or listen to the `rehost` event), C# `ManagedClient.RejoinAsync(fallbacks)`; Unity `NetRunner` does it automatically (`FallbackUrls`). C++ and Godot have no `rejoin` call: connect again with the same grant and join the same room. Actor ids are preserved by player id.
+When a node shuts down (deploy) it hands its rooms to another node and sends `left{reason:"rehost"}`. Clients rejoin the same room with the same grant: Rust `client.rejoin(&[fallback_urls])`, Web `client.rejoin(fallbackUrls)` (or listen to the `rehost` event), C# `ManagedClient.RejoinAsync(fallbacks)`; Unity `NetRunner` does it automatically (`FallbackUrls`). C++, Godot and Unreal have no `rejoin` call: connect again with the same grant and join the same room (Unreal reports the `left` with `OnLeft(Reason, RoomId)`). Actor ids are preserved by player id.
 
 ## Lobby statistics and presence
 
@@ -416,4 +416,5 @@ peer and raises `onSceneLoadDone` only when all players reported ready (or `scen
 Room props `replay_every` (ticks, default hz/2) and `replay_secs` (default 30, 0 off) keep full-world delta frames on
 the node; `GET /v1/rooms/{id}/replay?from=&to=` returns them (`mode: "sync"`). Feed the frames, in order, to a fresh
 sync world in any SDK to play back a kill cam, with no extra client state: `SyncWorld.receive(frame)` (Web, Unity),
-`aurix_net_sync_receive` (C), `Sync::receive(data, len)` (C++), `receive(null, frame)` (Godot `AurixNetSync`).
+`aurix_net_sync_receive` (C), `Sync::receive(data, len)` (C++), `receive(null, frame)` (Godot `AurixNetSync`), `ReceiveReplayFrame` on a
+`UAurixSyncWorld` with `bReplay` set (Unreal).

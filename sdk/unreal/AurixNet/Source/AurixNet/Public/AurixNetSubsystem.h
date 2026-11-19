@@ -16,6 +16,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FAurixNetEvent, uint8, Code, int3
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixNetNotice, const FString&, Text);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixNetError, const FString&, Code, const FString&, Message);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixNetClosed, const FString&, Reason);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixNetLeft, const FString&, Reason, const FString&, RoomId);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixNetHostMigration, EAurixNetMigration, Phase, bool, bNewHost);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixNetRoomsListed, const TArray<FAurixNetRoomSummary>&, Rooms);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FAurixNetRoomProps, const FString&, PropsJson, bool, bVisible, bool, bOpen);
@@ -51,17 +52,28 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net")
 	bool Connect(const FString& CellUrl, const FString& Grant, bool bTunnel = false);
 
-	/** Join a room by name, creating it with these settings when absent. Returns our actor id or -1. */
+	/**
+	 * Join a room by name, creating it with these settings when absent. Returns our actor id or -1.
+	 * PropsJson is a JSON object of the room's props; LobbyPropsJson is a JSON array of the names of
+	 * those props that room listings show and filters match, for example ["map","rank"].
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net")
-	int32 JoinOrCreate(const FString& RoomName, EAurixNetRoomMode Mode = EAurixNetRoomMode::Relay, int32 MaxPlayers = 8, const FString& PropsJson = TEXT(""));
+	int32 JoinOrCreate(const FString& RoomName, EAurixNetRoomMode Mode = EAurixNetRoomMode::Relay, int32 MaxPlayers = 8, const FString& PropsJson = TEXT(""), const FString& LobbyPropsJson = TEXT(""), bool bVisible = true, bool bOpen = true);
+
+	/**
+	 * JoinOrCreate with the names of the published props as a list, and seats held for these player
+	 * ids (the players of a matchmaking ticket): nobody else gets them.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Aurix Net")
+	int32 JoinOrCreateEx(const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson, const TArray<FString>& LobbyProps, bool bVisible, bool bOpen, const TArray<FString>& Reserved);
 
 	/** Join an existing room by name. Returns our actor id or -1. */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net")
 	int32 Join(const FString& RoomName);
 
-	/** Any open, visible room with a free slot (optionally filtered by lobby props JSON). */
+	/** Any open, visible room with a free slot (optionally filtered by lobby props JSON and a filter expression). */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net")
-	int32 JoinRandom(const FString& FilterJson = TEXT(""));
+	int32 JoinRandom(const FString& FilterJson = TEXT(""), const FString& Expr = TEXT(""));
 
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net")
 	void Leave();
@@ -75,7 +87,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net")
 	bool ConnectWithSettings(const FString& Grant);
 	/** JSON for the join calls (join_or_create / join / join_random), shared with the async nodes. */
-	static FString JoinOrCreateJson(const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson, const FString& LobbyPropsJson = TEXT(""), bool bVisible = true, bool bOpen = true);
+	static FString JoinOrCreateJson(const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson, const FString& LobbyPropsJson = TEXT(""), bool bVisible = true, bool bOpen = true, const TArray<FString>& Reserved = TArray<FString>());
+	static FString JoinOrCreateJson(const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson, const TArray<FString>& LobbyProps, bool bVisible, bool bOpen, const TArray<FString>& Reserved);
 	static FString JoinJsonFor(const FString& RoomName);
 	static FString JoinRandomJson(const FString& FilterJson, const FString& Expr = TEXT(""));
 	bool IsBusy() const { return bBusy; }
@@ -143,6 +156,8 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Aurix Net") EAurixNetState GetState() const { return State; }
 	UFUNCTION(BlueprintPure, Category = "Aurix Net") const FAurixNetRoomInfo& GetRoom() const { return Room; }
 	UFUNCTION(BlueprintPure, Category = "Aurix Net") bool IsMaster() const { return Room.Actor >= 0 && Room.Actor == Room.Master; }
+	/** The seed of the lockstep room we are in; false in other rooms and outside a room. */
+	UFUNCTION(BlueprintPure, Category = "Aurix Net|Lockstep") bool GetSeed(int64& Seed) const;
 	UFUNCTION(BlueprintPure, Category = "Aurix Net") static FString GetNativeVersion();
 	UFUNCTION(BlueprintPure, Category = "Aurix Net") FString GetLastError() const;
 	/** The reason of the last failed blocking call on the game thread. */
@@ -156,6 +171,8 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetEvent OnEvent;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetNotice OnNotice;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetError OnError;
+	/** The cell says we are out of room RoomId: Reason is "left", "kicked" or the reason a kick gave, "room closed", "session_replaced", or "rehost" (the room moved to another node: connect again with the same grant and join it). */
+	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetLeft OnLeft;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetClosed OnClosed;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetRoomsListed OnRoomsListed;
 
