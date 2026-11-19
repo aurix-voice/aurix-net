@@ -354,7 +354,11 @@ Two ways to rewind a lockstep match:
 - **From the node**: `GET /v1/rooms/:id/replay?from=&to=` returns the confirmed inputs of a *live*
   room from whichever node hosts it (and windows the stored replay after close). Use it for
   spectators who arrived late, bug reports and server-side highlight generation; the payload is the
-  same `Replay` JSON as the post-match replay (`from_tick`, `inputs`, `hashes`).
+  same `Replay` JSON as the post-match replay (`from_tick`, `inputs`, `hashes`). `hashes` are
+  `[tick, hash]` pairs, the hash of the state after that tick as on the wire: the node's own in
+  a room with a `logic` module, otherwise the one most of the players reported, and no pair
+  for a tick that not all of them or only one reported, or that they split evenly on.
+  `inputs` end at the last tick that had an input; the hashes of later ticks are there.
 
 
 ## Aurix Sim: deterministic physics in every SDK

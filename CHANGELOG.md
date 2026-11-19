@@ -191,6 +191,13 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Lockstep replay: `hashes` was always empty, in a live room and in a stored replay, so a
+  replay could not be verified. It holds the hash of the state after a tick: the node's own
+  in a room with a `logic` module, otherwise the one most of the players reported. A window
+  no longer drops the hashes of the ticks after the last one that had an input.
+- Lockstep replay: `schema_hash` was empty in every replay. The replay of a room with a
+  `logic` module names the schema the node steps; a room without one has no schema the node
+  knows, and the field stays empty.
 - Every client: a reliable message sent just before a leave could be lost without a word. The
   leave closed the data path at once, with what the node had not yet acknowledged. Of 40
   events each followed at once by a leave, over a link that loses data frames, the room got 36

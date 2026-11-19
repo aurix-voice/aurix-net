@@ -476,3 +476,95 @@ async fn room_continued_from_a_checkpoint_keeps_its_seed() {
     let (_, after) = tokio::join!(frozen, moved);
     assert_eq!(after, seed);
 }
+
+#[tokio::test]
+async fn replay_holds_the_hashes_the_players_agreed_on() {
+    let node = Node::start().await;
+    let project = node.project("replay-hashes").await;
+    let message =
+        |msg: Value| -> ClientMsg { serde_json::from_value(msg).expect("client message") };
+    let create = json!({"t": "create", "name": "arena", "mode": "lockstep",
+        "props": {"tick_hz": 60}});
+    let join = json!({"t": "join", "name": "arena"});
+    let mut clients = Vec::new();
+    for (player, msg) in [("ann", create), ("bob", join)] {
+        let opts = Options {
+            tunnel: true,
+            ..Default::default()
+        };
+        let mut client = Client::connect(&node.http, &project.grant(player).await, opts)
+            .await
+            .expect("connects");
+        client.join(message(msg)).await.expect("joins");
+        clients.push(client);
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    for client in &mut clients {
+        drain(client);
+    }
+    // The two agree about ticks 10 and 20 and disagree about tick 30.
+    for (client, last) in clients.iter().zip([7, 8]) {
+        for (tick, hash) in [(10, 7), (20, 7), (30, last)] {
+            client
+                .send_data(Channel::UnreliableSequenced, hash_frame(tick, hash))
+                .expect("hash");
+        }
+        client.flush();
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let (_, rooms) = project.api.get("/v1/rooms").await;
+    let room = rooms["rooms"][0]["room"]
+        .as_str()
+        .expect("room")
+        .to_string();
+    let replay = format!("/v1/rooms/{room}/replay");
+    let (_, live) = project.api.get(&replay).await;
+    assert_eq!(live["hashes"], json!([[10, 7], [20, 7]]));
+    assert_eq!(live["hash_every"], 10);
+    let (_, window) = project.api.get(&format!("{replay}?from=15&to=25")).await;
+    assert_eq!(window["hashes"], json!([[20, 7]]));
+
+    let (status, _) = project.api.delete(&format!("/v1/rooms/{room}")).await;
+    assert_eq!(status, 204);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let (_, stored) = project.api.get(&replay).await;
+    assert_eq!(stored["hashes"], json!([[10, 7], [20, 7]]));
+}
+
+#[tokio::test]
+async fn replay_names_the_schema_of_a_room_with_a_referee() {
+    let node = Node::start().await;
+    let project = node.project("replay-schema").await;
+    let upload = reqwest::Client::new()
+        .put(format!("{}/v1/modules/idle", project.api.http))
+        .bearer_auth(&project.api.token)
+        .body(IDLE_MODULE)
+        .send()
+        .await
+        .expect("upload");
+    assert!(upload.status().is_success(), "upload: {}", upload.status());
+    let schema = Schema::parse(ARENA_SCHEMA).expect("schema").hash;
+
+    for (name, props, hash) in [
+        ("refereed", json!({"logic": "idle"}), schema.as_str()),
+        ("plain", json!({}), ""),
+    ] {
+        let mut ann = project.player(name).await;
+        let create = json!({"t": "create", "name": name, "mode": "lockstep", "props": props});
+        let room = ann.call(create).await["room"]
+            .as_str()
+            .expect("room")
+            .to_string();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let replay = format!("/v1/rooms/{room}/replay");
+        let (_, live) = project.api.get(&replay).await;
+        assert_eq!(live["schema_hash"], hash, "live, {name}");
+
+        let (status, _) = project.api.delete(&format!("/v1/rooms/{room}")).await;
+        assert_eq!(status, 204);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let (_, stored) = project.api.get(&replay).await;
+        assert_eq!(stored["schema_hash"], hash, "stored, {name}");
+    }
+}

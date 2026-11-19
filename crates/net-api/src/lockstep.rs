@@ -146,6 +146,11 @@ pub struct LockstepRoom {
     recent: VecDeque<Bytes>,
     /// Hash reports per tick: actor -> hash.
     hashes: BTreeMap<u32, HashMap<ActorId, u64>>,
+    /// The hash of the state after a tick the journal holds: the referee's, or the one most
+    /// of the actors reported.
+    agreed: BTreeMap<u32, u64>,
+    /// Of the schema the referee steps; empty in a room without one.
+    schema_hash: String,
     pub desyncs: Vec<(u32, ActorId)>,
     /// Per actor since the last report: (min input margin in ticks, late inputs).
     margins: HashMap<ActorId, (i32, u16)>,
@@ -283,6 +288,8 @@ impl LockstepRoom {
             journal: Journal::default(),
             recent: VecDeque::new(),
             hashes: BTreeMap::new(),
+            agreed: BTreeMap::new(),
+            schema_hash: String::new(),
             desyncs: Vec::new(),
             margins: HashMap::new(),
             pending_dumps: Default::default(),
@@ -310,6 +317,7 @@ impl LockstepRoom {
     /// Runs `logic` on the node from the last checkpoint (or tick 0) through the journal to the
     /// current tick; from here on hashes and checkpoints are the server's.
     pub fn attach_sim(&mut self, schema: Schema, logic: Box<dyn GameLogic>) -> Result<(), String> {
+        let schema_hash = schema.hash.clone();
         let frame = Frame::new(
             schema,
             FrameConfig {
@@ -342,6 +350,7 @@ impl LockstepRoom {
             sim.step(&self.journal.tick(Tick(t)).unwrap_or_default());
         }
         self.sim = Some(sim);
+        self.schema_hash = schema_hash;
         self.server_hashes.clear();
         self.server_states.clear();
         Ok(())
@@ -944,11 +953,14 @@ impl LockstepRoom {
         for hash in reports.values() {
             *counts.entry(*hash).or_default() += 1;
         }
-        let (majority, _) = counts.iter().max_by_key(|(_, n)| **n).unwrap();
+        let (majority, held) = counts.iter().max_by_key(|(_, n)| **n).unwrap();
         for (actor, hash) in reports {
             if hash != majority {
                 self.desyncs.push((tick, *actor));
             }
+        }
+        if held * 2 > reports.len() && tick >= self.journal.base() {
+            self.agreed.insert(tick, *majority);
         }
         self.hashes.remove(&tick);
         // forget very old partial reports
@@ -957,18 +969,28 @@ impl LockstepRoom {
     }
 
     /// The canonical replay so far (consumes the journal copy).
-    pub fn replay(&self, schema_hash: &str) -> net_rollback::Replay {
+    pub fn replay(&self) -> net_rollback::Replay {
         // Actors from the journal: by the time a room closes everyone has left.
         let actors = self.journal.actors();
-        self.journal
-            .clone()
-            .into_replay(self.seed, schema_hash.to_string(), self.hz, actors, 10)
+        let mut replay = self.journal.clone().into_replay(
+            self.seed,
+            self.schema_hash.clone(),
+            self.hz,
+            actors,
+            SERVER_HASH_EVERY,
+        );
+        replay.hashes = self
+            .agreed
+            .iter()
+            .map(|(tick, hash)| (*tick, *hash))
+            .collect();
+        replay
     }
 
     /// Instant replay: the confirmed inputs of a live room for ticks `from..to` (what the journal
     /// still holds; `from_tick` in the result says where it really starts).
     pub fn replay_window(&self, from: u32, to: Option<u32>) -> net_rollback::Replay {
-        let mut replay = self.replay("");
+        let mut replay = self.replay();
         window_replay(&mut replay, from, to);
         replay
     }
@@ -1063,6 +1085,8 @@ impl LockstepRoom {
                     .saturating_sub(self.hz as u32 * CHECKPOINT_EVERY_SECS)
             });
             self.journal.trim_before(newest.max(after_checkpoint));
+            let base = self.journal.base();
+            self.agreed.retain(|tick, _| *tick >= base);
         }
         if let Some(sim) = self.sim.as_mut() {
             sim.step(&inputs);
@@ -1075,6 +1099,7 @@ impl LockstepRoom {
                 let state = Bytes::from(sim.frame.snapshot());
                 let fits = state.len() <= MAX_CHECKPOINT_BYTES;
                 if hashed {
+                    self.agreed.insert(tick, hash);
                     self.server_hashes.insert(tick, hash);
                     let cutoff = tick.saturating_sub(600);
                     self.server_hashes.retain(|k, _| *k >= cutoff);
@@ -1168,7 +1193,8 @@ impl LockstepRoom {
     }
 }
 
-/// Cuts a replay down to ticks `from..to` (exclusive); keeps `from_tick`/`hashes` consistent.
+/// Cuts a replay down to ticks `from..to` (exclusive). A tick with no input after the last one
+/// that had any is not among `inputs`, and its hash stays.
 pub fn window_replay(replay: &mut net_rollback::Replay, from: u32, to: Option<u32>) {
     if from > replay.from_tick {
         let drop = ((from - replay.from_tick) as usize).min(replay.inputs.len());
@@ -1179,10 +1205,10 @@ pub fn window_replay(replay: &mut net_rollback::Replay, from: u32, to: Option<u3
         let keep = to.saturating_sub(replay.from_tick) as usize;
         replay.inputs.truncate(keep);
     }
-    let end = replay.from_tick + replay.inputs.len() as u32;
+    let start = from.max(replay.from_tick);
     replay
         .hashes
-        .retain(|(t, _)| *t >= replay.from_tick && *t < end);
+        .retain(|(t, _)| *t >= start && to.is_none_or(|to| *t < to));
 }
 
 #[cfg(test)]
@@ -1447,7 +1473,7 @@ mod tests {
             .sum();
         assert_eq!(total, 101);
         // The restored node only knows the journal from the checkpoint on; its replay says so.
-        let (full, partial) = (room.replay(""), r3.replay(""));
+        let (full, partial) = (room.replay(), r3.replay());
         assert_eq!((full.from_tick, full.inputs.len()), (0, 400));
         assert_eq!((partial.from_tick, partial.inputs.len()), (300, 100));
     }

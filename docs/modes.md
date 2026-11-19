@@ -237,6 +237,8 @@ last one, rewind and resimulate when a late input differs, hash the state every 
 report it (`Hash` frame). The server compares hashes per tick; a minority is reported to
 everyone as `desync`. The server keeps the canonical input journal, which is also the replay
 format (`net-rollback::Replay`): seed + schema hash + inputs per tick reproduces the game.
+`schema_hash` there is of the schema the node steps in a room with a `logic` module (below);
+the node knows no schema of a room without one, and the field is empty.
 
 An input frame carries the input for one tick and repeats the few before it, so a lost frame
 costs nothing while the next one is still in time. An input that arrives after its tick was

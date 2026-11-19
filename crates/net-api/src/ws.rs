@@ -2643,7 +2643,7 @@ pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {
                 .lockstep
                 .as_ref()
                 .filter(|l| !l.journal.is_empty())
-                .map(|l| l.replay(""));
+                .map(|l| l.replay());
             // Detach every player (see `handoff_all`): the room is gone for them too.
             (
                 std::mem::take(&mut hosted.sessions)

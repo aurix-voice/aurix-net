@@ -26,8 +26,9 @@ pub struct Replay {
     pub from_tick: u32,
     /// Confirmed inputs per tick from `from_tick`; a missing actor keeps its previous input.
     pub inputs: Vec<TickInputs>,
-    /// Hash after every `hash_every` ticks, for verification.
     pub hash_every: u32,
+    /// Hashes to verify against. A node numbers the state after tick T as T; [`replay`]
+    /// numbers it T + 1.
     pub hashes: Vec<(u32, u64)>,
 }
 
