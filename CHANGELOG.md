@@ -92,6 +92,29 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Rooms: closing a room whose node did not answer was reported as done (`204` on
+  `DELETE /v1/rooms/:id`, a `room.closed` webhook, `closed_rooms` of a deleted project) while
+  the room went on, and a room of a deleted project stayed for good, out of the operator's
+  sight. The close is now refused with `internal`, and every node closes the rooms of deleted
+  projects it hosts with its heartbeat.
+- Errors: the `message` of a `database`, `redis` or `internal` error carried what the driver
+  or a library said (`sqlx`, `os error`, addresses of other nodes) to players and REST callers,
+  and the node's log had no cause. The `message` is now the same every time, and the node
+  logs the cause as an error with the route or the control message type and the project.
+- Rooms: a node that took over a room of a silent node while it could not reach Redis started
+  the room over, a lockstep match with another seed. The join is refused with `redis` and
+  the room stays to be taken over with its checkpoint.
+- REST, while the node could not reach Redis: `DELETE /v1/rooms/:id` and the operator's room
+  close answered `204` for a room on another node and left it running; the operator's project
+  page, `GET /v1/operator/rooms` and `GET /v1/operator/projects/:id/rooms` showed no rooms;
+  `GET /v1/operator/attention` showed no rejections after waiting on every project in turn.
+  They answer `500 redis`.
+- Matchmaking: a pass that could not read the live rooms of a project seated its
+  `fill_existing` tickets as if there were none. The pass is retried instead.
+- Operator API: a project deleted while the node could not reach Redis lost its keys but kept
+  its rooms running (`closed_rooms: 0`). The call now answers `500 redis` and deletes nothing.
+- REST: `GET /v1/rooms` answered `200` with an empty list while the node could not reach Redis,
+  as if the project had no rooms. It answers `500 redis` like the other calls.
 - Lobby: a room in which nobody joined, left or changed anything for two minutes dropped out
   of the room list (`lobby_rooms`, `get_rooms`, `GET /v1/rooms`) until its next change, with its
   players still in it. A node now renews its rooms in the list with every heartbeat.
@@ -538,8 +561,17 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   engine's own drivers do with a socket that is still connecting; a refused join ends the
   travel with a network failure. With two clients, the one that stays a client was back on the
   new host 0.70 s after the old host left, 2.17 s before.
+- Console: while the node could not reach Redis, the overview said "All quiet" under "Needs a
+  look" and counted no rooms, the rooms page went back and forth between the error and "No live
+  rooms", and a project page showed a spinner for ten seconds before the error. All three show
+  the node's error with Retry from the first failed request, and keep it on screen while they
+  repeat the request, until one succeeds.
 
 ### CI
+- `ci.yml`: the node of the `console` job reaches Redis through a Toxiproxy service, and a browser
+  spec switches it off to check what the overview, the rooms page and a project page show without
+  Redis. The spec is skipped on a stand without `AURIX_NET_E2E_TOXIPROXY`; with `NET_LIVE_REQUIRED`
+  set, as in this job, it fails there.
 - `release.yml`: the Web npm tarball is packed to the workspace root, so it sits beside the other
   SDK files in the `sdk` artifact, and the image job no longer uploads Docker build records. The
   0.1.0 run stopped at the checksum step on the `sdk/` folder; its GitHub Release was created by

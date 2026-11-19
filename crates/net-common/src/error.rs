@@ -33,6 +33,9 @@ pub enum NetError {
     Config(String),
     #[error("internal: {0}")]
     Internal(String),
+    /// Another node of the fleet could not be asked or refused, said in words of our own.
+    #[error("internal: {0}")]
+    Fleet(String),
 }
 
 impl NetError {
@@ -53,8 +56,29 @@ impl NetError {
             NetError::Database(_) => "database",
             NetError::Redis(_) => "redis",
             NetError::Config(_) => "config",
-            NetError::Internal(_) => "internal",
+            NetError::Internal(_) | NetError::Fleet(_) => "internal",
         }
+    }
+
+    /// What the caller is told. What a database, Redis or a library said about a failure
+    /// inside the node is for the node's log.
+    pub fn public_message(&self) -> String {
+        match self {
+            NetError::Database(_) => {
+                "database: the node could not complete a database request".into()
+            }
+            NetError::Redis(_) => "redis: the node could not complete a Redis request".into(),
+            NetError::Internal(_) => "internal: the node failed to handle the request".into(),
+            _ => self.to_string(),
+        }
+    }
+
+    /// Whether [`NetError::public_message`] holds the cause back.
+    pub fn is_fault(&self) -> bool {
+        matches!(
+            self,
+            NetError::Database(_) | NetError::Redis(_) | NetError::Internal(_)
+        )
     }
 
     pub fn http_status(&self) -> u16 {

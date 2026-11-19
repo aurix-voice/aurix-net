@@ -135,9 +135,12 @@ jobs:
       redis:
         image: redis:7
         ports: ["6379:6379"]
+      toxiproxy:
+        image: ghcr.io/shopify/toxiproxy:2.13.0
+        ports: ["8474:8474", "26379:26379"]
     env:
       NET__DATABASE__URL: postgres://aurix:aurix@127.0.0.1:5432/aurix_net
-      NET__REDIS__URL: redis://127.0.0.1:6379/
+      NET__REDIS__URL: redis://127.0.0.1:26379/   # through Toxiproxy: one spec takes Redis away
       NET__AUTH__ADMIN_TOKEN: ci-operator-token
       NET__AUTH__GRANT_SECRET: ci-grant-secret-ci-grant-secret-ci-grant
     steps:
@@ -153,6 +156,7 @@ jobs:
         with: { name: sim-and-server, path: target }  # relative to the workspace, not to working-directory
       - name: start a node for the live e2e suite
         run: |
+          curl -fs -d '{"name":"redis","listen":"0.0.0.0:26379","upstream":"redis:6379"}' http://127.0.0.1:8474/proxies
           chmod +x ../target/debug/aurix-net-server
           ../target/debug/aurix-net-server --migrate-only
           nohup ../target/debug/aurix-net-server > /tmp/node.log 2>&1 &
@@ -164,6 +168,8 @@ jobs:
           CI: "1"
           NET_API_URL: http://127.0.0.1:8090
           AURIX_NET_E2E_TOKEN: ci-operator-token
+          AURIX_NET_E2E_TOXIPROXY: http://127.0.0.1:8474
+          NET_LIVE_REQUIRED: "1"
       - name: node log
         if: failure()
         run: tail -n 200 /tmp/node.log

@@ -33,9 +33,12 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status =
             StatusCode::from_u16(self.0.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        if self.0.is_fault() {
+            tracing::error!(error = %self.0, "request failed");
+        }
         (
             status,
-            Json(json!({"error": self.0.code(), "message": self.0.to_string()})),
+            Json(json!({"error": self.0.code(), "message": self.0.public_message()})),
         )
             .into_response()
     }
@@ -245,6 +248,7 @@ async fn api_key(st: &Shared, headers: &HeaderMap, scope: Scope) -> Result<ApiKe
     let auth = queries::find_api_key(&st.pool, &hash_key(token))
         .await?
         .ok_or_else(|| NetError::Unauthorized("unknown api key".into()))?;
+    tracing::Span::current().record("project", tracing::field::display(auth.key.project_id));
     // A suspended project keeps read access so the team can see its state; everything that
     // creates load (grants, rooms, matchmaking, uploads) is refused.
     if auth.project_disabled_at.is_some() && scope != Scope::Read {
@@ -989,7 +993,7 @@ async fn op_create_grant(
 async fn list_rooms(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &headers, Scope::Read).await?;
     let project = ProjectId::from_uuid(key.project_id);
-    let live = st.redis.list_rooms(project).await.unwrap_or_default();
+    let live = st.redis.list_rooms(project).await?;
     Ok(Json(json!({"rooms": live})))
 }
 
@@ -1549,7 +1553,7 @@ fn peer(
     timeout_secs: u64,
 ) -> Result<reqwest::RequestBuilder> {
     if st.cfg.auth.admin_token.is_empty() {
-        return Err(NetError::Internal(
+        return Err(NetError::Fleet(
             "admin_token unset; cannot reach other nodes".into(),
         ));
     }
@@ -1565,10 +1569,7 @@ pub(crate) async fn internal_get(st: &Shared, http_url: &str, path: &str) -> Res
         .await
         .map_err(|e| NetError::Internal(e.to_string()))?;
     if !resp.status().is_success() {
-        return Err(NetError::Internal(format!(
-            "node returned {}",
-            resp.status()
-        )));
+        return Err(NetError::Fleet(format!("node returned {}", resp.status())));
     }
     resp.json::<Value>()
         .await
@@ -1771,7 +1772,7 @@ async fn remote_players(st: &Shared, http_url: &str, id: Uuid) -> Result<Vec<Val
         .await
         .map_err(|e| NetError::Internal(e.to_string()))?;
     if !res.status().is_success() {
-        return Err(NetError::Internal(format!(
+        return Err(NetError::Fleet(format!(
             "hosting node answered {}",
             res.status()
         )));
@@ -1806,7 +1807,7 @@ async fn op_delete_room(
 ) -> ApiResult<StatusCode> {
     let op = operator(&st, &headers).await?;
     let row = queries::get_room(&st.pool, id).await?;
-    close_room_anywhere(&st, ProjectId::from_uuid(row.project_id), id).await;
+    close_room_anywhere(&st, ProjectId::from_uuid(row.project_id), id).await?;
     audit_log(
         &st,
         Some(row.project_id),
@@ -2090,7 +2091,7 @@ async fn delete_room(
     if row.project_id != key.project_id {
         return Err(NetError::NotFound("room".into()).into());
     }
-    close_room_anywhere(&st, ProjectId::from_uuid(key.project_id), id).await;
+    close_room_anywhere(&st, ProjectId::from_uuid(key.project_id), id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2674,28 +2675,24 @@ async fn set_local_draining(st: &Shared, draining: bool) -> Result<usize> {
 }
 
 /// Closes a live room no matter which node hosts it: locally through `close_room`, otherwise by
-/// asking the hosting node (so its players get `left` and its memory is freed). Falls back to
-/// the DB/Redis close when the hosting node is unreachable.
-async fn close_room_anywhere(st: &Shared, project: ProjectId, id: Uuid) {
+/// asking the hosting node (so its players get `left` and its memory is freed). Only that node
+/// can close the room, so a failure to ask it is the caller's to report.
+async fn close_room_anywhere(st: &Shared, project: ProjectId, id: Uuid) -> Result<()> {
     let room = RoomId::from_uuid(id);
     if st.host.get(room).is_some() {
         close_room(st, project, room).await;
-        return;
+        return Ok(());
     }
-    let live = st.redis.get_room(project, room).await.ok().flatten();
-    let node = match &live {
-        Some(live) => crate::ws::room_host(st, live).await.ok().flatten(),
+    let node = match st.redis.get_room(project, room).await? {
+        Some(live) => crate::ws::room_host(st, &live).await?,
         None => None,
     };
     if let Some(host) = node.filter(|n| n.id != st.node_id) {
-        match internal_delete(st, &host.http_url, &format!("/v1/internal/rooms/{id}"), &[]).await {
-            Ok(_) => return,
-            Err(e) => {
-                tracing::warn!(room = %id, node = %host.http_url, error = %e, "remote close failed; closing locally")
-            }
-        }
+        internal_delete(st, &host.http_url, &format!("/v1/internal/rooms/{id}"), &[]).await?;
+        return Ok(());
     }
     close_room(st, project, room).await;
+    Ok(())
 }
 
 /// Room name and `lobby_props` keys as accepted by both the control plane and REST.
@@ -3121,10 +3118,7 @@ async fn internal_delete(
         return Err(NetError::NotFound("not found on hosting node".into()));
     }
     if !res.status().is_success() {
-        return Err(NetError::Internal(format!(
-            "node answered {}",
-            res.status()
-        )));
+        return Err(NetError::Fleet(format!("node answered {}", res.status())));
     }
     if res.status() == reqwest::StatusCode::NO_CONTENT {
         return Ok(Value::Null);
@@ -3140,14 +3134,20 @@ async fn op_delete_project(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
     let op = operator(&st, &headers).await?;
+    let project = ProjectId::from_uuid(id);
+    // Read first: a project deleted without its room list would keep its rooms running.
+    let live = st.redis.list_rooms(project).await?;
     if !queries::soft_delete_project(&st.pool, id).await? {
         return Err(NetError::NotFound("project not found".into()).into());
     }
-    let project = ProjectId::from_uuid(id);
-    let live = st.redis.list_rooms(project).await.unwrap_or_default();
-    let closed = live.len();
+    let mut closed = 0;
     for room in live {
-        close_room_anywhere(&st, project, room.room.0).await;
+        match close_room_anywhere(&st, project, room.room.0).await {
+            Ok(()) => closed += 1,
+            Err(e) => {
+                tracing::warn!(room = %room.room, error = %e, "room of a deleted project left to its node to close")
+            }
+        }
     }
     let revoked = queries::revoke_all_api_keys(&st.pool, id).await?;
     let webhooks = queries::delete_webhooks_of_project(&st.pool, id).await?;
@@ -3224,10 +3224,7 @@ async fn internal_post(st: &Shared, http_url: &str, path: &str, body: Value) -> 
         .await
         .map_err(|e| NetError::Internal(e.to_string()))?;
     if !res.status().is_success() {
-        return Err(NetError::Internal(format!(
-            "node answered {}",
-            res.status()
-        )));
+        return Err(NetError::Fleet(format!("node answered {}", res.status())));
     }
     res.json()
         .await
@@ -3281,8 +3278,7 @@ pub(crate) async fn attention_value(st: &Shared) -> Result<Value> {
         let buckets = st
             .redis
             .get_rejections(ProjectId::from_uuid(project.id), 1)
-            .await
-            .unwrap_or_default();
+            .await?;
         let mut total = 0i64;
         let mut by: std::collections::BTreeMap<String, i64> = Default::default();
         for (_, counts) in buckets {
@@ -3783,11 +3779,7 @@ async fn op_project(
             |r| json!({"name": r.name, "hash": r.hash, "size": r.size, "updated_at": r.updated_at}),
         )
         .collect();
-    let rooms = st
-        .redis
-        .list_rooms(ProjectId::from_uuid(id))
-        .await
-        .unwrap_or_default();
+    let rooms = st.redis.list_rooms(ProjectId::from_uuid(id)).await?;
     let (wh_failed, wh_total) = queries::webhook_delivery_stats_last_hour(&st.pool, id).await?;
     let (mtd_minutes, mtd_bytes) = usage_month(&st, id).await?;
     let limits = net_control::ProjectLimits::from_json(&project.limits);
@@ -3848,11 +3840,7 @@ async fn op_project_rooms(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
     operator(&st, &headers).await?;
-    let rooms = st
-        .redis
-        .list_rooms(ProjectId::from_uuid(id))
-        .await
-        .unwrap_or_default();
+    let rooms = st.redis.list_rooms(ProjectId::from_uuid(id)).await?;
     Ok(Json(json!({"rooms": rooms})))
 }
 
@@ -3864,8 +3852,7 @@ async fn op_rooms(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Jso
         for room in st
             .redis
             .list_rooms(ProjectId::from_uuid(project.id))
-            .await
-            .unwrap_or_default()
+            .await?
         {
             let mut entry = serde_json::to_value(&room).unwrap_or_default();
             if let Some(fields) = entry.as_object_mut() {

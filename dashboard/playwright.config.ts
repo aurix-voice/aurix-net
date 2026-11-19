@@ -8,6 +8,9 @@ import { defineConfig, devices } from "@playwright/test";
 //   AURIX_NET_E2E_TOKEN          operator token of that node (`auth.admin_token`)
 //   AURIX_NET_E2E_PEER           `http_url` of a second node of the same fleet; the spec that
 //                                drains another node is skipped without it
+//   AURIX_NET_E2E_TOXIPROXY      API address of a Toxiproxy whose proxy `redis` is the node's way
+//                                to Redis; the spec that takes Redis away is skipped without it,
+//                                and fails without it when NET_LIVE_REQUIRED is set
 const dashboardUrl = process.env.DASHBOARD_URL;
 const baseURL = dashboardUrl ?? "http://127.0.0.1:5174";
 

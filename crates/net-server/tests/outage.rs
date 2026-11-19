@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{joined, Node, Sink};
+use common::{joined, refused, Node, Sink};
 use serde_json::json;
 use std::time::Duration;
 use tokio::io::copy_bidirectional;
@@ -247,4 +247,263 @@ async fn room_created_during_a_redis_outage_is_listed_once_redis_is_back() {
     let (status, list) = project.api.get("/v1/rooms").await;
     assert_eq!(status, 200, "{list}");
     assert_eq!(list["rooms"][0]["name"], "arena", "{list}");
+}
+
+// The relay has to keep running while the node deletes its project on drop.
+#[tokio::test(flavor = "multi_thread")]
+async fn room_list_request_fails_while_redis_is_away() {
+    let relay = Relay::redis().await;
+    let node = Node::start_with(&[("NET__REDIS__URL", &relay.url)]).await;
+    let project = node.project("outage-list").await;
+    let mut ann = project.player("ann").await;
+    joined(&ann.call(json!({"t": "create", "name": "arena"})).await);
+
+    relay.set(false);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let (status, reply) = project.api.get("/v1/rooms").await;
+    relay.set(true);
+
+    // An empty list would tell the caller that the project has no rooms.
+    assert_eq!(status, 500, "{reply}");
+    assert_eq!(reply["error"], "redis", "{reply}");
+}
+
+// The relay has to keep running while the node deletes its project on drop.
+#[tokio::test(flavor = "multi_thread")]
+async fn project_is_not_deleted_while_its_rooms_cannot_be_read() {
+    let relay = Relay::redis().await;
+    let node = Node::start_with(&[("NET__REDIS__URL", &relay.url)]).await;
+    let project = node.project("outage-delete").await;
+    let mut ann = project.player("ann").await;
+    joined(&ann.call(json!({"t": "create", "name": "arena"})).await);
+    let path = format!("/v1/operator/projects/{}", project.id);
+
+    relay.set(false);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let (status, reply) = project.operator.delete(&path).await;
+    relay.set(true);
+    // Deleted now, the project would keep the rooms nobody could list.
+    assert_eq!(status, 500, "{reply}");
+    assert_eq!(reply["error"], "redis", "{reply}");
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let (status, reply) = project.operator.delete(&path).await;
+    assert_eq!(status, 200, "{reply}");
+    assert_eq!(reply["closed_rooms"], 1, "{reply}");
+    assert_eq!(ann.until("left").await["reason"], "room closed");
+}
+
+// The relay has to keep running while the node deletes its project on drop.
+#[tokio::test(flavor = "multi_thread")]
+async fn operator_reads_fail_while_redis_is_away() {
+    let relay = Relay::redis().await;
+    let node = Node::start_with(&[("NET__REDIS__URL", &relay.url)]).await;
+    let project = node.project("outage-operator").await;
+    let mut ann = project.player("ann").await;
+    joined(&ann.call(json!({"t": "create", "name": "arena"})).await);
+
+    relay.set(false);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let mut replies = Vec::new();
+    for path in [
+        format!("/v1/operator/projects/{}/rooms", project.id),
+        format!("/v1/operator/projects/{}", project.id),
+        "/v1/operator/rooms".to_string(),
+        "/v1/operator/attention".to_string(),
+    ] {
+        replies.push((project.operator.get(&path).await, path));
+    }
+    relay.set(true);
+
+    // Each of them reads Redis; answered without it, they would show no rooms and no rejections.
+    for ((status, reply), path) in replies {
+        assert_eq!(status, 500, "{path}: {reply}");
+        assert_eq!(reply["error"], "redis", "{path}: {reply}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn room_on_another_node_is_not_reported_closed_while_redis_is_away() {
+    let relay = Relay::redis().await;
+    let host = Node::start().await;
+    let cut_off = Node::start_with(&[("NET__REDIS__URL", &relay.url)]).await;
+    let project = host.project("outage-close").await;
+    let mut ann = project.player("ann").await;
+    joined(&ann.call(json!({"t": "create", "name": "arena"})).await);
+    let (_, list) = project.api.get("/v1/rooms").await;
+    let path = format!(
+        "/v1/rooms/{}",
+        list["rooms"][0]["room"].as_str().expect("room")
+    );
+    let asked = cut_off.same_project(&project);
+
+    relay.set(false);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let (status, reply) = asked.api.delete(&path).await;
+    relay.set(true);
+    // The node asked cannot learn which node hosts the room, so it cannot have closed it.
+    assert_eq!(status, 500, "{reply}");
+    assert_eq!(reply["error"], "redis", "{reply}");
+    assert!(ann.drain(Duration::from_secs(1)).await.is_empty());
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let (status, reply) = asked.api.delete(&path).await;
+    assert_eq!(status, 204, "{reply}");
+    assert_eq!(ann.until("left").await["reason"], "room closed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn room_is_not_continued_while_its_checkpoint_cannot_be_read() {
+    let relay = Relay::redis().await;
+    let node_a = Node::start_with(&[("NET__SERVER__HEARTBEAT_SECS", "1")]).await;
+    let node_b = Node::start_with(&[
+        ("NET__SERVER__HEARTBEAT_SECS", "1"),
+        ("NET__REDIS__URL", &relay.url),
+    ])
+    .await;
+    let pa = node_a.project("outage-continue").await;
+    let pb = node_b.same_project(&pa);
+    let mut ann = pa.player("ann").await;
+    ann.send(json!({"t": "create", "name": "arena", "mode": "lockstep"}))
+        .await;
+    let seed = ann.until("joined").await["seed"].clone();
+    // A lockstep room is checkpointed every five seconds.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+
+    // A is silent, so B continues the room for the player who asks; its seed is in the checkpoint.
+    let frozen = node_a.freeze(Duration::from_secs(12));
+    let moved = async {
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        let mut bob = pb.player("bob").await;
+        relay.set(false);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let refusal = bob.call(json!({"t": "join", "name": "arena"})).await;
+        relay.set(true);
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        bob.send(json!({"t": "join", "name": "arena"})).await;
+        (refusal, bob.until("joined").await["seed"].clone())
+    };
+    let (_, (refusal, after)) = tokio::join!(frozen, moved);
+    refused(&refusal, "redis");
+    assert_eq!(after, seed);
+}
+
+// The relays have to keep running while the node deletes its project on drop.
+#[tokio::test(flavor = "multi_thread")]
+async fn failure_inside_the_node_goes_to_its_log_and_not_to_the_caller() {
+    let database = Relay::start().await;
+    let redis = Relay::redis().await;
+    let node = Node::start_with(&[
+        ("NET__DATABASE__URL", &database.url),
+        ("NET__REDIS__URL", &redis.url),
+    ])
+    .await;
+    let project = node.project("outage-text").await;
+    let mut ann = project.player("ann").await;
+
+    database.set(false);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let refusal = ann.call(json!({"t": "create", "name": "arena"})).await;
+    database.set(true);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    redis.set(false);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let (status, reply) = project.api.get("/v1/rooms").await;
+    redis.set(true);
+
+    assert_eq!(
+        refusal,
+        json!({"t": "error", "code": "database",
+            "message": "database: the node could not complete a database request"})
+    );
+    assert_eq!(status, 500);
+    assert_eq!(
+        reply,
+        json!({"error": "redis", "message": "redis: the node could not complete a Redis request"})
+    );
+
+    // What failed is the operator's to read, with the message or the route and the project.
+    let logged = node.logged();
+    let cause = |line: &serde_json::Value, code: &str| {
+        line["level"] == "ERROR" && line["error"].as_str().is_some_and(|e| e.starts_with(code))
+    };
+    assert!(
+        logged.iter().any(|line| cause(line, "database: ")
+            && line["request"] == "create"
+            && line["project"] == project.id
+            && line["player"] == "ann"),
+        "{}",
+        node.log_tail()
+    );
+    assert!(
+        logged.iter().any(|line| cause(line, "redis: ")
+            && line["span"]["path"] == "/v1/rooms"
+            && line["span"]["project"] == project.id),
+        "{}",
+        node.log_tail()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn room_is_not_reported_closed_while_its_node_cannot_be_asked() {
+    let host = Node::start_with(&[("NET__SERVER__HEARTBEAT_SECS", "2")]).await;
+    let asked = Node::start().await;
+    let project = host.project("outage-silent").await;
+    let mut ann = project.player("ann").await;
+    joined(&ann.call(json!({"t": "create", "name": "arena"})).await);
+    let (_, list) = project.api.get("/v1/rooms").await;
+    let room = format!(
+        "/v1/rooms/{}",
+        list["rooms"][0]["room"].as_str().expect("room")
+    );
+    let there = asked.same_project(&project);
+    let deleted = format!("/v1/operator/projects/{}", project.id);
+
+    // Both requests wait for the silent node; the project's key is still good for the first.
+    let silent = host.freeze(Duration::from_secs(7));
+    let requests = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::join!(there.api.delete(&room), async {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            there.operator.delete(&deleted).await
+        })
+    };
+    let (_, ((status, reply), (project_status, project_reply))) = tokio::join!(silent, requests);
+
+    assert_eq!(status, 500, "{reply}");
+    assert_eq!(reply["error"], "internal", "{reply}");
+    assert_eq!(project_status, 200, "{project_reply}");
+    assert_eq!(project_reply["closed_rooms"], 0, "{project_reply}");
+    // Its node closes the room of the deleted project once it is back.
+    assert_eq!(ann.until("left").await["reason"], "room closed");
+}
+
+// The relay has to keep running while the node deletes its project on drop.
+#[tokio::test(flavor = "multi_thread")]
+async fn rooms_changed_during_a_redis_outage_reach_subscribers_on_another_node() {
+    let relay = Relay::redis().await;
+    let cut_off = Node::start_with(&[("NET__REDIS__URL", &relay.url)]).await;
+    let other = Node::start().await;
+    let project = cut_off.project("outage-told").await;
+    let mut ann = other.same_project(&project).player("ann").await;
+    ann.send(json!({"t": "lobby", "subscribe": true})).await;
+    ann.until("lobby_rooms").await;
+    let mut bob = project.player("bob").await;
+    joined(&bob.call(json!({"t": "create", "name": "old"})).await);
+    let old = ann.until("lobby_update").await["room"]["id"].clone();
+    let old = old.as_str().expect("room id").to_string();
+
+    relay.set(false);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    bob.send(json!({"t": "leave"})).await;
+    let mut cat = project.player("cat").await;
+    let new = cat.call(json!({"t": "create", "name": "new"})).await;
+    joined(&new);
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    relay.set(true);
+
+    // Their node never lost Redis and sends them no list: what the node that did publishes
+    // about each of its rooms once it is back is all they hear.
+    let heard = ann.drain(Duration::from_secs(5)).await;
+    assert_eq!(listed_after(vec![old], &heard), vec![new["room"].clone()]);
 }

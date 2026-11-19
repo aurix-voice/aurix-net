@@ -5,7 +5,7 @@ import { useMemo } from "react";
 
 import { useAuth } from "@/auth/AuthProvider";
 
-import { NetClient, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Attention, type Ban, type MatchmakingStats, type NewOperatorToken, type NodeStats, type OperatorToken, type PlayerLookup, type RotatedWebhook, type Rejections, type Webhook, type WebhookDelivery } from "./client";
+import { NetClient, NetError, type ApiKey, type AuditRow, type Health, type LiveRoom, type Module, type NewKey, type NodeRow, type Project, type PublicNode, type ProjectDetail, type Region, type RoomDetail, type Ticket, type Usage, type Attention, type Ban, type MatchmakingStats, type NewOperatorToken, type NodeStats, type OperatorToken, type PlayerLookup, type RotatedWebhook, type Rejections, type Webhook, type WebhookDelivery } from "./client";
 
 export function useApi(): NetClient {
   const { token } = useAuth();
@@ -33,6 +33,13 @@ export const qk = {
 };
 
 const LIVE = 5_000;
+
+/** A query the pages keep live repeats a request the node failed or did not answer until one
+ * succeeds; until then the failure is its `failureReason`. A 4xx is an answer and ends it. */
+const untilAnswered = {
+  retry: (_count: number, err: Error) => !(err instanceof NetError && err.status >= 400 && err.status < 500),
+  retryDelay: LIVE,
+};
 
 export function useHealth() {
   const api = useApi();
@@ -79,7 +86,7 @@ export function useProjects() {
 }
 export function useProject(id: string) {
   const api = useApi();
-  return useQuery({ queryKey: qk.project(id), queryFn: () => api.get<ProjectDetail>(`/v1/operator/projects/${id}`), refetchInterval: 10_000 });
+  return useQuery({ queryKey: qk.project(id), queryFn: () => api.get<ProjectDetail>(`/v1/operator/projects/${id}`), refetchInterval: 10_000, ...untilAnswered });
 }
 /** Live rooms in scope: the project's rooms (key or operator-selected project) or the whole fleet. */
 export function useRooms() {
@@ -92,6 +99,7 @@ export function useRooms() {
       return (await api.get<{ rooms: LiveRoom[] }>(path)).rooms;
     },
     refetchInterval: LIVE,
+    ...untilAnswered,
   });
 }
 export function useRoom(id: string) {
@@ -260,7 +268,7 @@ export function useNotice() {
 export function useAttention() {
   const api = useApi();
   const { operator } = useAuth();
-  return useQuery({ queryKey: ["attention"], enabled: operator, refetchInterval: 15_000, queryFn: () => api.get<Attention>("/v1/operator/attention") });
+  return useQuery({ queryKey: ["attention"], enabled: operator, refetchInterval: 15_000, ...untilAnswered, queryFn: () => api.get<Attention>("/v1/operator/attention") });
 }
 export function useBans(projectId?: string) {
   const api = useApi();

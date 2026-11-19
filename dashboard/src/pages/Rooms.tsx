@@ -22,6 +22,7 @@ export function RoomsPage() {
   const navigate = useNavigate();
   const toast = useToast();
   const rooms = useRooms();
+  const failure = rooms.error ?? rooms.failureReason;
   const nodes = useNodes();
   const close = useCloseRoom();
   const search = useSearch({ strict: false });
@@ -108,7 +109,7 @@ export function RoomsPage() {
     <>
       <PageHeader title={t("rooms.title")} description={t("rooms.desc")} />
       <Card>
-        <Toolbar end={<span className="text-xs text-fg-muted tabular-nums">{t("common.total")}: {fmtNumber(locale, rows.length)}</span>}>
+        <Toolbar end={!rooms.data || failure ? null : <span className="text-xs text-fg-muted tabular-nums">{t("common.total")}: {fmtNumber(locale, rows.length)}</span>}>
           <Input placeholder={t("common.search")} value={q} onChange={(e) => setQ(e.target.value)} className="w-56" />
           <NativeSelect aria-label={t("rooms.mode")} value={search.mode ?? ""} onChange={(e) => setFilter({ mode: e.target.value || undefined })} className="w-36">
             <option value="">{t("rooms.filter.anyMode")}</option>
@@ -139,11 +140,11 @@ export function RoomsPage() {
           ) : null}
         </Toolbar>
         <DataTable
-          rows={rows}
+          rows={rooms.data ? rows : undefined}
           columns={cols}
           rowKey={(r) => r.room}
-          loading={rooms.isLoading}
-          error={rooms.error}
+          loading={rooms.isLoading && !failure}
+          error={failure}
           onRowClick={(r) => void navigate({ to: "/rooms/$roomId", params: { roomId: r.room } })}
           empty={<EmptyState compact icon={<DoorOpen className="size-5" />} title={t("rooms.empty")} description={t("rooms.empty.desc")} />}
         />

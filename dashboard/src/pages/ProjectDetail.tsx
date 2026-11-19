@@ -109,8 +109,9 @@ function ProjectBody() {
   const [deleting, setDeleting] = useState<{ kind: "webhook" | "module"; id: string; label: string } | null>(null);
   const [tab, setTab] = useState("keys");
   const [newKey, setNewKey] = useState(false);
+  const failure = q.error ?? q.failureReason;
+  if (failure) return <QueryError error={failure} onRetry={() => void q.refetch()} />;
   if (q.isLoading) return <Loading />;
-  if (q.isError) return <QueryError error={q.error} onRetry={() => void q.refetch()} />;
   const d = q.data!;
   const p = d.project;
 

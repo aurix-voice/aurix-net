@@ -603,7 +603,7 @@ impl Matchmaker {
             .map(|t| t.project)
             .collect::<std::collections::HashSet<_>>()
         {
-            live.insert(ticket, redis.list_rooms(ticket).await.unwrap_or_default());
+            live.insert(ticket, redis.list_rooms(ticket).await?);
         }
         let seated = fill_existing(&mut tickets, &live);
         let (grouped, _rooms) = match_tickets(&mut tickets, now);

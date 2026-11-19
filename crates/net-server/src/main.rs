@@ -269,7 +269,18 @@ async fn main() -> anyhow::Result<()> {
             st.clone(),
             net_api::ratelimit::http_guard,
         ))
-        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(
+            tower_http::trace::TraceLayer::new_for_http().make_span_with(
+                |request: &axum::extract::Request| {
+                    tracing::info_span!(
+                        "request",
+                        method = %request.method(),
+                        path = request.uri().path(),
+                        project = tracing::field::Empty,
+                    )
+                },
+            ),
+        )
         .layer(cors_layer(
             &cfg.server.allowed_origins,
             &cfg.server.environment,

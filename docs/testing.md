@@ -366,5 +366,5 @@ lockstep bots, RSS/overrun verdict, CSV attached). First run on a GitHub-hosted 
 | `supply-chain` | `cargo audit`, `cargo deny check` |
 | `sdk-web` | `tsc` build + node tests of the Web SDK (sim tests load the wasm artifact; live tests skip without `NET_API_KEY`) |
 | `sdk-csharp` | dotnet builds of the live/rehost checks and `dotnet test` of the managed core (NUnit, P/Invokes the native artifact) |
-| `console` | dashboard `check`/`lint`/`test`/`build`, then the live Playwright suite against a node started from the artifact with Postgres/Redis services (`AURIX_NET_E2E_TOKEN` = that node's `auth.admin_token`) |
+| `console` | dashboard `check`/`lint`/`test`/`build`, then the live Playwright suite against a node started from the artifact with Postgres/Redis services (`AURIX_NET_E2E_TOKEN` = that node's `auth.admin_token`). The node reaches Redis through a Toxiproxy service (`AURIX_NET_E2E_TOXIPROXY`), which one spec switches off to see what the console shows without Redis |
 | `docker` | buildx of the node image (`Dockerfile`) and the console image (`dashboard/Dockerfile`), no push |

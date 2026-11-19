@@ -41,7 +41,7 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | GET | `/v1/nodes` | key | nodes visible to the project |
 | POST | `/v1/grants` | `rooms` | issue a join grant |
 | GET/POST | `/v1/rooms` | `read`/`rooms` | list open rooms / create a **relay** room (`name, max_players, visible, open, props, lobby_props, reserved`); sync/lockstep rooms are created by a client through the control plane (`create`) because they need the schema/simulation setup |
-| GET/DELETE | `/v1/rooms/:id` | `read`/`rooms` | details / close; `players[]` comes from the host node (any node answers) with live per-player counters `events`, `bytes_in`, `eps` (1 s window), `idle_secs`, `since_secs` — relay events raised through the data path; reset on rehost |
+| GET/DELETE | `/v1/rooms/:id` | `read`/`rooms` | details / close (500 `internal` and the room stays if the node hosting it could not be asked); `players[]` comes from the host node (any node answers) with live per-player counters `events`, `bytes_in`, `eps` (1 s window), `idle_secs`, `since_secs` — relay events raised through the data path; reset on rehost |
 | GET | `/v1/rooms/:id/desyncs` | `read` | state dumps collected after lockstep desyncs (`{tick, actor, hash, bytes, at}`, 24 h) |
 | GET | `/v1/rooms/:id/desyncs/:tick/:actor` | `read` | one dump as `application/octet-stream` — diff the desynced client's against the reference: actor `0` is the node's own referee state (rooms with a `logic` module), otherwise the master's |
 | GET | `/v1/rooms/:id/replay` | `read` | lockstep input journal: stored 24 h after close, or live from the hosting node; `?from=&to=` cuts a tick window (instant replay / kill cam) |
@@ -74,7 +74,7 @@ The grant is bound to the project; `room` restricts the player to one room name.
 | POST | `/v1/webhooks/:id/rotate` | admin | new signing secret (shown once), `{grace_secs?}` (default 24 h, max 7 d): until then deliveries also carry `X-Aurix-Signature-Previous` signed with the old secret; audited `webhook.rotate`; operators: `POST /v1/operator/projects/:id/webhooks/:wid/rotate` |
 | POST | `/v1/webhooks/:id/test` | admin | queue a `test` event to that webhook only; result shows in its deliveries |
 | GET/POST | `/v1/operator/projects/:id/webhooks/:wid/deliveries` · `/test` | operator | same for operators (test is audited as `webhook.test`) |
-| DELETE | `/v1/operator/projects/:id` | operator | soft delete: live rooms closed fleet-wide, all keys revoked, webhooks/modules removed; usage and audit rows stay |
+| DELETE | `/v1/operator/projects/:id` | operator | soft delete: live rooms closed fleet-wide, all keys revoked, webhooks/modules removed; usage and audit rows stay. `closed_rooms` counts the rooms closed by the time of the answer; a room whose node could not be asked is closed by that node with its next heartbeat |
 | GET/POST | `/v1/operator/tokens` | operator | named operator tokens: POST `{name, expires_in_secs?, allowed_cidrs?[]}` returns the plaintext once (with `allowed_cidrs` the token works only from those networks → 403 elsewhere); the list carries `last_used_at` / `last_used_ip`; they authenticate every operator route and appear in audit as actor `op:<name>` (the config `admin_token` stays actor `operator`) |
 | GET | `/v1/operator/billing` | operator | month report for invoicing: `?month=YYYY-MM` (default current, UTC) → per project `player_minutes, room_minutes, bytes_in, bytes_out, rooms_created`, the caps that applied, `deleted_at`; `totals`; `?format=csv` for a spreadsheet. Soft-deleted projects stay in the month they were used |
 | DELETE | `/v1/operator/tokens/:id` | operator | revoke (audited `operator_token.revoke`) |
@@ -93,7 +93,9 @@ The grant is bound to the project; `room` restricts the player to one room name.
 Errors: `{"error": "<code>", "message": "..."}` with codes `unauthorized, forbidden,
 not_found, conflict, invalid_request, room_full, room_closed, schema_mismatch, quota_exceeded,
 rate_limited`; a failure inside the node answers 500 with `internal`, `database`, `redis`,
-`transport` or `config`.
+`transport` or `config`. For `database`, `redis` and `internal` the `message` says only which
+of them failed, here and in `error` on the control channel; the cause is in the node's log,
+with the route or the message type and the project.
 
 ## WebSocket control channel `/ws`
 

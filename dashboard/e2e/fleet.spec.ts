@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { api, cleanupProjects, confirm, pinEnglish, uniq } from "./env";
+import { api, cleanupProjects, confirm, pinEnglish, redisProxyUrl, setRedis, uniq } from "./env";
 
 test.beforeEach(async ({ page }) => pinEnglish(page));
 test.afterEach(async ({ page }) => cleanupProjects(page));
@@ -54,4 +54,28 @@ test("audit log lists operator mutations", async ({ page }) => {
   await page.goto("/audit");
   await expect(page.getByRole("heading", { name: "Audit log" })).toBeVisible();
   await expect(page.getByRole("row").filter({ hasText: "project.create" }).first()).toBeVisible();
+});
+
+test("a node that cannot reach Redis shows the failure, not an empty fleet", async ({ page }) => {
+  test.skip(!redisProxyUrl(), "needs the node to reach Redis through Toxiproxy, named in AURIX_NET_E2E_TOXIPROXY");
+  const name = uniq("e2e-outage");
+  const created = await api<{ project: { id: string } }>(page, "POST", "/v1/operator/projects", { name });
+  const failure = page.getByText("redis: the node could not complete a Redis request");
+  await setRedis(false);
+  try {
+    await page.goto("/");
+    await expect(failure).toHaveCount(2);
+    await expect(page.getByText("All quiet")).toHaveCount(0);
+    await expect(page.getByText("No live rooms")).toHaveCount(0);
+    await page.goto("/rooms");
+    await expect(failure).toBeVisible();
+    await expect(page.getByText("No live rooms")).toHaveCount(0);
+    await expect(page.getByText("Total:")).toHaveCount(0);
+    await page.goto(`/projects/${created.project.id}`);
+    await expect(failure).toBeVisible();
+    await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+  } finally {
+    await setRedis(true);
+  }
+  await expect(page.getByRole("heading", { name })).toBeVisible({ timeout: 20_000 });
 });

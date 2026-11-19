@@ -159,6 +159,9 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
                     let auth = matches!(msg, ClientMsg::Auth { .. });
                     let id = msg.request_id();
                     if let Err(e) = sess.handle(msg).await {
+                        if e.is_fault() {
+                            sess.log_fault(&text, &e);
+                        }
                         let fatal = auth && matches!(e, NetError::RateLimited);
                         sess.refuse(id, e);
                         if fatal {
@@ -192,9 +195,25 @@ impl Session {
         self.st.metrics.errors.with_label_values(&[e.code()]).inc();
         let _ = self.ctl.try_send(ServerMsg::Error {
             code: e.code().to_string(),
-            message: e.to_string(),
+            message: e.public_message(),
             id,
         });
+    }
+
+    /// The player is not told what failed inside the node; `frame` is the message it failed on.
+    fn log_fault(&self, frame: &str, e: &NetError) {
+        #[derive(serde::Deserialize)]
+        struct Typed<'a> {
+            t: &'a str,
+        }
+        let request = serde_json::from_str::<Typed>(frame).map_or("", |typed| typed.t);
+        match &self.grant {
+            Some(grant) => tracing::error!(
+                error = %e, request, project = %grant.project, player = %grant.player_id,
+                "control message failed"
+            ),
+            None => tracing::error!(error = %e, request, "control message failed"),
+        }
     }
 
     fn grant(&self) -> Result<&Grant> {
@@ -1913,17 +1932,15 @@ pub async fn adopt_room(
         return Err(NetError::Conflict("room_pending".into()));
     }
     let _adopting = Adopting(st, row.id);
+    // Read before the room is taken: taken without its checkpoint, it would start over.
+    let ckpt = st
+        .redis
+        .get_checkpoint(project, room_id)
+        .await?
+        .and_then(|body| serde_json::from_slice::<RoomCheckpoint>(&body).ok());
     if !queries::adopt_room(&st.pool, row.id, st.node_id.0, st.region.as_str()).await? {
         return Err(NetError::Conflict("room_pending".into()));
     }
-    let ckpt = match st.redis.get_checkpoint(project, room_id).await {
-        Ok(Some(b)) => serde_json::from_slice::<RoomCheckpoint>(&b).ok(),
-        Ok(None) => None,
-        Err(e) => {
-            tracing::warn!(room = %room_id, error = %e, "checkpoint read failed");
-            None
-        }
-    };
     let proj = queries::get_project(&st.pool, row.project_id).await?;
     let limits = crate::rest::project_limits(st, &proj)?;
     let mode = row.mode.parse().unwrap_or_default();
@@ -2259,12 +2276,35 @@ pub async fn handoff_all(st: &Shared) -> usize {
 /// its rooms become adoptable, but the node may only have been stalled and still host them. It
 /// takes back the rooms nobody adopted and lets go of the ones another node now runs, so a room
 /// never lives on two nodes. Returns (reclaimed, dropped).
+///
+/// It also closes the rooms of deleted projects: the node asked to delete a project may not
+/// have reached this one, or the room was created while the project was being deleted.
 pub async fn reconcile_rooms(st: &Shared) -> Result<(u64, usize)> {
-    if st.is_draining() {
+    let rooms: Vec<(ProjectId, RoomId)> = st
+        .host
+        .all()
+        .iter()
+        .map(|h| {
+            let hosted = h.lock();
+            (hosted.project, hosted.room.id())
+        })
+        .collect();
+    if rooms.is_empty() {
         return Ok((0, 0));
     }
-    let hosted: Vec<uuid::Uuid> = st.host.all().iter().map(|h| h.lock().room.id().0).collect();
-    if hosted.is_empty() {
+    let mut projects: Vec<uuid::Uuid> = rooms.iter().map(|(project, _)| project.0).collect();
+    projects.sort_unstable();
+    projects.dedup();
+    let deleted = queries::deleted_projects(&st.pool, &projects).await?;
+    let mut hosted = Vec::new();
+    for (project, room) in rooms {
+        if deleted.contains(&project.0) {
+            close_room(st, project, room).await;
+        } else {
+            hosted.push(room.0);
+        }
+    }
+    if st.is_draining() || hosted.is_empty() {
         return Ok((0, 0));
     }
     let reclaimed = queries::reclaim_rooms(&st.pool, st.node_id.0, &hosted).await?;

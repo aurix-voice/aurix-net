@@ -3,12 +3,21 @@ import { Link } from "@tanstack/react-router";
 import type { Attention } from "@/api/client";
 import { useI18n } from "@/i18n";
 import { fmtNumber, fmtRelative } from "@/lib/format";
+import { QueryError } from "@/ui/Page";
 import { Badge, Card, Mono } from "@/ui/Primitives";
 
 /** Operator "needs a look" list: empty state means the fleet is quiet. */
-export function AttentionPanel({ data, loading }: { data: Attention | undefined; loading?: boolean }) {
+export function AttentionPanel({ data, loading, error, onRetry }: { data: Attention | undefined; loading?: boolean; error?: unknown; onRetry?: () => void }) {
   const { t, locale } = useI18n();
   const count = data ? data.stale_nodes.length + data.draining_nodes.length + data.suspended_projects.length + data.failing_webhooks.length + data.rejections.length + (data.usage_caps?.length ?? 0) + (data.invalid_limits?.length ?? 0) : 0;
+  if (error) {
+    return (
+      <Card className="p-4">
+        <div className="text-sm font-medium mb-3">{t("attention.title")}</div>
+        <QueryError compact error={error} onRetry={onRetry} />
+      </Card>
+    );
+  }
   return (
     <Card className="p-4">
       <div className="flex items-center justify-between gap-3 mb-3">

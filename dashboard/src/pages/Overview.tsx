@@ -23,6 +23,7 @@ export function OverviewPage() {
   const health = useHealth();
   const nodes = useNodes();
   const rooms = useRooms();
+  const roomsFailure = rooms.error ?? rooms.failureReason;
   const h = health.data;
   const attention = useAttention();
   const live = (nodes.data ?? []).filter((n) => !nodeStale(n) || !operator);
@@ -50,13 +51,13 @@ export function OverviewPage() {
   return (
     <>
       <PageHeader title={t("overview.title")} description={t("overview.desc")} />
-      {operator ? <div className="mb-5"><AttentionPanel data={attention.data} loading={attention.isLoading} /></div> : null}
+      {operator ? <div className="mb-5"><AttentionPanel data={attention.data} loading={attention.isLoading} error={attention.error ?? attention.failureReason} onRetry={() => void attention.refetch()} /></div> : null}
       {health.isError ? <QueryError error={health.error} onRetry={() => void health.refetch()} /> : null}
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 mb-6">
         <Stat label={t("overview.node")} value={h ? <span className="flex items-center gap-2">{h.draining ? <Badge tone="warn" dot>{t("overview.draining")}</Badge> : <Badge tone="ok" dot>{t("overview.ready")}</Badge>}</span> : <Skeleton className="h-6 w-20" />} hint={h ? <IdChip id={h.node_id} /> : null} />
         <Stat label={t("overview.region")} value={h ? <Mono>{h.region}</Mono> : <Skeleton className="h-6 w-16" />} hint={h ? `${t("overview.version")} ${h.version}` : null} />
-        <Stat label={operator && !projectId ? t("overview.liveRooms") : t("overview.rooms")} value={rooms.data ? fmtNumber(locale, rooms.data.length) : <Skeleton className="h-6 w-10" />} hint={h ? `${t("overview.node")}: ${fmtNumber(locale, h.rooms)}` : null} />
-        <Stat label={t("overview.players")} value={rooms.data ? fmtNumber(locale, players) : <Skeleton className="h-6 w-10" />} hint={h ? `${t("overview.uptime")} ${fmtDuration(locale, h.uptime_secs)}` : null} />
+        <Stat label={operator && !projectId ? t("overview.liveRooms") : t("overview.rooms")} value={roomsFailure ? "—" : rooms.data ? fmtNumber(locale, rooms.data.length) : <Skeleton className="h-6 w-10" />} hint={h ? `${t("overview.node")}: ${fmtNumber(locale, h.rooms)}` : null} />
+        <Stat label={t("overview.players")} value={roomsFailure ? "—" : rooms.data ? fmtNumber(locale, players) : <Skeleton className="h-6 w-10" />} hint={h ? `${t("overview.uptime")} ${fmtDuration(locale, h.uptime_secs)}` : null} />
       </div>
       <div className="grid gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Section
@@ -84,8 +85,10 @@ export function OverviewPage() {
           }
         >
           <Card>
-            <CardHeader title={t("rooms.title")} description={`${fmtNumber(locale, rooms.data?.length ?? 0)} · ${fmtNumber(locale, players)} ${t("overview.players").toLowerCase()}`} />
-            {rooms.data && rooms.data.length === 0 ? (
+            <CardHeader title={t("rooms.title")} description={!rooms.data || roomsFailure ? undefined : `${fmtNumber(locale, rooms.data.length)} · ${fmtNumber(locale, players)} ${t("overview.players").toLowerCase()}`} />
+            {roomsFailure ? (
+              <div className="p-4"><QueryError compact error={roomsFailure} onRetry={() => void rooms.refetch()} /></div>
+            ) : rooms.data && rooms.data.length === 0 ? (
               <EmptyState compact title={t("rooms.empty")} description={t("rooms.empty.desc")} />
             ) : (
               <ul className="divide-y divide-border">

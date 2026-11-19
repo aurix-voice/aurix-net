@@ -12,6 +12,24 @@ export const operatorToken = (): string => required("AURIX_NET_E2E_TOKEN");
  * The node list also holds whatever else shares the stand's database for a moment. */
 export const peerNodeUrl = (): string | undefined => process.env.AURIX_NET_E2E_PEER;
 
+/** With NET_LIVE_REQUIRED set, a spec the stand cannot run fails instead of being skipped. */
+export const liveRequired = !!process.env.NET_LIVE_REQUIRED;
+
+/** API address of the Toxiproxy the stand's node reaches Redis through, for the spec that takes
+ * Redis away. */
+export function redisProxyUrl(): string | undefined {
+  const url = process.env.AURIX_NET_E2E_TOXIPROXY;
+  if (!url && liveRequired) throw new Error("NET_LIVE_REQUIRED is set and AURIX_NET_E2E_TOXIPROXY is not");
+  return url;
+}
+
+/** Takes Redis away from the node or gives it back: Toxiproxy's proxy `redis`. Its API refuses a
+ * browser's user agent, so the request does not go through the page. */
+export async function setRedis(up: boolean): Promise<void> {
+  const res = await fetch(`${redisProxyUrl()}/proxies/redis`, { method: "PATCH", body: JSON.stringify({ enabled: up }) });
+  if (!res.ok) throw new Error(`PATCH /proxies/redis → ${res.status} ${await res.text()}`);
+}
+
 export const OPERATOR_STATE = "e2e/.auth/operator.json";
 
 /** Short unique suffix so re-runs against the same node never collide on names. */

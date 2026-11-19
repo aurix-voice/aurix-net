@@ -16,6 +16,7 @@ NET_API_URL=http://127.0.0.1:8090 npm run dev                  # http://127.0.0.
 npm run check && npm run lint && npm test && npm run build
 AURIX_NET_E2E_TOKEN=… npm run e2e                               # Playwright against a live node
 AURIX_NET_E2E_PEER=http://127.0.0.1:8091 …                      # with a second node: the drain spec runs too
+AURIX_NET_E2E_TOXIPROXY=http://127.0.0.1:8474 …                 # with the node's Redis behind Toxiproxy (proxy `redis`): the outage spec runs too
 ```
 
 Production: `docker build -f dashboard/Dockerfile .` from the repository root; run with

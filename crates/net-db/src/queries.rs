@@ -494,6 +494,17 @@ pub async fn rooms_lost(pool: &DbPool, node_id: Uuid, rooms: &[Uuid]) -> Result<
     .map_err(db_err)
 }
 
+/// Of `projects`, the deleted ones.
+pub async fn deleted_projects(pool: &DbPool, projects: &[Uuid]) -> Result<Vec<Uuid>> {
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM projects WHERE id = ANY($1) AND deleted_at IS NOT NULL",
+    )
+    .bind(projects)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}
+
 /// Orphaned rooms nobody adopted within `max_age_secs` (closed_at = when they were
 /// orphaned) are closed for good.
 pub async fn close_stale_orphans(pool: &DbPool, max_age_secs: i64) -> Result<u64> {

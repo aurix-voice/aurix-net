@@ -86,11 +86,18 @@ impl Node {
         let _ = Command::new("kill").args(["-CONT", &pid]).status();
     }
 
+    /// What the node has logged so far, one JSON object per line.
+    pub fn logged(&self) -> Vec<Value> {
+        let text = std::fs::read_to_string(&self.log).unwrap_or_default();
+        text.lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect()
+    }
+
     /// The address the node says its HTTP listener got.
     fn listening(&self) -> Option<String> {
-        let text = std::fs::read_to_string(&self.log).ok()?;
-        text.lines()
-            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        self.logged()
+            .into_iter()
             .find(|line| line["message"] == "control plane listening")
             .and_then(|line| line["addr"].as_str().map(String::from))
     }
