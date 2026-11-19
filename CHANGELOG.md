@@ -181,6 +181,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- SDKs: the native client (C, C++, Godot, Unreal, the native C# client, the Rust `net-client`)
+  could not connect to a node behind TLS: `https://` failed with `websocket: URL error: TLS
+  support not compiled in`, so it worked only with a node reached over plain HTTP. The control
+  channel now goes over `wss://` with the certificate authorities the HTTP calls trust.
+  `Options::roots` of `net-client` adds the authority of a node behind a private CA.
 - Data path: a link whose timer ran late was given up without one repeat. A node or a Rust
   client that got no processor time for the idle timeout (15 s) ended the link the moment
   its timer ran, though the acknowledgement was waiting to be read. A link ends when a

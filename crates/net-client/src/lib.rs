@@ -13,6 +13,7 @@ use net_common::{Channel, RoomMode};
 use net_rooms::protocol::{ClientMsg, DataEndpoint, ServerMsg, UNSEQUENCED};
 use net_transport::{quic, Link};
 use parking_lot::Mutex;
+use rustls::pki_types::CertificateDer;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -20,6 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::Connector;
 use tokio_util::sync::CancellationToken;
 
 pub use net_common;
@@ -77,6 +79,9 @@ pub struct Options {
     pub connect_timeout: Duration,
     /// How often the link timer runs (acks, retransmits, batches).
     pub tick: Duration,
+    /// Certificate authorities trusted for an `https://` node beside the public ones: the one
+    /// of a node behind a private CA.
+    pub roots: Vec<CertificateDer<'static>>,
 }
 
 impl Default for Options {
@@ -85,6 +90,7 @@ impl Default for Options {
             tunnel: false,
             connect_timeout: Duration::from_secs(10),
             tick: Duration::from_millis(5),
+            roots: Vec::new(),
         }
     }
 }
@@ -208,13 +214,33 @@ fn announced_avatar(frame: &[u8]) -> Option<u64> {
     created.then(|| u64::from_be_bytes(frame[6..14].try_into().expect("8 bytes")))
 }
 
+/// TLS of the control channel of an `https://` node: the public authorities `reqwest` trusts for
+/// the HTTP calls, and those the game adds.
+fn tls(roots: &[CertificateDer<'static>]) -> Result<Connector> {
+    let mut trusted = rustls::RootCertStore::empty();
+    trusted.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    for root in roots {
+        trusted
+            .add(root.clone())
+            .map_err(|error| ClientError::Ws(error.to_string()))?;
+    }
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|error| ClientError::Ws(error.to_string()))?
+        .with_root_certificates(trusted)
+        .with_no_client_auth();
+    Ok(Connector::Rustls(Arc::new(config)))
+}
+
 impl Client {
     /// Opens the control channel and authenticates with a grant.
     pub async fn connect(http_url: &str, grant: &str, opts: Options) -> Result<Client> {
         let ws_url = http_url.replacen("http", "ws", 1) + "/ws";
+        let connector = tls(&opts.roots)?;
         let (ws, _) = tokio::time::timeout(
             opts.connect_timeout,
-            tokio_tungstenite::connect_async(&ws_url),
+            tokio_tungstenite::connect_async_tls_with_config(&ws_url, None, false, Some(connector)),
         )
         .await
         .map_err(|_| ClientError::Timeout)?
