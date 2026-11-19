@@ -169,6 +169,8 @@ pub struct Joined {
     pub master: net_common::ActorId,
     pub tick_hz: Option<u16>,
     pub schema_hash: Option<String>,
+    /// Lockstep rooms: the seed every client and the node start the game from.
+    pub seed: Option<u64>,
     pub data: DataEndpoint,
 }
 
@@ -389,6 +391,7 @@ impl Client {
                     data,
                     tick_hz,
                     schema_hash,
+                    seed,
                     cached,
                     ..
                 })) => {
@@ -400,6 +403,7 @@ impl Client {
                         master,
                         tick_hz,
                         schema_hash,
+                        seed,
                         data,
                     };
                     break (joined, cached);

@@ -210,7 +210,10 @@ client whose hash differs is desynced even if every client agrees with it, check
 late join and failover come from the node (no master upload), and after a node failover the
 new node resimulates the journal tail from the last checkpoint. Clients that want to be
 compared must follow the same rule: an actor's avatar spawns at the first tick it appears in a
-bundle, state is a `net-sim` frame, hash = `hash_bytes(frame.snapshot())` every 10 ticks.
+bundle, state is a `net-sim` frame, hash = `hash_bytes(frame.snapshot())` after every tick that
+is a multiple of 10 (tick 0 included), reported under that tick: the state after tick T is
+numbered T. A checkpoint is numbered differently, by the tick its state starts from: `Catchup`
+and `Restore` with tick T carry the state after tick T - 1, and the bundles from T follow.
 On a desync the node stores its own state at that tick as the reference dump (actor `0` in
 `GET /v1/rooms/:id/desyncs`) next to the desynced client's, so nobody has to trust the master;
 room details report `referee: true` while the node hosts such a room.

@@ -85,7 +85,7 @@ class P
         {
             var c = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-ls-" + i));
             var cl = c; var l = new LockstepClient((ch, b) => cl.SendData(ch, b)); var j = new List<string>(); var sn = new HashSet<uint>(); int idx = i;
-            l.OnTick += (t, inputs) => { if (!sn.Add(t)) j.Add("DUP" + t); var sb = new StringBuilder(); sb.Append(t).Append(':'); foreach (var kv in inputs) sb.Append(kv.Key).Append('=').Append(kv.Value.Length > 0 ? kv.Value[0] : -1).Append(','); j.Add(sb.ToString()); if ((t + 1) % 10 == 0) l.ReportHash(t + 1, 1234); };
+            l.OnTick += (t, inputs) => { if (!sn.Add(t)) j.Add("DUP" + t); var sb = new StringBuilder(); sb.Append(t).Append(':'); foreach (var kv in inputs) sb.Append(kv.Key).Append('=').Append(kv.Value.Length > 0 ? kv.Value[0] : -1).Append(','); j.Add(sb.ToString()); if (t % 10 == 0) l.ReportHash(t, 1234); };
             l.OnRestore += (t, hh, st) => { restores++; if (idx == 2) cStart = t; };
             l.OnCheckpointRequested += t => { ckReqs++; l.SendCheckpoint(Math.Min(t, l.ConfirmedTick), 0xA0, new byte[64]); };
             c.OnData += (ch, t, p) => l.Receive(p);

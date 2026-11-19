@@ -18,6 +18,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   room from a missing one was to search the error text. The C++ wrapper carries the value in
   `aurix::net::Error::code`, the Godot nodes return it from `get_last_error_code()`
   (`AurixNetClient.ERROR_*`).
+- Rust client: `Joined` has the lockstep room's `seed`. The node sent it in `joined`, the client
+  dropped it, so a game on the Rust client could not start from the state the node starts from.
 
 ### Changed
 - Dates: the node reads and writes dates as strict RFC 3339 through the `time` crate; its own
@@ -52,6 +54,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - Limits: a refused value did not say which limit it belonged to (``invalid value: integer
   `100000`, expected u16``); the message names the field now, for the limits form and for
   limits already stored that the node cannot read.
+- Lockstep: a room with a referee numbered its state hash one tick ahead of the clients, so a
+  client reporting hashes the way `docs/sdk.md` says was called desynced every time. The state
+  after tick T is hashed under T on both sides now; checkpoint ticks are unchanged.
 - Console: the project page counted a megabyte as 1 000 000 bytes and the rest of the console as
   1 048 576, so the month's traffic read 196 MB there and 186.5 MB in billing.
 - Console: the matchmaking page crashed as soon as a ticket was filed; it took the ticket state
@@ -131,6 +136,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   restored and the room saw a desync at every hash, 30 in 12 s; now it is restored at the
   first one. A late joiner whose `Catchup` comes 400 ms after its first bundles still gets
   every tick once, 3 runs of 3.
+- Unity `LockstepDuel` sample: the state hash went out under the number of the next tick, not
+  of the tick it was computed after, which is the rule `docs/sdk.md` gives and the other
+  clients follow, so the sample and a client of another SDK reported one state under two
+  numbers. The managed live check reported its hash the same way.
 - Unity framework: a message over 65535 bytes (an RPC with a 70 KB `byte[]`, for one) broke the
   framing of the outgoing buffer: `NetworkUpdate` threw `ArgumentException` on every call from
   then on and nothing else was sent. Such a message is now refused where it is sent, with a

@@ -4,11 +4,17 @@ mod common;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use common::Node;
+use net_api::lockstep::ServerSim;
+use net_api::sync::ARENA_SCHEMA;
 use net_client::lockstep::{LockstepClient, LsEvent};
 use net_client::{Client, Event, Options};
-use net_common::Channel;
+use net_common::{ActorId, Channel};
+use net_game::GameEngine;
 use net_rooms::protocol::{ClientMsg, ServerMsg};
+use net_sim::{Frame, FrameConfig};
+use net_wire::Schema;
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 /// One input frame (`0x10`) with a one-byte input for each tick from `first`.
@@ -252,4 +258,143 @@ async fn desynced_client_is_sent_a_restore_frame_and_stays_trusted() {
             .any(|message| matches!(message, ServerMsg::Desync { .. })),
         "{control:?}"
     );
+}
+
+const IDLE_MODULE: &str = "(module (memory (export \"memory\") 1) \
+    (func (export \"aurix_init\") (param i64)) (func (export \"aurix_step\")))";
+
+/// An honest client of a room with a referee: steps `sim` over the bundles it receives and
+/// reports the hash of the state after every tenth tick under that tick, as `docs/sdk.md` says.
+struct Mirror {
+    sim: ServerSim,
+    bundles: LockstepClient,
+    reported: Vec<u32>,
+    /// The state each tick starts from.
+    states: BTreeMap<u32, Vec<u8>>,
+    desyncs: usize,
+    reliable: Vec<Bytes>,
+}
+
+impl Mirror {
+    fn pump(&mut self, client: &mut Client) {
+        while let Some(event) = client.try_next_event() {
+            let payload = match event {
+                Event::Data {
+                    channel, payload, ..
+                } => {
+                    if channel == Channel::ReliableOrdered {
+                        self.reliable.push(payload.clone());
+                    }
+                    payload
+                }
+                Event::Control(ServerMsg::Desync { .. }) => {
+                    self.desyncs += 1;
+                    continue;
+                }
+                _ => continue,
+            };
+            for event in self.bundles.receive(&payload).unwrap_or_default() {
+                let LsEvent::Tick { tick, inputs } = event else {
+                    continue;
+                };
+                let inputs = inputs
+                    .into_iter()
+                    .map(|(actor, input)| (ActorId(actor), input.to_vec()))
+                    .collect();
+                self.sim.step(&inputs);
+                self.states.insert(tick + 1, self.sim.frame.snapshot());
+                if tick.is_multiple_of(10) {
+                    client
+                        .send_data(
+                            Channel::UnreliableSequenced,
+                            hash_frame(tick, self.sim.hash()),
+                        )
+                        .expect("hash");
+                    self.reported.push(tick);
+                }
+            }
+            client.flush();
+        }
+    }
+}
+
+#[tokio::test]
+async fn client_hashing_by_the_documented_rule_agrees_with_the_referee() {
+    let node = Node::start().await;
+    let project = node.project("referee").await;
+    let upload = reqwest::Client::new()
+        .put(format!("{}/v1/modules/idle", project.api.http))
+        .bearer_auth(&project.api.token)
+        .body(IDLE_MODULE)
+        .send()
+        .await
+        .expect("upload");
+    assert!(upload.status().is_success(), "upload: {}", upload.status());
+
+    let opts = Options {
+        tunnel: true,
+        ..Default::default()
+    };
+    let mut ann = Client::connect(&node.http, &project.grant("ann").await, opts)
+        .await
+        .expect("connects");
+    let props = json!({"tick_hz": 60, "logic": "idle"});
+    let create = json!({"t": "create", "name": "arena", "mode": "lockstep", "props": props});
+    ann.join(serde_json::from_value(create).expect("client message"))
+        .await
+        .expect("joins");
+    // The seed is in `joined`, which `net-client` does not hand out.
+    let mut bob = project.player("bob").await;
+    bob.send(json!({"t": "join", "name": "arena"})).await;
+    let seed = bob.until("joined").await["seed"].as_u64().expect("seed");
+
+    let engine = GameEngine::new();
+    let (_, module) = engine.load(IDLE_MODULE.as_bytes()).expect("module");
+    let logic = engine.instantiate(&module, seed).expect("instance");
+    let config = FrameConfig {
+        tick_hz: 60,
+        ..Default::default()
+    };
+    let schema = Schema::parse(ARENA_SCHEMA).expect("schema");
+    let mut mirror = Mirror {
+        sim: ServerSim::new(Frame::new(schema, config, seed), Box::new(logic)),
+        bundles: LockstepClient::new(),
+        reported: Vec::new(),
+        states: BTreeMap::new(),
+        desyncs: 0,
+        reliable: Vec::new(),
+    };
+    // Past the first checkpoint of the referee, which it takes after 5 s.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while mirror.reported.last().is_none_or(|tick| *tick < 330) {
+        assert!(Instant::now() < deadline, "reported: {:?}", mirror.reported);
+        mirror.pump(&mut ann);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        mirror.desyncs, 0,
+        "the node called an honest client desynced"
+    );
+    assert_eq!(mirror.reported[..3], [0, 10, 20]);
+
+    // A wrong hash is a desync, and the state sent back is the one the checkpoint tick starts from.
+    let last = *mirror.reported.last().expect("a reported tick");
+    mirror.reliable.clear();
+    ann.send_data(
+        Channel::UnreliableSequenced,
+        hash_frame(last, !mirror.sim.hash()),
+    )
+    .expect("hash");
+    ann.flush();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    mirror.pump(&mut ann);
+    assert_eq!(mirror.desyncs, 1);
+    let restore = mirror
+        .reliable
+        .iter()
+        .find(|frame| frame[0] == 0x2A)
+        .expect("a restore frame");
+    let tick = u32::from_be_bytes(restore[1..5].try_into().expect("tick"));
+    assert_eq!(tick, 300);
+    assert_eq!(restore[17..], mirror.states[&tick][..]);
 }

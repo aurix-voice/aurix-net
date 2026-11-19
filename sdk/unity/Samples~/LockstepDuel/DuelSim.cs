@@ -109,9 +109,9 @@ public sealed class DuelSim : MonoBehaviour
             }
         }
         _tick = tick + 1;
-        if (_tick % 10 == 0)
+        if (tick % 10 == 0)
         {
-            Runner.Lockstep.ReportHash(_tick, Hash());
+            Runner.Lockstep.ReportHash(tick, Hash());
         }
     }
 

@@ -160,6 +160,7 @@ pub struct LockstepRoom {
     /// Server-stepped simulation (room prop `logic`): its hash is the truth clients are
     /// compared against, and checkpoints come from it instead of the master.
     sim: Option<ServerSim>,
+    /// Referee hashes by the tick just applied: the state after tick T is under T.
     server_hashes: BTreeMap<u32, u64>,
     /// Recent referee states at `SERVER_HASH_EVERY` ticks (bounded by `MAX_SERVER_STATES_BYTES`),
     /// so a desync can be answered with the node's own state instead of trusting the master.
@@ -959,28 +960,33 @@ impl LockstepRoom {
         }
         if let Some(sim) = self.sim.as_mut() {
             sim.step(&inputs);
-            let now = tick.wrapping_add(1);
+            let next = tick.wrapping_add(1);
             let every = (self.hz as u32 * CHECKPOINT_EVERY_SECS).max(1);
-            if now.is_multiple_of(SERVER_HASH_EVERY) || now.is_multiple_of(every) {
+            let hashed = tick.is_multiple_of(SERVER_HASH_EVERY);
+            let checkpointed = next.is_multiple_of(every);
+            if hashed || checkpointed {
                 let hash = sim.hash();
-                self.server_hashes.insert(now, hash);
-                let cutoff = now.saturating_sub(600);
-                self.server_hashes.retain(|k, _| *k >= cutoff);
-                let state = sim.frame.snapshot();
-                if state.len() <= MAX_CHECKPOINT_BYTES {
-                    self.server_states.insert(now, Bytes::from(state.clone()));
-                    let mut total: usize = self.server_states.values().map(|b| b.len()).sum();
-                    while total > MAX_SERVER_STATES_BYTES && self.server_states.len() > 1 {
-                        if let Some((&oldest, _)) = self.server_states.iter().next() {
-                            total -= self.server_states.remove(&oldest).map_or(0, |b| b.len());
+                let state = Bytes::from(sim.frame.snapshot());
+                let fits = state.len() <= MAX_CHECKPOINT_BYTES;
+                if hashed {
+                    self.server_hashes.insert(tick, hash);
+                    let cutoff = tick.saturating_sub(600);
+                    self.server_hashes.retain(|k, _| *k >= cutoff);
+                    if fits {
+                        self.server_states.insert(tick, state.clone());
+                        let mut total: usize = self.server_states.values().map(|b| b.len()).sum();
+                        while total > MAX_SERVER_STATES_BYTES && self.server_states.len() > 1 {
+                            if let Some((&oldest, _)) = self.server_states.iter().next() {
+                                total -= self.server_states.remove(&oldest).map_or(0, |b| b.len());
+                            }
                         }
                     }
                 }
-                if now.is_multiple_of(every) && state.len() <= MAX_CHECKPOINT_BYTES {
+                if checkpointed && fits {
                     self.checkpoint = Some(Checkpoint {
-                        tick: now,
+                        tick: next,
                         hash,
-                        state: Bytes::from(state),
+                        state,
                     });
                     self.want_checkpoint = false;
                 }
@@ -1400,14 +1406,15 @@ mod tests {
             for (tk, inputs) in LockstepRoom::decode_bundles(dg) {
                 if tk.0 == t {
                     mirror.step(&inputs);
-                    if (t + 1).is_multiple_of(SERVER_HASH_EVERY) {
-                        mirror_hashes.insert(t + 1, mirror.hash());
+                    if t.is_multiple_of(SERVER_HASH_EVERY) {
+                        mirror_hashes.insert(t, mirror.hash());
                     }
                 }
             }
         }
-        assert_eq!(room.server_hash(320), Some(mirror_hashes[&320]));
+        assert_eq!(room.server_hash(310), Some(mirror_hashes[&310]));
         assert_eq!(room.server_hash(10), Some(mirror_hashes[&10]));
+        assert_eq!(room.server_hash(319), None);
         assert!(room.checkpoint.as_ref().is_some_and(|c| c.tick == 300));
         assert!(room.checkpoint_request().is_none());
         // both clients agree on a wrong hash: a majority vote would pass, the server does not
@@ -1431,7 +1438,7 @@ mod tests {
         let snap = room.snapshot();
         let mut r2 = LockstepRoom::restore(snap);
         r2.attach_sim(schema, logic()).unwrap();
-        assert_eq!(r2.sim.as_ref().unwrap().hash(), mirror_hashes[&320]);
+        assert_eq!(r2.sim.as_ref().unwrap().hash(), mirror.hash());
     }
 
     fn ack(next: u32) -> Bytes {

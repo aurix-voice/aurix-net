@@ -37,6 +37,8 @@ mimalloc = "0.1"
 
 [dev-dependencies]
 net-client = { path = "../net-client" }
+net-sim = { path = "../net-sim" }
+net-wire = { path = "../net-wire" }
 base64 = { workspace = true }
 tokio-tungstenite = { workspace = true }
 reqwest = { workspace = true }
