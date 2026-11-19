@@ -28,10 +28,25 @@ const beside = await Client.connect(A, await grant(A, "web-rehost-o"));
 await beside.joinOrCreate(`${room}-open`, "relay", 8, tag);
 const moved = new Promise((res) => r.on("rehost", res));
 console.log(`web: a random join led to ${jr1.name} actor=${jr1.actor}`);
-const timer = setInterval(() => { a.sendEvent(1, new Uint8Array([1]), "others", false); a.flush(); }, 50);
+// a reliable event the room did not get is handed back: none is lost without a word
+const listener = await Client.connect(A, await grant(A, "web-rehost-l"));
+await listener.join({ t: "join", name: room });
+const number = (payload) => new DataView(payload.buffer, payload.byteOffset).getUint32(0);
+const reached = new Set(), handedBack = new Set(); let sent = 0;
+listener.on("event", (f) => { if (f.code === 2) reached.add(number(f.payload)); });
+a.on("undelivered", (events) => { for (const e of events) handedBack.add(number(e.payload)); });
+const timer = setInterval(() => {
+  a.sendEvent(1, new Uint8Array([1]), "others", false);
+  const payload = new Uint8Array(4); new DataView(payload.buffer).setUint32(0, sent++);
+  a.sendEvent(2, payload, "others", true); a.flush();
+}, 20);
 await Promise.race([rehost, new Promise((_, rej) => setTimeout(() => rej(new Error("no rehost within 60 s")), 60000))]);
 clearInterval(timer);
 console.log(`web: got rehost after ${frames} data frames`);
+await new Promise((r) => setTimeout(r, 500));
+const neither = [...Array(sent).keys()].filter((n) => !reached.has(n) && !handedBack.has(n));
+const both = [...handedBack].filter((n) => reached.has(n));
+console.log(`web: reliable events at rehost: sent ${sent}, the room got ${reached.size}, handed back ${handedBack.size}, neither ${neither.length}, both ${both.length}`);
 if (a.joined !== undefined || a.actor !== -1) { console.log("WEB_REHOST_FAIL still describes the room the node handed off"); process.exit(1); }
 const { client: a2, joined: j2 } = await a.rejoin([B]);
 console.log(`web: rejoined actor=${j2.actor} (same actor: ${j2.actor === j1.actor})`);
@@ -52,6 +67,6 @@ await b.join({ t: "join", name: room });
 b.sendEvent(7, new TextEncoder().encode("after-rehost"), "others", true); b.flush();
 const t0 = Date.now(); while (Date.now() - t0 < 3000 && !got.some((f) => f.code === 7)) await new Promise((r) => setTimeout(r, 20));
 const ok = got.some((f) => f.code === 7 && new TextDecoder().decode(f.payload) === "after-rehost");
-const pass = ok && j2.actor === j1.actor && returned;
+const pass = ok && j2.actor === j1.actor && returned && neither.length === 0;
 console.log(pass ? "WEB_REHOST_OK" : `WEB_REHOST_FAIL events=${got.length}`);
-a2.close(); b.close(); host.close(); beside.close(); process.exit(pass ? 0 : 1);
+a2.close(); b.close(); host.close(); beside.close(); listener.close(); process.exit(pass ? 0 : 1);

@@ -107,16 +107,62 @@ test("a lost connection is reported once, also when the handler closes the clien
   const a = await Client.connect(link.url, await grant("web-lost"));
   const reasons = [];
   a.on("closed", (why) => { reasons.push(why); a.close(); });
+  a.on("undelivered", (events) => reasons.push(events.map((event) => event.code)));
   try {
     await a.joinOrCreate(`web-lost-${process.pid}`, "relay", 4);
     link.mute();
     a.sendEvent(1, new Uint8Array(8), "others", true);
     for (let i = 0; i < 800 && !reasons.length; i++) await new Promise((resolve) => setTimeout(resolve, 25));
     await new Promise((resolve) => setTimeout(resolve, 300));
-    assert.deepEqual(reasons, ["link dead"]);
+    assert.deepEqual(reasons, [[1], "link dead"], "the event the node did not acknowledge comes first");
   } finally {
     a.close(); link.close();
   }
+});
+
+test("the reliable events the node did not acknowledge are handed back when the room is lost", { skip: !key }, async () => {
+  const remove = (path) => fetch(`${http}/v1/rooms/${path}`, { method: "DELETE", headers: { authorization: `Bearer ${key}` } });
+  // how: what ends the room for the client; the node's acknowledgements do not reach it
+  const run = async (how) => {
+    const link = mutableLink();
+    const a = await Client.connect(link.url, await grant(`web-undelivered-${how}`));
+    const b = await Client.connect(http, await grant(`web-undelivered-${how}-b`));
+    const seen = [], got = [];
+    a.on("undelivered", (events) => seen.push(events));
+    a.on("closed", (why) => seen.push(why));
+    a.on("control", (message) => { if (message.t === "left") seen.push(`left: ${message.reason}`); });
+    b.on("event", (frame) => got.push(frame.code));
+    try {
+      const joined = await a.joinOrCreate(`web-undelivered-${process.pid}-${how}`, "relay", 4);
+      await b.joinOrCreate(joined.name, "relay", 4);
+      a.sendEvent(1, Uint8Array.of(1), "others", true);
+      for (let i = 0; i < 80 && !got.length; i++) await new Promise((resolve) => setTimeout(resolve, 25));
+      link.mute();
+      a.sendEvent(2, Uint8Array.of(2), [b.actor], true);
+      a.sendEvent(3, Uint8Array.of(3), "others", false);
+      a.sendData(Channel.Reliable, encodeEvent(4, Uint8Array.of(4), "others"));
+      a.sendEvent(5, new Uint8Array(3000).fill(5), "master", true, { cache: "add" });
+      a.sendEventOn(Channel.ReliableUnordered, 6, Uint8Array.of(6), "all", { group: 9 });
+      for (let i = 0; i < 80 && got.length < 4; i++) await new Promise((resolve) => setTimeout(resolve, 25));
+      if (how === "kick") await remove(`${joined.room}/players/${joined.actor}`);
+      if (how === "socket") a.ws.close();
+      if (how === "leave") a.leave();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return { seen, got };
+    } finally {
+      a.close(); b.close(); link.close();
+    }
+  };
+  const unacknowledged = [
+    { code: 2, payload: Uint8Array.of(2), target: [2], group: undefined, cache: undefined },
+    { code: 5, payload: new Uint8Array(3000).fill(5), target: "master", group: undefined, cache: "add" },
+    { code: 6, payload: Uint8Array.of(6), target: "all", group: 9, cache: undefined },
+  ];
+  const kick = await run("kick");
+  assert.deepEqual(kick.seen, [unacknowledged, "left: kicked"], "kicked: the events come before the left");
+  assert.ok(kick.got.includes(2), "the room had got an event it did not acknowledge");
+  assert.deepEqual((await run("socket")).seen, [unacknowledged, "control channel closed"], "socket closed: the events come before closed");
+  assert.deepEqual((await run("leave")).seen, ["left: left"], "the game left by itself: nothing is handed back");
 });
 
 test("a data path the node gave up is closed at the client by the node's answer", { skip: !key }, async () => {

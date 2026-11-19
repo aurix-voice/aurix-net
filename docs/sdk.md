@@ -26,6 +26,24 @@ a hidden tab whose timers the browser slowed), is resent and waits 15 s more. Th
 the same rule to its own messages: when it gives the link up, the game gets the same `closed`
 with `link dead`, over QUIC, WebTransport and the tunnel alike.
 
+A reliable message is resent until the node acknowledges it, on the connection it was sent on:
+no client sends it again on another. When the game loses its room, the Web, managed C# and
+Rust clients hand it the reliable events the node had not acknowledged: once, in the order
+they were sent, an event that went out in parts as the one event it was, those still waiting
+to be sent among them. They come before the `closed` of a lost connection (`link dead`, a
+closed socket) and before the `left` of a room the node took the client out of (`kicked` or
+the reason a kick gave, `room closed`, `session_replaced`, `rehost`). A game that leaves or
+closes gets none. Not acknowledged does not mean not delivered: the room may have got an event
+whose acknowledgement was lost, so an event the game sends again must be safe to arrive twice.
+What `sendData` sent and lockstep commands are not among them. The C, C++, Godot, Unreal and
+native C# clients do not hand them back yet.
+
+| SDK | Events the node did not acknowledge |
+|---|---|
+| Web | `client.on("undelivered", (events) => ...)`: `code`, `payload`, `target`, `group`, `cache` of each |
+| Unity | `client.OnUndelivered` on the managed client: `Code`, `Payload`, `Target`, `Actors`, `Group`, `Cache` of each |
+| Rust | `Event::Undelivered(events)`: the `EventFrame` of each |
+
 A client that sends nothing stays connected: every client probes the control channel once a
 second, and the node closes one it has heard nothing from for 90 s ([api.md](api.md)).
 

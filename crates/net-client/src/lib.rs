@@ -109,8 +109,15 @@ pub enum Event {
     },
     /// Data path became ready (first ack from the server).
     DataReady,
+    /// The reliable events the node had not acknowledged when the room was lost, in the order
+    /// they were sent. Comes before `Closed` and before the `Left` of a room the node took the
+    /// client out of. The room may have got any of them.
+    Undelivered(Vec<EventFrame>),
     Closed(String),
 }
+
+/// The mark of an event among the messages of a link.
+const EVENT: u32 = 1;
 
 enum Sink {
     Quic(quinn::Connection),
@@ -743,6 +750,10 @@ impl Client {
     /// that does not take it. Fails with [`ClientError::Disconnected`] outside a room and once
     /// the connection is lost.
     pub fn send_data(&self, channel: Channel, payload: Bytes) -> Result<()> {
+        self.queue(channel, payload, 0)
+    }
+
+    fn queue(&self, channel: Channel, payload: Bytes, mark: u32) -> Result<()> {
         let dp = self.data.as_ref().ok_or(ClientError::Disconnected)?;
         let channel = match channel {
             Channel::UnreliableUnsequenced if !self.unsequenced => Channel::UnreliableSequenced,
@@ -750,7 +761,7 @@ impl Client {
         };
         dp.link
             .lock()
-            .send(channel, payload, Instant::now())
+            .send_marked(channel, payload, Instant::now(), mark)
             .map_err(|error| ClientError::Data(format!("{error:?}")))?;
         Ok(())
     }
@@ -811,7 +822,7 @@ impl Client {
             from: net_common::ActorId(0),
             payload,
         };
-        self.send_data(channel, frame.encode())
+        self.queue(channel, frame.encode(), EVENT)
     }
 
     pub async fn next_event(&mut self) -> Option<Event> {
@@ -820,8 +831,7 @@ impl Client {
                 Some(event) => event,
                 None => {
                     let event = self.events.recv().await?;
-                    self.note(&event);
-                    event
+                    self.noted(event)
                 }
             };
             if self.reports(&event) {
@@ -837,8 +847,7 @@ impl Client {
                 Some(event) => event,
                 None => {
                     let event = self.events.try_recv().ok()?;
-                    self.note(&event);
-                    event
+                    self.noted(event)
                 }
             };
             if self.reports(&event) {
@@ -850,31 +859,59 @@ impl Client {
     /// The node took the client out of its room (kick, room closed, rehost). `left` names the
     /// room: one about a room left earlier, or the answer to the client's own `leave`, changes
     /// nothing.
-    fn forget_room_on_left(&mut self, reason: &str, room: Option<&String>) {
+    fn forget_room_on_left(&mut self, reason: &str, room: Option<&String>) -> Option<Event> {
         let current = self.joined.as_ref().map(|joined| &joined.room);
         if reason != "left" && current.is_some() && current == room {
             self.joined = None;
             self.avatar = None;
-            self.close_data();
+            return self.lose_data();
         }
+        None
     }
 
-    /// What the client keeps of an event whether or not the game reads it.
-    fn note(&mut self, event: &Event) {
+    /// Closes a data path the game did not close; the reliable events the node had not
+    /// acknowledged on it are for the game.
+    fn lose_data(&mut self) -> Option<Event> {
+        let events: Vec<_> = self
+            .data
+            .iter()
+            .flat_map(|path| path.link.lock().unacknowledged_messages())
+            .filter(|message| message.mark == EVENT)
+            .filter_map(|message| EventFrame::decode(message.msg).ok())
+            .collect();
+        self.close_data();
+        (!events.is_empty()).then_some(Event::Undelivered(events))
+    }
+
+    /// What the client keeps of an event whether or not the game reads it. Returns what the
+    /// game is told before the event.
+    fn note(&mut self, event: &Event) -> Option<Event> {
         match event {
             Event::Control(ServerMsg::Left { reason, room }) => {
                 if reason == "left" {
                     self.leaves_unanswered = self.leaves_unanswered.saturating_sub(1);
                 }
-                self.forget_room_on_left(reason, room.as_ref());
+                self.forget_room_on_left(reason, room.as_ref())
             }
             Event::Data { payload, .. } => {
                 if let Some(entity) = announced_avatar(payload) {
                     self.avatar = Some(entity);
                 }
+                None
             }
-            Event::Closed(_) => self.close_data(),
-            _ => {}
+            Event::Closed(_) => self.lose_data(),
+            _ => None,
+        }
+    }
+
+    /// An event as it came from the connection, after what [`Self::note`] puts before it.
+    fn noted(&mut self, event: Event) -> Event {
+        match self.note(&event) {
+            Some(first) => {
+                self.replay.push_front(event);
+                first
+            }
+            None => event,
         }
     }
 

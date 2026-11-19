@@ -149,3 +149,36 @@ test("a timer that comes late resends a packet before the link is given up", () 
     }
   }
 });
+
+test("a link names the reliable messages its peer has not acknowledged, in the order they were queued", () => {
+  const near = new Link(), far = new Link();
+  const listed = () => near.unacknowledged().map((m) => [m.channel, m.msg, m.mark]);
+  // what the far side acknowledges of the datagrams that `keep` lets through
+  const exchange = (now, keep = () => true) => {
+    for (const d of near.drain()) if (keep(d)) far.receive(d, now);
+    far.poll(now + 100);
+    for (const d of far.drain()) near.receive(d, now + 100);
+  };
+  const small = Uint8Array.of(1), loose = Uint8Array.of(2), large = new Uint8Array(3000).fill(3), last = Uint8Array.of(4);
+  near.send(Channel.Reliable, small, 0, 7);
+  near.send(Channel.ReliableUnordered, loose, 0, 8);
+  near.send(Channel.Unreliable, Uint8Array.of(9), 0, 9);
+  near.send(Channel.Unreliable, new Uint8Array(3000), 0, 9);
+  near.send(Channel.Reliable, large, 0, 0);
+  near.send(Channel.Reliable, last, 0, 7);
+  const all = [[Channel.Reliable, small, 7], [Channel.ReliableUnordered, loose, 8], [Channel.Reliable, large, 0], [Channel.Reliable, last, 7]];
+  assert.deepEqual(listed(), all, "unreliable messages are not among them, a message in parts is there once");
+
+  let fragments = 0;
+  // the second part of the large reliable message is lost: parts 0..2 of the unreliable one come first
+  exchange(0, (d) => !((d[1] & 0x1f) === 3 && !(d[1] & 0x80) && fragments++ === 4));
+  assert.deepEqual(listed(), [[Channel.Reliable, large, 0]], "a message is there until every part is acknowledged");
+
+  const queue = new Link();
+  const many = Array.from({ length: 40 }, (_, i) => Uint8Array.of(i));
+  for (const msg of many) queue.send(Channel.Reliable, msg, 0);
+  assert.deepEqual(queue.unacknowledged().map((m) => m.msg), many, "what waits for the window is among them");
+
+  near.close();
+  assert.deepEqual(listed(), [[Channel.Reliable, large, 0]], "a link that has ended keeps the list");
+});

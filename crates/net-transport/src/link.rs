@@ -45,6 +45,14 @@ const MIN_RTO: Duration = Duration::from_millis(60);
 const MAX_RTO: Duration = Duration::from_millis(1500);
 const ACK_DELAY: Duration = Duration::from_millis(20);
 
+/// A reliable message the peer has not acknowledged, with the mark its sender gave it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unacknowledged {
+    pub mark: u32,
+    pub channel: Channel,
+    pub msg: Bytes,
+}
+
 #[derive(Debug)]
 pub struct Link {
     seq_tx: u16,
@@ -76,6 +84,10 @@ pub struct Link {
     last_ack_sent: Instant,
     last_recv: Instant,
     dead: bool,
+    /// Reliable messages ever queued.
+    queued: u64,
+    /// What the peer had not acknowledged when the link ended.
+    lost: Vec<Unacknowledged>,
     /// Set once the link takes nothing more from the peer but his acknowledgements: how far
     /// each reliable channel was queued by then.
     closing: Option<[u16; 3]>,
@@ -111,6 +123,8 @@ impl Link {
             last_ack_sent: now,
             last_recv: now,
             dead: false,
+            queued: 0,
+            lost: Vec::new(),
             closing: None,
         }
     }
@@ -133,8 +147,31 @@ impl Link {
             + self.frag_tx.pending_bytes()
     }
 
+    /// The reliable messages the peer has not acknowledged, in the order they were queued; on
+    /// a link that has ended, those it had not acknowledged by then. The peer may have taken
+    /// any of them: an acknowledgement can be lost too.
+    pub fn unacknowledged_messages(&self) -> Vec<Unacknowledged> {
+        if self.dead {
+            return self.lost.clone();
+        }
+        let mut waiting: Vec<_> = [&self.ordered_tx, &self.unordered_tx, &self.frag_tx]
+            .into_iter()
+            .flat_map(|tx| tx.waiting())
+            .collect();
+        waiting.sort_by_key(|message| message.order);
+        waiting
+            .into_iter()
+            .map(|message| Unacknowledged {
+                mark: message.mark,
+                channel: message.channel,
+                msg: message.msg.clone(),
+            })
+            .collect()
+    }
+
     /// Ends the link: nothing more is sent or queued, and what was queued is dropped.
     pub fn close(&mut self) {
+        self.lost = self.unacknowledged_messages();
         self.dead = true;
         for tx in [
             &mut self.ordered_tx,
@@ -227,14 +264,26 @@ impl Link {
 
     /// Queues an application message on `channel`.
     pub fn send(&mut self, channel: Channel, msg: Bytes, now: Instant) -> Result<(), LinkError> {
+        self.send_marked(channel, msg, now, 0)
+    }
+
+    /// [`Self::send`] with a mark of the sender's, which comes back with a reliable message
+    /// in [`Self::unacknowledged_messages`].
+    pub fn send_marked(
+        &mut self,
+        channel: Channel,
+        msg: Bytes,
+        now: Instant,
+        mark: u32,
+    ) -> Result<(), LinkError> {
         if self.dead {
             return Err(LinkError::Dead);
         }
-        let queued = msg.len() > MAX_UNFRAGMENTED
-            || matches!(
-                channel,
-                Channel::ReliableOrdered | Channel::ReliableUnordered
-            );
+        let reliable = matches!(
+            channel,
+            Channel::ReliableOrdered | Channel::ReliableUnordered
+        );
+        let queued = msg.len() > MAX_UNFRAGMENTED || reliable;
         if queued && self.backlog() + msg.len() > RELIABLE_BACKLOG_BYTES {
             self.close();
             return Err(LinkError::Backlog);
@@ -244,6 +293,11 @@ impl Link {
                 .fragmenter
                 .split(channel, &msg)
                 .ok_or(LinkError::TooLarge)?;
+            if reliable {
+                self.frag_tx
+                    .note(self.queued, mark, channel, msg, parts.len());
+                self.queued += 1;
+            }
             for part in parts {
                 for (seq, payload) in self.frag_tx.push(part, now) {
                     self.emit(Kind::Fragment, seq, &payload, false);
@@ -272,11 +326,17 @@ impl Link {
                 self.loose_n += 1;
             }
             Channel::ReliableOrdered => {
+                self.ordered_tx
+                    .note(self.queued, mark, channel, msg.clone(), 1);
+                self.queued += 1;
                 for (seq, payload) in self.ordered_tx.push(msg, now) {
                     self.emit(Kind::Channel(channel), seq, &payload, false);
                 }
             }
             Channel::ReliableUnordered => {
+                self.unordered_tx
+                    .note(self.queued, mark, channel, msg.clone(), 1);
+                self.queued += 1;
                 for (seq, payload) in self.unordered_tx.push(msg, now) {
                     self.emit(Kind::Channel(channel), seq, &payload, false);
                 }
@@ -544,6 +604,78 @@ mod tests {
             got.extend(to.receive(datagram, now));
         }
         got
+    }
+
+    #[test]
+    fn link_names_the_reliable_messages_its_peer_has_not_acknowledged() {
+        let t0 = Instant::now();
+        let mut near = Link::new(t0, IDLE);
+        let mut far = Link::new(t0, IDLE);
+        let small = Bytes::from_static(b"small");
+        let loose = Bytes::from_static(b"loose");
+        let large = Bytes::from(vec![3u8; 3000]);
+        let last = Bytes::from_static(b"last");
+        let sent = |mark, channel, msg: &Bytes| Unacknowledged {
+            mark,
+            channel,
+            msg: msg.clone(),
+        };
+        for (channel, msg, mark) in [
+            (Channel::ReliableOrdered, &small, 7),
+            (Channel::ReliableUnordered, &loose, 8),
+            (Channel::UnreliableSequenced, &small, 9),
+            (Channel::UnreliableSequenced, &large, 9),
+            (Channel::ReliableOrdered, &large, 0),
+            (Channel::ReliableOrdered, &last, 7),
+        ] {
+            near.send_marked(channel, msg.clone(), t0, mark).unwrap();
+        }
+        // Unreliable messages are not among them, and a message in parts is there once.
+        assert_eq!(
+            near.unacknowledged_messages(),
+            [
+                sent(7, Channel::ReliableOrdered, &small),
+                sent(8, Channel::ReliableUnordered, &loose),
+                sent(0, Channel::ReliableOrdered, &large),
+                sent(7, Channel::ReliableOrdered, &last),
+            ]
+        );
+
+        // The second part of the large reliable message is lost: the three parts of the
+        // unreliable one come first.
+        let mut fragments = 0;
+        near.flush_batch();
+        while let Some(datagram) = near.next_outgoing() {
+            let (header, _) = Header::decode(datagram.clone()).unwrap();
+            if header.kind == Kind::Fragment && !header.ack_only {
+                fragments += 1;
+                if fragments == 5 {
+                    continue;
+                }
+            }
+            far.receive(datagram, t0);
+        }
+        far.poll(t0 + ACK_DELAY).unwrap();
+        while let Some(datagram) = far.next_outgoing() {
+            near.receive(datagram, t0 + ACK_DELAY);
+        }
+        let left = [sent(0, Channel::ReliableOrdered, &large)];
+        assert_eq!(near.unacknowledged_messages(), left);
+
+        // What waits for the window is among them.
+        let mut queue = Link::new(t0, IDLE);
+        let many: Vec<_> = (0..40u8).map(|i| Bytes::from(vec![i])).collect();
+        for msg in &many {
+            queue
+                .send(Channel::ReliableOrdered, msg.clone(), t0)
+                .unwrap();
+        }
+        let waiting = queue.unacknowledged_messages();
+        assert!(waiting.iter().map(|message| &message.msg).eq(&many));
+
+        // A link that has ended keeps the list.
+        near.close();
+        assert_eq!(near.unacknowledged_messages(), left);
     }
 
     #[test]

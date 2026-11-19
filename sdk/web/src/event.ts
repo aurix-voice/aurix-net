@@ -60,6 +60,23 @@ export function encodeEvent(
   return bytes;
 }
 
+/** A reliable event the node did not acknowledge, with what `sendEvent` was given. */
+export interface UndeliveredEvent {
+  code: number;
+  payload: Uint8Array;
+  target: Target;
+  group?: number;
+  cache?: CacheOp;
+}
+
+/** Reads an event back from the bytes `encodeEvent` made of it. */
+export function decodeSentEvent(bytes: Uint8Array): UndeliveredEvent {
+  const { code, payload, target, group } = decodeEvent(bytes)!;
+  const cache =
+    bytes[1] & 0x04 ? "add" : bytes[1] & 0x08 ? "remove" : undefined;
+  return { code, payload, target, group, cache };
+}
+
 export function decodeEvent(bytes: Uint8Array): EventFrame | null {
   if (bytes.length < 4) {
     return null;

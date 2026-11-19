@@ -552,6 +552,45 @@ public class ManagedCoreTests
 
     static List<byte[]> Drain(Link link) { var sent = new List<byte[]>(); while (link.TryDequeueOutgoing(out var datagram)) sent.Add(datagram); return sent; }
 
+    [Test]
+    public void ALinkNamesTheReliableMessagesItsPeerHasNotAcknowledged()
+    {
+        var near = new Link(); var far = new Link();
+        (Channel, byte[], int)[] Listed() => near.Unacknowledged().Select(m => (m.Channel, m.Msg, m.Mark)).ToArray();
+        byte[] small = { 1 }, loose = { 2 }, large = Enumerable.Repeat((byte)3, 3000).ToArray(), last = { 4 };
+        near.Send(Channel.Reliable, small, 0, 7);
+        near.Send(Channel.ReliableUnordered, loose, 0, 8);
+        near.Send(Channel.Unreliable, new byte[] { 9 }, 0, 9);
+        near.Send(Channel.Unreliable, new byte[3000], 0, 9);
+        near.Send(Channel.Reliable, large, 0, 0);
+        near.Send(Channel.Reliable, last, 0, 7);
+        Assert.That(
+            Listed(),
+            Is.EqualTo(new[] { (Channel.Reliable, small, 7), (Channel.ReliableUnordered, loose, 8), (Channel.Reliable, large, 0), (Channel.Reliable, last, 7) }),
+            "unreliable messages are not among them, a message in parts is there once");
+
+        // the second part of the large reliable message is lost: the three parts of the unreliable one come first
+        int fragments = 0;
+        near.FlushBatch();
+        foreach (var datagram in Drain(near))
+        {
+            if ((datagram[1] & 0x1f) == 3 && (datagram[1] & 0x80) == 0 && fragments++ == 4) continue;
+            far.Receive(datagram, 0);
+        }
+        far.Poll(100);
+        foreach (var datagram in Drain(far)) near.Receive(datagram, 100);
+        var left = new[] { (Channel.Reliable, large, 0) };
+        Assert.That(Listed(), Is.EqualTo(left), "a message is there until every part is acknowledged");
+
+        var queue = new Link();
+        var many = Enumerable.Range(0, 40).Select(i => new[] { (byte)i }).ToArray();
+        foreach (var msg in many) queue.Send(Channel.Reliable, msg, 0);
+        Assert.That(queue.Unacknowledged().Select(m => m.Msg), Is.EqualTo(many), "what waits for the window is among them");
+
+        near.Close();
+        Assert.That(Listed(), Is.EqualTo(left), "a link that has ended keeps the list");
+    }
+
     [TestCase(true)]
     [TestCase(false)]
     public void ATimerThatComesLateResendsAPacketBeforeTheLinkIsGivenUp(bool answered)

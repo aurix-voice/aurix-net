@@ -640,35 +640,39 @@ pub unsafe extern "C" fn aurix_net_poll(
         return 0;
     };
     *out = AurixNetEvent::empty();
-    let ev = client.inner.lock().try_next_event();
-    let Some(ev) = ev else { return 0 };
-    match ev {
-        Event::Control(msg) => {
-            out.kind = AURIX_NET_EVENT_CONTROL;
-            out.json = json_c(&msg);
+    loop {
+        let ev = client.inner.lock().try_next_event();
+        let Some(ev) = ev else { return 0 };
+        match ev {
+            // The C ABI has no event for these yet.
+            Event::Undelivered(_) => continue,
+            Event::Control(msg) => {
+                out.kind = AURIX_NET_EVENT_CONTROL;
+                out.json = json_c(&msg);
+            }
+            Event::Data {
+                channel,
+                tick,
+                payload,
+            } => {
+                out.kind = AURIX_NET_EVENT_DATA;
+                out.channel = channel as u8;
+                out.tick = tick;
+                let mut bytes = payload.to_vec().into_boxed_slice();
+                out.data_len = bytes.len();
+                out.data = bytes.as_mut_ptr();
+                std::mem::forget(bytes);
+            }
+            Event::DataReady => out.kind = AURIX_NET_EVENT_DATA_READY,
+            Event::Closed(reason) => {
+                out.kind = AURIX_NET_EVENT_CLOSED;
+                out.json = CString::new(reason)
+                    .map(CString::into_raw)
+                    .unwrap_or(std::ptr::null_mut());
+            }
         }
-        Event::Data {
-            channel,
-            tick,
-            payload,
-        } => {
-            out.kind = AURIX_NET_EVENT_DATA;
-            out.channel = channel as u8;
-            out.tick = tick;
-            let mut bytes = payload.to_vec().into_boxed_slice();
-            out.data_len = bytes.len();
-            out.data = bytes.as_mut_ptr();
-            std::mem::forget(bytes);
-        }
-        Event::DataReady => out.kind = AURIX_NET_EVENT_DATA_READY,
-        Event::Closed(reason) => {
-            out.kind = AURIX_NET_EVENT_CLOSED;
-            out.json = CString::new(reason)
-                .map(CString::into_raw)
-                .unwrap_or(std::ptr::null_mut());
-        }
+        return 1;
     }
-    1
 }
 
 fn json_c(msg: &ServerMsg) -> *mut c_char {

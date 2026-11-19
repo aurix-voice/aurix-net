@@ -3,6 +3,7 @@
 // from one thread (the Unity main thread) and feed datagrams through Receive().
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Aurix.Net.Managed
 {
@@ -11,6 +12,15 @@ namespace Aurix.Net.Managed
         public Channel Channel;
         public ushort Tick;
         public byte[] Payload;
+    }
+
+    /// <summary>A reliable message the peer has not acknowledged, with the mark its sender gave
+    /// it.</summary>
+    public struct Unacknowledged
+    {
+        public Channel Channel;
+        public byte[] Msg;
+        public int Mark;
     }
 
     public sealed class Link
@@ -38,11 +48,28 @@ namespace Aurix.Net.Managed
             public bool Resent;
         }
 
+        /// <summary>A reliable message and where its packets are among those queued on a
+        /// stream.</summary>
+        sealed class Queued
+        {
+            public long Order;
+            public Unacknowledged Message;
+            public long First;
+            public int Count;
+        }
+
         sealed class Stream
         {
             public byte Kind;
             public bool Ordered;
             public ushort TxSeq;
+
+            /// <summary>Packets ever queued: the nth of them gets seq n mod 65536.</summary>
+            public long QueuedPackets;
+
+            /// <summary>The reliable messages queued, from the oldest one not acknowledged
+            /// yet.</summary>
+            public readonly Queue<Queued> Log = new Queue<Queued>();
             public List<InFlight> InFlight = new List<InFlight>();
             public Queue<byte[]> Pending = new Queue<byte[]>();
             public int PendingBytes;
@@ -70,6 +97,25 @@ namespace Aurix.Net.Managed
                     }
                     return acked;
                 });
+                while (Log.Count > 0 && !Holds(Log.Peek()))
+                {
+                    Log.Dequeue();
+                }
+            }
+
+            /// <summary>Whether a packet of <paramref name="message"/> waits for the window or for
+            /// its acknowledgement.</summary>
+            public bool Holds(Queued message)
+            {
+                long sent = QueuedPackets - Pending.Count;
+                for (long n = message.First; n < message.First + message.Count; n++)
+                {
+                    if (n >= sent || InFlight.Exists(packet => packet.Seq == (ushort)n))
+                    {
+                        return true;
+                    }
+                }
+                return false;
             }
 
             /// <summary>Records a received seq for acks; false when already seen or too old.</summary>
@@ -170,6 +216,8 @@ namespace Aurix.Net.Managed
         readonly Queue<byte[]> _out = new Queue<byte[]>();
         readonly double _idle;
         readonly List<double> _samples = new List<double>();
+        long _order;
+        List<Unacknowledged> _lost = new List<Unacknowledged>();
         double _srtt = double.NaN,
             _rttVar;
         public ushort Tick;
@@ -214,15 +262,38 @@ namespace Aurix.Net.Managed
             return bytes;
         }
 
+        /// <summary>The reliable messages the peer has not acknowledged, in the order they were
+        /// queued; on a link that has ended, those it had not acknowledged by then. The peer may
+        /// have taken any of them: an acknowledgement can be lost too.</summary>
+        public List<Unacknowledged> Unacknowledged()
+        {
+            if (IsDead)
+            {
+                return _lost;
+            }
+
+            var waiting = new List<Queued>();
+            foreach (var stream in _streams.Values)
+            {
+                waiting.AddRange(stream.Log.Where(stream.Holds));
+            }
+            return waiting
+                .OrderBy(message => message.Order)
+                .Select(message => message.Message)
+                .ToList();
+        }
+
         /// <summary>Ends the link: nothing more is sent or queued, and what was queued is dropped.</summary>
         public void Close()
         {
+            _lost = Unacknowledged();
             IsDead = true;
             foreach (var stream in _streams.Values)
             {
                 stream.InFlight.Clear();
                 stream.Pending.Clear();
                 stream.PendingBytes = 0;
+                stream.Log.Clear();
             }
             foreach (var batch in _batches.Values)
             {
@@ -256,9 +327,13 @@ namespace Aurix.Net.Managed
 
         public void Send(Channel channel, byte[] msg) => Send(channel, msg, Now());
 
+        public void SendMarked(Channel channel, byte[] msg, int mark) =>
+            Send(channel, msg, Now(), mark);
+
         /// <summary>Queues a message. Throws on a dead link, and ends the link when the message
-        /// would not fit in <see cref="ReliableBacklogBytes"/>.</summary>
-        public void Send(Channel channel, byte[] msg, double now)
+        /// would not fit in <see cref="ReliableBacklogBytes"/>. <paramref name="mark"/> comes back
+        /// with a reliable message in <see cref="Unacknowledged"/>.</summary>
+        public void Send(Channel channel, byte[] msg, double now, int mark = 0)
         {
             if (IsDead)
             {
@@ -270,10 +345,8 @@ namespace Aurix.Net.Managed
                 throw new ArgumentException("message too large (max 64 KiB)");
             }
 
-            bool queued =
-                msg.Length > Packet.MaxUnfragmented
-                || channel == Channel.Reliable
-                || channel == Channel.ReliableUnordered;
+            bool reliable = channel == Channel.Reliable || channel == Channel.ReliableUnordered;
+            bool queued = msg.Length > Packet.MaxUnfragmented || reliable;
             if (queued && Backlog() + msg.Length > ReliableBacklogBytes)
             {
                 Close();
@@ -289,6 +362,10 @@ namespace Aurix.Net.Managed
                 }
 
                 ushort id = _fragId++;
+                if (reliable)
+                {
+                    Note(_streams[Packet.KindFragment], channel, msg, mark, count);
+                }
                 for (int i = 0; i < count; i++)
                 {
                     int off = i * FragPayload,
@@ -315,12 +392,32 @@ namespace Aurix.Net.Managed
                 batch.Add(msg);
                 return;
             }
+            Note(_streams[(byte)channel], channel, msg, mark, 1);
             Queue(_streams[(byte)channel], msg);
             Pump(now);
         }
 
+        void Note(Stream stream, Channel channel, byte[] msg, int mark, int count)
+        {
+            stream.Log.Enqueue(
+                new Queued
+                {
+                    Order = _order++,
+                    Message = new Unacknowledged
+                    {
+                        Channel = channel,
+                        Msg = msg,
+                        Mark = mark,
+                    },
+                    First = stream.QueuedPackets,
+                    Count = count,
+                }
+            );
+        }
+
         static void Queue(Stream stream, byte[] packet)
         {
+            stream.QueuedPackets++;
             stream.Pending.Enqueue(packet);
             stream.PendingBytes += packet.Length;
         }

@@ -3,14 +3,16 @@ import { Link, type Received } from "./link.js";
 import {
   encodeEvent,
   decodeEvent,
+  decodeSentEvent,
   type Target,
   type CacheOp,
   type EventFrame,
+  type UndeliveredEvent,
 } from "./event.js";
 export { Channel } from "./packet.js";
 export { Link, IDLE_TIMEOUT, RELIABLE_BACKLOG_BYTES } from "./link.js";
 export { encodeEvent, decodeEvent } from "./event.js";
-export type { Target, EventFrame } from "./event.js";
+export type { Target, EventFrame, UndeliveredEvent } from "./event.js";
 export * from "./sync.js";
 export * from "./lockstep.js";
 export * from "./chat.js";
@@ -106,6 +108,9 @@ function wayBack(asked: Record<string, unknown>, name: string): object {
   return again;
 }
 
+// The mark of an event among the messages of the link.
+const EVENT = 1;
+
 // An `error` refuses the request whose `id` it repeats; one without an `id` may refuse any.
 function refuses(message: ControlMessage, id?: number): boolean {
   return (
@@ -120,6 +125,10 @@ export interface ClientEvents {
   event: (frame: EventFrame) => void;
   ready: () => void;
   closed: (reason: string) => void;
+  /** The reliable events the node had not acknowledged when the room was lost, in the order
+   *  they were sent. Comes before `closed` and before the `left` of a room the node took the
+   *  client out of. The room may have got any of them. */
+  undelivered: (events: UndeliveredEvent[]) => void;
   rehost: () => void;
   notice: (text: string, level: string) => void;
 }
@@ -316,8 +325,10 @@ export class Client {
         this.joined &&
         message.room === this.joined.room
       ) {
+        const events = this.unacknowledgedEvents();
         this.closePath();
         this.forgetRoom();
+        this.handBack(events);
       }
       this.emit("control", message);
       if (message.t === "error" && message.code === "transport") {
@@ -673,6 +684,9 @@ export class Client {
    *  the connection is lost. It is lost when the node acknowledges nothing for `IDLE_TIMEOUT`
    *  and when more than `RELIABLE_BACKLOG_BYTES` of reliable messages wait for it. */
   sendData(channel: Channel, payload: Uint8Array) {
+    this.queue(channel, payload, 0);
+  }
+  private queue(channel: Channel, payload: Uint8Array, mark: number) {
     if (!this.path || this.isLost) {
       throw new Error("disconnected");
     }
@@ -683,7 +697,7 @@ export class Client {
       channel = Channel.Unreliable;
     }
     try {
-      this.link.send(channel, payload);
+      this.link.send(channel, payload, undefined, mark);
     } catch (error) {
       if (this.link.isDead) {
         this.lost("link dead");
@@ -719,9 +733,10 @@ export class Client {
     target: Target = "others",
     opts: { group?: number; cache?: CacheOp } = {},
   ) {
-    this.sendData(
+    this.queue(
       channel,
       encodeEvent(code, payload, target, opts.group, opts.cache),
+      EVENT,
     );
   }
   /** Relay event-cache slices: `increase` opens the next slice, `set` picks one, `purge` drops one slice, `purge_up_to` every slice up to `index`. */
@@ -818,9 +833,22 @@ export class Client {
       return;
     }
     this.isLost = true;
+    const events = this.unacknowledgedEvents();
     this.closePath();
     this.failReady?.(new Error(why));
+    this.handBack(events);
     this.emit("closed", why);
+  }
+  private unacknowledgedEvents(): UndeliveredEvent[] {
+    return this.link
+      .unacknowledged()
+      .filter((message) => message.mark === EVENT)
+      .map((message) => decodeSentEvent(message.msg));
+  }
+  private handBack(events: UndeliveredEvent[]) {
+    if (events.length) {
+      this.emit("undelivered", events);
+    }
   }
   /** No answer can come any more: the calls waiting for one fail now, not at their timeout. */
   private controlClosed() {

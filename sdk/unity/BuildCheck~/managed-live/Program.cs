@@ -651,6 +651,50 @@ class P
             givenUpOk = aliveBefore && answers.SequenceEqual(new[] { "transport" }) && reasons.SequenceEqual(new[] { "link dead" }) && sendRefused;
             quiet.Dispose(); talker.Dispose();
         }
+        // the reliable events the node did not acknowledge come back to the game when the room is
+        // lost, before the left or the closed that tells it so; a game that leaves gets none
+        bool undeliveredOk = true;
+        foreach (string how in new[] { "kick", "socket", "leave" })
+        {
+            using (var gag = new GagRelay())
+            {
+                var sender = await ManagedClient.ConnectAsync(gag.Url, await Grant(h, key, "cs-undelivered-" + how));
+                var told = new List<string>();
+                sender.OnUndelivered += events => told.Add(string.Join(" ", events.Select(sent =>
+                    $"{sent.Code}:{sent.Payload.Length}:{sent.Target}:{(sent.Actors == null ? "" : string.Join("+", sent.Actors))}:{sent.Group}:{sent.Cache}")));
+                sender.OnControl += json => { if (ManagedClientTestHooks.Str(json, "t") == "left") told.Add("left " + ManagedClientTestHooks.Str(json, "reason")); };
+                sender.OnClosed += reason => told.Add("closed " + reason);
+                await sender.JoinOrCreateAsync("cs-undelivered-" + how + "-" + Environment.ProcessId, "relay", 4);
+                sender.SendEvent(1, new byte[] { 1 }, Target.Others, reliable: true); sender.Flush();
+                for (int i = 0; i < 40; i++) { sender.Poll(); await Task.Delay(10); }
+                gag.Gagged = true;
+                sender.SendEvent(2, new byte[] { 2 }, Target.Actors, reliable: true, actors: new ushort[] { 7, 9 });
+                sender.SendEvent(3, new byte[] { 3 }, Target.Others, reliable: false);
+                sender.SendData(Channel.Reliable, Event.Encode(4, new byte[] { 4 }, Target.Others));
+                sender.SendEvent(5, new byte[3000], Target.Master, cache: CacheOp.Add);
+                sender.SendEventOn(Channel.ReliableUnordered, 6, new byte[] { 6 }, Target.All, group: 9);
+                sender.Flush();
+                for (int i = 0; i < 20; i++) { sender.Poll(); await Task.Delay(10); }
+                if (how == "kick")
+                {
+                    var removal = new HttpRequestMessage(HttpMethod.Delete, "http://127.0.0.1:8090/v1/rooms/" + ManagedClientTestHooks.Str(sender.JoinedJson, "room") + "/players/" + sender.Actor);
+                    removal.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+                    if (!(await h.SendAsync(removal)).IsSuccessStatusCode) throw new Exception("kick refused");
+                }
+                if (how == "socket") gag.Dispose();
+                if (how == "leave") await sender.LeaveAsync();
+                for (int i = 0; i < 60; i++) { sender.Poll(); await Task.Delay(10); }
+                const string events = "2:1:Actors:7+9::None 5:3000:Master:::Add 6:1:All::9:None";
+                Console.WriteLine($"undelivered events, {how}: [{string.Join(" | ", told)}]");
+                undeliveredOk &= how switch
+                {
+                    "kick" => told.SequenceEqual(new[] { events, "left kicked" }),
+                    "socket" => told.Count == 2 && told[0] == events && told[1].StartsWith("closed "),
+                    _ => told.SequenceEqual(new[] { "left left" }),
+                };
+                sender.Dispose();
+            }
+        }
         // a game thread that is blocked for a while (a scene load) keeps its link: the client
         // reads, acknowledges and resends without it
         bool busyOk;
@@ -732,7 +776,7 @@ class P
             stallOk = stallGot == stallSent && stallReasons.Count == 0;
             talker.Dispose();
         }
-        bool ok = wayBack && stallOk && busyOk && givenUpOk && refused && lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && failedFast && runnerOk;
+        bool ok = wayBack && stallOk && busyOk && givenUpOk && undeliveredOk && refused && lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && failedFast && runnerOk;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");
         return ok ? 0 : 1;
     }

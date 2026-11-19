@@ -1,6 +1,8 @@
 // Live rehost check: joins a relay room on node A, waits for OnRehost (A got SIGTERM), RejoinAsync
 // via node B with the same grant, then a second client on B must still reach it.
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -43,15 +45,25 @@ class P
         bool rehost = false; int frames = 0;
         a.OnRehost += () => rehost = true;
         a.OnData += (ch, t, p) => frames++;
+        // a reliable event the room did not get is handed back: none is lost without a word
+        var listener = await ManagedClient.ConnectAsync(A, await Grant(h, A, key, "cs-rehost-l"));
+        await listener.JoinAsync(room);
+        var reached = new HashSet<int>(); var handedBack = new HashSet<int>(); int sent = 0;
+        listener.OnEvent += frame => { if (frame.Code == 3) reached.Add(BitConverter.ToInt32(frame.Payload.ToArray(), 0)); };
+        a.OnUndelivered += events => { foreach (var back in events) handedBack.Add(BitConverter.ToInt32(back.Payload, 0)); };
         var deadline = DateTime.UtcNow.AddSeconds(60);
         while (!rehost && DateTime.UtcNow < deadline)
         {
-            a.SendEvent(1, new byte[] { 1 }, Target.Others, reliable: false); a.Flush(); a.Poll();
-            r.Poll(); host.Poll(); beside.Poll();
-            await Task.Delay(50);
+            a.SendEvent(1, new byte[] { 1 }, Target.Others, reliable: false);
+            a.SendEvent(3, BitConverter.GetBytes(sent++), Target.Others, reliable: true); a.Flush(); a.Poll();
+            r.Poll(); host.Poll(); beside.Poll(); listener.Poll();
+            await Task.Delay(20);
         }
         if (!rehost) { Console.WriteLine("CS_REHOST_FAIL no rehost within 60 s"); return 1; }
         Console.WriteLine($"cs: got rehost after {frames} data frames");
+        for (int i = 0; i < 25; i++) { listener.Poll(); await Task.Delay(20); }
+        int neither = Enumerable.Range(0, sent).Count(n => !reached.Contains(n) && !handedBack.Contains(n));
+        Console.WriteLine($"cs: reliable events at rehost: sent {sent}, the room got {reached.Count}, handed back {handedBack.Count}, neither {neither}, both {handedBack.Count(reached.Contains)}");
         if (a.Actor != -1 || a.JoinedJson != null) { Console.WriteLine("CS_REHOST_FAIL still describes the room the node handed off"); return 1; }
         var a2 = await a.RejoinAsync(B);
         Console.WriteLine($"cs: rejoined actor={a2.Actor} (same actor: {a2.Actor == actor1})");
@@ -74,9 +86,9 @@ class P
         b.SendEvent(7, Encoding.UTF8.GetBytes("after-rehost"), Target.Others, reliable: true); b.Flush();
         deadline = DateTime.UtcNow.AddSeconds(3);
         while (got == null && DateTime.UtcNow < deadline) { a2.Poll(); b.Poll(); await Task.Delay(5); }
-        bool ok = got == "after-rehost" && a2.Actor == actor1 && returned;
+        bool ok = got == "after-rehost" && a2.Actor == actor1 && returned && neither == 0;
         Console.WriteLine(ok ? "CS_REHOST_OK" : $"CS_REHOST_FAIL got={got}");
-        a2.Dispose(); b.Dispose(); host.Dispose(); beside.Dispose();
+        a2.Dispose(); b.Dispose(); host.Dispose(); beside.Dispose(); listener.Dispose();
         return ok ? 0 : 1;
     }
 }

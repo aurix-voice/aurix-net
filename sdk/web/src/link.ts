@@ -57,8 +57,26 @@ class Batch {
   }
 }
 
+/** A reliable message the peer has not acknowledged, with the mark its sender gave it. */
+export interface Unacknowledged {
+  channel: Channel;
+  msg: Uint8Array;
+  mark: number;
+}
+
+/** A reliable message and where its packets are among those queued on a stream. */
+interface Queued extends Unacknowledged {
+  order: number;
+  first: number;
+  count: number;
+}
+
 class ReliableTx {
   seq = 0;
+  /** Packets ever queued: the nth of them gets seq n mod 65536. */
+  queued = 0;
+  /** The reliable messages queued, from the oldest one not acknowledged yet. */
+  log: Queued[] = [];
   inFlight: {
     seq: number;
     payload: Uint8Array;
@@ -82,7 +100,20 @@ class ReliableTx {
       }
       return !acked;
     });
+    while (this.log.length && !this.holds(this.log[0])) {
+      this.log.shift();
+    }
     return samples;
+  }
+  /** Whether a packet of `message` waits for the window or for its acknowledgement. */
+  holds(message: Queued): boolean {
+    const sent = this.queued - this.pending.length;
+    for (let n = message.first; n < message.first + message.count; n++) {
+      if (n >= sent || this.inFlight.some((p) => p.seq === (n & 0xffff))) {
+        return true;
+      }
+    }
+    return false;
   }
 }
 class ReliableRx {
@@ -156,6 +187,8 @@ export class Link {
   private srtt: number | null = null;
   private rttVar = 0;
   private dead = false;
+  private order = 0;
+  private lost: Unacknowledged[] = [];
   tick = 0;
   stats = { sent: 0, recv: 0, retransmits: 0, dropped: 0 };
 
@@ -180,13 +213,30 @@ export class Link {
     }
     return bytes;
   }
+  /** The reliable messages the peer has not acknowledged, in the order they were queued; on a
+   *  link that has ended, those it had not acknowledged by then. The peer may have taken any of
+   *  them: an acknowledgement can be lost too. */
+  unacknowledged(): Unacknowledged[] {
+    if (this.dead) {
+      return this.lost;
+    }
+    const waiting: Queued[] = [];
+    for (const stream of this.streams.values()) {
+      waiting.push(...stream.tx.log.filter((m) => stream.tx.holds(m)));
+    }
+    return waiting
+      .sort((a, b) => a.order - b.order)
+      .map(({ channel, msg, mark }) => ({ channel, msg, mark }));
+  }
   /** Ends the link: nothing more is sent or queued, and what was queued is dropped. */
   close() {
+    this.lost = this.unacknowledged();
     this.dead = true;
     for (const stream of this.streams.values()) {
       stream.tx.inFlight = [];
       stream.tx.pending = [];
       stream.tx.pendingBytes = 0;
+      stream.tx.log = [];
     }
     for (const batch of this.batches.values()) {
       batch.take();
@@ -219,18 +269,17 @@ export class Link {
   }
 
   /** Queues a message. Throws on a dead link, and ends the link when the message would not fit
-   *  in `RELIABLE_BACKLOG_BYTES`. */
-  send(channel: Channel, msg: Uint8Array, now = performance.now()) {
+   *  in `RELIABLE_BACKLOG_BYTES`. `mark` comes back with a reliable message in `unacknowledged()`. */
+  send(channel: Channel, msg: Uint8Array, now = performance.now(), mark = 0) {
     if (this.dead) {
       throw new Error("peer stopped acknowledging; link dead");
     }
     if (msg.length > MAX_MESSAGE) {
       throw new Error("message too large (max 64 KiB)");
     }
-    const queued =
-      msg.length > MAX_UNFRAGMENTED ||
-      channel === Channel.Reliable ||
-      channel === Channel.ReliableUnordered;
+    const reliable =
+      channel === Channel.Reliable || channel === Channel.ReliableUnordered;
+    const queued = msg.length > MAX_UNFRAGMENTED || reliable;
     if (queued && this.backlog() + msg.length > RELIABLE_BACKLOG_BYTES) {
       this.close();
       throw new Error("reliable messages outran the peer; link dead");
@@ -242,6 +291,10 @@ export class Link {
       }
       const id = this.fragId;
       this.fragId = (this.fragId + 1) & 0xffff;
+      const stream = this.streams.get(KIND_FRAGMENT)!;
+      if (reliable) {
+        this.note(stream, channel, msg, mark, count);
+      }
       for (let i = 0; i < count; i++) {
         const chunk = msg.subarray(
           i * FRAG_PAYLOAD,
@@ -254,7 +307,7 @@ export class Link {
         packet[3] = i;
         packet[4] = count;
         packet.set(chunk, FRAG_HDR);
-        this.queue(this.streams.get(KIND_FRAGMENT)!, packet);
+        this.queue(stream, packet);
       }
       this.pump(now);
       return;
@@ -267,10 +320,29 @@ export class Link {
       batch.add(msg);
       return;
     }
-    this.queue(this.streams.get(channel)!, msg);
+    const stream = this.streams.get(channel)!;
+    this.note(stream, channel, msg, mark, 1);
+    this.queue(stream, msg);
     this.pump(now);
   }
+  private note(
+    stream: Stream,
+    channel: Channel,
+    msg: Uint8Array,
+    mark: number,
+    count: number,
+  ) {
+    stream.tx.log.push({
+      order: this.order++,
+      channel,
+      msg,
+      mark,
+      first: stream.tx.queued,
+      count,
+    });
+  }
   private queue(stream: Stream, packet: Uint8Array) {
+    stream.tx.queued++;
     stream.tx.pending.push(packet);
     stream.tx.pendingBytes += packet.length;
   }

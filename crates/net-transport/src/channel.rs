@@ -4,6 +4,7 @@
 use crate::packet::seq_newer;
 use bytes::Bytes;
 use net_common::limits::RELIABLE_WINDOW;
+use net_common::Channel;
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -34,6 +35,18 @@ pub struct InFlight {
     pub resent: bool,
 }
 
+/// A reliable message and where its packets are among those queued on a channel.
+#[derive(Debug)]
+pub struct Queued {
+    /// Its place among the reliable messages of the link.
+    pub order: u64,
+    pub mark: u32,
+    pub channel: Channel,
+    pub msg: Bytes,
+    first: u64,
+    count: u64,
+}
+
 /// Send side of a reliable channel: a sliding window of unacked packets.
 #[derive(Debug, Default)]
 pub struct ReliableTx {
@@ -41,14 +54,43 @@ pub struct ReliableTx {
     in_flight: VecDeque<InFlight>,
     pending: VecDeque<Bytes>,
     pending_bytes: usize,
+    /// Packets ever queued: the nth of them gets seq n mod 65536.
+    queued: u64,
+    /// The reliable messages queued, from the oldest one not acknowledged yet.
+    log: VecDeque<Queued>,
 }
 
 impl ReliableTx {
     /// Queues a payload; returns packets that may be sent now (window permitting).
     pub fn push(&mut self, payload: Bytes, now: Instant) -> Vec<(u16, Bytes)> {
+        self.queued += 1;
         self.pending_bytes += payload.len();
         self.pending.push_back(payload);
         self.drain_window(now)
+    }
+
+    /// Notes a reliable message whose `count` packets are queued next.
+    pub fn note(&mut self, order: u64, mark: u32, channel: Channel, msg: Bytes, count: usize) {
+        self.log.push_back(Queued {
+            order,
+            mark,
+            channel,
+            msg,
+            first: self.queued,
+            count: count as u64,
+        });
+    }
+
+    /// Whether a packet of `message` waits for the window or for its acknowledgement.
+    fn holds(&self, message: &Queued) -> bool {
+        let sent = self.queued - self.pending.len() as u64;
+        (message.first..message.first + message.count)
+            .any(|n| n >= sent || self.in_flight.iter().any(|p| p.seq == n as u16))
+    }
+
+    /// The reliable messages with a packet the peer has not acknowledged.
+    pub fn waiting(&self) -> impl Iterator<Item = &Queued> {
+        self.log.iter().filter(|message| self.holds(message))
     }
 
     /// Sends what waits for the window, as far as the window allows.
@@ -100,6 +142,9 @@ impl ReliableTx {
             }
             !acked
         });
+        while self.log.front().is_some_and(|message| !self.holds(message)) {
+            self.log.pop_front();
+        }
         rtts
     }
 
@@ -149,6 +194,7 @@ impl ReliableTx {
         self.in_flight = VecDeque::new();
         self.pending = VecDeque::new();
         self.pending_bytes = 0;
+        self.log = VecDeque::new();
     }
 
     pub fn in_flight(&self) -> usize {

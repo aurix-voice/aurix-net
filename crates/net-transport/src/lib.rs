@@ -12,6 +12,6 @@ pub mod quic;
 pub mod ticket;
 pub mod webtransport;
 
-pub use link::{Link, LinkStats, Received};
+pub use link::{Link, LinkStats, Received, Unacknowledged};
 pub use packet::{Header, PROTOCOL_VERSION};
 pub use ticket::{DataTicket, TicketSigner};

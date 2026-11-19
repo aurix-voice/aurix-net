@@ -27,6 +27,9 @@ namespace Aurix.Net.Managed
         ISocket _socket;
         Link _link = new Link();
 
+        /// <summary>The mark of an event among the messages of the link.</summary>
+        const int EventMark = 1;
+
         // The link is worked from three places: the reader, the timer and the game's calls.
         readonly object _linkLock = new object();
 
@@ -100,6 +103,11 @@ namespace Aurix.Net.Managed
         public event Action<EventFrame> OnEvent;
         public event Action OnDataReady;
         public event Action<string> OnClosed;
+
+        /// <summary>The reliable events the node had not acknowledged when the room was lost, in the
+        /// order they were sent. Comes before OnClosed and before the `left` of a room the node took
+        /// the client out of. The room may have got any of them.</summary>
+        public event Action<IReadOnlyList<UndeliveredEvent>> OnUndelivered;
 
         sealed class Closed
         {
@@ -383,7 +391,9 @@ namespace Aurix.Net.Managed
 
         Task SendBinaryAsync(byte[] bytes) => _socket.SendAsync(bytes, false);
 
-        public void SendData(Channel channel, byte[] payload)
+        public void SendData(Channel channel, byte[] payload) => Queue(channel, payload, 0);
+
+        void Queue(Channel channel, byte[] payload, int mark)
         {
             if (!_dataOpen)
             {
@@ -399,7 +409,7 @@ namespace Aurix.Net.Managed
             {
                 lock (_linkLock)
                 {
-                    _link.Send(channel, payload);
+                    _link.SendMarked(channel, payload, mark);
                 }
             }
             catch (InvalidOperationException error)
@@ -445,7 +455,7 @@ namespace Aurix.Net.Managed
             ushort[] actors = null,
             ushort? group = null,
             CacheOp cache = CacheOp.None
-        ) => SendData(channel, Event.Encode(code, payload, target, actors, group, cache));
+        ) => Queue(channel, Event.Encode(code, payload, target, actors, group, cache), EventMark);
 
         /// <summary>Relay event-cache slices: "increase" opens the next slice, "set" picks one, "purge" drops one slice, "purge_up_to" every slice up to index.</summary>
         public Task CacheSliceAsync(string op, ushort? index = null) =>
@@ -547,7 +557,9 @@ namespace Aurix.Net.Managed
                             && Json.Str(text.Json, "room") == Json.Str(JoinedJson, "room")
                         )
                         {
+                            var events = UnacknowledgedEvents();
                             ForgetRoom();
+                            HandBack(events);
                         }
                         if (Json.Str(text.Json, "t") == "hello")
                         {
@@ -657,8 +669,30 @@ namespace Aurix.Net.Managed
             }
 
             _lost = true;
+            var events = UnacknowledgedEvents();
             CloseLink();
+            HandBack(events);
             OnClosed?.Invoke(reason);
+        }
+
+        List<UndeliveredEvent> UnacknowledgedEvents()
+        {
+            lock (_linkLock)
+            {
+                return _link
+                    .Unacknowledged()
+                    .Where(message => message.Mark == EventMark)
+                    .Select(message => Event.DecodeSent(message.Msg))
+                    .ToList();
+            }
+        }
+
+        void HandBack(List<UndeliveredEvent> events)
+        {
+            if (events.Count > 0)
+            {
+                OnUndelivered?.Invoke(events);
+            }
         }
 
         /// <summary>The client is out of its room: by LeaveAsync, or the node took it out (kick, room closed, rehost). Its data path closes with what was queued for it.</summary>
@@ -881,9 +915,52 @@ namespace Aurix.Net.Managed
         }
     }
 
+    /// <summary>A reliable event the node did not acknowledge, with what SendEvent was given.</summary>
+    public struct UndeliveredEvent
+    {
+        public byte Code;
+        public byte[] Payload;
+        public Target Target;
+        public ushort[] Actors;
+        public ushort? Group;
+        public CacheOp Cache;
+    }
+
     /// <summary>Relay event frame codec (u8 code, u8 flags, u16 from, [u16 group], [u16 n, n*u16], payload).</summary>
     public static class Event
     {
+        /// <summary>Reads an event back from the bytes <see cref="Encode"/> made of it.</summary>
+        public static UndeliveredEvent DecodeSent(byte[] bytes)
+        {
+            byte flags = bytes[1];
+            var sent = new UndeliveredEvent
+            {
+                Code = bytes[0],
+                Target = (Target)(flags & 3),
+                Cache =
+                    (flags & 0x04) != 0 ? CacheOp.Add
+                    : (flags & 0x08) != 0 ? CacheOp.Remove
+                    : CacheOp.None,
+            };
+            int offset = 4;
+            if ((flags & 0x10) != 0)
+            {
+                sent.Group = (ushort)(bytes[offset] << 8 | bytes[offset + 1]);
+                offset += 2;
+            }
+            if (sent.Target == Target.Actors)
+            {
+                sent.Actors = new ushort[bytes[offset] << 8 | bytes[offset + 1]];
+                offset += 2;
+                for (int i = 0; i < sent.Actors.Length; i++, offset += 2)
+                {
+                    sent.Actors[i] = (ushort)(bytes[offset] << 8 | bytes[offset + 1]);
+                }
+            }
+            sent.Payload = bytes.Skip(offset).ToArray();
+            return sent;
+        }
+
         public static byte[] Encode(
             byte code,
             byte[] payload,
