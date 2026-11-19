@@ -367,6 +367,17 @@ async fn refused_ban_request_bans_nobody() {
 }
 
 #[tokio::test]
+async fn ban_for_no_time_is_refused_and_not_made_permanent() {
+    let node = Node::start().await;
+    let project = node.project("ban-zero").await;
+    let ban = json!({"player_id": "eve", "duration_secs": 0});
+    let (status, reply) = project.api.post("/v1/bans", ban).await;
+    assert_eq!((status, &reply["error"]), (400, &json!("invalid_request")));
+    let (_, listed) = project.api.get("/v1/bans").await;
+    assert_eq!(listed["bans"], json!([]), "{listed}");
+}
+
+#[tokio::test]
 async fn address_ban_stops_the_next_player_from_that_address() {
     let node = Node::start().await;
     let project = node.project("ban-address").await;

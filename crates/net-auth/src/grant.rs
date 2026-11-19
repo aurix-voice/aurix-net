@@ -83,11 +83,10 @@ impl GrantSigner {
         meta: Option<serde_json::Value>,
         ttl_override: Option<u64>,
     ) -> Result<(String, GrantClaims)> {
-        if player_id.is_empty() || player_id.len() > 128 {
-            return Err(NetError::Invalid("player_id must be 1..=128 chars".into()));
-        }
-        if player_id.chars().any(char::is_control) {
-            return Err(NetError::Invalid("player_id has control characters".into()));
+        if !valid_player_id(player_id) {
+            return Err(NetError::Invalid(
+                "player_id: 1..=128 chars, no control characters".into(),
+            ));
         }
         if let Some(extra) = &meta {
             let size = serde_json::to_vec(extra)
@@ -107,9 +106,12 @@ impl GrantSigner {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
-        let ttl = ttl_override
-            .map(|t| (t as i64).min(self.ttl_secs))
-            .unwrap_or(self.ttl_secs);
+        if ttl_override == Some(0) {
+            return Err(NetError::Invalid("ttl_secs must be at least 1".into()));
+        }
+        let ttl = ttl_override.map_or(self.ttl_secs, |t| {
+            i64::try_from(t).map_or(self.ttl_secs, |t| t.min(self.ttl_secs))
+        });
         let claims = GrantClaims {
             sub: player_id.to_string(),
             pid: project.to_string(),
@@ -160,6 +162,12 @@ impl GrantSigner {
     }
 }
 
+/// Whether `player_id` may name a player: 1 to 128 characters, none of them a control character.
+pub fn valid_player_id(player_id: &str) -> bool {
+    let len = player_id.chars().count();
+    (1..=128).contains(&len) && !player_id.chars().any(char::is_control)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,11 +216,36 @@ mod tests {
     }
 
     #[test]
+    fn player_id_is_measured_in_characters() {
+        let signer = GrantSigner::new("s3cret", 60);
+        let issue =
+            |player: &str| signer.issue(ProjectId::new(), player, "", None, &[], None, None);
+        assert!(issue(&"я".repeat(128)).is_ok());
+        assert!(issue(&"я".repeat(129)).is_err());
+        assert!(issue("").is_err());
+        assert!(issue("a\nb").is_err());
+    }
+
+    #[test]
     fn ttl_is_capped() {
         let signer = GrantSigner::new("s3cret", 60);
         let (_, claims) = signer
             .issue(ProjectId::new(), "p", "", None, &[], None, Some(10_000))
             .unwrap();
         assert!(claims.exp - claims.iat <= 60);
+    }
+
+    #[test]
+    fn ttl_too_large_for_a_signed_number_is_capped_and_zero_is_refused() {
+        let signer = GrantSigner::new("s3cret", 60);
+        for ttl in [1 << 63, u64::MAX] {
+            let (_, claims) = signer
+                .issue(ProjectId::new(), "p", "", None, &[], None, Some(ttl))
+                .unwrap();
+            assert_eq!(claims.exp - claims.iat, 60);
+        }
+        assert!(signer
+            .issue(ProjectId::new(), "p", "", None, &[], None, Some(0))
+            .is_err());
     }
 }

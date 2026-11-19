@@ -127,6 +127,9 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// What `match_type` may be.
+pub const MATCH_TYPES: [&str; 3] = ["fill", "serial", "random"];
+
 /// Picks one room out of `rooms` (already filtered to acceptable ones) by `match_type`.
 pub fn pick_room<'a>(rooms: &[&'a LiveRoom], match_type: Option<&str>) -> Option<&'a LiveRoom> {
     match match_type.unwrap_or("fill") {
@@ -543,14 +546,25 @@ impl Matchmaker {
             .filter(|t| t.project == project))
     }
 
-    pub async fn cancel(&self, redis: &RedisStore, project: ProjectId, id: Uuid) -> Result<bool> {
-        match self.get(redis, project, id).await? {
-            Some(mut ticket) if ticket.searching() => {
-                ticket.state = TicketState::Cancelled;
-                self.replace_searching(redis, &[&ticket]).await
-            }
-            _ => Ok(false),
+    /// Cancels a ticket that is still searching. Returns the ticket as the call leaves it:
+    /// cancelled, by this call or an earlier one, or matched if a match got to it first.
+    pub async fn cancel(
+        &self,
+        redis: &RedisStore,
+        project: ProjectId,
+        id: Uuid,
+    ) -> Result<Option<Ticket>> {
+        let Some(mut ticket) = self.get(redis, project, id).await? else {
+            return Ok(None);
+        };
+        if !ticket.searching() {
+            return Ok(Some(ticket));
         }
+        ticket.state = TicketState::Cancelled;
+        if self.replace_searching(redis, &[&ticket]).await? {
+            return Ok(Some(ticket));
+        }
+        self.get(redis, project, id).await
     }
 
     /// One matching cycle; only the node holding the leader lock does work. Returns the matches

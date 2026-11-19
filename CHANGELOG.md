@@ -86,6 +86,23 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   and no threads in a browser.
 
 ### Changed
+- Rooms: `join_random` with a `match_type` other than `fill`, `serial` or `random` is
+  refused with `invalid_request`. It was read as `fill`.
+- Rooms: `reserved` with more than 32 names is refused with `invalid_request`. The node
+  kept the first 32 and dropped the rest without a word.
+- Matchmaking: a ticket with a `region` the deployment does not have, a `match_type` other
+  than `fill`, `serial` or `random`, or `props` larger than a room's props may be is refused
+  with 400. The first was queued under a region that does not exist, the second was read
+  as `fill`, the third was taken at any size.
+- Matchmaking: `DELETE /v1/matchmaking/tickets/:id` answers 204 for a ticket already
+  cancelled and 409 `conflict` for a matched one. Both got 404 `not found`, though `GET`
+  showed the ticket. 404 is left for a ticket the node does not have.
+- Rooms: `reserved` with more names than the room has seats is refused with
+  `invalid_request`, in `POST /v1/rooms`, `create` and `join_or_create`. Such a room was
+  made and offered to nobody. A change of behaviour for a caller that sent it.
+- REST: `POST /v1/bans` with `duration_secs: 0` is refused with 400. It used to ban for
+  good, as a request without `duration_secs` does. A change of behaviour: a backend that
+  sends 0 for a permanent ban leaves the field out instead.
 - Lockstep rollback and instant replay (Rust, Web, C#, Unreal), breaking: the step of the
   simulation takes the commands of the tick as a third argument, `step(tick, inputs, commands)`,
   and a game that predicts takes its commands there. A command reached such a game only through
@@ -164,6 +181,17 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   reliable message has been resent and has gone the idle timeout without acknowledgement;
   one whose time ran out before any resend is resent and waits again, as in the Web and C#
   clients.
+- Grants: the length of a `player_id` was counted in bytes when a grant was signed and in
+  characters everywhere else, so a player named in 65 to 128 Cyrillic letters could be
+  banned and queued for a match and could get no grant. It is counted in characters, by
+  one function: 1 to 128, none of them a control character.
+- Matchmaking: a ticket was taken with a `max_players` above the project's
+  `max_players_per_room`, a room size the project cannot have. It is refused with 400.
+- Matchmaking: a ticket was taken for a banned player and waited for a match he could not
+  join. It is refused with 403, as a grant for him is, and counted under `banned`.
+- Matchmaking: a ticket was taken with any `player_id`: empty, of any length, with control
+  characters. It waited in the queue for a player no grant can be issued for. The ticket
+  is refused with 400, by the rule a grant is held to.
 - SDKs, sync rooms: the render tick, the one remote entities are drawn at, could pass the
   room's tick and stay ahead of it for the rest of the stay. It only ever moved forward: with
   frame time, and up to `interpolationTicks` behind each delta. Deltas three frames late put it
@@ -209,6 +237,15 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   the sender was left without the acknowledgement of some it had taken. The node stops
   taking packets, waits for the players' acknowledgements for at most half of
   `server.shutdown_secs` and tells them to leave after that.
+- REST: `POST /v1/grants` with a `ttl_secs` of 2^63 or more answered 200 with a grant that
+  had expired before it was issued (`expires_at` in the past, negative for 2^63). Such a
+  value is cut to the node's limit like any other, and `ttl_secs: 0` is refused with 400.
+- REST: `GET /v1/me` answered a key used from an address outside its `allowed_cidrs` with
+  the project (id, name, plan, limits) and the key's scopes, where every other call refused
+  it. It refuses such a key with 403.
+- REST: `GET /v1/nodes` answered anyone, without a key: the id, the address, the QUIC port,
+  the certificate hash and the load of every node. It takes a key with `read`, as the
+  documentation said.
 - Hand-over: an `event` sent on the control channel while the node waited for the players'
   acknowledgements was taken and could be lost without a word to its sender. It is refused
   with `conflict: node_draining`.

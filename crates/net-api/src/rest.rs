@@ -9,9 +9,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use net_auth::api_key::{hash_key, looks_like_key, ApiKeyMaterial, Scope};
+pub(crate) use net_auth::grant::valid_player_id;
 use net_common::ipnet::{net_contains, parse_net};
 use net_common::{NetError, ProjectId, Result, RoomId};
-use net_db::models::ApiKeyRow;
+use net_db::models::{ApiKeyAuth, ApiKeyRow};
 use net_db::queries;
 use net_db::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -239,7 +240,9 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .map(str::trim)
 }
 
-async fn api_key(st: &Shared, headers: &HeaderMap, scope: Scope) -> Result<ApiKeyRow> {
+/// The key a request carries: one the node knows, neither revoked nor expired, used from an
+/// address the key allows.
+async fn known_key(st: &Shared, headers: &HeaderMap) -> Result<ApiKeyAuth> {
     let token =
         bearer(headers).ok_or_else(|| NetError::Unauthorized("missing bearer api key".into()))?;
     if !looks_like_key(token) {
@@ -249,6 +252,23 @@ async fn api_key(st: &Shared, headers: &HeaderMap, scope: Scope) -> Result<ApiKe
         .await?
         .ok_or_else(|| NetError::Unauthorized("unknown api key".into()))?;
     tracing::Span::current().record("project", tracing::field::display(auth.key.project_id));
+    if !auth.key.allowed_cidrs.is_empty() {
+        let ip = headers
+            .get(crate::ratelimit::CLIENT_IP_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<IpAddr>().ok());
+        if !ip.is_some_and(|ip| cidr_allows(&auth.key.allowed_cidrs, ip)) {
+            reject(st, ProjectId::from_uuid(auth.key.project_id), "ip_denied");
+            return Err(NetError::Forbidden(
+                "api key is not allowed from this address".into(),
+            ));
+        }
+    }
+    Ok(auth)
+}
+
+async fn api_key(st: &Shared, headers: &HeaderMap, scope: Scope) -> Result<ApiKeyRow> {
+    let auth = known_key(st, headers).await?;
     // A suspended project keeps read access so the team can see its state; everything that
     // creates load (grants, rooms, matchmaking, uploads) is refused.
     if auth.project_disabled_at.is_some() && scope != Scope::Read {
@@ -265,18 +285,6 @@ async fn api_key(st: &Shared, headers: &HeaderMap, scope: Scope) -> Result<ApiKe
             "key lacks scope {}",
             scope.as_str()
         )));
-    }
-    if !row.allowed_cidrs.is_empty() {
-        let ip = headers
-            .get(crate::ratelimit::CLIENT_IP_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<IpAddr>().ok());
-        if !ip.is_some_and(|ip| cidr_allows(&row.allowed_cidrs, ip)) {
-            reject(st, ProjectId::from_uuid(row.project_id), "ip_denied");
-            return Err(NetError::Forbidden(
-                "api key is not allowed from this address".into(),
-            ));
-        }
     }
     let _ = queries::touch_api_key(&st.pool, row.id).await;
     Ok(row)
@@ -872,13 +880,21 @@ async fn regions(State(st): State<Shared>) -> ApiResult<Json<Vec<RegionOut>>> {
     ))
 }
 
+pub(crate) const RESERVED_OVER_SEATS: &str = "reserved: more players than the room has seats";
+pub(crate) const MAX_RESERVED: usize = 32;
+
 #[derive(Deserialize)]
 struct NodesQuery {
     region: Option<String>,
 }
 
-async fn nodes(State(st): State<Shared>, Query(q): Query<NodesQuery>) -> Json<Vec<Value>> {
-    Json(
+async fn nodes(
+    State(st): State<Shared>,
+    headers: HeaderMap,
+    Query(q): Query<NodesQuery>,
+) -> ApiResult<Json<Vec<Value>>> {
+    api_key(&st, &headers, Scope::Read).await?;
+    Ok(Json(
         st.registry
             .snapshot()
             .into_iter()
@@ -890,7 +906,7 @@ async fn nodes(State(st): State<Shared>, Query(q): Query<NodesQuery>) -> Json<Ve
                 })
             })
             .collect(),
-    )
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1053,6 +1069,12 @@ async fn create_room(
         .max_players
         .unwrap_or(limits.max_players_per_room.min(16))
         .clamp(1, limits.max_players_per_room);
+    if req.reserved.len() > MAX_RESERVED {
+        return Err(NetError::Invalid(format!("reserved: at most {MAX_RESERVED} players")).into());
+    }
+    if req.reserved.len() > usize::from(max_players) {
+        return Err(NetError::Invalid(RESERVED_OVER_SEATS.into()).into());
+    }
     let cfg = net_rooms::RoomConfig {
         id: RoomId::new(),
         project,
@@ -1063,7 +1085,7 @@ async fn create_room(
         open: req.open,
         props: req.props.clone(),
         lobby_props: req.lobby_props.clone(),
-        reserved: req.reserved.iter().take(32).cloned().collect(),
+        reserved: req.reserved.clone(),
         reserved_until: (!req.reserved.is_empty())
             .then(|| std::time::Instant::now() + std::time::Duration::from_secs(60)),
         cleanup_cache_on_leave: crate::ws::prop_bool(&req.props, "cleanup_cache_on_leave", true),
@@ -2038,8 +2060,38 @@ async fn mm_file(
 ) -> ApiResult<Json<Value>> {
     let key = api_key(&st, &headers, Scope::Rooms).await?;
     key_write(&st, &key)?;
+    if !valid_player_id(&req.player_id) {
+        return Err(NetError::Invalid("player_id: 1..=128 chars".into()).into());
+    }
+    if let Some(ban) = queries::get_ban(&st.pool, key.project_id, &req.player_id).await? {
+        reject(&st, ProjectId::from_uuid(key.project_id), "banned");
+        return Err(NetError::Forbidden(ban_message(&ban)).into());
+    }
     if req.max_players == 0 || req.min_players == 0 || req.min_players > req.max_players {
         return Err(NetError::Invalid("min_players must be 1..=max_players".into()).into());
+    }
+    let project = queries::get_project(&st.pool, key.project_id).await?;
+    let limits = project_limits(&st, &project)?;
+    if req.max_players > limits.max_players_per_room {
+        return Err(NetError::Invalid(format!(
+            "max_players: at most {}",
+            limits.max_players_per_room
+        ))
+        .into());
+    }
+    if net_rooms::room::props_len(&req.props) > limits.max_props_bytes {
+        return Err(NetError::Invalid("props too large".into()).into());
+    }
+    if let Some(match_type) = req.match_type.as_deref() {
+        if !crate::matchmaking::MATCH_TYPES.contains(&match_type) {
+            return Err(NetError::Invalid("match_type: fill, serial or random".into()).into());
+        }
+    }
+    if let Some(region) = req.region.as_deref() {
+        let regions = queries::list_regions(&st.pool, true).await?;
+        if !regions.iter().any(|r| r.id == region) {
+            return Err(NetError::Invalid("region: not a region of this deployment".into()).into());
+        }
     }
     let ticket = st
         .matchmaker
@@ -2070,14 +2122,14 @@ async fn mm_cancel(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     let key = api_key(&st, &headers, Scope::Rooms).await?;
-    if st
+    let ticket = st
         .matchmaker
         .cancel(&st.redis, ProjectId::from_uuid(key.project_id), id)
         .await?
-    {
-        Ok(StatusCode::NO_CONTENT)
-    } else {
-        Err(NetError::NotFound("ticket".into()).into())
+        .ok_or_else(|| NetError::NotFound("ticket".into()))?;
+    match ticket.state {
+        crate::matchmaking::TicketState::Cancelled => Ok(StatusCode::NO_CONTENT),
+        _ => Err(NetError::Conflict("ticket is matched".into()).into()),
     }
 }
 
@@ -2721,11 +2773,6 @@ pub(crate) fn validate_room_create(
     Ok(())
 }
 
-pub(crate) fn valid_player_id(player_id: &str) -> bool {
-    let len = player_id.chars().count();
-    (1..=128).contains(&len) && !player_id.chars().any(char::is_control)
-}
-
 async fn remove_mark(st: &Shared, project: Uuid, kind: &str, value: &str, by: &str) -> Result<()> {
     if !matches!(kind, "ip" | "device") {
         return Err(NetError::Invalid("kind: ip or device".into()));
@@ -2816,9 +2863,13 @@ async fn add_ban(st: &Shared, project: Uuid, req: &BanReq, by: &str) -> Result<V
     if req.reason.chars().count() > 256 {
         return Err(NetError::Invalid("reason: at most 256 chars".into()));
     }
+    if req.duration_secs == Some(0) {
+        return Err(NetError::Invalid(
+            "duration_secs: at least 1; leave it out for a permanent ban".into(),
+        ));
+    }
     let expires = req
         .duration_secs
-        .filter(|d| *d > 0)
         .map(|d| Timestamp::now() + time::Duration::seconds(d.min(10 * 365 * 86_400) as i64));
     let scope = req.scope.as_deref().unwrap_or("player");
     let mut wanted = Vec::new();
@@ -3433,15 +3484,7 @@ async fn me(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Json<Valu
             json!({"kind": "operator", "actor": op.actor, "region": st.region, "node_id": st.node_id}),
         ));
     }
-    let token =
-        bearer(&headers).ok_or_else(|| NetError::Unauthorized("missing bearer token".into()))?;
-    if !looks_like_key(token) {
-        return Err(NetError::Unauthorized("malformed api key".into()).into());
-    }
-    let row = queries::find_api_key(&st.pool, &hash_key(token))
-        .await?
-        .ok_or_else(|| NetError::Unauthorized("unknown api key".into()))?
-        .key;
+    let row = known_key(&st, &headers).await?.key;
     let project = queries::get_project(&st.pool, row.project_id).await?;
     Ok(Json(json!({
         "kind": "project",

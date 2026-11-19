@@ -34,6 +34,131 @@ async fn matched(project: &Project, ticket: &str) -> String {
     panic!("ticket {ticket} was not matched");
 }
 
+fn ticket(player: &str) -> Value {
+    json!({"player_id": player, "mode": "relay", "max_players": 2, "min_players": 2,
+           "max_wait_secs": 30, "props": {}})
+}
+
+#[tokio::test]
+async fn ticket_is_not_taken_for_a_player_no_grant_would_name() {
+    let node = Node::start().await;
+    let project = node.project("mm-player-id").await;
+    for player in ["", "a\nb", &"x".repeat(129)] {
+        let (status, reply) = project
+            .api
+            .post("/v1/matchmaking/tickets", ticket(player))
+            .await;
+        assert_eq!((status, &reply["error"]), (400, &json!("invalid_request")));
+    }
+    let (_, queue) = project.api.get("/v1/matchmaking").await;
+    assert_eq!(queue["searching"], json!([]), "{queue}");
+    file(&project, ticket(&"x".repeat(128))).await;
+}
+
+#[tokio::test]
+async fn ticket_is_not_taken_for_a_banned_player() {
+    let node = Node::start().await;
+    let project = node.project("mm-banned").await;
+    let ban = json!({"player_id": "mallory", "reason": "cheat"});
+    let (status, reply) = project.api.post("/v1/bans", ban).await;
+    assert_eq!(status, 200, "{reply}");
+
+    let (status, reply) = project
+        .api
+        .post("/v1/matchmaking/tickets", ticket("mallory"))
+        .await;
+    assert_eq!((status, &reply["error"]), (403, &json!("forbidden")));
+    assert_eq!(reply["message"], "forbidden: banned: cheat");
+    let (_, queue) = project.api.get("/v1/matchmaking").await;
+    assert_eq!(queue["searching"], json!([]), "{queue}");
+
+    // The counter is written off the request.
+    for _ in 0..50 {
+        let (_, rejections) = project.api.get("/v1/rejections").await;
+        if rejections["total"]["banned"] == 1 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the refusal was not counted");
+}
+
+#[tokio::test]
+async fn ticket_is_not_taken_for_a_room_larger_than_the_project_may_have() {
+    let node = Node::start().await;
+    let project = node.project("mm-seats").await;
+    let limits = format!("/v1/operator/projects/{}/limits", project.id);
+    let (status, reply) = project
+        .operator
+        .post(&limits, json!({"max_players_per_room": 4}))
+        .await;
+    assert!(status < 300, "{reply}");
+
+    let mut large = ticket("ann");
+    large["max_players"] = json!(5);
+    let (status, reply) = project.api.post("/v1/matchmaking/tickets", large).await;
+    assert_eq!((status, &reply["error"]), (400, &json!("invalid_request")));
+    assert_eq!(reply["message"], "invalid request: max_players: at most 4");
+
+    let mut fits = ticket("ann");
+    fits["max_players"] = json!(4);
+    file(&project, fits).await;
+}
+
+#[tokio::test]
+async fn cancel_of_a_cancelled_ticket_succeeds_and_of_a_matched_one_is_refused() {
+    let node = Node::start().await;
+    let project = node.project("mm-cancel-twice").await;
+
+    let lone = file(&project, ticket("ann")).await;
+    let path = format!("/v1/matchmaking/tickets/{lone}");
+    for _ in 0..2 {
+        let (status, reply) = project.api.delete(&path).await;
+        assert_eq!(status, 204, "{reply}");
+    }
+    assert_eq!(state(&project, &lone).await["state"], "cancelled");
+
+    let bob = file(&project, ticket("bob")).await;
+    let cat = file(&project, ticket("cat")).await;
+    let room = matched(&project, &bob).await;
+    let path = format!("/v1/matchmaking/tickets/{bob}");
+    let (status, reply) = project.api.delete(&path).await;
+    assert_eq!((status, &reply["error"]), (409, &json!("conflict")));
+    assert_eq!(matched(&project, &bob).await, room);
+    assert_eq!(matched(&project, &cat).await, room);
+
+    let unknown = format!("/v1/matchmaking/tickets/{}", uuid::Uuid::now_v7());
+    assert_eq!(project.api.delete(&unknown).await.0, 404);
+}
+
+#[tokio::test]
+async fn ticket_is_not_taken_with_a_field_the_node_would_have_to_guess_or_cut() {
+    let node = Node::start().await;
+    let project = node.project("mm-fields").await;
+    for (field, bad, good) in [
+        ("region", json!("nowhere"), json!("local")),
+        ("match_type", json!("fullest"), json!("serial")),
+        (
+            "props",
+            json!({"map": "x".repeat(16_384)}),
+            json!({"map": "x".repeat(8_000)}),
+        ),
+    ] {
+        let mut request = ticket("ann");
+        request[field] = bad;
+        let (status, reply) = project.api.post("/v1/matchmaking/tickets", request).await;
+        assert_eq!(
+            (status, &reply["error"]),
+            (400, &json!("invalid_request")),
+            "{field}"
+        );
+
+        let mut request = ticket("ann");
+        request[field] = good;
+        file(&project, request).await;
+    }
+}
+
 #[tokio::test]
 async fn short_group_starts_without_the_player_who_wants_more() {
     let node = Node::start().await;

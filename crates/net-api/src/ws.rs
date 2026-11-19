@@ -523,6 +523,13 @@ impl Session {
             } => {
                 let grant = self.grant()?.clone();
                 self.ensure_not_in_room()?;
+                if let Some(match_type) = match_type.as_deref() {
+                    if !crate::matchmaking::MATCH_TYPES.contains(&match_type) {
+                        return Err(NetError::Invalid(
+                            "match_type: fill, serial or random".into(),
+                        ));
+                    }
+                }
                 let expr = match expr.as_deref() {
                     Some(expected) => Some(
                         crate::mmfilter::Filter::parse(expected)
@@ -1014,6 +1021,17 @@ impl Session {
         if net_rooms::room::props_len(&props) > limits.max_props_bytes {
             return Err(NetError::Invalid("props too large".into()));
         }
+        if reserved.len() > crate::rest::MAX_RESERVED {
+            return Err(NetError::Invalid(format!(
+                "reserved: at most {} players",
+                crate::rest::MAX_RESERVED
+            )));
+        }
+        // The creator takes a seat himself.
+        let held = reserved.iter().filter(|r| **r != grant.player_id).count();
+        if held >= usize::from(max_players) {
+            return Err(NetError::Invalid(crate::rest::RESERVED_OVER_SEATS.into()));
+        }
         let room_id = RoomId::new();
         let cfg = RoomConfig {
             id: room_id,
@@ -1025,7 +1043,7 @@ impl Session {
             open,
             props: props.clone(),
             lobby_props: lobby_props.clone(),
-            reserved: reserved.iter().take(32).cloned().collect(),
+            reserved: reserved.clone(),
             reserved_until: (!reserved.is_empty())
                 .then(|| std::time::Instant::now() + Duration::from_secs(60)),
             cleanup_cache_on_leave: prop_bool(&props, "cleanup_cache_on_leave", true),

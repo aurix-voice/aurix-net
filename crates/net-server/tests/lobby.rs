@@ -364,6 +364,57 @@ async fn lobby_watcher_who_subscribes_again_is_still_told_once_that_a_room_left(
 }
 
 #[tokio::test]
+async fn room_is_not_made_with_more_held_seats_than_it_has() {
+    let node = Node::start().await;
+    let project = node.project("lobby-overheld").await;
+
+    let room = json!({"name": "rest", "max_players": 2, "reserved": ["a", "b", "c"]});
+    let (status, reply) = project.api.post("/v1/rooms", room).await;
+    assert_eq!((status, &reply["error"]), (400, &json!("invalid_request")));
+    assert!(project.room_names().await.is_empty());
+
+    let mut host = project.player("host").await;
+    let create = json!({"t": "create", "name": "ws", "max_players": 2, "reserved": ["a", "b"]});
+    refused(&host.call(create).await, "invalid_request");
+    let create = json!({"t": "create", "name": "ws", "max_players": 2, "reserved": ["a"]});
+    joined(&host.call(create).await);
+}
+
+#[tokio::test]
+async fn room_is_not_made_with_a_list_of_held_seats_the_node_would_cut() {
+    let node = Node::start().await;
+    let project = node.project("lobby-longlist").await;
+    let names = |n: usize| (0..n).map(|i| format!("p{i}")).collect::<Vec<_>>();
+
+    let room = json!({"name": "rest", "max_players": 64, "reserved": names(33)});
+    let (status, reply) = project.api.post("/v1/rooms", room).await;
+    assert_eq!((status, &reply["error"]), (400, &json!("invalid_request")));
+    let room = json!({"name": "rest", "max_players": 64, "reserved": names(32)});
+    let (status, reply) = project.api.post("/v1/rooms", room).await;
+    assert_eq!(status, 200, "{reply}");
+
+    let mut host = project.player("host").await;
+    let create = json!({"t": "create", "name": "ws", "max_players": 64, "reserved": names(33)});
+    refused(&host.call(create).await, "invalid_request");
+    let create = json!({"t": "create", "name": "ws", "max_players": 64, "reserved": names(32)});
+    joined(&host.call(create).await);
+}
+
+#[tokio::test]
+async fn random_join_does_not_guess_what_an_unknown_match_type_meant() {
+    let node = Node::start().await;
+    let project = node.project("lobby-match-type").await;
+    let mut host = project.player("host").await;
+    joined(&host.call(json!({"t": "create", "name": "arena"})).await);
+
+    let mut ann = project.player("ann").await;
+    let fullest = json!({"t": "join_random", "match_type": "fullest"});
+    refused(&ann.call(fullest).await, "invalid_request");
+    let serial = json!({"t": "join_random", "match_type": "serial"});
+    joined(&ann.call(serial).await);
+}
+
+#[tokio::test]
 async fn room_is_offered_again_once_the_hold_on_its_seat_lapses() {
     let node = Node::start().await;
     let project = node.project("lobby-lapse").await;
