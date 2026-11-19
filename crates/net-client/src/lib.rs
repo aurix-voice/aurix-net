@@ -14,11 +14,13 @@ use net_rooms::protocol::{ClientMsg, DataEndpoint, ServerMsg, UNSEQUENCED};
 use net_transport::{quic, Link};
 use parking_lot::Mutex;
 use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_util::sync::CancellationToken;
 
 pub use net_common;
 pub use net_rooms::event::{CacheOp, EventFrame, EventTarget};
@@ -164,6 +166,11 @@ pub struct Client {
     tasks: Vec<tokio::task::JoinHandle<()>>,
     /// Tasks of the current data path; they end with it.
     data_tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// Cancelled when the client closes the current data path.
+    data_stop: CancellationToken,
+    /// Leaves the node has not answered yet. It answers in the order it was asked, so what
+    /// comes before the answer to a leave was asked before that leave.
+    leaves_unanswered: u32,
     tunnel_slot: Option<Arc<Mutex<Option<Arc<DataPath>>>>>,
     /// What `rejoin` needs after a rehost: the URL given to `connect`, the grant, the last join.
     entry_url: String,
@@ -237,6 +244,8 @@ impl Client {
             avatar: None,
             tasks: vec![writer],
             data_tasks: Vec::new(),
+            data_stop: CancellationToken::new(),
+            leaves_unanswered: 0,
             tunnel_slot: None,
             entry_url: http_url.to_string(),
             grant: grant.to_string(),
@@ -427,6 +436,15 @@ impl Client {
     }
 
     pub async fn join(&mut self, msg: ClientMsg) -> Result<Joined> {
+        let joined = self.enter(msg).await;
+        if !matches!(joined, Ok(_) | Err(ClientError::Server { .. })) {
+            // the node may have let the client in, or may yet: the client is in no room after this
+            let _ = self.leave().await;
+        }
+        joined
+    }
+
+    async fn enter(&mut self, msg: ClientMsg) -> Result<Joined> {
         let asked = msg.clone();
         // what the room before this one sent is not the new room's
         self.replay
@@ -437,6 +455,10 @@ impl Client {
         let mut passed = VecDeque::new();
         let answer = loop {
             match self.answer_by(deadline).await {
+                // the answer to a join the client gave up: it left right after
+                Ok(Event::Control(
+                    ServerMsg::Joined { .. } | ServerMsg::Error { id: None, .. },
+                )) if self.leaves_unanswered > 0 => {}
                 Ok(Event::Control(ServerMsg::Joined {
                     room,
                     name,
@@ -512,10 +534,24 @@ impl Client {
 
     /// Stops the data path of the room the client is leaving or has lost. Left running, it would
     /// go on resending what the room has not acknowledged, to a node that no longer expects it.
+    /// The tasks of the path are told to stop first, so its end is not reported as a loss.
     fn close_data(&mut self) {
+        self.data_stop.cancel();
+        self.data_tasks.clear();
+        self.drop_data();
+    }
+
+    /// `close_data` where the client can wait: the tasks of the path have ended when this
+    /// returns, and the connection is closed after them.
+    async fn end_data(&mut self) {
+        self.data_stop.cancel();
         for task in self.data_tasks.drain(..) {
-            task.abort();
+            let _ = task.await;
         }
+        self.drop_data();
+    }
+
+    fn drop_data(&mut self) {
         if let Some(slot) = &self.tunnel_slot {
             *slot.lock() = None;
         }
@@ -527,20 +563,24 @@ impl Client {
     }
 
     async fn open_data(&mut self, ep: &DataEndpoint) -> Result<()> {
-        self.close_data();
+        self.end_data().await;
+        self.data_stop = CancellationToken::new();
         let ticket = base64::engine::general_purpose::STANDARD
             .decode(&ep.ticket)
             .map_err(|error| ClientError::Data(error.to_string()))?;
         let link = Mutex::new(Link::new(Instant::now(), IDLE_TIMEOUT));
         let dp: Arc<DataPath> = if self.opts.tunnel {
             let (ws_tx, mut ws_rx) = mpsc::channel::<Message>(1024);
-            let ctl = self.ctl.clone();
+            let (ctl, stop) = (self.ctl.clone(), self.data_stop.clone());
             self.data_tasks.push(tokio::spawn(async move {
-                while let Some(message) = ws_rx.recv().await {
-                    if ctl.send(message).await.is_err() {
-                        break;
+                let forward = async {
+                    while let Some(message) = ws_rx.recv().await {
+                        if ctl.send(message).await.is_err() {
+                            break;
+                        }
                     }
-                }
+                };
+                stop.run_until_cancelled(forward).await;
             }));
             let dp = Arc::new(DataPath {
                 link,
@@ -582,12 +622,12 @@ impl Client {
                 sink: Sink::Quic(conn.clone()),
             });
             let (dp2, ev) = (dp.clone(), self.events_tx.clone());
-            self.data_tasks.push(tokio::spawn(async move {
+            let reading = async move {
                 // the ticket is a datagram: it is repeated until the node's first one arrives
                 let start = tokio::time::Instant::now() + TICKET_RESEND;
                 let mut again = tokio::time::interval_at(start, TICKET_RESEND);
                 let mut answered = false;
-                let reason = loop {
+                loop {
                     tokio::select! {
                         datagram = conn.read_datagram() => {
                             match datagram {
@@ -607,24 +647,22 @@ impl Client {
                             let _ = conn.send_datagram(ticket.clone());
                         }
                     }
-                };
-                let _ = ev.send(Event::Closed(reason.into())).await;
-            }));
+                }
+            };
+            self.data_task(reading);
             dp
         };
-        // link timer
-        let (dp2, tick, ev) = (dp.clone(), self.opts.tick, self.events_tx.clone());
-        self.data_tasks.push(tokio::spawn(async move {
+        let (dp2, tick) = (dp.clone(), self.opts.tick);
+        self.data_task(async move {
             let mut iv = tokio::time::interval(tick);
             loop {
                 iv.tick().await;
                 if dp2.link.lock().poll(Instant::now()).is_err() {
-                    let _ = ev.send(Event::Closed("link dead".into())).await;
-                    break;
+                    break "link dead";
                 }
                 dp2.flush();
             }
-        }));
+        });
         self.data = Some(dp);
         // wait for the server's empty ack frame
         let deadline = tokio::time::Instant::now() + self.opts.connect_timeout;
@@ -638,6 +676,22 @@ impl Client {
         };
         self.keep(passed);
         ready
+    }
+
+    /// Runs a task of the current data path until the client closes the path. `task` ends
+    /// when the path closes by itself, with the reason the game is told.
+    fn data_task(&mut self, task: impl Future<Output = &'static str> + Send + 'static) {
+        let (stop, events) = (self.data_stop.clone(), self.events_tx.clone());
+        self.data_tasks.push(tokio::spawn(async move {
+            let report = async {
+                let reason = task.await;
+                // a path the client closes may end before its task sees the stop
+                if !stop.is_cancelled() {
+                    let _ = events.send(Event::Closed(reason.into())).await;
+                }
+            };
+            stop.run_until_cancelled(report).await;
+        }));
     }
 
     /// Hands the game what a call read while it waited for its own answer, in the order it came
@@ -783,6 +837,9 @@ impl Client {
     fn note(&mut self, event: &Event) {
         match event {
             Event::Control(ServerMsg::Left { reason, room }) => {
+                if reason == "left" {
+                    self.leaves_unanswered = self.leaves_unanswered.saturating_sub(1);
+                }
                 self.forget_room_on_left(reason, room.as_ref());
             }
             Event::Data { payload, .. } => {
@@ -809,10 +866,12 @@ impl Client {
     }
 
     pub async fn leave(&mut self) -> Result<()> {
-        self.close_data();
+        self.end_data().await;
         self.joined = None;
         self.avatar = None;
-        self.send(ClientMsg::Leave).await
+        self.send(ClientMsg::Leave).await?;
+        self.leaves_unanswered += 1;
+        Ok(())
     }
 
     /// Ask for project-wide room/player counts per lobby; the answer arrives as

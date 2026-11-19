@@ -151,6 +151,17 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   reliable message has been resent and has gone the idle timeout without acknowledgement;
   one whose time ran out before any resend is resent and waits again, as in the Web and C#
   clients.
+- Rust client and what is built on it (C, C++, Godot, the native Unity client, Unreal): a join
+  right after `leave` over QUIC at times failed with `disconnected`, and every later join of
+  that client failed with it: 3 runs of 9 that joined and left 150 times broke that way. The
+  client closed the connection of the data path while the task that reads it was still
+  running, and the task reported the end of the path as a lost connection. The tasks of a data
+  path are now told to stop and have ended before its connection is closed, and a path the
+  client closes reports nothing.
+- Rust client: a join the client gave up, with no answer in time or a data path that did not
+  open, left the player in the room on the node, and its late `joined` was taken for the answer
+  to the next join. The client now leaves after such a join and passes over what the node
+  answers before it answers that leave.
 - Data path: a player who stopped acknowledging over the WebSocket tunnel kept its link for
   good, and the node queued every reliable message for it: 100 events a second of 60 000 bytes
   grew the node by about 1 MB a second. Over QUIC and WebTransport a link was given up after 20
