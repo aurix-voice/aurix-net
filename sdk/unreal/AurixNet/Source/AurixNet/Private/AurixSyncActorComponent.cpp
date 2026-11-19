@@ -3,7 +3,6 @@
 #include "AurixNetSubsystem.h"
 #include "AurixNetLog.h"
 #include "GameFramework/Actor.h"
-#include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "UObject/UnrealType.h"
@@ -14,10 +13,24 @@ UAurixSyncActorComponent::UAurixSyncActorComponent() { PrimaryComponentTick.bCan
 
 UAurixNetSubsystem* UAurixSyncActorComponent::Net() const
 {
-	const UWorld* W = GetWorld(); const UGameInstance* GI = W ? W->GetGameInstance() : nullptr;
-	return GI ? GI->GetSubsystem<UAurixNetSubsystem>() : nullptr;
+	return UAurixNetSubsystem::Get(this);
 }
-bool UAurixSyncActorComponent::IsOwner() const { const UAurixNetSubsystem* N = Net(); return N && Entity != 0 && OwnerActor >= 0 && OwnerActor == N->GetRoom().Actor; }
+/** Operation codes of aurix_net_sync_send_op. */
+namespace SyncOp
+{
+	enum Type : int32
+	{
+		Write = 0,
+		Spawn = 1,
+		Despawn = 2,
+		Transfer = 3,
+		SetPolicy = 4,
+		RequestOwnership = 5,
+		Release = 6,
+	};
+}
+
+bool UAurixSyncActorComponent::IsOwner() const { const UAurixNetSubsystem* N = Net(); return N && Entity != INDEX_NONE && OwnerActor >= 0 && OwnerActor == N->GetRoom().Actor; }
 
 bool UAurixSyncActorComponent::Resolve()
 {
@@ -40,6 +53,9 @@ bool UAurixSyncActorComponent::Resolve()
 	}
 	else { for (TFieldIterator<FProperty> It(O->GetClass()); It; ++It) TryMap(*It); }
 	if (bSyncTransform) { PosField = World->FieldIndex(Component, TEXT("position")); RotField = World->FieldIndex(Component, TEXT("rotation")); }
+	World->OnSpawn.AddDynamic(this, &UAurixSyncActorComponent::HandleSpawn);
+	World->OnChange.AddDynamic(this, &UAurixSyncActorComponent::HandleChange);
+	World->OnDespawn.AddDynamic(this, &UAurixSyncActorComponent::HandleDespawn);
 	bResolved = true;
 	return true;
 }
@@ -47,18 +63,15 @@ bool UAurixSyncActorComponent::Resolve()
 void UAurixSyncActorComponent::BeginPlay()
 {
 	Super::BeginPlay();
-	if (Resolve() && World)
+	if (Resolve() && bSpawnOnBeginPlay)
 	{
-		World->OnSpawn.AddDynamic(this, &UAurixSyncActorComponent::HandleSpawn);
-		World->OnChange.AddDynamic(this, &UAurixSyncActorComponent::HandleChange);
-		World->OnDespawn.AddDynamic(this, &UAurixSyncActorComponent::HandleDespawn);
-		if (bSpawnOnBeginPlay) Spawn();
+		Spawn();
 	}
 }
 void UAurixSyncActorComponent::EndPlay(const EEndPlayReason::Type Reason)
 {
 	if (bDespawnOnEndPlay && IsOwner()) Despawn();
-	if (World)
+	if (World && bResolved)
 	{
 		World->OnSpawn.RemoveDynamic(this, &UAurixSyncActorComponent::HandleSpawn);
 		World->OnChange.RemoveDynamic(this, &UAurixSyncActorComponent::HandleChange);
@@ -69,6 +82,7 @@ void UAurixSyncActorComponent::EndPlay(const EEndPlayReason::Type Reason)
 
 void UAurixSyncActorComponent::BindEntity(int64 E)
 {
+	Resolve();
 	Entity = E; int64 Id; int32 Own = -1;
 	for (int32 I = 0; World && World->EntityAt(I, Id, Own); ++I) if (Id == E) { OwnerActor = Own; break; }
 	OnBound.Broadcast(Entity);
@@ -77,27 +91,27 @@ void UAurixSyncActorComponent::BindEntity(int64 E)
 }
 bool UAurixSyncActorComponent::Spawn()
 {
-	if (!Resolve() || Entity != 0 || bAwaitingSpawn) return false;
+	if (!Resolve() || Entity != INDEX_NONE || bAwaitingSpawn) return false;
 	if (!WriteToWorld(true)) return false;
-	bAwaitingSpawn = World->SendOp(1, 0, -1) >= 0;
+	bAwaitingSpawn = World->SendOp(SyncOp::Spawn, 0, -1) >= 0;
 	return bAwaitingSpawn;
 }
-bool UAurixSyncActorComponent::Despawn() { if (!IsOwner()) return false; const bool bOk = World->SendOp(2, Entity, -1) >= 0; Entity = 0; OwnerActor = -1; return bOk; }
-bool UAurixSyncActorComponent::TransferTo(int32 Actor) { return IsOwner() && World->SendOp(3, Entity, Actor) >= 0; }
-bool UAurixSyncActorComponent::SetPolicy(EAurixOwnerPolicy Policy) { OwnershipPolicy = Policy; bPolicySent = IsOwner() && World->SendOp(4, Entity, (int32)Policy) >= 0; return bPolicySent; }
+bool UAurixSyncActorComponent::Despawn() { if (!IsOwner()) return false; const bool bOk = World->SendOp(SyncOp::Despawn, Entity, -1) >= 0; Entity = INDEX_NONE; OwnerActor = -1; return bOk; }
+bool UAurixSyncActorComponent::TransferTo(int32 Actor) { return IsOwner() && World->SendOp(SyncOp::Transfer, Entity, Actor) >= 0; }
+bool UAurixSyncActorComponent::SetPolicy(EAurixOwnerPolicy Policy) { OwnershipPolicy = Policy; bPolicySent = IsOwner() && World->SendOp(SyncOp::SetPolicy, Entity, (int32)Policy) >= 0; return bPolicySent; }
 bool UAurixSyncActorComponent::RequestOwnership()
 {
-	if (!World || Entity == 0 || IsOwner()) return false;
-	if (World->SendOp(5, Entity, -1) < 0) return false;
+	if (!World || Entity == INDEX_NONE || IsOwner()) return false;
+	if (World->SendOp(SyncOp::RequestOwnership, Entity, -1) < 0) return false;
 	RequestLeft = RequestTimeout;
 	return true;
 }
-bool UAurixSyncActorComponent::Release() { return IsOwner() && World->SendOp(6, Entity, -1) >= 0; }
+bool UAurixSyncActorComponent::Release() { return IsOwner() && World->SendOp(SyncOp::Release, Entity, -1) >= 0; }
 
 void UAurixSyncActorComponent::HandleSpawn(int64 E, int32 Owner)
 {
 	// Our own spawn comes back as a spawn owned by us; the first one while we wait is ours.
-	if (bAwaitingSpawn && Entity == 0 && Net() && Owner == Net()->GetRoom().Actor)
+	if (bAwaitingSpawn && Entity == INDEX_NONE && Net() && Owner == Net()->GetRoom().Actor)
 	{
 		bAwaitingSpawn = false; Entity = E; OwnerActor = Owner; bPolicySent = false;
 		if (OwnershipPolicy != EAurixOwnerPolicy::DestroyOnLeave) SetPolicy(OwnershipPolicy);
@@ -113,7 +127,7 @@ void UAurixSyncActorComponent::HandleChange(int64 E, int32 Owner)
 void UAurixSyncActorComponent::HandleDespawn(int64 E, int32)
 {
 	if (E != Entity) return;
-	Entity = 0; OwnerActor = -1;
+	Entity = INDEX_NONE; OwnerActor = -1;
 	if (bDespawnOnEndPlay && GetOwner()) GetOwner()->Destroy();
 }
 
@@ -126,7 +140,7 @@ void UAurixSyncActorComponent::TickComponent(float Dt, ELevelTick T, FActorCompo
 	const float Step = WriteHz > 0 ? 1.f / WriteHz : 0.f;
 	if (Accum < Step) return;
 	Accum = 0.f;
-	if (WriteToWorld(false)) World->SendOp(0, Entity, -1);
+	if (WriteToWorld(false)) World->SendOp(SyncOp::Write, Entity, -1);
 }
 
 bool UAurixSyncActorComponent::WriteProperty(const FMap& M, void* C)
@@ -196,7 +210,7 @@ bool UAurixSyncActorComponent::WriteToWorld(bool bForSpawn)
 void UAurixSyncActorComponent::ApplyFromWorld()
 {
 	AActor* O = GetOwner();
-	if (!O || !World || Entity == 0 || !World->Has(Entity, Component)) return;
+	if (!O || !World || Entity == INDEX_NONE || !World->Has(Entity, Component)) return;
 	for (const FMap& M : Maps) ReadProperty(M, O);
 	if (bSyncTransform && O->GetRootComponent())
 	{

@@ -32,7 +32,7 @@ public:
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 	/** Lockstep component to drive (defaults to one on the same actor). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Rollback") UAurixLockstepComponent* Lockstep = nullptr;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Rollback") TObjectPtr<UAurixLockstepComponent> Lockstep;
 	/** Maximum ticks ahead of the confirmed tick; beyond it the runner waits (stalls) instead of predicting further. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Rollback", meta = (ClampMin = 0, ClampMax = 60)) int32 MaxPrediction = 8;
 	/** Simulation rate; must equal the room's tick_hz. */
@@ -74,6 +74,7 @@ private:
 	int32 RollbackCount = 0;
 	double Accum = 0.0;
 	TArray<uint8> ConfirmedState;
+	TArray<uint8> InitialState;
 	TArray<uint8> LocalInput;
 	TMap<int32, TArray<uint8>> LastInputs;                 // other actors' latest confirmed input (prediction source)
 	TMap<int64, TArray<FAurixLockstepInput>> Pending;       // confirmed ticks received ahead of Confirmed+1

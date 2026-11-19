@@ -46,7 +46,7 @@ public:
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 	/** Sync world to use; empty = the first AurixSyncWorld found in the level. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Sync") UAurixSyncWorld* World = nullptr;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Sync") TObjectPtr<UAurixSyncWorld> World;
 	/** Schema component this actor maps to. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aurix Net|Sync") FString SchemaComponent;
 	/** UPROPERTY names on the owning actor; each must exist as a field of SchemaComponent (same name). Empty = every field with a same-named property. */
@@ -82,7 +82,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Sync") void MarkDirty() { bDirty = true; }
 
 	UFUNCTION(BlueprintPure, Category = "Aurix Net|Sync") int64 GetEntity() const { return Entity; }
-	UFUNCTION(BlueprintPure, Category = "Aurix Net|Sync") bool IsBound() const { return Entity != 0; }
+	UFUNCTION(BlueprintPure, Category = "Aurix Net|Sync") bool IsBound() const { return Entity != INDEX_NONE; }
 	UFUNCTION(BlueprintPure, Category = "Aurix Net|Sync") bool IsOwner() const;
 	UFUNCTION(BlueprintPure, Category = "Aurix Net|Sync") int32 GetOwnerActor() const { return OwnerActor; }
 
@@ -101,7 +101,8 @@ private:
 	UFUNCTION() void HandleChange(int64 InEntity, int32 Owner);
 	UFUNCTION() void HandleDespawn(int64 InEntity, int32 Owner);
 
-	int64 Entity = 0;
+	/** INDEX_NONE while unbound: the cell numbers entities from 0. */
+	int64 Entity = INDEX_NONE;
 	int32 OwnerActor = -1;
 	int32 Component = -1;
 	int32 PosField = -1, RotField = -1;

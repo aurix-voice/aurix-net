@@ -10,7 +10,7 @@ class FOnlineSubsystemAurix;
 class FOnlineIdentityAurix : public IOnlineIdentity
 {
 public:
-	explicit FOnlineIdentityAurix(FOnlineSubsystemAurix* InSubsystem) : Subsystem(InSubsystem) {}
+	explicit FOnlineIdentityAurix(FOnlineSubsystemAurix* InSubsystem);
 	virtual ~FOnlineIdentityAurix() = default;
 
 	virtual bool Login(int32 LocalUserNum, const FOnlineAccountCredentials& AccountCredentials) override;
@@ -32,7 +32,7 @@ public:
 	virtual FString GetAuthType() const override { return TEXT("aurix"); }
 
 private:
-	FUniqueNetIdPtr IdFor(int32 LocalUserNum) const;
 	FOnlineSubsystemAurix* Subsystem;
-	mutable TMap<int32, FUniqueNetIdPtr> Ids;
+	/** Logged-in local users. */
+	TMap<int32, FUniqueNetIdRef> Ids;
 };

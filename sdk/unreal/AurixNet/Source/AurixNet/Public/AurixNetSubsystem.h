@@ -25,7 +25,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixNetStats, int32, Rooms, int32
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FAurixNetRpcResult, int32, Id, bool, bOk, const FString&, BodyJson, const FString&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FAurixNetDesync, int64, Tick, int32, Actor, int32, Strikes, bool, bUntrusted);
 /** Result of an async connect/join: Actor >= 0 on success. */
-DECLARE_DELEGATE_TwoParams(FAurixNetAsyncResult, int32 /*Actor*/, const FString& /*Error*/);
+DECLARE_DELEGATE_ThreeParams(FAurixNetAsyncResult, int32 /*Actor*/, EAurixNetError /*Code*/, const FString& /*Error*/);
 /** Best region: endpoint URL (empty on error), region id, RTT ms, full JSON (candidates), error. */
 DECLARE_DELEGATE_FiveParams(FAurixNetRegionResult, const FString& /*Endpoint*/, const FString& /*Region*/, int32 /*RttMs*/, const FString& /*Json*/, const FString& /*Error*/);
 
@@ -115,6 +115,10 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Room") FAurixNetPlayerProps OnPlayerProps;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Lobby") FAurixNetLobbyUpdate OnLobbyUpdate;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Lobby") FAurixNetStats OnStats;
+	/** Rooms from the latest answer to RequestRooms or the lobby subscription. */
+	UFUNCTION(BlueprintPure, Category = "Aurix Net|Lobby") const TArray<FAurixNetRoomSummary>& GetLastRooms() const { return LastRooms; }
+	/** Room and player counts from the latest answer to RequestStats; false before the first one. */
+	UFUNCTION(BlueprintPure, Category = "Aurix Net|Lobby") bool GetLastStats(int32& Rooms, int32& Players) const;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Room") FAurixNetRpcResult OnRpcResult;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Lockstep") FAurixNetDesync OnDesync;
 
@@ -141,6 +145,8 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Aurix Net") bool IsMaster() const { return Room.Actor >= 0 && Room.Actor == Room.Master; }
 	UFUNCTION(BlueprintPure, Category = "Aurix Net") static FString GetNativeVersion();
 	UFUNCTION(BlueprintPure, Category = "Aurix Net") FString GetLastError() const;
+	/** The reason of the last failed blocking call on the game thread. */
+	UFUNCTION(BlueprintPure, Category = "Aurix Net") EAurixNetError GetLastErrorCode() const;
 
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetStateChanged OnStateChanged;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetJoined OnJoined;
@@ -164,9 +170,12 @@ public:
 	/** Send a raw data payload (sync/lockstep rooms). */
 	bool SendData(EAurixNetChannel Channel, TArrayView<const uint8> Payload);
 	bool HasClient() const { return Client != nullptr; }
+	/** The subsystem of the game instance that owns this object's world, or null. */
+	static UAurixNetSubsystem* Get(const UObject* WorldContextObject);
 
 	// FTickableGameObject
 	virtual void Tick(float DeltaTime) override;
+	virtual ETickableTickType GetTickableTickType() const override { return IsTemplate() ? ETickableTickType::Never : ETickableTickType::Conditional; }
 	virtual bool IsTickable() const override { return Client != nullptr; }
 	virtual TStatId GetStatId() const override { RETURN_QUICK_DECLARE_CYCLE_STAT(UAurixNetSubsystem, STATGROUP_Tickables); }
 	virtual bool IsTickableWhenPaused() const override { return true; }
@@ -179,11 +188,18 @@ private:
 	void DestroyClient();
 
 	AurixNetClient* Client = nullptr;
+	/** The client a JoinAsync worker thread is using; it is destroyed only after the worker returns. */
+	AurixNetClient* JoiningClient = nullptr;
+	/** Bumped whenever the client is dropped, so a ConnectAsync that was running then discards its result. */
+	uint32 ConnectSerial = 0;
 	bool bBusy = false;
+	TArray<FAurixNetRoomSummary> LastRooms;
+	int32 LastStatsRooms = -1;
+	int32 LastStatsPlayers = -1;
 	int32 NextRpcId = 1;
 	FString RoomPropsJson;
 	TMap<int32, FString> PlayerProps;
-	void FinishJoin(int32 Actor);
+	void FinishJoin();
 	EAurixNetState State = EAurixNetState::Disconnected;
 	FAurixNetRoomInfo Room;
 };

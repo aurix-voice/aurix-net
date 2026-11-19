@@ -29,6 +29,12 @@ void UAurixNetConnection::InitLocalConnection(UNetDriver* InDriver, FSocket* InS
 	InitBase(InDriver, InSocket, InURL, InState, InMaxPacket, InPacketOverhead);
 }
 
+void UAurixNetConnection::SetRemoteActor(uint16 Actor)
+{
+	RemoteActor = Actor;
+	RemoteAddr = MakeShared<FInternetAddrAurix>(RemoteActor);
+}
+
 void UAurixNetConnection::LowLevelSend(void* Data, int32 CountBits, FOutPacketTraits& Traits)
 {
 	const uint8* Bytes = reinterpret_cast<const uint8*>(Data);

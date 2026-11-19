@@ -2,15 +2,13 @@
 #include "AurixNetSubsystem.h"
 #include "AurixNetLog.h"
 #include "aurix_net.h"
-#include "Engine/GameInstance.h"
 #include "Engine/World.h"
 
 UAurixSyncWorld::UAurixSyncWorld() { PrimaryComponentTick.bCanEverTick = true; }
 
 UAurixNetSubsystem* UAurixSyncWorld::Net() const
 {
-	const UWorld* W = GetWorld(); const UGameInstance* GI = W ? W->GetGameInstance() : nullptr;
-	return GI ? GI->GetSubsystem<UAurixNetSubsystem>() : nullptr;
+	return UAurixNetSubsystem::Get(this);
 }
 
 bool UAurixSyncWorld::Setup(const FString& InSchema)
@@ -18,7 +16,7 @@ bool UAurixSyncWorld::Setup(const FString& InSchema)
 	Teardown();
 	SchemaJson = InSchema;
 	S = aurix_net_sync_new(TCHAR_TO_UTF8(*SchemaJson));
-	if (!S) { UE_LOG(LogAurixNet, Error, TEXT("sync schema rejected: %s"), *Net()->GetLastError()); return false; }
+	if (!S) { UE_LOG(LogAurixNet, Error, TEXT("sync schema rejected: %s"), UTF8_TO_TCHAR(aurix_net_last_error())); return false; }
 	if (UAurixNetSubsystem* N = Net()) DataHandle = N->OnRawData.AddUObject(this, &UAurixSyncWorld::OnRawData);
 	return true;
 }
@@ -36,7 +34,11 @@ void UAurixSyncWorld::OnRawData(uint8, TArrayView<const uint8> Data)
 	uint8 Ack[9];
 	if (aurix_net_sync_receive(S, Data.GetData(), Data.Num(), Ack) == 1)
 	{
-		if (UAurixNetSubsystem* N = Net()) N->SendData(EAurixNetChannel::Unreliable, TArrayView<const uint8>(Ack, 9));
+		if (UAurixNetSubsystem* N = Net())
+		{
+			N->SendData(EAurixNetChannel::Unreliable, TArrayView<const uint8>(Ack, 9));
+			aurix_net_sync_pump(S, N->NativeClient());
+		}
 	}
 }
 

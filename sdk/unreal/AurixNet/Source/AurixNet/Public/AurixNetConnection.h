@@ -37,6 +37,7 @@ class AURIXNET_API UAurixNetConnection : public UNetConnection
 public:
 	/** Remote actor id inside the room. */
 	uint16 RemoteActor = 0;
+	void SetRemoteActor(uint16 Actor);
 
 	virtual void InitBase(UNetDriver* InDriver, class FSocket* InSocket, const FURL& InURL, EConnectionState InState, int32 InMaxPacket = 0, int32 InPacketOverhead = 0) override;
 	virtual void InitRemoteConnection(UNetDriver* InDriver, class FSocket* InSocket, const FURL& InURL, const FInternetAddr& InRemoteAddr, EConnectionState InState, int32 InMaxPacket = 0, int32 InPacketOverhead = 0) override;

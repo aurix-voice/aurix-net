@@ -53,7 +53,6 @@ public:
 	virtual bool Tick(float DeltaTime) override;
 	virtual FString GetAppId() const override { return TEXT("aurix"); }
 	virtual FText GetOnlineServiceName() const override;
-	virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
 
 	/** The game instance's Aurix Net subsystem for this OSS instance (PIE-aware), or null. */
 	class UAurixNetSubsystem* GetNetSubsystem() const;

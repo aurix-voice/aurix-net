@@ -1,7 +1,6 @@
 #include "AurixInterestComponent.h"
 #include "AurixNetSubsystem.h"
 #include "AurixNetSettings.h"
-#include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 
@@ -9,8 +8,7 @@ UAurixInterestComponent::UAurixInterestComponent() { PrimaryComponentTick.bCanEv
 
 UAurixNetSubsystem* UAurixInterestComponent::Net() const
 {
-	const UWorld* W = GetWorld(); const UGameInstance* GI = W ? W->GetGameInstance() : nullptr;
-	return GI ? GI->GetSubsystem<UAurixNetSubsystem>() : nullptr;
+	return UAurixNetSubsystem::Get(this);
 }
 float UAurixInterestComponent::Cell() const { return CellSize > 0.f ? CellSize : UAurixNetSettings::Get()->InterestCellSize; }
 

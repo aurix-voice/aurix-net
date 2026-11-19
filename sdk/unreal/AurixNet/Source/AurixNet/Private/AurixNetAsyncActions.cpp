@@ -1,18 +1,14 @@
 #include "AurixNetAsyncActions.h"
 #include "AurixNetSubsystem.h"
 #include "AurixNetSettings.h"
-#include "Engine/GameInstance.h"
 #include "Engine/World.h"
-#include "Engine/Engine.h"
 
 UAurixNetAsyncAction* UAurixNetAsyncAction::Make(UObject* Ctx, EOp InOp)
 {
 	UAurixNetAsyncAction* A = NewObject<UAurixNetAsyncAction>();
 	A->Op = InOp;
-	const UWorld* W = GEngine ? GEngine->GetWorldFromContextObject(Ctx, EGetWorldErrorMode::LogAndReturnNull) : nullptr;
-	const UGameInstance* GI = W ? W->GetGameInstance() : nullptr;
-	A->Net = GI ? GI->GetSubsystem<UAurixNetSubsystem>() : nullptr;
-	A->RegisterWithGameInstance(const_cast<UGameInstance*>(GI));
+	A->Net = UAurixNetSubsystem::Get(Ctx);
+	A->RegisterWithGameInstance(Ctx);
 	return A;
 }
 
@@ -47,38 +43,38 @@ UAurixNetAsyncAction* UAurixNetAsyncAction::ConnectWithDevGrant(UObject* Ctx, co
 }
 #endif
 
-void UAurixNetAsyncAction::Fail(const FString& Error) { OnFailure.Broadcast(Net.IsValid() ? Net->GetRoom() : FAurixNetRoomInfo(), Error); SetReadyToDestroy(); }
-void UAurixNetAsyncAction::Succeed() { OnSuccess.Broadcast(Net.IsValid() ? Net->GetRoom() : FAurixNetRoomInfo(), FString()); SetReadyToDestroy(); }
+void UAurixNetAsyncAction::Fail(EAurixNetError Code, const FString& Error) { OnFailure.Broadcast(Net.IsValid() ? Net->GetRoom() : FAurixNetRoomInfo(), Code, Error); SetReadyToDestroy(); }
+void UAurixNetAsyncAction::Succeed() { OnSuccess.Broadcast(Net.IsValid() ? Net->GetRoom() : FAurixNetRoomInfo(), EAurixNetError::None, FString()); SetReadyToDestroy(); }
 
 void UAurixNetAsyncAction::DoJoin()
 {
-	Net->JoinAsync(JoinJson, FAurixNetAsyncResult::CreateWeakLambda(this, [this](int32 Actor, const FString& Err) { if (Actor < 0) Fail(Err); else Succeed(); }));
+	Net->JoinAsync(JoinJson, FAurixNetAsyncResult::CreateWeakLambda(this, [this](int32 Actor, EAurixNetError Code, const FString& Err) { if (Actor < 0) Fail(Code, Err); else Succeed(); }));
 }
 
 void UAurixNetAsyncAction::Activate()
 {
-	if (!Net.IsValid()) { Fail(TEXT("no game instance / Aurix Net subsystem")); return; }
+	if (!Net.IsValid()) { Fail(EAurixNetError::InvalidArgument, TEXT("no game instance / Aurix Net subsystem")); return; }
 	const UAurixNetSettings* S = UAurixNetSettings::Get();
 	const FString Url = CellUrl.IsEmpty() ? S->CellUrl : CellUrl;
 	switch (Op)
 	{
 	case EOp::Connect:
-		Net->ConnectAsync(Url, Grant, S->bForceTunnel, FAurixNetAsyncResult::CreateWeakLambda(this, [this](int32 R, const FString& Err) { if (R < 0) Fail(Err); else Succeed(); }));
+		Net->ConnectAsync(Url, Grant, S->bForceTunnel, FAurixNetAsyncResult::CreateWeakLambda(this, [this](int32 R, EAurixNetError Code, const FString& Err) { if (R < 0) Fail(Code, Err); else Succeed(); }));
 		break;
 	case EOp::ConnectAndJoin:
 		if (Net->HasClient() && Net->GetState() != EAurixNetState::Closed) { if (Net->GetState() == EAurixNetState::InRoom) Net->Leave(); DoJoin(); }
-		else Net->ConnectAsync(Url, Grant, S->bForceTunnel, FAurixNetAsyncResult::CreateWeakLambda(this, [this](int32 R, const FString& Err) { if (R < 0) Fail(Err); else DoJoin(); }));
+		else Net->ConnectAsync(Url, Grant, S->bForceTunnel, FAurixNetAsyncResult::CreateWeakLambda(this, [this](int32 R, EAurixNetError Code, const FString& Err) { if (R < 0) Fail(Code, Err); else DoJoin(); }));
 		break;
 	case EOp::Join:
-		if (!Net->HasClient()) { Fail(TEXT("not connected")); return; }
+		if (!Net->HasClient()) { Fail(EAurixNetError::Disconnected, TEXT("not connected")); return; }
 		if (Net->GetState() == EAurixNetState::InRoom) Net->Leave();
 		DoJoin();
 		break;
 	case EOp::DevGrant:
 #if WITH_EDITOR
-		Net->ConnectWithDevGrantAsync(PlayerName, FAurixNetAsyncResult::CreateWeakLambda(this, [this](int32 R, const FString& Err) { if (R < 0) Fail(Err); else Succeed(); }));
+		Net->ConnectWithDevGrantAsync(PlayerName, FAurixNetAsyncResult::CreateWeakLambda(this, [this](int32 R, EAurixNetError Code, const FString& Err) { if (R < 0) Fail(Code, Err); else Succeed(); }));
 #else
-		Fail(TEXT("development grants are editor-only"));
+		Fail(EAurixNetError::InvalidArgument, TEXT("development grants are editor-only"));
 #endif
 		break;
 	}

@@ -3,8 +3,8 @@
 #include "AurixNetLog.h"
 #include "Components/PrimitiveComponent.h"
 #include "GameFramework/Actor.h"
-#include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "Misc/Crc.h"
 #include "Runtime/Launch/Resources/Version.h"
 
 UAurixPhysicsPredictionComponent::UAurixPhysicsPredictionComponent() { PrimaryComponentTick.bCanEverTick = true; PrimaryComponentTick.TickGroup = TG_PostPhysics; }
@@ -12,10 +12,9 @@ UAurixPhysicsPredictionComponent::UAurixPhysicsPredictionComponent() { PrimaryCo
 UPrimitiveComponent* UAurixPhysicsPredictionComponent::Body() const { const AActor* O = GetOwner(); return O ? Cast<UPrimitiveComponent>(O->GetRootComponent()) : nullptr; }
 UAurixNetSubsystem* UAurixPhysicsPredictionComponent::Net() const
 {
-	const UWorld* W = GetWorld(); const UGameInstance* GI = W ? W->GetGameInstance() : nullptr;
-	return GI ? GI->GetSubsystem<UAurixNetSubsystem>() : nullptr;
+	return UAurixNetSubsystem::Get(this);
 }
-uint32 UAurixPhysicsPredictionComponent::EffectiveId() const { return BodyId > 0 ? (uint32)BodyId : GetTypeHash(GetOwner() ? GetOwner()->GetFName() : NAME_None); }
+uint32 UAurixPhysicsPredictionComponent::EffectiveId() const { return BodyId > 0 ? (uint32)BodyId : FCrc::StrCrc32(*GetNameSafe(GetOwner())); }
 
 void UAurixPhysicsPredictionComponent::ApplyEngineMode()
 {

@@ -3,7 +3,6 @@
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
-#include "ToolMenus.h"
 #include "Framework/Docking/TabManager.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/SBoxPanel.h"
@@ -13,6 +12,7 @@
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
 #include "AurixNetSubsystem.h"
+#include "AurixNetSettings.h"
 #include "AurixLockstepComponent.h"
 #include "EngineUtils.h"
 #include "ISettingsModule.h"
@@ -85,6 +85,16 @@ private:
 						S += FString::Printf(TEXT("  lockstep %s: confirmed %lld  server %lld  delay %lld (adaptive %lld)  late %lld  dropped %lld  catch-ups %lld\n"), *It->GetName(), L->GetStat(7), L->GetStat(8), L->GetStat(0), L->GetStat(3), L->GetStat(6), L->GetStat(11), L->GetStat(10));
 				}
 			}
+			int32 StatsRooms = 0;
+			int32 StatsPlayers = 0;
+			if (N->GetLastStats(StatsRooms, StatsPlayers))
+			{
+				S += FString::Printf(TEXT("  cell: %d rooms, %d players\n"), StatsRooms, StatsPlayers);
+			}
+			for (const FAurixNetRoomSummary& Listed : N->GetLastRooms())
+			{
+				S += FString::Printf(TEXT("  listed '%s'  %d/%d  %s  %s\n"), *Listed.Name, Listed.Players, Listed.MaxPlayers, Listed.bOpen ? TEXT("open") : TEXT("closed"), *Listed.PropsJson);
+			}
 			const FString Err = N->GetLastError();
 			if (!Err.IsEmpty()) S += FString::Printf(TEXT("  last error: %s\n"), *Err);
 			S += TEXT("\n");
@@ -97,7 +107,11 @@ private:
 	FReply OnLeave() { ForEachNet([](const FWorldContext&, UAurixNetSubsystem* N) { if (N->GetState() == EAurixNetState::InRoom) N->Leave(); }); return FReply::Handled(); }
 	FReply OnSettings()
 	{
-		if (ISettingsModule* S = FModuleManager::GetModulePtr<ISettingsModule>("Settings")) S->ShowViewer("Project", "Plugins", "Aurix Net");
+		if (ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings"))
+		{
+			const UAurixNetSettings* Settings = GetDefault<UAurixNetSettings>();
+			SettingsModule->ShowViewer(Settings->GetContainerName(), Settings->GetCategoryName(), Settings->GetSectionName());
+		}
 		return FReply::Handled();
 	}
 };

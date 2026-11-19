@@ -6,7 +6,7 @@
 
 class UAurixNetSubsystem;
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixNetAsyncPin, const FAurixNetRoomInfo&, Room, const FString&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FAurixNetAsyncPin, const FAurixNetRoomInfo&, Room, EAurixNetError, Code, const FString&, Error);
 
 /** Latent Blueprint nodes for Aurix Net (connect / rooms). Each completes on the game thread with Success or Failure. */
 UCLASS()
@@ -50,7 +50,7 @@ private:
 	TWeakObjectPtr<UAurixNetSubsystem> Net;
 
 	static UAurixNetAsyncAction* Make(UObject* WorldContextObject, EOp Op);
-	void Fail(const FString& Error);
+	void Fail(EAurixNetError Code, const FString& Error);
 	void Succeed();
 	void DoJoin();
 };

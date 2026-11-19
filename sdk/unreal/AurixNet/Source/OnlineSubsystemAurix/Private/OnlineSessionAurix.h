@@ -28,8 +28,8 @@ public:
 	virtual const FUniqueNetId& GetSessionId() const override { return *SessionId; }
 };
 
-/** Sessions as Aurix relay rooms. Everything completes on the game thread, either immediately or on the next cell reply. */
-class FOnlineSessionAurix : public IOnlineSession
+/** Sessions as Aurix relay rooms. Requests to the cell run off the game thread and complete on it. */
+class FOnlineSessionAurix : public IOnlineSession, public TSharedFromThis<FOnlineSessionAurix, ESPMode::ThreadSafe>
 {
 public:
 	explicit FOnlineSessionAurix(FOnlineSubsystemAurix* InSubsystem) : Subsystem(InSubsystem) {}
@@ -87,6 +87,10 @@ private:
 	FString RoomNameFor(FName SessionName, const FOnlineSessionSettings& Settings) const;
 	void OnRooms(const TArray<FAurixNetRoomSummary>& Rooms);
 	void FinishSearch(bool bOk);
+	void OnCreateJoined(int32 Actor, EAurixNetError Code, const FString& Error, FName SessionName, FString Room);
+	void OnSessionJoined(int32 Actor, EAurixNetError Code, const FString& Error, FName SessionName, FString Room);
+	void OnMatchJoined(int32 Actor, EAurixNetError Code, const FString& Error, FName SessionName, FString FallbackJoinJson, TSharedRef<FOnlineSessionSearch> Search, FOnStartMatchmakingComplete Done);
+	void FailMatchmaking(FName SessionName, const TSharedRef<FOnlineSessionSearch>& Search, const FOnStartMatchmakingComplete& Done);
 
 	FOnlineSubsystemAurix* Subsystem;
 	mutable FCriticalSection SessionLock;

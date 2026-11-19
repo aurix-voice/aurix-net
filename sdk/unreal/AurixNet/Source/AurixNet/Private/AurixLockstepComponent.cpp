@@ -2,15 +2,13 @@
 #include "AurixNetSubsystem.h"
 #include "AurixNetLog.h"
 #include "aurix_net.h"
-#include "Engine/GameInstance.h"
 #include "Engine/World.h"
 
 UAurixLockstepComponent::UAurixLockstepComponent() { PrimaryComponentTick.bCanEverTick = true; }
 
 UAurixNetSubsystem* UAurixLockstepComponent::Net() const
 {
-	const UWorld* W = GetWorld(); const UGameInstance* GI = W ? W->GetGameInstance() : nullptr;
-	return GI ? GI->GetSubsystem<UAurixNetSubsystem>() : nullptr;
+	return UAurixNetSubsystem::Get(this);
 }
 
 void UAurixLockstepComponent::BeginPlay()
@@ -28,7 +26,8 @@ void UAurixLockstepComponent::EndPlay(const EEndPlayReason::Type Reason)
 
 void UAurixLockstepComponent::OnRawData(uint8, TArrayView<const uint8> Data)
 {
-	if (Ls) aurix_net_lockstep_receive(Ls, Data.GetData(), Data.Num());
+	UAurixNetSubsystem* N = Net();
+	if (Ls && N) aurix_net_lockstep_receive(Ls, N->NativeClient(), Data.GetData(), Data.Num());
 }
 
 void UAurixLockstepComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* F)
@@ -106,5 +105,6 @@ bool UAurixLockstepComponent::SendDump(int64 Tick, int64 Hash, const TArray<uint
 	return N && N->NativeClient() && aurix_net_lockstep_send_dump(N->NativeClient(), (uint32)Tick, (uint64)Hash, State.GetData(), State.Num()) == 0;
 }
 int64 UAurixLockstepComponent::HashBytes(const TArray<uint8>& Data) { return (int64)aurix_net_lockstep_fnv1a(Data.GetData(), Data.Num()); }
+int64 UAurixLockstepComponent::ConfirmedTick() const { return GetStat(AURIX_NET_LS_CONFIRMED_TICK); }
 int64 UAurixLockstepComponent::GetStat(int32 Key) const { return Ls ? aurix_net_lockstep_get(Ls, Key) : -1; }
 bool UAurixLockstepComponent::SetOption(int32 Key, int64 Value) { return Ls && aurix_net_lockstep_set(Ls, Key, Value) == 0; }

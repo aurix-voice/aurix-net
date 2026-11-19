@@ -9,11 +9,10 @@ class AURIXNET_API UAurixNetSettings : public UDeveloperSettings
 {
 	GENERATED_BODY()
 public:
-	UAurixNetSettings();
 	virtual FName GetCategoryName() const override { return FName(TEXT("Plugins")); }
 
 	/** Cell the game connects to, e.g. https://eu-central.net.aurix.run (hosted) or your own cell. */
-	UPROPERTY(config, EditAnywhere, Category = "Connection") FString CellUrl;
+	UPROPERTY(config, EditAnywhere, Category = "Connection") FString CellUrl = TEXT("https://eu-central.net.aurix.run");
 	/** Dedicated-server topology: `-server` builds connect through the node on this machine (e.g. http://127.0.0.1:8090) so the room lives here and players connect straight to this host. Empty = use CellUrl. */
 	UPROPERTY(config, EditAnywhere, Category = "Connection") FString DedicatedNodeUrl;
 	/** Always use the WebSocket tunnel instead of QUIC datagrams (restrictive networks, debugging). */

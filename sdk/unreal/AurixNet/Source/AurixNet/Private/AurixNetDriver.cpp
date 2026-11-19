@@ -4,7 +4,6 @@
 #include "AurixNetLog.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
-#include "Misc/Parse.h"
 #include "AurixNetSettings.h"
 #include "Engine/Engine.h"
 #include "UObject/Package.h"
@@ -12,12 +11,6 @@
 #include "PacketHandlers/StatelessConnectHandlerComponent.h"
 #include "Net/Common/Packets/PacketView.h"
 #include "SocketTypes.h"
-
-UClass* UAurixNetDriver::ConnectionClass() const
-{
-	UClass* Configured = NetConnectionClass;
-	return Configured && Configured->IsChildOf(UAurixNetConnection::StaticClass()) ? Configured : UAurixNetConnection::StaticClass();
-}
 
 UAurixNetSubsystem* UAurixNetDriver::Subsystem() const
 {
@@ -42,21 +35,6 @@ bool UAurixNetDriver::IsAvailable() const { return true; }
 
 bool UAurixNetDriver::InitBase(bool bInitAsClient, FNetworkNotify* InNotify, const FURL& URL, bool bReuseAddressAndPort, FString& Error)
 {
-	// These are per-class config and the engine ships values only for its own drivers. Left at zero, a
-	// connection times out on its first tick. The values are the IpNetDriver ones; config still overrides.
-	if (InitialConnectTimeout <= 0.f) InitialConnectTimeout = 60.f;
-	if (ConnectionTimeout <= 0.f) ConnectionTimeout = 60.f;
-	if (TimeoutMultiplierForUnoptimizedBuilds <= 0.f) TimeoutMultiplierForUnoptimizedBuilds = 1.f;
-	if (RecentlyDisconnectedTrackingTime <= 0) RecentlyDisconnectedTrackingTime = 120;
-	if (KeepAliveTime <= 0.f) KeepAliveTime = 0.2f;
-	if (RelevantTimeout <= 0.f) RelevantTimeout = 5.f;
-	if (SpawnPrioritySeconds <= 0.f) SpawnPrioritySeconds = 1.f;
-	if (ServerTravelPause <= 0.f) ServerTravelPause = 4.f;
-	if (MaxClientRate <= 0) MaxClientRate = 100000;
-	if (MaxInternetClientRate <= 0) MaxInternetClientRate = 100000;
-	if (GetNetServerMaxTickRate() <= 0) SetNetServerMaxTickRate(30);
-	if (MaxNetTickRate <= 0) MaxNetTickRate = 120;
-
 	if (!Super::InitBase(bInitAsClient, InNotify, URL, bReuseAddressAndPort, Error)) return false;
 	UAurixNetSubsystem* S = Subsystem();
 	if (!S || !S->HasClient())
@@ -74,48 +52,96 @@ bool UAurixNetDriver::InitBase(bool bInitAsClient, FNetworkNotify* InNotify, con
 		Error = TEXT("Aurix Net: no room to host; add ?Room=<name> to the listen URL or join a room first");
 		return false;
 	}
-	if (S->GetState() != EAurixNetState::InRoom || (!RoomName.IsEmpty() && S->GetRoom().Name != RoomName))
+	bListening = !bInitAsClient;
+	if (S->GetState() == EAurixNetState::InRoom && (RoomName.IsEmpty() || S->GetRoom().Name == RoomName)) return true;
+
+	// Like a socket that is still connecting: the travel goes on, IsNetResourceValid() holds the
+	// handshake back until the room is joined, and a refused join closes the driver.
+	if (S->GetState() == EAurixNetState::InRoom) S->Leave();
+	const TCHAR* MaxPlayersOption = URL.GetOption(TEXT("MaxPlayers="), nullptr);
+	const int32 Max = MaxPlayersOption ? FCString::Atoi(MaxPlayersOption) : UAurixNetSettings::Get()->DefaultMaxPlayers;
+	const FString JoinJson = bInitAsClient ? UAurixNetSubsystem::JoinJsonFor(RoomName) : UAurixNetSubsystem::JoinOrCreateJson(RoomName, EAurixNetRoomMode::Relay, Max, FString());
+	bJoining = true;
+	bStartingJoin = true;
+	S->JoinAsync(JoinJson, FAurixNetAsyncResult::CreateUObject(this, &UAurixNetDriver::OnRoomJoined, RoomName));
+	bStartingJoin = false;
+	if (!bJoining)
 	{
-		if (S->GetState() == EAurixNetState::InRoom) S->Leave();
-		int32 Max = 16; FParse::Value(*URL.ToString(), TEXT("MaxPlayers="), Max);
-		const int32 Actor = bInitAsClient ? S->Join(RoomName) : S->JoinOrCreate(RoomName, EAurixNetRoomMode::Relay, Max);
-		if (Actor < 0) { Error = FString::Printf(TEXT("Aurix Net: could not join room '%s': %s"), *RoomName, *S->GetLastError()); return false; }
-	}
-	if (!bInitAsClient && !S->IsMaster())
-	{
-		Error = TEXT("Aurix Net: this player is not the room master; only the master can listen");
+		Error = FString::Printf(TEXT("Aurix Net: could not join room '%s': %s"), *RoomName, *JoinError);
 		return false;
 	}
-	RawHandle = S->OnRawEvent.AddUObject(this, &UAurixNetDriver::OnRawEvent);
-	S->OnPlayerLeft.AddDynamic(this, &UAurixNetDriver::HandlePlayerLeft);
-	S->OnMasterChanged.AddDynamic(this, &UAurixNetDriver::HandleMasterChanged);
-	S->OnClosed.AddDynamic(this, &UAurixNetDriver::HandleClosed);
-	LocalAddr = MakeShared<FInternetAddrAurix>(uint16(S->GetRoom().Actor));
 	return true;
+}
+
+void UAurixNetDriver::OnRoomJoined(int32 Actor, EAurixNetError Code, const FString& JoinFailure, FString RoomName)
+{
+	bJoining = false;
+	UAurixNetSubsystem* S = Subsystem();
+	JoinError = Actor < 0 || !S ? JoinFailure : bListening && !S->IsMaster() ? TEXT("this player is not the room master; only the master can listen") : FString();
+	if (JoinError.IsEmpty())
+	{
+		EnterRoom();
+		return;
+	}
+	if (bStartingJoin) return;
+	UE_LOG(LogAurixNet, Error, TEXT("could not join room '%s': %s"), *RoomName, *JoinError);
+	if (ServerConnection)
+	{
+		ServerConnection->SetConnectionState(USOCK_Closed);
+		return;
+	}
+	GEngine->BroadcastNetworkFailure(GetWorld(), this, ENetworkFailure::NetDriverListenFailure, JoinError);
+	Shutdown();
+}
+
+void UAurixNetDriver::EnterRoom()
+{
+	UAurixNetSubsystem* S = Subsystem();
+	bInRoom = true;
+	RawHandle = S->OnRawEvent.AddUObject(this, &UAurixNetDriver::OnRawEvent);
+	S->OnPlayerLeft.AddDynamic(this, &UAurixNetDriver::OnPlayerLeft);
+	S->OnMasterChanged.AddDynamic(this, &UAurixNetDriver::OnMasterChanged);
+	S->OnClosed.AddDynamic(this, &UAurixNetDriver::OnClosed);
+	LocalAddr = MakeShared<FInternetAddrAurix>(uint16(S->GetRoom().Actor));
+	if (UAurixNetConnection* C = Cast<UAurixNetConnection>(ServerConnection))
+	{
+		ServerActor = uint16(S->GetRoom().Master);
+		C->SetRemoteActor(ServerActor);
+		Remotes.Add(ServerActor, C);
+		UE_LOG(LogAurixNet, Log, TEXT("client: joined room '%s' as actor %d, server is actor %u"), *S->GetRoom().Name, S->GetRoom().Actor, ServerActor);
+	}
+	else
+	{
+		UE_LOG(LogAurixNet, Log, TEXT("listen: room '%s', master actor %d"), *S->GetRoom().Name, S->GetRoom().Actor);
+	}
+	if (S->bResumingAfterMigration)
+	{
+		S->bResumingAfterMigration = false;
+		S->OnHostMigration.Broadcast(EAurixNetMigration::Done, bListening);
+	}
 }
 
 bool UAurixNetDriver::InitConnect(FNetworkNotify* InNotify, const FURL& ConnectURL, FString& Error)
 {
 	if (!InitBase(true, InNotify, ConnectURL, false, Error)) return false;
-	UAurixNetSubsystem* S = Subsystem();
-	ServerActor = uint16(S->GetRoom().Master);
-	UAurixNetConnection* C = NewObject<UAurixNetConnection>(GetTransientPackage(), ConnectionClass());
-	ServerConnection = C;
-	C->InitLocalConnection(this, nullptr, ConnectURL, USOCK_Pending);
-	Remotes.Add(ServerActor, C);
+	ServerConnection = NewObject<UAurixNetConnection>(GetTransientPackage(), NetConnectionClass);
+	ServerConnection->InitLocalConnection(this, nullptr, ConnectURL, USOCK_Pending);
 	CreateInitialClientChannels();
-	if (S->bResumingAfterMigration) { S->bResumingAfterMigration = false; S->OnHostMigration.Broadcast(EAurixNetMigration::Done, false); }
-	UE_LOG(LogAurixNet, Log, TEXT("client: joined room '%s' as actor %d, server is actor %u"), *S->GetRoom().Name, S->GetRoom().Actor, ServerActor);
+	if (!bJoining) EnterRoom();
 	return true;
 }
 
 bool UAurixNetDriver::InitListen(FNetworkNotify* InNotify, FURL& LocalURL, bool bReuseAddressAndPort, FString& Error)
 {
 	if (!InitBase(false, InNotify, LocalURL, bReuseAddressAndPort, Error)) return false;
-	bListening = true;
 	InitConnectionlessHandler();
-	if (UAurixNetSubsystem* S = Subsystem()) { if (S->bResumingAfterMigration) { S->bResumingAfterMigration = false; S->OnHostMigration.Broadcast(EAurixNetMigration::Done, true); } }
-	UE_LOG(LogAurixNet, Log, TEXT("listen: room '%s', master actor %d"), *Subsystem()->GetRoom().Name, Subsystem()->GetRoom().Actor);
+	if (bJoining) return true;
+	if (!Subsystem()->IsMaster())
+	{
+		Error = TEXT("Aurix Net: this player is not the room master; only the master can listen");
+		return false;
+	}
+	EnterRoom();
 	return true;
 }
 
@@ -157,7 +183,7 @@ UAurixNetConnection* UAurixNetDriver::AcceptRemote(uint16 Actor, TArray<uint8>& 
 	else
 	{
 		const UWorld* W = GetWorld();
-		C = NewObject<UAurixNetConnection>(GetTransientPackage(), ConnectionClass());
+		C = NewObject<UAurixNetConnection>(GetTransientPackage(), NetConnectionClass);
 		C->InitRemoteConnection(this, nullptr, W ? W->URL : FURL(), *Addr, USOCK_Open);
 		int32 ServerSequence = 0, ClientSequence = 0;
 		Stateless->GetChallengeSequence(ServerSequence, ClientSequence);
@@ -184,8 +210,7 @@ void UAurixNetDriver::OnRawEvent(const FAurixNetEventFrame& F)
 void UAurixNetDriver::TickDispatch(float DeltaTime)
 {
 	Super::TickDispatch(DeltaTime);
-	bSentThisTick = false;
-	if (bMigrating) { MigrateIn -= DeltaTime; if (MigrateIn <= 0.f) { bMigrating = false; TravelForMigration(); } return; }
+	if (bMigrating) return;
 	// The subsystem polled the native client this frame and queued our frames; hand them to the connections.
 	TArray<TPair<uint16, TArray<uint8>>> Batch = MoveTemp(Inbox);
 	Inbox.Reset();
@@ -197,6 +222,20 @@ void UAurixNetDriver::TickDispatch(float DeltaTime)
 		else C = AcceptRemote(P.Key, P.Value);
 		if (!C || C->GetConnectionState() == USOCK_Closed || P.Value.Num() == 0) continue;
 		C->ReceivedRawPacket(P.Value.GetData(), P.Value.Num());
+	}
+}
+
+void UAurixNetDriver::TickFlush(float DeltaSeconds)
+{
+	Super::TickFlush(DeltaSeconds);
+	// The relay client batches unreliable sends; without this they wait for its own timer.
+	if (bSentThisTick)
+	{
+		bSentThisTick = false;
+		if (UAurixNetSubsystem* S = Subsystem())
+		{
+			S->Flush();
+		}
 	}
 }
 
@@ -226,13 +265,10 @@ void UAurixNetDriver::LowLevelSend(TSharedPtr<const FInternetAddr> Address, void
 }
 
 FString UAurixNetDriver::LowLevelGetNetworkNumber() { const UAurixNetSubsystem* S = Subsystem(); return S ? FString::Printf(TEXT("aurix:%d"), S->GetRoom().Actor) : TEXT("aurix:?"); }
-bool UAurixNetDriver::IsNetResourceValid() { const UAurixNetSubsystem* S = Subsystem(); return S && S->HasClient(); }
+bool UAurixNetDriver::IsNetResourceValid() { const UAurixNetSubsystem* S = Subsystem(); return S && S->HasClient() && bInRoom; }
 
 void UAurixNetDriver::ForgetConnection(uint16 Actor) { Remotes.Remove(Actor); }
 
-void UAurixNetDriver::HandlePlayerLeft(int32 Actor, bool bOffline) { OnPlayerLeft(Actor, bOffline); }
-void UAurixNetDriver::HandleMasterChanged(int32 Master) { OnMasterChanged(Master); }
-void UAurixNetDriver::HandleClosed(const FString& Reason) { OnClosed(Reason); }
 
 void UAurixNetDriver::OnPlayerLeft(int32 Actor, bool bOffline)
 {
@@ -256,20 +292,20 @@ void UAurixNetDriver::OnMasterChanged(int32 Master)
 }
 
 // The master left. Everyone stays in the room: the new master reloads the current map as a listen
-// server on the same room, the others reconnect to it a moment later. Game state is the game's job
-// (save it to the room props on Starting, restore it on Done).
+// server on the same room and the others reconnect to it; their handshake is resent until it
+// listens. Game state is the game's job (save it to the room props on Starting, restore it on Done).
 void UAurixNetDriver::BeginHostMigration(int32 NewMaster)
 {
 	UAurixNetSubsystem* S = Subsystem();
 	bMigrateAsHost = S->GetRoom().Actor == NewMaster;
 	MigrationRoom = S->GetRoom().Name;
-	MigrateIn = bMigrateAsHost ? 0.2f : 1.5f; // host first, clients after it listens
 	bMigrating = true;
 	UE_LOG(LogAurixNet, Log, TEXT("host migration: new master %d, we %s"), NewMaster, bMigrateAsHost ? TEXT("host") : TEXT("rejoin"));
 	S->OnHostMigration.Broadcast(EAurixNetMigration::Starting, bMigrateAsHost);
 	S->OnHostMigration.Broadcast(bMigrateAsHost ? EAurixNetMigration::BecomingHost : EAurixNetMigration::Rejoining, bMigrateAsHost);
 	// The server connection stays open until the travel replaces this driver (see OnPlayerLeft);
 	// TickDispatch drops incoming packets while bMigrating is set.
+	TravelForMigration();
 }
 
 FString UAurixNetDriver::CurrentMapPath() const
@@ -287,7 +323,7 @@ void UAurixNetDriver::TravelForMigration()
 	const FString Url = bMigrateAsHost
 		? FString::Printf(TEXT("%s?listen?Room=%s"), *CurrentMapPath(), *MigrationRoom)
 		: FString::Printf(TEXT("%s.aurix%s"), *MigrationRoom, *CurrentMapPath());
-	// Deferred travel: this runs inside the driver's own tick, and the travel destroys the driver.
+	// The engine runs the travel on its next tick; it destroys this driver.
 	GEngine->SetClientTravel(W, *Url, TRAVEL_Absolute);
 }
 
@@ -303,9 +339,9 @@ void UAurixNetDriver::LowLevelDestroy()
 	if (UAurixNetSubsystem* S = Subsystem())
 	{
 		if (RawHandle.IsValid()) S->OnRawEvent.Remove(RawHandle);
-		S->OnPlayerLeft.RemoveDynamic(this, &UAurixNetDriver::HandlePlayerLeft);
-		S->OnMasterChanged.RemoveDynamic(this, &UAurixNetDriver::HandleMasterChanged);
-		S->OnClosed.RemoveDynamic(this, &UAurixNetDriver::HandleClosed);
+		S->OnPlayerLeft.RemoveDynamic(this, &UAurixNetDriver::OnPlayerLeft);
+		S->OnMasterChanged.RemoveDynamic(this, &UAurixNetDriver::OnMasterChanged);
+		S->OnClosed.RemoveDynamic(this, &UAurixNetDriver::OnClosed);
 	}
 	Remotes.Empty();
 	Super::LowLevelDestroy();

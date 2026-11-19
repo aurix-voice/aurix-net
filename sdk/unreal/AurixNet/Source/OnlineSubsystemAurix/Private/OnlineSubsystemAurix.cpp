@@ -3,7 +3,6 @@
 #include "OnlineIdentityAurix.h"
 #include "OnlineSubsystemUtils.h"
 #include "AurixNetSubsystem.h"
-#include "Engine/GameInstance.h"
 #include "Engine/World.h"
 
 IOnlineSessionPtr FOnlineSubsystemAurix::GetSessionInterface() const { return SessionInterface; }
@@ -12,9 +11,7 @@ FText FOnlineSubsystemAurix::GetOnlineServiceName() const { return NSLOCTEXT("On
 
 UAurixNetSubsystem* FOnlineSubsystemAurix::GetNetSubsystem() const
 {
-	const UWorld* W = GetWorldForOnline(InstanceName);
-	const UGameInstance* GI = W ? W->GetGameInstance() : nullptr;
-	return GI ? GI->GetSubsystem<UAurixNetSubsystem>() : nullptr;
+	return UAurixNetSubsystem::Get(GetWorldForOnline(InstanceName));
 }
 
 bool FOnlineSubsystemAurix::Init()
@@ -36,4 +33,3 @@ bool FOnlineSubsystemAurix::Tick(float DeltaTime)
 	if (SessionInterface.IsValid()) SessionInterface->Tick(DeltaTime);
 	return true;
 }
-bool FOnlineSubsystemAurix::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) { return FOnlineSubsystemImpl::Exec(InWorld, Cmd, Ar); }

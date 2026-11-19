@@ -34,6 +34,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   `npm run format:check`).
 - C++ and Godot SDK: notices and the rehost signal read control messages with the library's JSON
   parser (new C ABI call `aurix_net_json_string`) instead of a hand-written string search.
+- Unreal plugin, session interface: `CreateSession`, `JoinSession` and `StartMatchmaking` no longer
+  block the game thread for the round trip to the cell. They return at once and their completion
+  delegates fire when the room is joined; until then the session state is `Creating`. Search
+  results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
 - Console: a chart covering one to two days labelled its time axis with the time alone, so the
@@ -44,6 +48,14 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   for a string, and the node sends an object.
 - Console: the matchmaking page filed every ticket for 8 players whatever size the form showed;
   it sent the size in a field the node does not read.
+- Unreal plugin, rollback: `AurixRollbackRunner` answered a checkpoint request with the state
+  after tick N under the number N, and after a restore at N went on from N + 1. The node
+  sends the inputs from N on after a checkpoint, so the number means the state before N. Two
+  Unreal clients cancelled each other's error; in a room with a client on another SDK the
+  late joiner missed one tick or ran it twice and the room reported it desynced on every
+  hash. A restore with an empty state (no checkpoint yet) was handed to the game as bytes to
+  load; the runner now goes back to the state it started with. Checked in UE 5.8.2 against a
+  Web SDK player, joining either way: 0 of 29 state comparisons matched before, 26 of 26 after.
 - Web SDK: a late joiner got neither the cached relay events nor the chat history. The node sends
   them in `joined.cached`, and the client dropped that field. They are now emitted as `event` after
   the join (`cached: true`, also kept in `Client.cached`), and `Chat.join` delivers the history of
@@ -85,8 +97,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
     host-migration travel use the same forms;
   - the listen server runs the engine's stateless handshake before it creates a connection;
   - a connecting client finds the subsystem through its world context (its driver has no world yet);
-  - the packet size follows the engine cap (`MAX_PACKET_SIZE`), and the driver sets the timeouts the
-    engine ships only for its own drivers;
+  - the packet size follows the engine cap (`MAX_PACKET_SIZE`), and the plugin's `Config/Engine.ini`
+    carries the timeouts and rates the engine ships only for its own drivers;
   - host migration reads `master_changed{actor}` and keeps the server connection open until the
     travel, so the engine does not drop to the default map;
   - `build_native.sh` stages `libaurix_net.so` next to the module binaries on Linux, so a packaged
@@ -164,6 +176,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - Web, C++ and Godot SDKs: a sync room takes one input per tick, and the SDKs now send it that way.
   A game that sent writes every frame in a slower room (60 frames a second, 20 Hz room) had them
   stamped further and further ahead, so other players saw it seconds late and the last writes never
+  arrived. The C ABI gains `aurix_net_sync_pump`; the C++ wrapper and the Unreal plugin call it
+  for you. In Unity the same holds for `NetRunner.SendInput`, and input ticks start over in every
+  room.
 - Web, Unity, C++ and Godot SDKs: lockstep `sendInput` sends one input per room tick. Called more
   often (every frame at 60 frames a second in a 30 Hz room) it stamped inputs further and further
   ahead until the node dropped them, and the player's input stopped reaching the game. Extra calls
@@ -184,12 +199,49 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - Load test: `aurix-net-loadtest --mode sync` stamped its inputs two ticks ahead of the last delta
   whatever the latency, so over a link with 50 ms of delay each way the room dropped every one
   of them. It now measures the round trip with `ping` once a second and stamps that far ahead.
+- Unreal plugin: a room name, kick reason, RPC name or room filter with a line break or another
+  control character no longer produces a message the cell refuses; the subsystem writes its
+  messages with the engine's JSON writer instead of pasting strings. An RPC result whose body is
+  an array reaches `OnRpcResult`; it used to arrive empty.
+- Unreal plugin: `Disconnect`, a new `Connect` or closing the game during an async join freed the
+  client the join was still using; it is now freed after the join returns. A `Disconnect` during
+  an async connect is no longer undone when the connect finishes.
+- Unreal plugin: the NetDriver flushes its packets at the end of the frame; they used to wait for
+  the client's own 5 ms timer.
+- Unreal plugin: an `AurixSyncActorComponent` whose `AurixSyncWorld` gets its schema after
+  `BeginPlay` now receives the world's events. Before, its spawned entity was never bound and
+  remote changes were not applied.
+- Unreal plugin: `AurixPhysicsPredictionComponent` with `BodyId` left at 0 derives the id from the
+  actor's name text. It used the hash of the engine name, which differs between processes, so
+  players ignored each other's snapshots of the same body.
+- Unreal plugin, session interface: `Logout` logs the user out; the status stayed `LoggedIn` and
+  the id stayed valid. `GetUniquePlayerId` no longer creates a user as a side effect, and `Login`
+  reports the status change once. The first local player is logged in at start, as with
+  OnlineSubsystemNull.
+- Unreal plugin, editor: the debugger's Request rooms and Request stats buttons show their answers
+  (the subsystem keeps them: `GetLastRooms`, `GetLastStats`), and the Settings button opens the
+  plugin's section.
+- Unreal plugin: the `aurix.net.rooms` console command prints the room list once. Each run used to
+  add a log handler that stayed, so later lists were printed several times.
+- Unreal plugin: `AurixSyncActorComponent` can bind the entity numbered 0. It used 0 for "no
+  entity", but the cell numbers entities from 0, so the first entity of a room could not be bound
+  or owned and its changes were applied to every unbound component.
 - Console: the quota form of a project and the matchmaking page showed nothing when the node
   refused the request. A quota out of range, which the node now answers with `invalid_request`,
   looked like a button that did nothing. Both show the node's message.
 - Console: a project whose stored quotas the node cannot read is listed under "Needs a look"
   on the overview, and its page says that new rooms and joins are refused and shows the node's
   error, until the quotas are saved again.
+- Unreal plugin: `JoinSession` told a full room from a missing one by words in the error text.
+  It reads the error code of the C API now (`aurix_net_last_error_code`): `SessionIsFull` for
+  `room_full`, `SessionDoesNotExist` for `not_found`. `UAurixNetSubsystem::GetLastErrorCode`
+  and the async Blueprint nodes give the same code as `EAurixNetError`.
+- Unreal plugin: travelling to a room froze the game until the node answered the join, and a
+  host migration waited a fixed 0.2 s on the new host and 1.5 s on the others. The driver joins
+  the room in the background and holds the engine's handshake back until it is in, as the
+  engine's own drivers do with a socket that is still connecting; a refused join ends the
+  travel with a network failure. With two clients, the one that stays a client was back on the
+  new host 0.70 s after the old host left, 2.17 s before.
 
 ### CI
 - `release.yml`: the Web npm tarball is packed to the workspace root, so it sits beside the other

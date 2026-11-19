@@ -57,31 +57,63 @@ EOnlineSessionState::Type FOnlineSessionAurix::GetSessionState(FName SessionName
 
 bool FOnlineSessionAurix::CreateSession(int32 HostingPlayerNum, FName SessionName, const FOnlineSessionSettings& NewSettings)
 {
-	if (GetNamedSession(SessionName)) { UE_LOG(LogOnlineAurix, Warning, TEXT("CreateSession: '%s' already exists"), *SessionName.ToString()); TriggerOnCreateSessionCompleteDelegates(SessionName, false); return false; }
 	UAurixNetSubsystem* N = Net();
-	if (!N || !N->HasClient()) { UE_LOG(LogOnlineAurix, Warning, TEXT("CreateSession: Aurix Net is not connected (call Connect with a grant first)")); TriggerOnCreateSessionCompleteDelegates(SessionName, false); return false; }
-	const FString Room = RoomNameFor(SessionName, NewSettings);
-	const int32 Max = FMath::Max(1, NewSettings.NumPublicConnections + NewSettings.NumPrivateConnections);
-	if (N->GetState() == EAurixNetState::InRoom) N->Leave();
-	const int32 Actor = N->JoinOrCreate(Room, EAurixNetRoomMode::Relay, Max);
-	if (Actor < 0 || !N->IsMaster())
+	const TCHAR* Refusal = GetNamedSession(SessionName) ? TEXT("the session already exists")
+		: !N || !N->HasClient() ? TEXT("Aurix Net is not connected (call Connect with a grant first)")
+		: N->IsBusy() ? TEXT("another connect or join is running") : nullptr;
+	if (Refusal)
 	{
-		UE_LOG(LogOnlineAurix, Warning, TEXT("CreateSession: room '%s' %s"), *Room, Actor < 0 ? TEXT("could not be created") : TEXT("already has a host"));
-		if (Actor >= 0) N->Leave();
+		UE_LOG(LogOnlineAurix, Warning, TEXT("CreateSession '%s': %s"), *SessionName.ToString(), Refusal);
 		TriggerOnCreateSessionCompleteDelegates(SessionName, false);
 		return false;
 	}
-	FNamedOnlineSession* S = AddNamedSession(SessionName, NewSettings);
-	S->SessionState = EOnlineSessionState::Pending;
-	S->bHosting = true;
-	S->HostingPlayerNum = HostingPlayerNum;
-	S->NumOpenPublicConnections = NewSettings.NumPublicConnections;
-	S->NumOpenPrivateConnections = NewSettings.NumPrivateConnections;
-	S->SessionInfo = MakeShared<FOnlineSessionInfoAurix>(Room, N->GetRoom().RoomId);
-	if (const IOnlineIdentityPtr Id = Subsystem->GetIdentityInterface()) { S->OwningUserId = Id->GetUniquePlayerId(HostingPlayerNum); S->OwningUserName = Id->GetPlayerNickname(HostingPlayerNum); S->LocalOwnerId = S->OwningUserId; }
-	TriggerOnCreateSessionCompleteDelegates(SessionName, true);
+	const FString Room = RoomNameFor(SessionName, NewSettings);
+	const int32 MaxPlayers = FMath::Max(1, NewSettings.NumPublicConnections + NewSettings.NumPrivateConnections);
+	if (N->GetState() == EAurixNetState::InRoom)
+	{
+		N->Leave();
+	}
+	FNamedOnlineSession* Session = AddNamedSession(SessionName, NewSettings);
+	Session->SessionState = EOnlineSessionState::Creating;
+	Session->bHosting = true;
+	Session->HostingPlayerNum = HostingPlayerNum;
+	Session->NumOpenPublicConnections = NewSettings.NumPublicConnections;
+	Session->NumOpenPrivateConnections = NewSettings.NumPrivateConnections;
+	if (const IOnlineIdentityPtr Identity = Subsystem->GetIdentityInterface())
+	{
+		Session->OwningUserId = Identity->GetUniquePlayerId(HostingPlayerNum);
+		Session->OwningUserName = Identity->GetPlayerNickname(HostingPlayerNum);
+		Session->LocalOwnerId = Session->OwningUserId;
+	}
+	N->JoinAsync(UAurixNetSubsystem::JoinOrCreateJson(Room, EAurixNetRoomMode::Relay, MaxPlayers, FString()),
+		FAurixNetAsyncResult::CreateThreadSafeSP(this, &FOnlineSessionAurix::OnCreateJoined, SessionName, Room));
 	return true;
 }
+
+void FOnlineSessionAurix::OnCreateJoined(int32 Actor, EAurixNetError Code, const FString& Error, FName SessionName, FString Room)
+{
+	UAurixNetSubsystem* N = Net();
+	FNamedOnlineSession* Session = GetNamedSession(SessionName);
+	const bool bHosting = Actor >= 0 && N && N->IsMaster();
+	if (!Session || !bHosting)
+	{
+		if (Actor >= 0 && N)
+		{
+			N->Leave();
+		}
+		if (Session)
+		{
+			UE_LOG(LogOnlineAurix, Warning, TEXT("CreateSession: room '%s' %s"), *Room, Actor < 0 ? *Error : TEXT("already has a host"));
+			RemoveNamedSession(SessionName);
+			TriggerOnCreateSessionCompleteDelegates(SessionName, false);
+		}
+		return;
+	}
+	Session->SessionState = EOnlineSessionState::Pending;
+	Session->SessionInfo = MakeShared<FOnlineSessionInfoAurix>(Room, N->GetRoom().RoomId);
+	TriggerOnCreateSessionCompleteDelegates(SessionName, true);
+}
+
 bool FOnlineSessionAurix::CreateSession(const FUniqueNetId&, FName SessionName, const FOnlineSessionSettings& NewSettings) { return CreateSession(0, SessionName, NewSettings); }
 
 bool FOnlineSessionAurix::StartSession(FName SessionName)
@@ -129,28 +161,75 @@ bool FOnlineSessionAurix::StartMatchmaking(const TArray<FUniqueNetIdRef>& LocalP
 {
 	TArray<FSessionMatchmakingUser> Users;
 	for (const FUniqueNetIdRef& Id : LocalPlayers) Users.Add(FSessionMatchmakingUser{ Id, {} });
-	if (StartMatchmaking(Users, SessionName, NewSettings, Search, FOnStartMatchmakingComplete())) return true;
+	if (StartMatchmaking(Users, SessionName, NewSettings, Search, FOnStartMatchmakingComplete()))
+	{
+		return true;
+	}
 	TriggerOnMatchmakingCompleteDelegates(SessionName, false);
 	return false;
 }
 bool FOnlineSessionAurix::StartMatchmaking(const TArray<FSessionMatchmakingUser>&, FName SessionName, const FOnlineSessionSettings& NewSettings, TSharedRef<FOnlineSessionSearch>& Search, const FOnStartMatchmakingComplete& Done)
 {
-	// Server-side matchmaking: any open relay room with a free slot, else host one.
 	UAurixNetSubsystem* N = Net();
-	if (!N || !N->HasClient()) { Done.ExecuteIfBound(SessionName, FOnlineError(false), {}); return false; }
-	if (N->GetState() == EAurixNetState::InRoom) N->Leave();
-	int32 Actor = N->JoinRandom();
-	if (Actor < 0) Actor = N->JoinOrCreate(RoomNameFor(SessionName, NewSettings), EAurixNetRoomMode::Relay, FMath::Max(1, NewSettings.NumPublicConnections));
-	if (Actor < 0) { Done.ExecuteIfBound(SessionName, FOnlineError(false), {}); return false; }
-	FNamedOnlineSession* S = AddNamedSession(SessionName, NewSettings);
-	S->SessionState = EOnlineSessionState::Pending;
-	S->bHosting = N->IsMaster();
-	S->SessionInfo = MakeShared<FOnlineSessionInfoAurix>(N->GetRoom().Name, N->GetRoom().RoomId);
+	if (GetNamedSession(SessionName) || !N || !N->HasClient() || N->IsBusy())
+	{
+		Done.ExecuteIfBound(SessionName, FOnlineError(false), {});
+		return false;
+	}
+	if (N->GetState() == EAurixNetState::InRoom)
+	{
+		N->Leave();
+	}
+	FNamedOnlineSession* Session = AddNamedSession(SessionName, NewSettings);
+	Session->SessionState = EOnlineSessionState::Creating;
+	Search->SearchState = EOnlineAsyncTaskState::InProgress;
+	// Any open relay room with a free slot; when there is none, host one.
+	const FString HostJson = UAurixNetSubsystem::JoinOrCreateJson(RoomNameFor(SessionName, NewSettings), EAurixNetRoomMode::Relay, FMath::Max(1, NewSettings.NumPublicConnections), FString());
+	N->JoinAsync(UAurixNetSubsystem::JoinRandomJson(FString()),
+		FAurixNetAsyncResult::CreateThreadSafeSP(this, &FOnlineSessionAurix::OnMatchJoined, SessionName, HostJson, Search, Done));
+	return true;
+}
+
+void FOnlineSessionAurix::OnMatchJoined(int32 Actor, EAurixNetError Code, const FString& Error, FName SessionName, FString FallbackJoinJson, TSharedRef<FOnlineSessionSearch> Search, FOnStartMatchmakingComplete Done)
+{
+	UAurixNetSubsystem* N = Net();
+	FNamedOnlineSession* Session = GetNamedSession(SessionName);
+	if (!Session || !N)
+	{
+		if (Actor >= 0 && N)
+		{
+			N->Leave();
+		}
+		FailMatchmaking(SessionName, Search, Done);
+		return;
+	}
+	if (Actor < 0)
+	{
+		if (FallbackJoinJson.IsEmpty())
+		{
+			UE_LOG(LogOnlineAurix, Warning, TEXT("StartMatchmaking: %s"), *Error);
+			FailMatchmaking(SessionName, Search, Done);
+			return;
+		}
+		N->JoinAsync(FallbackJoinJson, FAurixNetAsyncResult::CreateThreadSafeSP(this, &FOnlineSessionAurix::OnMatchJoined, SessionName, FString(), Search, Done));
+		return;
+	}
+	Session->SessionState = EOnlineSessionState::Pending;
+	Session->bHosting = N->IsMaster();
+	Session->SessionInfo = MakeShared<FOnlineSessionInfoAurix>(N->GetRoom().Name, N->GetRoom().RoomId);
 	Search->SearchState = EOnlineAsyncTaskState::Done;
 	Done.ExecuteIfBound(SessionName, FOnlineError(true), {});
 	TriggerOnMatchmakingCompleteDelegates(SessionName, true);
-	return true;
 }
+
+void FOnlineSessionAurix::FailMatchmaking(FName SessionName, const TSharedRef<FOnlineSessionSearch>& Search, const FOnStartMatchmakingComplete& Done)
+{
+	RemoveNamedSession(SessionName);
+	Search->SearchState = EOnlineAsyncTaskState::Failed;
+	Done.ExecuteIfBound(SessionName, FOnlineError(false), {});
+	TriggerOnMatchmakingCompleteDelegates(SessionName, false);
+}
+
 bool FOnlineSessionAurix::CancelMatchmaking(int32, FName SessionName) { TriggerOnCancelMatchmakingCompleteDelegates(SessionName, true); return true; }
 bool FOnlineSessionAurix::CancelMatchmaking(const FUniqueNetId&, FName SessionName) { TriggerOnCancelMatchmakingCompleteDelegates(SessionName, true); return true; }
 
@@ -180,7 +259,6 @@ void FOnlineSessionAurix::OnRooms(const TArray<FAurixNetRoomSummary>& Rooms)
 		Res.Session.SessionSettings.bShouldAdvertise = true;
 		Res.Session.SessionSettings.bAllowJoinInProgress = R.bOpen;
 		Res.Session.SessionSettings.Set(SETTING_AURIX_ROOM, R.Name, EOnlineDataAdvertisementType::ViaOnlineService);
-		Res.Session.SessionSettings.Set(SETTING_MAPNAME, R.Name, EOnlineDataAdvertisementType::ViaOnlineService);
 		Res.Session.NumOpenPublicConnections = FMath::Max(0, R.MaxPlayers - R.Players);
 		Res.Session.OwningUserName = R.Name;
 		Res.PingInMs = 0;
@@ -211,30 +289,64 @@ bool FOnlineSessionAurix::PingSearchResults(const FOnlineSessionSearchResult&) {
 
 bool FOnlineSessionAurix::JoinSession(int32 PlayerNum, FName SessionName, const FOnlineSessionSearchResult& Desired)
 {
-	if (GetNamedSession(SessionName)) { TriggerOnJoinSessionCompleteDelegates(SessionName, EOnJoinSessionCompleteResult::AlreadyInSession); return false; }
-	UAurixNetSubsystem* N = Net();
-	FString Room;
-	if (Desired.Session.SessionInfo.IsValid()) Room = StaticCastSharedPtr<FOnlineSessionInfoAurix>(Desired.Session.SessionInfo)->RoomName;
-	if (Room.IsEmpty()) Desired.Session.SessionSettings.Get(SETTING_AURIX_ROOM, Room);
-	if (!N || !N->HasClient() || Room.IsEmpty()) { TriggerOnJoinSessionCompleteDelegates(SessionName, EOnJoinSessionCompleteResult::UnknownError); return false; }
-	if (N->GetState() == EAurixNetState::InRoom) N->Leave();
-	const int32 Actor = N->Join(Room);
-	if (Actor < 0)
+	if (GetNamedSession(SessionName))
 	{
-		const FString Err = N->GetLastError();
-		const EOnJoinSessionCompleteResult::Type R = Err.Contains(TEXT("full")) ? EOnJoinSessionCompleteResult::SessionIsFull
-			: Err.Contains(TEXT("not found")) || Err.Contains(TEXT("no such")) ? EOnJoinSessionCompleteResult::SessionDoesNotExist : EOnJoinSessionCompleteResult::UnknownError;
-		TriggerOnJoinSessionCompleteDelegates(SessionName, R);
+		TriggerOnJoinSessionCompleteDelegates(SessionName, EOnJoinSessionCompleteResult::AlreadyInSession);
 		return false;
 	}
-	FNamedOnlineSession* S = AddNamedSession(SessionName, Desired.Session);
-	S->SessionState = EOnlineSessionState::Pending;
-	S->bHosting = false;
-	S->HostingPlayerNum = PlayerNum;
-	S->SessionInfo = MakeShared<FOnlineSessionInfoAurix>(Room, N->GetRoom().RoomId);
-	TriggerOnJoinSessionCompleteDelegates(SessionName, EOnJoinSessionCompleteResult::Success);
+	UAurixNetSubsystem* N = Net();
+	FString Room;
+	if (Desired.Session.SessionInfo.IsValid())
+	{
+		Room = StaticCastSharedPtr<FOnlineSessionInfoAurix>(Desired.Session.SessionInfo)->RoomName;
+	}
+	if (Room.IsEmpty())
+	{
+		Desired.Session.SessionSettings.Get(SETTING_AURIX_ROOM, Room);
+	}
+	if (!N || !N->HasClient() || N->IsBusy() || Room.IsEmpty())
+	{
+		TriggerOnJoinSessionCompleteDelegates(SessionName, EOnJoinSessionCompleteResult::UnknownError);
+		return false;
+	}
+	if (N->GetState() == EAurixNetState::InRoom)
+	{
+		N->Leave();
+	}
+	FNamedOnlineSession* Session = AddNamedSession(SessionName, Desired.Session);
+	Session->SessionState = EOnlineSessionState::Creating;
+	Session->bHosting = false;
+	Session->HostingPlayerNum = PlayerNum;
+	N->JoinAsync(UAurixNetSubsystem::JoinJsonFor(Room), FAurixNetAsyncResult::CreateThreadSafeSP(this, &FOnlineSessionAurix::OnSessionJoined, SessionName, Room));
 	return true;
 }
+
+void FOnlineSessionAurix::OnSessionJoined(int32 Actor, EAurixNetError Code, const FString& Error, FName SessionName, FString Room)
+{
+	UAurixNetSubsystem* N = Net();
+	FNamedOnlineSession* Session = GetNamedSession(SessionName);
+	if (!Session)
+	{
+		if (Actor >= 0 && N)
+		{
+			N->Leave();
+		}
+		return;
+	}
+	if (Actor < 0 || !N)
+	{
+		const EOnJoinSessionCompleteResult::Type Result = Code == EAurixNetError::RoomFull ? EOnJoinSessionCompleteResult::SessionIsFull
+			: Code == EAurixNetError::NotFound ? EOnJoinSessionCompleteResult::SessionDoesNotExist
+			: EOnJoinSessionCompleteResult::UnknownError;
+		RemoveNamedSession(SessionName);
+		TriggerOnJoinSessionCompleteDelegates(SessionName, Result);
+		return;
+	}
+	Session->SessionState = EOnlineSessionState::Pending;
+	Session->SessionInfo = MakeShared<FOnlineSessionInfoAurix>(Room, N->GetRoom().RoomId);
+	TriggerOnJoinSessionCompleteDelegates(SessionName, EOnJoinSessionCompleteResult::Success);
+}
+
 bool FOnlineSessionAurix::JoinSession(const FUniqueNetId&, FName SessionName, const FOnlineSessionSearchResult& Desired) { return JoinSession(0, SessionName, Desired); }
 
 bool FOnlineSessionAurix::FindFriendSession(int32 LocalUserNum, const FUniqueNetId&) { TriggerOnFindFriendSessionCompleteDelegates(LocalUserNum, false, {}); return false; }

@@ -3,7 +3,6 @@
 #include "aurix_net.h"
 #include "GameFramework/Actor.h"
 #include "AurixNetSubsystem.h"
-#include "Engine/GameInstance.h"
 #include "Engine/World.h"
 
 UAurixRollbackRunner::UAurixRollbackRunner() { PrimaryComponentTick.bCanEverTick = true; }
@@ -35,6 +34,7 @@ void UAurixRollbackRunner::Start(int64 FromTick)
 {
 	Confirmed = Predicted = FromTick - 1;
 	ConfirmedState = SaveState.IsBound() ? SaveState.Execute() : TArray<uint8>();
+	InitialState = ConfirmedState;
 	Pending.Reset(); LastInputs.Reset(); Journal.Reset(); JournalStart = FromTick; RollbackCount = 0; Accum = 0;
 	bRunning = true;
 }
@@ -52,8 +52,7 @@ void UAurixRollbackRunner::Simulate(int64 Tick, const TArray<FAurixLockstepInput
 
 int32 UAurixRollbackRunner::LocalActor() const
 {
-	const UWorld* W = GetWorld(); const UGameInstance* GI = W ? W->GetGameInstance() : nullptr;
-	const UAurixNetSubsystem* N = GI ? GI->GetSubsystem<UAurixNetSubsystem>() : nullptr;
+	const UAurixNetSubsystem* N = UAurixNetSubsystem::Get(this);
 	return N ? N->GetRoom().Actor : -1;
 }
 
@@ -118,17 +117,18 @@ void UAurixRollbackRunner::HandleTick(int64 Tick, const TArray<FAurixLockstepInp
 
 void UAurixRollbackRunner::HandleRestore(int64 Tick, int64, const TArray<uint8>& State)
 {
-	// Late join / resync: the cell hands us a checkpoint; continue from it.
-	if (LoadState.IsBound()) LoadState.Execute(State);
-	ConfirmedState = State; Confirmed = Predicted = Tick; Pending.Reset();
-	Journal.Reset(); JournalStart = Tick + 1;
+	// Late join / resync: the cell hands us the state before Tick, or nothing when the room has no checkpoint yet.
+	ConfirmedState = State.IsEmpty() ? InitialState : State;
+	if (LoadState.IsBound()) LoadState.Execute(ConfirmedState);
+	Confirmed = Predicted = Tick - 1; Pending.Reset();
+	Journal.Reset(); JournalStart = Tick;
 	bRunning = true;
 }
 void UAurixRollbackRunner::HandleStateRequest(int64, bool bFullDump)
 {
 	if (!Lockstep) return;
 	const int64 H = (int64)aurix_net_lockstep_fnv1a(ConfirmedState.GetData(), ConfirmedState.Num());
-	if (bFullDump) Lockstep->SendDump(Confirmed, H, ConfirmedState); else Lockstep->SendCheckpoint(Confirmed, H, ConfirmedState);
+	if (bFullDump) Lockstep->SendDump(Confirmed, H, ConfirmedState); else Lockstep->SendCheckpoint(Confirmed + 1, H, ConfirmedState);
 }
 
 TArray<uint8> UAurixRollbackRunner::ExportReplay() const

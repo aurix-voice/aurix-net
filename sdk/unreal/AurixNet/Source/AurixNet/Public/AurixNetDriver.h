@@ -32,6 +32,7 @@ public:
 	virtual bool InitConnect(FNetworkNotify* InNotify, const FURL& ConnectURL, FString& Error) override;
 	virtual bool InitListen(FNetworkNotify* InNotify, FURL& LocalURL, bool bReuseAddressAndPort, FString& Error) override;
 	virtual void TickDispatch(float DeltaTime) override;
+	virtual void TickFlush(float DeltaSeconds) override;
 	virtual void LowLevelSend(TSharedPtr<const FInternetAddr> Address, void* Data, int32 CountBits, FOutPacketTraits& Traits) override;
 	virtual FString LowLevelGetNetworkNumber() override;
 	virtual void LowLevelDestroy() override;
@@ -43,27 +44,28 @@ public:
 
 private:
 	UAurixNetSubsystem* Subsystem() const;
-	UClass* ConnectionClass() const;
 	void OnRawEvent(const FAurixNetEventFrame& Frame);
-	void OnPlayerLeft(int32 Actor, bool bOffline);
-	void OnMasterChanged(int32 Master);
-	void OnClosed(const FString& Reason);
 	UAurixNetConnection* AcceptRemote(uint16 Actor, TArray<uint8>& Packet);
 
-	UFUNCTION() void HandlePlayerLeft(int32 Actor, bool bOffline);
-	UFUNCTION() void HandleMasterChanged(int32 Master);
-	UFUNCTION() void HandleClosed(const FString& Reason);
+	UFUNCTION() void OnPlayerLeft(int32 Actor, bool bOffline);
+	UFUNCTION() void OnMasterChanged(int32 Master);
+	UFUNCTION() void OnClosed(const FString& Reason);
 
+	void OnRoomJoined(int32 Actor, EAurixNetError Code, const FString& JoinFailure, FString RoomName);
+	void EnterRoom();
 	void BeginHostMigration(int32 NewMaster);
 	void TravelForMigration();
 	FString CurrentMapPath() const;
 	bool bMigrating = false;
 	bool bMigrateAsHost = false;
-	float MigrateIn = 0.f;
 	FString MigrationRoom;
 	TMap<uint16, TWeakObjectPtr<UAurixNetConnection>> Remotes;
 	TArray<TPair<uint16, TArray<uint8>>> Inbox;
 	FDelegateHandle RawHandle;
 	bool bListening = false;
+	bool bJoining = false;
+	bool bInRoom = false;
+	bool bStartingJoin = false;
+	FString JoinError;
 	bool bSentThisTick = false;
 };

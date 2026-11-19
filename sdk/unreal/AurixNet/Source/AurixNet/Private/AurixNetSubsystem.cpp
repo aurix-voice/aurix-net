@@ -8,7 +8,8 @@
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "AurixNetSettings.h"
 #include "Async/Async.h"
-#include "Misc/Base64.h"
+#include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "UObject/Package.h"
 
@@ -18,9 +19,6 @@ static FString ToJsonString(const TSharedPtr<FJsonObject>& O)
 	if (O.IsValid()) { const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Wr = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out); FJsonSerializer::Serialize(O.ToSharedRef(), Wr); }
 	return Out;
 }
-static FString IntArray(const TArray<int32>& A) { FString S = TEXT("["); for (int32 I = 0; I < A.Num(); ++I) { if (I) S += TEXT(","); S += FString::FromInt(A[I]); } return S + TEXT("]"); }
-static FString Int64Array(const TArray<int64>& A) { FString S = TEXT("["); for (int32 I = 0; I < A.Num(); ++I) { if (I) S += TEXT(","); S += FString::Printf(TEXT("%lld"), A[I]); } return S + TEXT("]"); }
-
 static FString ModeName(EAurixNetRoomMode M)
 {
 	switch (M) { case EAurixNetRoomMode::Sync: return TEXT("sync"); case EAurixNetRoomMode::Lockstep: return TEXT("lockstep"); default: return TEXT("relay"); }
@@ -31,12 +29,58 @@ static EAurixNetRoomMode ModeFrom(const FString& S)
 	if (S == TEXT("lockstep")) return EAurixNetRoomMode::Lockstep;
 	return EAurixNetRoomMode::Relay;
 }
-static FString Quote(const FString& S)
+/** One control message for the cell: an object that starts with its type. */
+class FControlMessage
 {
-	FString Out = TEXT("\"");
-	for (TCHAR C : S) { if (C == '"' || C == '\\') { Out.AppendChar('\\'); } Out.AppendChar(C); }
-	return Out + TEXT("\"");
-}
+public:
+	explicit FControlMessage(const TCHAR* Type)
+		: Writer(TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Text))
+	{
+		Writer->WriteObjectStart();
+		Writer->WriteValue(TEXT("t"), Type);
+	}
+
+	template <typename ValueType>
+	FControlMessage& Value(const TCHAR* Name, const ValueType& InValue)
+	{
+		Writer->WriteValue(Name, InValue);
+		return *this;
+	}
+
+	/** JSON text the caller already holds; nothing is written for an empty one. */
+	FControlMessage& Raw(const TCHAR* Name, const FString& Json)
+	{
+		if (!Json.IsEmpty())
+		{
+			Writer->WriteRawJSONValue(Name, Json);
+		}
+		return *this;
+	}
+
+	template <typename ElementType>
+	FControlMessage& Array(const TCHAR* Name, const TArray<ElementType>& Values)
+	{
+		Writer->WriteArrayStart(Name);
+		for (const ElementType& Element : Values)
+		{
+			Writer->WriteValue(static_cast<int64>(Element));
+		}
+		Writer->WriteArrayEnd();
+		return *this;
+	}
+
+	FString Finish()
+	{
+		Writer->WriteObjectEnd();
+		Writer->Close();
+		return MoveTemp(Text);
+	}
+
+private:
+	FString Text;
+	TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer;
+};
+
 static FAurixNetPlayer PlayerFrom(const TSharedPtr<FJsonObject>& O)
 {
 	FAurixNetPlayer P;
@@ -47,10 +91,35 @@ static FAurixNetPlayer PlayerFrom(const TSharedPtr<FJsonObject>& O)
 	O->TryGetBoolField(TEXT("online"), P.bOnline);
 	return P;
 }
+static FAurixNetRoomSummary RoomSummaryFrom(const FJsonObject& Object)
+{
+	FAurixNetRoomSummary Summary;
+	Object.TryGetStringField(TEXT("id"), Summary.RoomId);
+	Object.TryGetStringField(TEXT("name"), Summary.Name);
+	FString Mode;
+	Object.TryGetStringField(TEXT("mode"), Mode);
+	Summary.Mode = ModeFrom(Mode);
+	Summary.Players = (int32)Object.GetNumberField(TEXT("players"));
+	Summary.MaxPlayers = (int32)Object.GetNumberField(TEXT("max_players"));
+	Object.TryGetBoolField(TEXT("open"), Summary.bOpen);
+	const TSharedPtr<FJsonObject>* Props = nullptr;
+	if (Object.TryGetObjectField(TEXT("props"), Props))
+	{
+		Summary.PropsJson = ToJsonString(*Props);
+	}
+	return Summary;
+}
 static TSharedPtr<FJsonObject> Parse(const FString& Json)
 {
 	TSharedPtr<FJsonObject> O; const TSharedRef<TJsonReader<>> R = TJsonReaderFactory<>::Create(Json);
 	FJsonSerializer::Deserialize(R, O); return O;
+}
+
+UAurixNetSubsystem* UAurixNetSubsystem::Get(const UObject* WorldContextObject)
+{
+	const UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull) : nullptr;
+	const UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+	return GameInstance ? GameInstance->GetSubsystem<UAurixNetSubsystem>() : nullptr;
 }
 
 void UAurixNetSubsystem::Deinitialize() { DestroyClient(); Super::Deinitialize(); }
@@ -58,10 +127,29 @@ void UAurixNetSubsystem::Deinitialize() { DestroyClient(); Super::Deinitialize()
 FString UAurixNetSubsystem::GetNativeVersion() { const char* V = aurix_net_version(); return V ? UTF8_TO_TCHAR(V) : FString(); }
 FString UAurixNetSubsystem::GetLastError() const { const char* E = aurix_net_last_error(); return E ? UTF8_TO_TCHAR(E) : FString(); }
 
+static_assert((int32)EAurixNetError::InvalidArgument == AURIX_NET_ERR_INVALID_ARGUMENT && (int32)EAurixNetError::Http == AURIX_NET_ERR_HTTP
+	&& (int32)EAurixNetError::Connection == AURIX_NET_ERR_CONNECTION && (int32)EAurixNetError::DataPath == AURIX_NET_ERR_DATA_PATH
+	&& (int32)EAurixNetError::Disconnected == AURIX_NET_ERR_DISCONNECTED && (int32)EAurixNetError::Timeout == AURIX_NET_ERR_TIMEOUT
+	&& (int32)EAurixNetError::Protocol == AURIX_NET_ERR_PROTOCOL && (int32)EAurixNetError::Unauthorized == AURIX_NET_ERR_UNAUTHORIZED
+	&& (int32)EAurixNetError::Forbidden == AURIX_NET_ERR_FORBIDDEN && (int32)EAurixNetError::NotFound == AURIX_NET_ERR_NOT_FOUND
+	&& (int32)EAurixNetError::Conflict == AURIX_NET_ERR_CONFLICT && (int32)EAurixNetError::InvalidRequest == AURIX_NET_ERR_INVALID_REQUEST
+	&& (int32)EAurixNetError::RoomFull == AURIX_NET_ERR_ROOM_FULL && (int32)EAurixNetError::RoomClosed == AURIX_NET_ERR_ROOM_CLOSED
+	&& (int32)EAurixNetError::SchemaMismatch == AURIX_NET_ERR_SCHEMA_MISMATCH && (int32)EAurixNetError::QuotaExceeded == AURIX_NET_ERR_QUOTA_EXCEEDED
+	&& (int32)EAurixNetError::RateLimited == AURIX_NET_ERR_RATE_LIMITED && (int32)EAurixNetError::Server == AURIX_NET_ERR_SERVER,
+	"EAurixNetError must match AURIX_NET_ERR_*");
+
+static EAurixNetError LastErrorCode() { return static_cast<EAurixNetError>(aurix_net_last_error_code()); }
+EAurixNetError UAurixNetSubsystem::GetLastErrorCode() const { return LastErrorCode(); }
+
 void UAurixNetSubsystem::SetState(EAurixNetState S) { if (State != S) { State = S; OnStateChanged.Broadcast(S); } }
 
 bool UAurixNetSubsystem::Connect(const FString& CellUrl, const FString& Grant, bool bTunnel)
 {
+	if (bBusy)
+	{
+		OnError.Broadcast(TEXT("connect"), TEXT("busy"));
+		return false;
+	}
 	DestroyClient();
 	SetState(EAurixNetState::Connecting);
 	Client = aurix_net_connect(TCHAR_TO_UTF8(*CellUrl), TCHAR_TO_UTF8(*Grant), bTunnel ? 1 : 0);
@@ -81,10 +169,10 @@ int32 UAurixNetSubsystem::JoinJson(const FString& Json)
 	if (!Client || bBusy) { OnError.Broadcast(TEXT("join"), bBusy ? TEXT("busy") : TEXT("not connected")); return -1; }
 	const int32 Actor = aurix_net_join(Client, TCHAR_TO_UTF8(*Json));
 	if (Actor < 0) { UE_LOG(LogAurixNet, Warning, TEXT("join failed: %s"), *GetLastError()); OnError.Broadcast(TEXT("join"), GetLastError()); return -1; }
-	FinishJoin(Actor);
+	FinishJoin();
 	return Actor;
 }
-void UAurixNetSubsystem::FinishJoin(int32)
+void UAurixNetSubsystem::FinishJoin()
 {
 	ReadJoined();
 	RoomPropsJson.Reset(); PlayerProps.Reset();
@@ -94,18 +182,31 @@ void UAurixNetSubsystem::FinishJoin(int32)
 
 FString UAurixNetSubsystem::JoinOrCreateJson(const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson, const FString& LobbyPropsJson, bool bVisible, bool bOpen)
 {
-	FString J = FString::Printf(TEXT("{\"t\":\"join_or_create\",\"name\":%s,\"mode\":\"%s\",\"max_players\":%d,\"visible\":%s,\"open\":%s"), *Quote(RoomName), *ModeName(Mode), FMath::Clamp(MaxPlayers, 1, 65535), bVisible ? TEXT("true") : TEXT("false"), bOpen ? TEXT("true") : TEXT("false"));
-	if (!PropsJson.IsEmpty()) J += TEXT(",\"props\":") + PropsJson;
-	if (!LobbyPropsJson.IsEmpty()) J += TEXT(",\"lobby_props\":") + LobbyPropsJson;
-	return J + TEXT("}");
+	return FControlMessage(TEXT("join_or_create"))
+		.Value(TEXT("name"), RoomName)
+		.Value(TEXT("mode"), ModeName(Mode))
+		.Value(TEXT("max_players"), static_cast<int64>(FMath::Clamp(MaxPlayers, 1, 65535)))
+		.Value(TEXT("visible"), bVisible)
+		.Value(TEXT("open"), bOpen)
+		.Raw(TEXT("props"), PropsJson)
+		.Raw(TEXT("lobby_props"), LobbyPropsJson)
+		.Finish();
 }
-FString UAurixNetSubsystem::JoinJsonFor(const FString& RoomName) { return FString::Printf(TEXT("{\"t\":\"join\",\"name\":%s}"), *Quote(RoomName)); }
+
+FString UAurixNetSubsystem::JoinJsonFor(const FString& RoomName)
+{
+	return FControlMessage(TEXT("join")).Value(TEXT("name"), RoomName).Finish();
+}
+
 FString UAurixNetSubsystem::JoinRandomJson(const FString& FilterJson, const FString& Expr)
 {
-	FString J = TEXT("{\"t\":\"join_random\"");
-	if (!FilterJson.IsEmpty()) J += TEXT(",\"filter\":") + FilterJson;
-	if (!Expr.IsEmpty()) J += TEXT(",\"expr\":") + Quote(Expr);
-	return J + TEXT("}");
+	FControlMessage Message(TEXT("join_random"));
+	Message.Raw(TEXT("filter"), FilterJson);
+	if (!Expr.IsEmpty())
+	{
+		Message.Value(TEXT("expr"), Expr);
+	}
+	return Message.Finish();
 }
 
 bool UAurixNetSubsystem::ConnectWithSettings(const FString& Grant)
@@ -117,46 +218,66 @@ bool UAurixNetSubsystem::ConnectWithSettings(const FString& Grant)
 
 void UAurixNetSubsystem::ConnectAsync(const FString& CellUrl, const FString& Grant, bool bTunnel, FAurixNetAsyncResult Done)
 {
-	if (bBusy) { Done.ExecuteIfBound(-1, TEXT("busy")); return; }
+	if (bBusy) { Done.ExecuteIfBound(-1, EAurixNetError::InvalidArgument, TEXT("busy")); return; }
 	DestroyClient();
 	bBusy = true;
+	const uint32 Serial = ConnectSerial;
 	SetState(EAurixNetState::Connecting);
 	TWeakObjectPtr<UAurixNetSubsystem> Self(this);
-	Async(EAsyncExecution::Thread, [Self, CellUrl, Grant, bTunnel, Done]()
+	Async(EAsyncExecution::Thread, [Self, Serial, CellUrl, Grant, bTunnel, Done]()
 	{
 		AurixNetClient* C = aurix_net_connect(TCHAR_TO_UTF8(*CellUrl), TCHAR_TO_UTF8(*Grant), bTunnel ? 1 : 0);
 		const FString Err = C ? FString() : (aurix_net_last_error() ? FString(UTF8_TO_TCHAR(aurix_net_last_error())) : TEXT("connect failed"));
-		AsyncTask(ENamedThreads::GameThread, [Self, C, Err, Done]()
+		const EAurixNetError Code = C ? EAurixNetError::None : LastErrorCode();
+		AsyncTask(ENamedThreads::GameThread, [Self, Serial, C, Code, Err, Done]()
 		{
 			if (!Self.IsValid()) { if (C) aurix_net_destroy(C); return; }
 			Self->bBusy = false;
-			if (!C) { Self->SetState(EAurixNetState::Disconnected); Self->OnError.Broadcast(TEXT("connect"), Err); Done.ExecuteIfBound(-1, Err); return; }
+			if (Self->ConnectSerial != Serial)
+			{
+				if (C) aurix_net_destroy(C);
+				Done.ExecuteIfBound(-1, EAurixNetError::Disconnected, TEXT("disconnected while connecting"));
+				return;
+			}
+			if (!C) { Self->SetState(EAurixNetState::Disconnected); Self->OnError.Broadcast(TEXT("connect"), Err); Done.ExecuteIfBound(-1, Code, Err); return; }
 			Self->Client = C;
 			Self->SetState(EAurixNetState::Connected);
-			Done.ExecuteIfBound(0, FString());
+			Done.ExecuteIfBound(0, EAurixNetError::None, FString());
 		});
 	});
 }
 
 void UAurixNetSubsystem::JoinAsync(const FString& JoinJson, FAurixNetAsyncResult Done)
 {
-	if (!Client) { Done.ExecuteIfBound(-1, TEXT("not connected")); return; }
-	if (bBusy) { Done.ExecuteIfBound(-1, TEXT("busy")); return; }
+	if (!Client) { Done.ExecuteIfBound(-1, EAurixNetError::Disconnected, TEXT("not connected")); return; }
+	if (bBusy) { Done.ExecuteIfBound(-1, EAurixNetError::InvalidArgument, TEXT("busy")); return; }
 	bBusy = true;
 	AurixNetClient* C = Client;
+	JoiningClient = C;
 	TWeakObjectPtr<UAurixNetSubsystem> Self(this);
 	Async(EAsyncExecution::Thread, [Self, C, JoinJson, Done]()
 	{
 		const int32 Actor = aurix_net_join(C, TCHAR_TO_UTF8(*JoinJson));
 		const FString Err = Actor >= 0 ? FString() : (aurix_net_last_error() ? FString(UTF8_TO_TCHAR(aurix_net_last_error())) : TEXT("join failed"));
-		AsyncTask(ENamedThreads::GameThread, [Self, C, Actor, Err, Done]()
+		const EAurixNetError Code = Actor >= 0 ? EAurixNetError::None : LastErrorCode();
+		AsyncTask(ENamedThreads::GameThread, [Self, C, Actor, Code, Err, Done]()
 		{
-			if (!Self.IsValid()) return;
+			if (!Self.IsValid())
+			{
+				aurix_net_destroy(C);
+				return;
+			}
 			Self->bBusy = false;
-			if (Self->Client != C) { Done.ExecuteIfBound(-1, TEXT("client replaced")); return; }
-			if (Actor < 0) { Self->OnError.Broadcast(TEXT("join"), Err); Done.ExecuteIfBound(-1, Err); return; }
-			Self->FinishJoin(Actor);
-			Done.ExecuteIfBound(Actor, FString());
+			Self->JoiningClient = nullptr;
+			if (Self->Client != C)
+			{
+				aurix_net_destroy(C);
+				Done.ExecuteIfBound(-1, EAurixNetError::Disconnected, TEXT("disconnected while joining"));
+				return;
+			}
+			if (Actor < 0) { Self->OnError.Broadcast(TEXT("join"), Err); Done.ExecuteIfBound(-1, Code, Err); return; }
+			Self->FinishJoin();
+			Done.ExecuteIfBound(Actor, EAurixNetError::None, FString());
 		});
 	});
 }
@@ -166,7 +287,7 @@ void UAurixNetSubsystem::ConnectWithDevGrantAsync(const FString& PlayerName, FAu
 {
 	const UAurixNetEditorSettings* E = GetDefault<UAurixNetEditorSettings>();
 	const UAurixNetSettings* S = UAurixNetSettings::Get();
-	if (E->DevApiKey.IsEmpty()) { Done.ExecuteIfBound(-1, TEXT("the DevApiKey of the Aurix Net (Editor) settings is empty")); return; }
+	if (E->DevApiKey.IsEmpty()) { Done.ExecuteIfBound(-1, EAurixNetError::InvalidArgument, TEXT("the DevApiKey of the Aurix Net (Editor) settings is empty")); return; }
 	const UWorld* W = GetWorld();
 	const int32 Pie = (W && W->GetOutermost()) ? W->GetOutermost()->GetPIEInstanceID() : -1;
 	const FString PlayerId = FString::Printf(TEXT("%s-%d-%s"), *E->DevPlayerPrefix, FMath::Max(0, Pie), *FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8));
@@ -179,79 +300,116 @@ void UAurixNetSubsystem::ConnectWithDevGrantAsync(const FString& PlayerName, FAu
 		const FString Grant = G ? FString(UTF8_TO_TCHAR(G)) : FString();
 		if (G) aurix_net_string_free(G);
 		const FString Err = G ? FString() : (aurix_net_last_error() ? FString(UTF8_TO_TCHAR(aurix_net_last_error())) : TEXT("grant failed"));
-		AsyncTask(ENamedThreads::GameThread, [Self, Url, Grant, bTunnel, Err, Done]()
+		const EAurixNetError Code = G ? EAurixNetError::None : LastErrorCode();
+		AsyncTask(ENamedThreads::GameThread, [Self, Url, Grant, bTunnel, Code, Err, Done]()
 		{
 			if (!Self.IsValid()) return;
-			if (Grant.IsEmpty()) { Done.ExecuteIfBound(-1, Err); return; }
+			if (Grant.IsEmpty()) { Done.ExecuteIfBound(-1, Code, Err); return; }
 			Self->ConnectAsync(Url, Grant, bTunnel, Done);
 		});
 	});
 }
 #endif
 
+static const FString EmptyJsonObject(TEXT("{}"));
+
 bool UAurixNetSubsystem::SetRoomProps(const FString& PropsJson, const FString& ExpectedJson)
 {
-	FString J = TEXT("{\"t\":\"set_room_props\",\"props\":") + (PropsJson.IsEmpty() ? TEXT("{}") : PropsJson);
-	if (!ExpectedJson.IsEmpty()) J += TEXT(",\"expected\":") + ExpectedJson;
-	return SendControl(J + TEXT("}"));
+	return SendControl(FControlMessage(TEXT("set_room_props"))
+		.Raw(TEXT("props"), PropsJson.IsEmpty() ? EmptyJsonObject : PropsJson)
+		.Raw(TEXT("expected"), ExpectedJson)
+		.Finish());
 }
+
 bool UAurixNetSubsystem::SetRoomVisibility(bool bVisible, bool bOpen)
 {
-	return SendControl(FString::Printf(TEXT("{\"t\":\"set_room_props\",\"props\":{},\"visible\":%s,\"open\":%s}"), bVisible ? TEXT("true") : TEXT("false"), bOpen ? TEXT("true") : TEXT("false")));
+	return SendControl(FControlMessage(TEXT("set_room_props"))
+		.Raw(TEXT("props"), EmptyJsonObject)
+		.Value(TEXT("visible"), bVisible)
+		.Value(TEXT("open"), bOpen)
+		.Finish());
 }
+
 bool UAurixNetSubsystem::SetPlayerProps(const FString& PropsJson, const FString& ExpectedJson)
 {
-	FString J = TEXT("{\"t\":\"set_player_props\",\"props\":") + (PropsJson.IsEmpty() ? TEXT("{}") : PropsJson);
-	if (!ExpectedJson.IsEmpty()) J += TEXT(",\"expected\":") + ExpectedJson;
-	return SendControl(J + TEXT("}"));
+	return SendControl(FControlMessage(TEXT("set_player_props"))
+		.Raw(TEXT("props"), PropsJson.IsEmpty() ? EmptyJsonObject : PropsJson)
+		.Raw(TEXT("expected"), ExpectedJson)
+		.Finish());
 }
+
 bool UAurixNetSubsystem::SetGroups(const TArray<int32>& Join, const TArray<int32>& Leave)
 {
-	return SendControl(FString::Printf(TEXT("{\"t\":\"set_groups\",\"join\":%s,\"leave\":%s}"), *IntArray(Join), *IntArray(Leave)));
+	return SendControl(FControlMessage(TEXT("set_groups")).Array(TEXT("join"), Join).Array(TEXT("leave"), Leave).Finish());
 }
+
 bool UAurixNetSubsystem::SendEventEx(uint8 Code, const TArray<uint8>& Payload, EAurixNetTarget Target, const TArray<int32>& Actors, EAurixNetChannel Channel, int32 Group, EAurixNetCache Cache)
 {
-	// Fast path: plain events go as binary frames; group/cache need the control-channel form.
-	if (Group <= 0 && Cache == EAurixNetCache::None && Actors.Num() == 0) return SendEvent(Code, Payload, Target, Channel != EAurixNetChannel::Unreliable);
-	if (Group <= 0 && Cache == EAurixNetCache::None)
+	if (!Client)
 	{
-		TArray<uint16> A; for (int32 X : Actors) A.Add((uint16)X);
-		return SendEventTo(Code, Payload, A, Channel != EAurixNetChannel::Unreliable);
+		return false;
 	}
-	const TCHAR* Ch = Channel == EAurixNetChannel::Reliable ? TEXT("reliable") : Channel == EAurixNetChannel::ReliableUnordered ? TEXT("reliable_unordered") : TEXT("unreliable");
-	const TCHAR* Ca = Cache == EAurixNetCache::Add ? TEXT("add") : Cache == EAurixNetCache::Remove ? TEXT("remove") : TEXT("none");
-	FString Tg = Actors.Num() ? FString::Printf(TEXT("{\"kind\":\"actors\",\"actors\":%s}"), *IntArray(Actors))
-		: Target == EAurixNetTarget::All ? TEXT("{\"kind\":\"all\"}") : Target == EAurixNetTarget::Master ? TEXT("{\"kind\":\"master\"}") : TEXT("{\"kind\":\"others\"}");
-	FString J = FString::Printf(TEXT("{\"t\":\"event\",\"code\":%d,\"data\":%s,\"target\":%s,\"channel\":\"%s\",\"cache\":\"%s\""), (int32)Code, *Quote(FBase64::Encode(Payload)), *Tg, Ch, Ca);
-	if (Group > 0) J += FString::Printf(TEXT(",\"group\":%d"), Group);
-	return SendControl(J + TEXT("}"));
+	TArray<uint16> ActorIds;
+	ActorIds.Reserve(Actors.Num());
+	for (const int32 Actor : Actors)
+	{
+		ActorIds.Add(static_cast<uint16>(Actor));
+	}
+	const int32 NativeTarget = ActorIds.Num() ? AURIX_NET_TARGET_ACTORS : static_cast<int32>(Target);
+	const int32 NativeGroup = Group > 0 ? Group : -1;
+	return aurix_net_send_event_ex(Client, Code, NativeTarget, ActorIds.GetData(), ActorIds.Num(), Payload.GetData(), Payload.Num(),
+		Channel != EAurixNetChannel::Unreliable, NativeGroup, static_cast<int32>(Cache)) == 0;
 }
+
 bool UAurixNetSubsystem::SetView(const TArray<int64>& Viewpoints, const TArray<int64>& Interest)
 {
-	return SendControl(FString::Printf(TEXT("{\"t\":\"set_view\",\"viewpoints\":%s,\"interest\":%s}"), *Int64Array(Viewpoints), *Int64Array(Interest)));
+	return SendControl(FControlMessage(TEXT("set_view")).Array(TEXT("viewpoints"), Viewpoints).Array(TEXT("interest"), Interest).Finish());
 }
-bool UAurixNetSubsystem::SubscribeLobby(bool bSubscribe) { return SendControl(FString::Printf(TEXT("{\"t\":\"lobby\",\"subscribe\":%s}"), bSubscribe ? TEXT("true") : TEXT("false"))); }
-bool UAurixNetSubsystem::RequestStats() { return SendControl(TEXT("{\"t\":\"stats\"}")); }
+
+bool UAurixNetSubsystem::SubscribeLobby(bool bSubscribe)
+{
+	return SendControl(FControlMessage(TEXT("lobby")).Value(TEXT("subscribe"), bSubscribe).Finish());
+}
+
+bool UAurixNetSubsystem::RequestStats()
+{
+	return SendControl(FControlMessage(TEXT("stats")).Finish());
+}
+
 int32 UAurixNetSubsystem::Rpc(const FString& Name, const FString& BodyJson)
 {
 	const int32 Id = NextRpcId++;
-	return SendControl(FString::Printf(TEXT("{\"t\":\"rpc\",\"id\":%d,\"name\":%s,\"body\":%s}"), Id, *Quote(Name), BodyJson.IsEmpty() ? TEXT("null") : *BodyJson)) ? Id : -1;
+	const bool bSent = SendControl(FControlMessage(TEXT("rpc"))
+		.Value(TEXT("id"), static_cast<int64>(Id))
+		.Value(TEXT("name"), Name)
+		.Raw(TEXT("body"), BodyJson.IsEmpty() ? FString(TEXT("null")) : BodyJson)
+		.Finish());
+	return bSent ? Id : -1;
 }
-bool UAurixNetSubsystem::Kick(int32 Actor, const FString& Reason) { return SendControl(FString::Printf(TEXT("{\"t\":\"kick\",\"actor\":%d,\"reason\":%s}"), Actor, *Quote(Reason))); }
-bool UAurixNetSubsystem::SetMaster(int32 Actor) { return SendControl(FString::Printf(TEXT("{\"t\":\"set_master\",\"actor\":%d}"), Actor)); }
+
+bool UAurixNetSubsystem::Kick(int32 Actor, const FString& Reason)
+{
+	return SendControl(FControlMessage(TEXT("kick")).Value(TEXT("actor"), static_cast<int64>(Actor)).Value(TEXT("reason"), Reason).Finish());
+}
+
+bool UAurixNetSubsystem::SetMaster(int32 Actor)
+{
+	return SendControl(FControlMessage(TEXT("set_master")).Value(TEXT("actor"), static_cast<int64>(Actor)).Finish());
+}
 
 int32 UAurixNetSubsystem::JoinOrCreate(const FString& RoomName, EAurixNetRoomMode Mode, int32 MaxPlayers, const FString& PropsJson)
 {
-	FString J = FString::Printf(TEXT("{\"t\":\"join_or_create\",\"name\":%s,\"mode\":\"%s\",\"max_players\":%d"), *Quote(RoomName), *ModeName(Mode), FMath::Clamp(MaxPlayers, 1, 65535));
-	if (!PropsJson.IsEmpty()) J += TEXT(",\"props\":") + PropsJson;
-	return JoinJson(J + TEXT("}"));
+	return JoinJson(JoinOrCreateJson(RoomName, Mode, MaxPlayers, PropsJson));
 }
-int32 UAurixNetSubsystem::Join(const FString& RoomName) { return JoinJson(FString::Printf(TEXT("{\"t\":\"join\",\"name\":%s}"), *Quote(RoomName))); }
+
+int32 UAurixNetSubsystem::Join(const FString& RoomName)
+{
+	return JoinJson(JoinJsonFor(RoomName));
+}
+
 int32 UAurixNetSubsystem::JoinRandom(const FString& FilterJson)
 {
-	FString J = TEXT("{\"t\":\"join_random\"");
-	if (!FilterJson.IsEmpty()) J += TEXT(",\"filter\":") + FilterJson;
-	return JoinJson(J + TEXT("}"));
+	return JoinJson(JoinRandomJson(FilterJson));
 }
 
 void UAurixNetSubsystem::ReadJoined()
@@ -284,7 +442,12 @@ void UAurixNetSubsystem::Disconnect() { DestroyClient(); SetState(EAurixNetState
 
 void UAurixNetSubsystem::DestroyClient()
 {
-	if (Client) { aurix_net_destroy(Client); Client = nullptr; }
+	if (Client && Client != JoiningClient)
+	{
+		aurix_net_destroy(Client);
+	}
+	Client = nullptr;
+	++ConnectSerial;
 	Room = FAurixNetRoomInfo();
 }
 
@@ -300,15 +463,24 @@ bool UAurixNetSubsystem::SendEventTo(uint8 Code, TArrayView<const uint8> Payload
 }
 bool UAurixNetSubsystem::RequestRooms(const FString& FilterExpr, int32 Limit)
 {
-	FString J = FString::Printf(TEXT("{\"t\":\"get_rooms\",\"limit\":%d"), FMath::Clamp(Limit, 1, 500));
-	if (!FilterExpr.IsEmpty()) J += TEXT(",\"expr\":") + Quote(FilterExpr);
-	return SendControl(J + TEXT("}"));
+	FControlMessage Message(TEXT("get_rooms"));
+	Message.Value(TEXT("limit"), static_cast<int64>(FMath::Clamp(Limit, 1, 500)));
+	if (!FilterExpr.IsEmpty())
+	{
+		Message.Value(TEXT("expr"), FilterExpr);
+	}
+	return SendControl(Message.Finish());
 }
-
 bool UAurixNetSubsystem::SendControl(const FString& Json) { return Client && aurix_net_send_control(Client, TCHAR_TO_UTF8(*Json)) == 0; }
 bool UAurixNetSubsystem::SendData(EAurixNetChannel Channel, TArrayView<const uint8> Payload)
 {
 	return Client && aurix_net_send_data(Client, (uint8)Channel, Payload.GetData(), Payload.Num()) == 0;
+}
+bool UAurixNetSubsystem::GetLastStats(int32& Rooms, int32& Players) const
+{
+	Rooms = LastStatsRooms;
+	Players = LastStatsPlayers;
+	return LastStatsRooms >= 0;
 }
 void UAurixNetSubsystem::Flush() { if (Client) aurix_net_flush(Client); }
 
@@ -393,29 +565,20 @@ void UAurixNetSubsystem::HandleControl(const FString& Json)
 	}
 	else if (T == TEXT("rooms") || T == TEXT("lobby_rooms"))
 	{
-		TArray<FAurixNetRoomSummary> Rooms;
-		const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
-		if (O->TryGetArrayField(TEXT("rooms"), Arr))
+		LastRooms.Reset();
+		const TArray<TSharedPtr<FJsonValue>>* Listed = nullptr;
+		if (O->TryGetArrayField(TEXT("rooms"), Listed))
 		{
-			for (const auto& V : *Arr)
+			for (const TSharedPtr<FJsonValue>& Value : *Listed)
 			{
-				const TSharedPtr<FJsonObject> R = V->AsObject(); if (!R.IsValid()) continue;
-				FAurixNetRoomSummary S;
-				R->TryGetStringField(TEXT("id"), S.RoomId); R->TryGetStringField(TEXT("name"), S.Name);
-				FString M; R->TryGetStringField(TEXT("mode"), M); S.Mode = ModeFrom(M);
-				S.Players = (int32)R->GetNumberField(TEXT("players")); S.MaxPlayers = (int32)R->GetNumberField(TEXT("max_players"));
-				R->TryGetBoolField(TEXT("open"), S.bOpen);
-				const TSharedPtr<FJsonObject>* Props = nullptr;
-				if (R->TryGetObjectField(TEXT("props"), Props) && Props->IsValid())
+				if (const TSharedPtr<FJsonObject> RoomObject = Value->AsObject())
 				{
-					const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Wr = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&S.PropsJson);
-					FJsonSerializer::Serialize(Props->ToSharedRef(), Wr);
+					LastRooms.Add(RoomSummaryFrom(*RoomObject));
 				}
-				Rooms.Add(MoveTemp(S));
 			}
 		}
-		OnRoomsNative.Broadcast(Rooms);
-		OnRoomsListed.Broadcast(Rooms);
+		OnRoomsNative.Broadcast(LastRooms);
+		OnRoomsListed.Broadcast(LastRooms);
 	}
 	else if (T == TEXT("room_props"))
 	{
@@ -432,25 +595,33 @@ void UAurixNetSubsystem::HandleControl(const FString& Json)
 	}
 	else if (T == TEXT("lobby_update"))
 	{
-		const TSharedPtr<FJsonObject>* R = nullptr; bool bRemoved = false; O->TryGetBoolField(TEXT("removed"), bRemoved);
-		if (O->TryGetObjectField(TEXT("room"), R) && R->IsValid())
+		bool bRemoved = false;
+		O->TryGetBoolField(TEXT("removed"), bRemoved);
+		const TSharedPtr<FJsonObject>* RoomObject = nullptr;
+		if (O->TryGetObjectField(TEXT("room"), RoomObject) && RoomObject->IsValid())
 		{
-			FAurixNetRoomSummary S;
-			(*R)->TryGetStringField(TEXT("id"), S.RoomId); (*R)->TryGetStringField(TEXT("name"), S.Name);
-			FString M; (*R)->TryGetStringField(TEXT("mode"), M); S.Mode = ModeFrom(M);
-			S.Players = (int32)(*R)->GetNumberField(TEXT("players")); S.MaxPlayers = (int32)(*R)->GetNumberField(TEXT("max_players"));
-			(*R)->TryGetBoolField(TEXT("open"), S.bOpen);
-			const TSharedPtr<FJsonObject>* P = nullptr; if ((*R)->TryGetObjectField(TEXT("props"), P)) S.PropsJson = ToJsonString(*P);
-			OnLobbyUpdate.Broadcast(S, bRemoved);
+			OnLobbyUpdate.Broadcast(RoomSummaryFrom(**RoomObject), bRemoved);
 		}
 	}
-	else if (T == TEXT("stats")) { OnStats.Broadcast((int32)O->GetNumberField(TEXT("rooms")), (int32)O->GetNumberField(TEXT("players"))); }
+	else if (T == TEXT("stats"))
+	{
+		LastStatsRooms = (int32)O->GetNumberField(TEXT("rooms"));
+		LastStatsPlayers = (int32)O->GetNumberField(TEXT("players"));
+		OnStats.Broadcast(LastStatsRooms, LastStatsPlayers);
+	}
 	else if (T == TEXT("rpc_result"))
 	{
-		bool bOk = false; O->TryGetBoolField(TEXT("ok"), bOk);
-		FString Err; O->TryGetStringField(TEXT("error"), Err);
-		FString Body; const TSharedPtr<FJsonValue> BV = O->TryGetField(TEXT("body"));
-		if (BV.IsValid()) { if (BV->Type == EJson::Object) Body = ToJsonString(BV->AsObject()); else if (BV->Type == EJson::String) Body = BV->AsString(); else if (BV->Type == EJson::Number) Body = FString::SanitizeFloat(BV->AsNumber()); else if (BV->Type == EJson::Boolean) Body = BV->AsBool() ? TEXT("true") : TEXT("false"); }
+		bool bOk = false;
+		O->TryGetBoolField(TEXT("ok"), bOk);
+		FString Err;
+		O->TryGetStringField(TEXT("error"), Err);
+		FString Body;
+		const TSharedPtr<FJsonValue> BodyValue = O->TryGetField(TEXT("body"));
+		if (BodyValue.IsValid() && !BodyValue->IsNull() && !BodyValue->TryGetString(Body))
+		{
+			const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Body);
+			FJsonSerializer::Serialize(BodyValue.ToSharedRef(), FString(), Writer);
+		}
 		OnRpcResult.Broadcast((int32)O->GetNumberField(TEXT("id")), bOk, Body, Err);
 	}
 	else if (T == TEXT("desync"))

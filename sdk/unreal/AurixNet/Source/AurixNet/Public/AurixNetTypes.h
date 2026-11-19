@@ -32,6 +32,31 @@ enum class EAurixNetMigration : uint8
 UENUM(BlueprintType)
 enum class EAurixNetState : uint8 { Disconnected, Connecting, Connected, InRoom, Closed };
 
+/** Why a call failed. The values are the AURIX_NET_ERR_* codes of the native library. */
+UENUM(BlueprintType)
+enum class EAurixNetError : uint8
+{
+	None = 0,
+	InvalidArgument = 1,
+	Http = 2,
+	Connection = 3,
+	DataPath = 4,
+	Disconnected = 5,
+	Timeout = 6,
+	Protocol = 7,
+	Unauthorized = 100,
+	Forbidden = 101,
+	NotFound = 102,
+	Conflict = 103,
+	InvalidRequest = 104,
+	RoomFull = 105,
+	RoomClosed = 106,
+	SchemaMismatch = 107,
+	QuotaExceeded = 108,
+	RateLimited = 109,
+	Server = 199,
+};
+
 USTRUCT(BlueprintType)
 struct AURIXNET_API FAurixNetPlayer
 {

@@ -25,10 +25,10 @@ Release zips on GitHub ship the plugin with the natives already staged.
 [/Script/Engine.Engine]
 !NetDriverDefinitions=ClearArray
 +NetDriverDefinitions=(DefName="GameNetDriver",DriverClassName="/Script/AurixNet.AurixNetDriver",DriverClassNameFallback="/Script/OnlineSubsystemUtils.IpNetDriver")
-
-[/Script/AurixNet.AurixNetDriver]
-NetConnectionClassName="/Script/AurixNet.AurixNetConnection"
 ```
+
+The driver's timeouts and rates ship in the plugin's `Config/Engine.ini`. To change one, repeat
+its line under `[/Script/AurixNet.AurixNetDriver]` in your `DefaultEngine.ini`.
 
 ## 3. Connect, then travel
 
