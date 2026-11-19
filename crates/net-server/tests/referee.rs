@@ -1,18 +1,25 @@
 //! A client that runs the room's module over the confirmed inputs and reports its state hash
-//! the way `docs/sdk.md` tells it to agrees with the node, which runs the same module.
+//! the way `docs/sdk.md` tells it to agrees with the node, which runs the same module. Like
+//! the SDKs, it keeps the commands of a tick out of the players' inputs and hands them to the
+//! game one by one before the tick. One that runs ahead of the confirmed ticks does the same in
+//! its confirmed state.
 
 mod common;
 
 use bytes::{Buf, Bytes};
 use common::{Node, Project};
-use net_api::lockstep::ServerSim;
 use net_api::sync::ARENA_SCHEMA;
-use net_client::lockstep::{LockstepClient, LsEvent, Outgoing, COMMAND_ACTOR, LS_COMMAND};
+use net_client::lockstep::{
+    take_commands, Command, LockstepClient, LsEvent, Outgoing, TickInputs, COMMAND_ACTOR,
+    LS_COMMAND,
+};
+use net_client::rollback::{Rollback, Simulation};
 use net_client::{Client, Event, Options};
 use net_common::types::ActorId;
 use net_common::Channel;
+use net_game::{StepInput, WasmLogic};
 use net_rooms::protocol::{ClientMsg, ServerMsg};
-use net_sim::{Frame, FrameConfig};
+use net_sim::{EntityId, Frame, FrameConfig};
 use net_wire::Schema;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -30,11 +37,68 @@ fn send(client: &Client, frame: Outgoing) {
     client.send_data(channel, frame.payload).expect("sends");
 }
 
+/// The game of the arena room: the room's module over a frame.
+struct Game {
+    frame: Frame,
+    logic: WasmLogic,
+    avatars: BTreeMap<ActorId, Option<EntityId>>,
+    /// The ticks stepped with commands, once for every such step.
+    commanded: Vec<u32>,
+}
+
+impl Simulation for Game {
+    type Snapshot = (Vec<u8>, BTreeMap<ActorId, Option<EntityId>>);
+
+    fn step(&mut self, tick: u32, inputs: &TickInputs, commands: &[Command]) {
+        if !commands.is_empty() {
+            self.commanded.push(tick);
+        }
+        for actor in inputs.keys().map(|actor| ActorId(*actor)) {
+            if !self.avatars.contains_key(&actor) {
+                let avatar = self.logic.on_join(&mut self.frame, actor);
+                self.avatars.insert(actor, avatar);
+            }
+        }
+        let step: Vec<StepInput> = self
+            .avatars
+            .iter()
+            .map(|(actor, avatar)| {
+                let input = inputs.get(&actor.0);
+                (
+                    *actor,
+                    *avatar,
+                    input.map(|input| input.to_vec()).unwrap_or_default(),
+                    input.is_some(),
+                )
+            })
+            .collect();
+        let logic = &mut self.logic;
+        self.frame.advance(|frame| {
+            for command in commands {
+                logic.on_command(frame, ActorId(command.actor), &command.data);
+            }
+            logic.step(frame, &step);
+        });
+    }
+
+    fn snapshot(&self) -> Self::Snapshot {
+        (self.frame.snapshot(), self.avatars.clone())
+    }
+
+    fn restore(&mut self, (frame, avatars): &Self::Snapshot) {
+        self.frame.restore(frame).expect("restores");
+        self.avatars = avatars.clone();
+    }
+}
+
 /// A player of the arena room who runs the room's module over the ticks it receives.
 struct Player {
     client: Client,
+    actor: u16,
     bundles: LockstepClient,
-    sim: ServerSim,
+    game: Game,
+    /// Set for a player who runs ahead of the confirmed ticks.
+    rollback: Option<Rollback<Game>>,
     /// Reported hashes, as (tick, hash).
     reported: Vec<(u32, u64)>,
     /// The input of the command actor in every tick that had one.
@@ -44,8 +108,15 @@ struct Player {
 }
 
 impl Player {
-    /// Steps the game over the ticks received and reports the hash after every tenth one
-    /// under that tick's number. Returns the tick numbers of the desyncs the node announced.
+    /// From here on the player runs ahead of the confirmed ticks, by 8 at most.
+    fn run_ahead(&mut self) {
+        let tick = self.bundles.confirmed_tick();
+        self.rollback = Some(Rollback::new(&self.game, self.actor, tick, 8));
+    }
+
+    /// Steps the confirmed state over the ticks received and reports its hash after every
+    /// tenth one under that tick's number. Returns the tick numbers of the desyncs the node
+    /// announced.
     fn play(&mut self) -> Vec<u32> {
         let mut desyncs = Vec::new();
         while let Some(event) = self.client.try_next_event() {
@@ -63,23 +134,29 @@ impl Player {
             };
             for event in self.bundles.receive(&payload).unwrap_or_default() {
                 match event {
-                    LsEvent::Tick { tick, inputs } => {
-                        if let Some(commands) = inputs.get(&COMMAND_ACTOR) {
-                            self.commands.insert(tick, commands.to_vec());
+                    LsEvent::Tick { tick, mut inputs } => {
+                        if let Some(entry) = inputs.get(&COMMAND_ACTOR) {
+                            self.commands.insert(tick, entry.to_vec());
                         }
-                        let inputs = inputs
-                            .iter()
-                            .map(|(actor, input)| (ActorId(*actor), input.to_vec()))
-                            .collect();
-                        self.sim.step(&inputs);
+                        let state = match &mut self.rollback {
+                            Some(rollback) => {
+                                rollback.confirm(&mut self.game, tick, &inputs);
+                                rollback.confirmed_snapshot().0.clone()
+                            }
+                            None => {
+                                let commands = take_commands(&mut inputs);
+                                self.game.step(tick, &inputs, &commands);
+                                self.game.frame.snapshot()
+                            }
+                        };
                         if tick % 10 == 0 {
-                            let hash = self.sim.hash();
+                            let hash = net_rollback::hash_bytes(&state);
                             send(&self.client, LockstepClient::hash_frame(tick, hash));
                             self.reported.push((tick, hash));
                         }
                     }
                     LsEvent::Restore { state, .. } if !state.is_empty() => {
-                        self.sim.frame.restore(&state).expect("restores");
+                        self.game.frame.restore(&state).expect("restores");
                     }
                     _ => {}
                 }
@@ -93,8 +170,13 @@ impl Player {
     async fn play_for(&mut self, time: Duration) {
         let until = Instant::now() + time;
         while Instant::now() < until {
-            if let Some((_, frame)) = self.bundles.send_input(Bytes::from_static(&[127, 0, 0])) {
+            let input = Bytes::from_static(&[127, 0, 0]);
+            if let Some((tick, frame)) = self.bundles.send_input(input.clone()) {
                 send(&self.client, frame);
+                if let Some(rollback) = &mut self.rollback {
+                    rollback.local_input(tick, input);
+                    rollback.predict(&mut self.game, tick + 1);
+                }
             }
             self.client.flush();
             tokio::time::sleep(Duration::from_millis(1000 / u64::from(TICK_HZ))).await;
@@ -145,8 +227,15 @@ async fn arena(node: &Node, project: &Project) -> (Player, String) {
     let schema = Schema::parse(ARENA_SCHEMA).expect("schema");
     let player = Player {
         client,
+        actor: joined.actor.0,
         bundles: LockstepClient::new(),
-        sim: ServerSim::new(Frame::new(schema, config, seed), Box::new(logic)),
+        game: Game {
+            frame: Frame::new(schema, config, seed),
+            logic,
+            avatars: BTreeMap::new(),
+            commanded: Vec::new(),
+        },
+        rollback: None,
         reported: Vec::new(),
         commands: BTreeMap::new(),
         refusals: Vec::new(),
@@ -278,4 +367,34 @@ async fn every_command_is_delivered_or_refused() {
     );
     assert!(refused >= 10, "{refused} refusals");
     assert_eq!(delivered + refused, 40);
+}
+
+#[tokio::test]
+async fn client_that_runs_ahead_takes_a_command_in_its_confirmed_tick_only() {
+    let node = Node::start().await;
+    let project = node.project("referee").await;
+    let (mut ann, _) = arena(&node, &project).await;
+    ann.play_for(Duration::from_millis(500)).await;
+    ann.run_ahead();
+    ann.play_for(Duration::from_millis(500)).await;
+
+    for step in [100, 50] {
+        send(&ann.client, LockstepClient::command_frame(&[step]).unwrap());
+        ann.play_for(Duration::from_millis(500)).await;
+    }
+    let before = ann.reported.len();
+    ann.play_for(Duration::from_secs(1)).await;
+
+    let rollback = ann.rollback.as_ref().expect("runs ahead");
+    assert!(
+        rollback.predicted_ticks > 60,
+        "{}",
+        rollback.predicted_ticks
+    );
+    assert!(rollback.head() > rollback.confirmed_tick());
+    let commanded: Vec<u32> = ann.commands.keys().copied().collect();
+    assert_eq!(commanded.len(), 2);
+    assert_eq!(ann.game.commanded, commanded);
+    // the node compared the hashes of the confirmed state after the commands with its own
+    assert!(ann.reported.len() >= before + 5, "{:?}", ann.reported);
 }

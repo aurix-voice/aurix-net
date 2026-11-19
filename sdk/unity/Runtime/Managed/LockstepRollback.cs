@@ -1,7 +1,9 @@
 // Predict/rollback on top of LockstepClient (same core as the Rust/Web SDKs): the game runs ahead of
 // the confirmed tick with predicted remote inputs (each actor's last confirmed input, repeated) and
 // its own inputs as sent, keeps a snapshot per predicted tick, and when a confirmed tick differs from
-// the prediction restores the snapshot, re-steps it and re-predicts the ticks after it.
+// the prediction restores the snapshot, re-steps it and re-predicts the ticks after it. Commands are
+// never predicted: a predicted tick has none, and a confirmed tick that carries some is stepped
+// again with them.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -11,7 +13,12 @@ namespace Aurix.Net.Managed
     /// <summary>The game's deterministic simulation: step one tick, snapshot, restore.</summary>
     public interface ISimulation<TSnapshot>
     {
-        void Step(uint tick, Dictionary<ushort, byte[]> inputs);
+        /// <summary>One tick: the commands in their order, then the players' inputs. A predicted tick has no commands.</summary>
+        void Step(
+            uint tick,
+            Dictionary<ushort, byte[]> inputs,
+            IReadOnlyList<LockstepCommand> commands
+        );
         TSnapshot Snapshot();
         void Restore(TSnapshot snapshot);
     }
@@ -67,7 +74,7 @@ namespace Aurix.Net.Managed
             ConfirmedTick = HeadTick = tick;
         }
 
-        /// <summary>Remember the input sent stamped with <paramref name="tick"/> (what LockstepClient.SendInput stamped) so our own prediction uses exactly it.</summary>
+        /// <summary>Remember the input sent stamped with <paramref name="tick"/> (what LockstepClient.SendInput returned) so our own prediction uses exactly it.</summary>
         public void LocalInput(uint tick, byte[] input)
         {
             _lastLocal = input;
@@ -82,7 +89,7 @@ namespace Aurix.Net.Managed
             {
                 uint tick = HeadTick;
                 var inputs = Guess(tick);
-                _sim.Step(tick, inputs);
+                _sim.Step(tick, inputs, Array.Empty<LockstepCommand>());
                 _predicted[tick] = inputs;
                 HeadTick = tick + 1;
                 _history[HeadTick] = _sim.Snapshot();
@@ -90,8 +97,12 @@ namespace Aurix.Net.Managed
             }
         }
 
-        /// <summary>Feeds a confirmed tick (LockstepClient.OnTick). True when a rollback happened.</summary>
-        public bool Confirm(uint tick, Dictionary<ushort, byte[]> inputs)
+        /// <summary>Feeds a confirmed tick with its commands (LockstepClient.OnTick, LockstepClient.Commands). True when a rollback happened.</summary>
+        public bool Confirm(
+            uint tick,
+            Dictionary<ushort, byte[]> inputs,
+            IReadOnlyList<LockstepCommand> commands
+        )
         {
             if (tick != ConfirmedTick)
             {
@@ -107,16 +118,20 @@ namespace Aurix.Net.Managed
             bool rolled = false;
             if (tick >= HeadTick)
             {
-                _sim.Step(tick, inputs);
+                _sim.Step(tick, inputs, commands);
                 HeadTick = tick + 1;
                 _history[HeadTick] = _sim.Snapshot();
             }
-            else if (!_predicted.TryGetValue(tick, out var guess) || !SameInputs(guess, inputs))
+            else if (
+                commands.Count > 0
+                || !_predicted.TryGetValue(tick, out var guess)
+                || !SameInputs(guess, inputs)
+            )
             {
                 rolled = true;
                 Rollbacks++;
                 _sim.Restore(_history[tick]);
-                _sim.Step(tick, inputs);
+                _sim.Step(tick, inputs, commands);
                 _history[tick + 1] = _sim.Snapshot();
                 uint oldHead = HeadTick;
                 HeadTick = tick + 1;
@@ -168,21 +183,24 @@ namespace Aurix.Net.Managed
         }
     }
 
-    /// <summary>What <see cref="ReplayRing{TSnapshot}.Window"/> hands back: restore Snapshot, then step Inputs from Start.</summary>
+    /// <summary>What <see cref="ReplayRing{TSnapshot}.Window"/> hands back: restore Snapshot, then step from Start, tick by tick, with Inputs[i] and Commands[i].</summary>
     public struct ReplayWindow<TSnapshot>
     {
         public uint Start;
         public TSnapshot Snapshot;
         public List<Dictionary<ushort, byte[]>> Inputs;
+        public List<IReadOnlyList<LockstepCommand>> Commands;
     }
 
-    /// <summary>Instant replay (kill cam) buffer: the inputs of at least the last <c>keep</c> confirmed ticks, back to a snapshot of the confirmed state taken every <c>every</c> ticks. Feed it from the confirmed path (after Confirm, with ConfirmedSnapshot).</summary>
+    /// <summary>Instant replay (kill cam) buffer: the inputs and commands of at least the last <c>keep</c> confirmed ticks, back to a snapshot of the confirmed state taken every <c>every</c> ticks. Feed it from the confirmed path (after Confirm, with ConfirmedSnapshot).</summary>
     public sealed class ReplayRing<TSnapshot>
     {
         readonly int _keep;
         readonly uint _every;
         uint _first;
         readonly List<Dictionary<ushort, byte[]>> _inputs = new List<Dictionary<ushort, byte[]>>();
+        readonly List<IReadOnlyList<LockstepCommand>> _commands =
+            new List<IReadOnlyList<LockstepCommand>>();
         readonly SortedDictionary<uint, TSnapshot> _snaps = new SortedDictionary<uint, TSnapshot>();
 
         public ReplayRing(int keepTicks = 300, uint snapshotEvery = 10)
@@ -191,16 +209,18 @@ namespace Aurix.Net.Managed
             _every = Math.Max(1u, snapshotEvery);
         }
 
-        /// <summary>Records confirmed <paramref name="tick"/> with its inputs and the confirmed state <em>before</em> it (taken lazily on snapshot boundaries). A gap resets the ring.</summary>
+        /// <summary>Records confirmed <paramref name="tick"/> with its inputs, its commands and the confirmed state <em>before</em> it (taken lazily on snapshot boundaries). A gap resets the ring.</summary>
         public void Record(
             uint tick,
             Dictionary<ushort, byte[]> inputs,
+            IReadOnlyList<LockstepCommand> commands,
             Func<TSnapshot> stateBefore
         )
         {
             if (_inputs.Count == 0 || _first + (uint)_inputs.Count != tick)
             {
                 _inputs.Clear();
+                _commands.Clear();
                 _snaps.Clear();
                 _first = tick;
             }
@@ -210,6 +230,7 @@ namespace Aurix.Net.Managed
             }
 
             _inputs.Add(inputs);
+            _commands.Add(commands);
             // the oldest tick kept is one with a snapshot, so every tick kept can be stepped from one
             long wanted = (long)tick + 1 - _keep;
             var older = _snaps.Keys.Where(key => key <= wanted).ToList();
@@ -223,6 +244,7 @@ namespace Aurix.Net.Managed
                 }
 
                 _inputs.RemoveRange(0, (int)(anchor - _first));
+                _commands.RemoveRange(0, (int)(anchor - _first));
                 _first = anchor;
             }
         }
@@ -256,6 +278,7 @@ namespace Aurix.Net.Managed
                 Start = start,
                 Snapshot = _snaps[start],
                 Inputs = _inputs.Skip(skip).ToList(),
+                Commands = _commands.Skip(skip).ToList(),
             };
         }
     }

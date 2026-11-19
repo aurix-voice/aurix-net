@@ -436,13 +436,22 @@ public:
         const uint8_t* data;
         size_t len;
     };
+    struct Command {
+        uint16_t actor;
+        const uint8_t* data;
+        size_t len;
+    };
     struct Event {
         Kind kind;
         uint32_t tick;
         uint64_t hash;
+        /// Tick: the players' inputs. The commands of the tick are not among them.
         std::vector<Input> inputs;
         const uint8_t* state;
         size_t stateLen;
+        /// Tick: its commands with their senders, in the order every client gets them. Run them
+        /// before the step.
+        std::vector<Command> commands;
     };
 
     Lockstep() : lockstep_(aurix_net_lockstep_new()) {}
@@ -470,8 +479,24 @@ public:
         out.stateLen = event.state_len;
         for (uint16_t i = 0; i < event.inputs; i++) {
             Input in{};
-            if (aurix_net_lockstep_input(lockstep_, i, &in.actor, &in.data, &in.len) == 1) {
+            if (aurix_net_lockstep_input(lockstep_, i, &in.actor, &in.data, &in.len) != 1) {
+                continue;
+            }
+            if (in.actor != AURIX_NET_COMMAND_ACTOR) {
                 out.inputs.push_back(in);
+                continue;
+            }
+            for (size_t offset = 0; offset + 4 <= in.len;) {
+                Command command{};
+                command.actor = uint16_t((in.data[offset] << 8) | in.data[offset + 1]);
+                command.len = size_t((in.data[offset + 2] << 8) | in.data[offset + 3]);
+                offset += 4;
+                if (offset + command.len > in.len) {
+                    break;
+                }
+                command.data = in.data + offset;
+                out.commands.push_back(command);
+                offset += command.len;
             }
         }
         return out;
@@ -481,8 +506,8 @@ public:
     int64_t sendInput(Client& client, const uint8_t* data, size_t len) {
         return aurix_net_lockstep_send_input(lockstep_, client.handle(), data, len);
     }
-    /// Reliable command outside the input stream; everyone gets it next tick as input of actor
-    /// AURIX_NET_COMMAND_ACTOR.
+    /// Reliable command outside the input stream; everyone gets it in Event::commands of the
+    /// next tick.
     void sendCommand(Client& client, const std::vector<uint8_t>& data) {
         if (aurix_net_lockstep_send_command(client.handle(), data.data(), data.size()) != 0) {
             throw Error::last();

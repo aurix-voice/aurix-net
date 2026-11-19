@@ -6,6 +6,19 @@ using System.Collections.Generic;
 
 namespace Aurix.Net.Managed
 {
+    /// <summary>A command of a tick and the actor who sent it.</summary>
+    public readonly struct LockstepCommand
+    {
+        public readonly ushort Actor;
+        public readonly byte[] Data;
+
+        public LockstepCommand(ushort actor, byte[] data)
+        {
+            Actor = actor;
+            Data = data;
+        }
+    }
+
     public sealed class LockstepClient
     {
         public const byte KindInput = 0x10,
@@ -32,6 +45,10 @@ namespace Aurix.Net.Managed
 
         /// <summary>Reliable command delivered to everyone at the same tick: (tick, sender actor, bytes). Raised before OnTick of that tick.</summary>
         public event Action<uint, ushort, byte[]> OnCommand;
+
+        /// <summary>Inside OnTick: the commands of that tick in the order every client gets them. Empty outside it.</summary>
+        public IReadOnlyList<LockstepCommand> Commands { get; private set; } =
+            Array.Empty<LockstepCommand>();
 
         /// <summary>Catch-up start: restore the game state from this checkpoint (state empty at tick 0 = fresh start).</summary>
         public event Action<uint, ulong, byte[]> OnRestore;
@@ -265,12 +282,17 @@ namespace Aurix.Net.Managed
                 var tick = _next;
                 _next++;
                 Delivered++;
-                if (inputs.TryGetValue(CommandActor, out var cmds))
+                if (inputs.TryGetValue(CommandActor, out var entry))
                 {
                     inputs.Remove(CommandActor);
-                    DispatchCommands(tick, cmds);
+                    Commands = ReadCommands(entry);
+                    foreach (var command in Commands)
+                    {
+                        OnCommand?.Invoke(tick, command.Actor, command.Data);
+                    }
                 }
                 OnTick?.Invoke(tick, inputs);
+                Commands = Array.Empty<LockstepCommand>();
             }
             // Ticks older than the redundancy window that never arrived are lost for good only if the
             // node skipped them; the node re-sends 3 ticks per datagram and the journal tail is reliable.
@@ -289,20 +311,21 @@ namespace Aurix.Net.Managed
             }
         }
 
-        /// <summary>Queues this tick's local input (sent with the previous two for redundancy). The room takes one
-        /// input per tick: called more often than that it sends nothing, so sample the input again next time. It
-        /// does the same before the first frame from the room, while the room's tick is unknown.</summary>
-        public void SendInput(byte[] input)
+        /// <summary>Queues this tick's local input (sent with the previous two for redundancy) and returns the tick
+        /// it is stamped with. The room takes one input per tick: called more often than that it sends nothing and
+        /// returns -1, so sample the input again next time. It does the same before the first frame from the room,
+        /// while the room's tick is unknown.</summary>
+        public long SendInput(byte[] input)
         {
             if (!_started)
             {
-                return;
+                return -1;
             }
 
             uint tick = Math.Max(ServerTick + InputDelay, _lastInput + 1);
             if (tick > ServerTick + InputDelay + 1)
             {
-                return;
+                return -1;
             }
 
             // A frame carries inputs for consecutive ticks, so earlier ones are resent only without a gap.
@@ -323,6 +346,7 @@ namespace Aurix.Net.Managed
                 Channel.Unreliable,
                 SyncWorld.EncodeInput(tick - (uint)(_recentInputs.Count - 1), _recentInputs)
             );
+            return tick;
         }
 
         /// <summary>Reliable command outside the input stream (buy, surrender, pause): the server stamps it onto the next tick and every client and the referee get it via OnCommand, journaled and replayed. 1..MaxCommand bytes.</summary>
@@ -340,27 +364,30 @@ namespace Aurix.Net.Managed
             _send(Channel.Reliable, bytes);
         }
 
-        void DispatchCommands(uint tick, byte[] cmds)
+        static LockstepCommand[] ReadCommands(byte[] entry)
         {
+            var commands = new List<LockstepCommand>();
             int index = 0;
 
-            while (index + 4 <= cmds.Length)
+            while (index + 4 <= entry.Length)
             {
-                ushort actor = (ushort)((cmds[index] << 8) | cmds[index + 1]);
-                int len = (cmds[index + 2] << 8) | cmds[index + 3];
+                ushort actor = (ushort)((entry[index] << 8) | entry[index + 1]);
+                int len = (entry[index + 2] << 8) | entry[index + 3];
                 index += 4;
 
-                if (index + len > cmds.Length)
+                if (index + len > entry.Length)
                 {
                     break;
                 }
 
                 var data = new byte[len];
-                Buffer.BlockCopy(cmds, index, data, 0, len);
+                Buffer.BlockCopy(entry, index, data, 0, len);
                 index += len;
 
-                OnCommand?.Invoke(tick, actor, data);
+                commands.Add(new LockstepCommand(actor, data));
             }
+
+            return commands.ToArray();
         }
 
         public void ReportHash(uint tick, ulong hash)

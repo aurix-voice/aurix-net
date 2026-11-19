@@ -242,19 +242,36 @@ confirmed state only ever sees confirmed inputs, so determinism and hash reports
 
 Same core in three SDKs: `net_client::rollback::Rollback<S: Simulation>` (Rust),
 `LockstepRollback<S>` + `Simulation<S>` (Web), `LockstepRollback<TSnapshot>` + `ISimulation<TSnapshot>`
-(C#). Your simulation implements `step(tick, inputs)`, `snapshot()`, `restore(snapshot)`; keep
-snapshots cheap (value copies of the game state) because one is taken per predicted tick.
+(C#). Your simulation implements `step(tick, inputs, commands)`, `snapshot()`, `restore(snapshot)`;
+keep snapshots cheap (value copies of the game state) because one is taken per predicted tick.
+
+`commands` are the [lockstep commands](#lockstep-commands) of the tick, each with its sender, in
+the order every client gets them: run them first, then the inputs. Commands are not predicted. A
+predicted tick has none, and a confirmed tick that carries some is stepped again with them even
+when the inputs were guessed right. A game that predicts takes its commands here and nowhere
+else: one applied from `onCommand` is lost at the next rollback and is not in the replay. This
+third argument is a breaking change for a simulation written as `step(tick, inputs)`.
+
+| | step | confirm |
+|---|---|---|
+| Rust | `Simulation::step(tick, &inputs, &[Command])` | `confirm(&mut sim, tick, &inputs)` with the inputs of `LsEvent::Tick`; it takes the commands out itself (`lockstep::take_commands`) |
+| Web | `step(tick, inputs, commands)` | `onTick(tick, inputs, commands)`, `confirm(tick, inputs, commands)` |
+| C# | `Step(tick, inputs, commands)` | inside `OnTick`: `Confirm(tick, inputs, lockstep.Commands)` |
+| Unreal | `OnSimulate(Tick, Inputs, Commands, bPredicted)` of `AurixRollbackRunner` | the runner does it |
 
 ```ts
 const ls = new LockstepClient((ch, p) => c.sendData(ch, p));
 const rb = new LockstepRollback(game, joined.actor, 0, 8);   // up to 8 predicted ticks
-ls.onTick = (t, inputs) => { rb.confirm(t, inputs); ls.reportHash(t, hashOf(rb.confirmedSnapshot())); };
+ls.onTick = (t, inputs, commands) => { rb.confirm(t, inputs, commands); ls.reportHash(t, hashOf(rb.confirmedSnapshot())); };
 ls.onRestore = (t, _h, state) => { game.load(state); rb.reset(t); };
 // per frame
 const tick = ls.sendInput(input); rb.localInput(tick, input);
 rb.predict(ls.serverTick + ls.inputDelay);                    // run up to where our input will land
 render(game);                                                 // predicted state, no input lag
 ```
+
+In C# `LockstepClient.SendInput` returns the same as `sendInput`: the tick the input is stamped
+with, or -1 when it sent nothing. Give `LocalInput` the input only with a tick that is not -1.
 
 Rollback counters (`rollbacks`, `resimulatedTicks`, `predictedTicks`) tell you how often remote
 players change their input unexpectedly; a high ratio means lower `maxPrediction` or smoothing in
@@ -266,16 +283,16 @@ never on the predicted head: the head is speculative and differs between players
 Two ways to rewind a lockstep match:
 
 - **Locally, no round trip**: `ReplayRing` (Rust `net_client::rollback::ReplayRing`, Web/C# `ReplayRing`)
-  keeps the last `keep` confirmed ticks' inputs and a snapshot of the confirmed state every `every`
-  ticks. Record from the confirmed path, then `window(from)` gives the nearest snapshot at or before
-  `from` and the inputs to step from it:
+  keeps the last `keep` confirmed ticks' inputs and commands and a snapshot of the confirmed state
+  every `every` ticks. Record from the confirmed path, then `window(from)` gives the nearest
+  snapshot at or before `from` and the inputs and commands to step from it:
 
   ```ts
   const ring = new ReplayRing<State>(300, 10);    // 10 s at 30 Hz, snapshot every 10 ticks; State: the type of rb's snapshots
-  ls.onTick = (t, inputs) => { const before = rb.confirmedSnapshot(); rb.confirm(t, inputs); ring.record(t, inputs, () => before); };
+  ls.onTick = (t, inputs, commands) => { const before = rb.confirmedSnapshot(); rb.confirm(t, inputs, commands); ring.record(t, inputs, commands, () => before); };
   // kill cam: last 3 s
   const w = ring.window(rb.confirmedTick - 90);
-  if (w) { cam.restore(w.snapshot); let t = w.start; for (const i of w.inputs) cam.step(t++, i); }
+  if (w) { cam.restore(w.snapshot); w.inputs.forEach((inputs, i) => cam.step(w.start + i, inputs, w.commands[i])); }
   ```
 
 - **From the node**: `GET /v1/rooms/:id/replay?from=&to=` returns the confirmed inputs of a *live*
@@ -418,8 +435,11 @@ stays inside the room, so moderation (kick, bans), rate limits and GDPR export/e
 `SendCommand(bytes)` (Unity `LockstepClient`, Web `LockstepClient`, C `aurix_net_lockstep_send_command`, C++
 `Lockstep::sendCommand`, Unreal `UAurixLockstepComponent::SendCommand`) sends a reliable message outside the input
 stream; the cell stamps it onto the next tick and everyone (and the referee) receives it at that tick:
-`OnCommand(tick, actor, bytes)` right before `OnTick`, or as the input of pseudo-actor 65535 where the SDK exposes
-raw bundles (C/C++). Commands are journaled, so replays and late-join catch-ups include them. A command is 1 to 251
+`OnCommand(tick, actor, bytes)` right before `OnTick`, `Event::commands` of the tick in C++, the signal `command`
+before `tick` in Godot. C hands the tick as the node sent it: the commands are the input of pseudo-actor 65535
+(`AURIX_NET_COMMAND_ACTOR`), which is not a player, and so does the Rust `LsEvent::Tick`
+(`lockstep::take_commands` takes them out). A game that predicts gets the commands in the step of its simulation
+instead ([predict/rollback](#predictrollback-on-lockstep-zero-lag-local-input)). Commands are journaled, so replays and late-join catch-ups include them. A command is 1 to 251
 bytes (`MAX_COMMAND`, `LockstepClient.MaxCommand`, `AURIX_NET_MAX_COMMAND`); an empty or a longer one is refused at
 the sender. Commands that do not fit one tick ride the next ticks in the order they were sent. When more than
 4096 bytes of them wait, the node refuses the command and the sender gets a control message

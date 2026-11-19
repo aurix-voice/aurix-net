@@ -81,6 +81,31 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   random join.
 
 ### Changed
+- Lockstep rollback and instant replay (Rust, Web, C#, Unreal), breaking: the step of the
+  simulation takes the commands of the tick as a third argument, `step(tick, inputs, commands)`,
+  and a game that predicts takes its commands there. A command reached such a game only through
+  `onCommand`, outside the step, so the next rollback and the local replay lost it and the
+  client got `desync` in a room with a referee; in Rust the commands stayed among the inputs
+  under actor 65535 and were repeated in every predicted tick as that actor's last input. A
+  predicted tick has no commands, and a confirmed tick that carries some is stepped again with
+  them. What to change in a game ([SDK](docs/sdk.md)):
+  - Rust: `Simulation::step(tick, inputs, commands)`; `Rollback::confirm` and `ReplayRing::record`
+    take the inputs of `LsEvent::Tick` as before and take the commands out themselves,
+    `ReplayWindow` has `commands`, and `lockstep::take_commands` does the same for a game
+    without prediction;
+  - Web: `Simulation.step(tick, inputs, commands)`, `onTick(tick, inputs, commands)`,
+    `LockstepRollback.confirm(tick, inputs, commands)`, `ReplayRing.record(tick, inputs, commands,
+    stateBefore)`, `ReplayWindow.commands`;
+  - C#: `ISimulation.Step(tick, inputs, commands)`, `LockstepRollback.Confirm(tick, inputs,
+    commands)`, `ReplayRing.Record(tick, inputs, commands, stateBefore)`, `ReplayWindow.Commands`;
+    inside `OnTick` the commands of the tick are `LockstepClient.Commands`;
+  - Unreal: `OnSimulate` of `AurixRollbackRunner` is `(Tick, Inputs, Commands, bPredicted)`, and
+    `ExportReplay` / `PlayReplay` keep the commands of a tick as its entry of actor 65535.
+
+  `onCommand` / `OnCommand` stay as they were for a game without prediction.
+- Unity SDK: `LockstepClient.SendInput` returns the tick the input is stamped with, or -1 when
+  it sent nothing, as `sendInput` of the Web SDK does. It returned nothing, and a game that
+  predicts had no tick to give `LockstepRollback.LocalInput`.
 - Unity SDK: the package names Unity 2022.3 as the oldest editor it works in; it named 2021.3,
   in which it was never built. It builds, weaves and makes a player in 2022.3.62f3.
 - Lockstep: the journal keeps the inputs of a tick packed in one buffer: 72 bytes a tick
@@ -133,6 +158,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   that wait for the window (`RELIABLE_BACKLOG_BYTES`); a sender that outruns its peer by more
   loses the link with `LinkError::Backlog`. `Link::new` takes the idle timeout of its carrier.
   `LinkStats::retransmits` counted first sends that had waited for the window as repeats.
+- Lockstep: the referee took the commands' sender `65535` for a player, called `aurix_join`
+  for it and never ran the commands, so a client that runs them got `desync` after the
+  first one. A module gets the commands through the optional `aurix_command` export.
 - Rooms: a room whose last free seat was held for a party member stayed in the room list
   and in `join_random` and `fill_existing`, so a stranger was sent there to get `room_full`.
   A held seat counts as taken for everybody but the player it is held for, until he arrives
@@ -305,6 +333,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   `transport` to a frame of a tunnel it gave up, and its close of a QUIC or WebTransport
   connection with code 4, now end the data path with `closed` (`link dead`), and sends fail
   from there.
+- C++ SDK, Godot: a tick of `Lockstep` hands its commands over in `Event::commands`, with their
+  senders and in the order every client gets them, and no longer among the players' inputs
+  under actor 65535, where a game that makes an avatar for every actor of a tick made one for
+  it. The C API hands the tick as the node sent it.
 - Unity SDK: the package comes with the `.meta` files of its assets, written by Unity
   2022.3.62f3. Without them every project that took the package made identifiers of its own,
   and a package installed from a git URL or a registry, which the editor may not write into,

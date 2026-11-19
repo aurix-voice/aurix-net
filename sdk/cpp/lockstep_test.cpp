@@ -1,4 +1,5 @@
 #include "aurix_net.hpp"
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -8,7 +9,7 @@
 using namespace aurix::net;
 // Two clients of one lockstep room get the same inputs for every tick, in order, and the same seed.
 struct Peer {
-    Client client; Lockstep lockstep; std::map<uint32_t, std::string> ticks; int desyncs = 0; bool gap = false; size_t commands = 0; std::vector<std::string> errors; uint64_t hash = 14695981039346656037ull;
+    Client client; Lockstep lockstep; std::map<uint32_t, std::string> ticks; int desyncs = 0; bool gap = false; size_t commands = 0; std::vector<std::pair<int, int>> heard; bool commandPlayer = false; std::vector<std::string> errors; uint64_t hash = 14695981039346656037ull;
     void start(const std::string& http, const char* key, const char* player, const std::string& room) {
         client.connect(http, Client::issueGrant(http, key, player, player));
         client.onData = [this](Channel, uint16_t, const uint8_t* d, size_t n) { lockstep.receive(client, d, n); };
@@ -27,7 +28,12 @@ struct Peer {
             std::string& line = ticks[e.tick];
             for (const auto& in : e.inputs) {
                 line += std::to_string(in.actor) + "=" + std::to_string(in.len ? in.data[0] : -1) + ",";
-                if (in.actor == AURIX_NET_COMMAND_ACTOR) commands += in.len;
+                if (in.actor == AURIX_NET_COMMAND_ACTOR) commandPlayer = true;
+            }
+            for (const auto& command : e.commands) {
+                line += "!" + std::to_string(command.actor) + ":" + std::to_string(command.len) + ":" + std::to_string(command.data[0]) + ";";
+                commands += 4 + command.len;
+                if (command.len == 1) heard.emplace_back(command.actor, command.data[0]);
             }
             for (char c : line) hash = (hash ^ uint8_t(c)) * 1099511628211ull;
             if (e.tick % 10 == 0) Lockstep::reportHash(client, e.tick, hash);
@@ -41,10 +47,15 @@ int main() {
     Peer a, b; a.start(http, key, "cpp-la", room); b.start(http, key, "cpp-lb", room);
     // the longest command reaches both whole, under its 4-byte header; a longer one is refused
     a.lockstep.sendCommand(a.client, std::vector<uint8_t>(AURIX_NET_MAX_COMMAND, 7));
+    // a tick hands its commands over with their senders, in the order they were sent, apart from the players' inputs
+    a.lockstep.sendCommand(a.client, {1}); a.lockstep.sendCommand(a.client, {2}); b.lockstep.sendCommand(b.client, {3});
     bool refused = false;
     try { a.lockstep.sendCommand(a.client, std::vector<uint8_t>(AURIX_NET_MAX_COMMAND + 1, 7)); } catch (const Error&) { refused = true; }
     for (int frame = 0; frame < 180; frame++) { a.step(uint8_t(frame)); b.step(uint8_t(255 - frame % 200)); std::this_thread::sleep_for(std::chrono::milliseconds(16)); }
-    bool commands = refused && a.commands == 4 + AURIX_NET_MAX_COMMAND && b.commands == a.commands;
+    int actorA = a.client.actor(), actorB = b.client.actor();
+    auto at = [&](int actor, int byte) { return std::find(a.heard.begin(), a.heard.end(), std::make_pair(actor, byte)) - a.heard.begin(); };
+    bool apart = !a.commandPlayer && !b.commandPlayer && a.heard.size() == 3 && a.heard == b.heard && at(actorA, 1) < at(actorA, 2) && at(actorB, 3) < 3;
+    bool commands = refused && apart && a.commands == 4 + AURIX_NET_MAX_COMMAND + 3 * 5 && b.commands == a.commands;
     int common = 0, same = 0, both = 0;
     for (const auto& [tick, line] : a.ticks) {
         auto other = b.ticks.find(tick); if (other == b.ticks.end()) continue;

@@ -49,21 +49,11 @@ bool AurixNetLockstep::receive(AurixNetClient *client, const PackedByteArray &pa
 	for (auto event = ls_->poll(); event.kind != aurix::net::Lockstep::Kind::None; event = ls_->poll()) {
 		switch (event.kind) {
 			case aurix::net::Lockstep::Kind::Tick: {
+				for (const auto &command : event.commands) {
+					emit_signal("command", (int64_t)event.tick, (int)command.actor, to_pba(command.data, command.len));
+				}
 				Array inputs;
 				for (const auto &in : event.inputs) {
-					if (in.actor == AURIX_NET_COMMAND_ACTOR) {
-						for (size_t offset = 0; offset + 4 <= in.len;) {
-							const int actor = (in.data[offset] << 8) | in.data[offset + 1];
-							const size_t len = (size_t)((in.data[offset + 2] << 8) | in.data[offset + 3]);
-							offset += 4;
-							if (offset + len > in.len) {
-								break;
-							}
-							emit_signal("command", (int64_t)event.tick, actor, to_pba(in.data + offset, len));
-							offset += len;
-						}
-						continue;
-					}
 					Dictionary input;
 					input["actor"] = (int)in.actor;
 					input["data"] = to_pba(in.data, in.len);

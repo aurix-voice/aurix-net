@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::margin::MarginControl;
 
@@ -32,6 +32,34 @@ const MAX_PENDING_AHEAD: u32 = 600;
 
 /// Confirmed inputs of one tick: actor id → input bytes (absent actor = sent nothing).
 pub type TickInputs = BTreeMap<u16, Bytes>;
+
+/// A command of a tick and the actor who sent it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Command {
+    pub actor: u16,
+    pub data: Bytes,
+}
+
+/// Takes the commands of a tick out of its inputs (the entry of `COMMAND_ACTOR`), in the order
+/// every client gets them. What is left are the inputs of the players.
+pub fn take_commands(inputs: &mut TickInputs) -> Vec<Command> {
+    let mut commands = Vec::new();
+    let Some(mut entry) = inputs.remove(&COMMAND_ACTOR) else {
+        return commands;
+    };
+    while entry.remaining() >= 4 {
+        let actor = entry.get_u16();
+        let len = usize::from(entry.get_u16());
+        if len > entry.remaining() {
+            break;
+        }
+        commands.push(Command {
+            actor,
+            data: entry.split_to(len),
+        });
+    }
+    commands
+}
 
 /// What the node told us, in order. `Tick` arrives for every tick exactly once.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -335,8 +363,8 @@ impl LockstepClient {
     }
     /// Reliable out-of-input-stream command; the server stamps it onto the next tick and every
     /// client (and the referee) receives it in that tick's inputs under `COMMAND_ACTOR` (65535)
-    /// as `[u16 actor, u16 len, bytes]*`. `None` for an empty command and for one longer than
-    /// `MAX_COMMAND`.
+    /// as `[u16 actor, u16 len, bytes]*`, which [`take_commands`] reads. `None` for an empty
+    /// command and for one longer than `MAX_COMMAND`.
     pub fn command_frame(data: &[u8]) -> Option<Outgoing> {
         if data.is_empty() || data.len() > MAX_COMMAND {
             return None;
@@ -635,5 +663,25 @@ mod tests {
         assert_eq!(longest.payload.len(), 1 + MAX_COMMAND);
         assert!(LockstepClient::command_frame(&[7; MAX_COMMAND + 1]).is_none());
         assert!(LockstepClient::command_frame(&[]).is_none());
+    }
+
+    #[test]
+    fn the_commands_of_a_tick_are_taken_out_of_its_inputs_in_order() {
+        let mut client = LockstepClient::new();
+        let entry = [0, 2, 0, 1, 9, 0, 1, 0, 2, 7, 8];
+        let events = client
+            .receive(&bundle(&[(0, &[(1, b"a"), (COMMAND_ACTOR, &entry)])]))
+            .unwrap();
+        let LsEvent::Tick { mut inputs, .. } = events[0].clone() else {
+            panic!("{events:?}");
+        };
+        let commands = take_commands(&mut inputs);
+        let command = |actor, data: &'static [u8]| Command {
+            actor,
+            data: Bytes::from_static(data),
+        };
+        assert_eq!(commands, [command(2, &[9]), command(1, &[7, 8])]);
+        assert_eq!(inputs.keys().copied().collect::<Vec<_>>(), [1]);
+        assert!(take_commands(&mut inputs).is_empty());
     }
 }

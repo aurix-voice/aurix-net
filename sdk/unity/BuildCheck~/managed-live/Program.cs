@@ -117,6 +117,20 @@ sealed class GameThread : SynchronizationContext
     }
 }
 
+// A game whose state is a number: the commands of a tick in their order, then the players' inputs.
+sealed class Toy : ISimulation<ulong>
+{
+    public ulong State;
+    public void Step(uint tick, Dictionary<ushort, byte[]> inputs, IReadOnlyList<LockstepCommand> commands)
+    {
+        foreach (var c in commands) unchecked { State = State * 131 + c.Actor * 1000UL + c.Data[0]; }
+        foreach (var kv in inputs.OrderBy(k => k.Key)) unchecked { State = State * 31 + tick * 1000UL + kv.Key * 10UL + (kv.Value.Length > 0 ? kv.Value[0] : 0UL); }
+        unchecked { State = State * 7 + tick; }
+    }
+    public ulong Snapshot() => State;
+    public void Restore(ulong snapshot) { State = snapshot; }
+}
+
 class P
 {
     // NET_LIVE_REQUIRED: a part that cannot run fails the check instead of being skipped
@@ -293,6 +307,75 @@ class P
         // two calls to the backend in flight: each gets its own answer
         var first = ra.RpcAsync("first"); var second = ra.RpcAsync("second");
         if (ManagedClientTestHooks.Num(await first, "id") == ManagedClientTestHooks.Num(await second, "id")) throw new Exception("rpc: two calls in flight got the same answer");
+        // a tick's commands come with their senders, before the tick and apart from the players' inputs
+        var apart = new List<(ManagedClient client, LockstepClient ls, List<string> heard)>(); int late = 0, asPlayer = 0;
+        foreach (var name in new[] { "cs-ca", "cs-cb" })
+        {
+            var client = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, name));
+            await client.JoinOrCreateAsync(room + "-apart", "lockstep", 8);
+            var lockstep = new LockstepClient((ch, b) => client.SendData(ch, b)); var heard = new List<string>(); long stepped = -1;
+            lockstep.OnCommand += (t, actor, data) => { heard.Add($"{t}:{actor}:{data[0]}"); if (t <= stepped) late++; };
+            lockstep.OnTick += (t, inputs) => { stepped = t; if (inputs.ContainsKey(65535)) asPlayer++; };
+            client.OnData += (ch, t, p) => lockstep.Receive(p);
+            apart.Add((client, lockstep, heard));
+        }
+        async Task ApartFrames(Func<bool> done)
+        {
+            var end = DateTime.UtcNow.AddSeconds(3);
+            while (DateTime.UtcNow < end && !done()) { foreach (var peer in apart) { peer.ls.SendInput(new byte[] { 1 }); peer.client.Poll(); } await Task.Delay(16); }
+        }
+        int ticksSeen = 0; apart[0].ls.OnTick += (t, inputs) => ticksSeen++;
+        await ApartFrames(() => ticksSeen >= 10);
+        apart[0].ls.SendCommand(new byte[] { 1 }); apart[0].ls.SendCommand(new byte[] { 2 }); apart[1].ls.SendCommand(new byte[] { 3 });
+        await ApartFrames(() => apart[0].heard.Count >= 3 && apart[1].heard.Count >= 3);
+        string fromFirst = $":{apart[0].client.Actor}:", fromSecond = $":{apart[1].client.Actor}:";
+        var own = apart[0].heard.Where(c => c.Contains(fromFirst)).Select(c => c.Substring(c.LastIndexOf(':') + 1)).ToArray();
+        if (apart[0].heard.Count != 3 || !apart[0].heard.SequenceEqual(apart[1].heard) || string.Join(",", own) != "1,2" || apart[0].heard.Count(c => c.Contains(fromSecond) && c.EndsWith(":3")) != 1 || late != 0 || asPlayer != 0)
+            throw new Exception($"lockstep commands apart from inputs: a=[{string.Join(" ", apart[0].heard)}] b=[{string.Join(" ", apart[1].heard)}] late={late} among the inputs={asPlayer}");
+        Console.WriteLine($"lockstep commands: {apart[0].heard.Count} with their senders, the same on both players, before their tick, none among the players' inputs");
+        foreach (var peer in apart) peer.client.Dispose();
+        // a client that runs ahead of the confirmed ticks and one that steps in OnTick agree on a command
+        var aheadClient = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-ahead"));
+        await aheadClient.JoinOrCreateAsync(room + "-ahead", "lockstep", 2, "{\"tick_hz\":30}");
+        var plainClient = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-plain"));
+        await plainClient.JoinOrCreateAsync(room + "-ahead", "lockstep", 2, "{\"tick_hz\":30}");
+        var aheadLs = new LockstepClient((ch, b) => aheadClient.SendData(ch, b)); var plainLs = new LockstepClient((ch, b) => plainClient.SendData(ch, b));
+        var aheadSim = new Toy(); var plainSim = new Toy(); var rollback = new LockstepRollback<ulong>(aheadSim, (ushort)aheadClient.Actor, 0, 8);
+        var aheadHashes = new Dictionary<uint, ulong>(); var plainHashes = new Dictionary<uint, ulong>(); var aheadHeard = new List<string>(); var plainHeard = new List<string>();
+        var plainCommands = new List<LockstepCommand>(); int dumpsAsked = 0;
+        aheadLs.OnTick += (t, inputs) =>
+        {
+            foreach (var c in aheadLs.Commands) aheadHeard.Add($"{t}:{c.Actor}:{c.Data[0]}");
+            rollback.Confirm(t, inputs, aheadLs.Commands);
+            aheadHashes[t] = rollback.ConfirmedSnapshot; aheadLs.ReportHash(t, rollback.ConfirmedSnapshot);
+        };
+        plainLs.OnCommand += (t, actor, data) => { plainHeard.Add($"{t}:{actor}:{data[0]}"); plainCommands.Add(new LockstepCommand(actor, data)); };
+        plainLs.OnTick += (t, inputs) => { plainSim.Step(t, inputs, plainCommands); plainCommands.Clear(); plainHashes[t] = plainSim.State; plainLs.ReportHash(t, plainSim.State); };
+        aheadLs.OnDumpRequested += t => dumpsAsked++; plainLs.OnDumpRequested += t => dumpsAsked++;
+        aheadClient.OnData += (ch, t, p) => aheadLs.Receive(p); plainClient.OnData += (ch, t, p) => plainLs.Receive(p);
+        for (int step = 1; step <= 120; step++)
+        {
+            var input = new byte[] { 3 }; long stamped = aheadLs.SendInput(input);
+            if (stamped >= 0) rollback.LocalInput((uint)stamped, input);
+            rollback.Predict(aheadLs.ServerTick + aheadLs.InputDelay);
+            plainLs.SendInput(new byte[] { 4 });
+            if (step == 30) aheadLs.SendCommand(new byte[] { 100 });
+            if (step == 60) plainLs.SendCommand(new byte[] { 50 });
+            aheadClient.Poll(); plainClient.Poll(); await Task.Delay(33);
+        }
+        for (int i = 0; i < 10; i++) { aheadClient.Poll(); plainClient.Poll(); await Task.Delay(30); }
+        if (aheadHeard.Count != 2 || !aheadHeard.SequenceEqual(plainHeard) || rollback.PredictedTicks == 0 || rollback.Rollbacks < 2)
+            throw new Exception($"rollback command: ahead=[{string.Join(" ", aheadHeard)}] plain=[{string.Join(" ", plainHeard)}] predicted={rollback.PredictedTicks} rollbacks={rollback.Rollbacks}");
+        uint lastCommand = uint.Parse(aheadHeard[1].Split(':')[0]); int sameTicks = 0, afterCommands = 0;
+        foreach (var kv in aheadHashes)
+        {
+            if (!plainHashes.TryGetValue(kv.Key, out var other)) continue;
+            sameTicks++; if (kv.Key >= lastCommand) afterCommands++;
+            if (kv.Value != other) throw new Exception($"rollback command: the confirmed state differs at tick {kv.Key}: {kv.Value} and {other}");
+        }
+        if (sameTicks <= 60 || afterCommands <= 10 || dumpsAsked != 0) throw new Exception($"rollback command: compared={sameTicks} after the commands={afterCommands} dump requests={dumpsAsked}");
+        Console.WriteLine($"rollback command: commands at ticks {string.Join(",", aheadHeard.Select(c => c.Split(':')[0]))}, {sameTicks} ticks equal ({afterCommands} after), {rollback.Rollbacks} rollbacks, no dump asked");
+        aheadClient.Dispose(); plainClient.Dispose();
         // a command the node refuses comes back as a control error
         var cmd = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-cmd"));
         await cmd.JoinOrCreateAsync(room + "-cmd", "lockstep", 8);

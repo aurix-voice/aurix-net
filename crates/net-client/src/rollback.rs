@@ -3,18 +3,22 @@
 //! snapshot per predicted tick, and when the node confirms a tick whose inputs differ from the
 //! prediction it restores the snapshot, re-steps that tick and re-predicts the ticks after it.
 //! Local actions therefore render immediately; the simulation stays deterministic because only
-//! confirmed inputs ever reach the confirmed state. Same core as the C#/Web `LockstepRollback`.
+//! confirmed inputs ever reach the confirmed state. Commands are never predicted: a predicted tick
+//! has none, and a confirmed tick that carries some is stepped again with them. Same core as the
+//! C#/Web `LockstepRollback`.
 
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
 
-use crate::lockstep::TickInputs;
+use crate::lockstep::{take_commands, Command, TickInputs};
 
 /// The game's deterministic simulation: step by one tick, snapshot and restore.
 pub trait Simulation {
     type Snapshot;
-    fn step(&mut self, tick: u32, inputs: &TickInputs);
+    /// One tick: the commands in their order, then the players' inputs. A predicted tick has no
+    /// commands.
+    fn step(&mut self, tick: u32, inputs: &TickInputs, commands: &[Command]);
     fn snapshot(&self) -> Self::Snapshot;
     fn restore(&mut self, snapshot: &Self::Snapshot);
 }
@@ -97,7 +101,7 @@ impl<S: Simulation> Rollback<S> {
         while self.head < target {
             let tick = self.head;
             let inputs = self.guess(tick);
-            sim.step(tick, &inputs);
+            sim.step(tick, &inputs, &[]);
             self.predicted.insert(tick, inputs);
             self.head = tick + 1;
             self.history.insert(self.head, sim.snapshot());
@@ -105,21 +109,24 @@ impl<S: Simulation> Rollback<S> {
         }
     }
 
-    /// Feeds a confirmed tick (`LsEvent::Tick`). Returns true when a rollback happened.
+    /// Feeds a confirmed tick as `LsEvent::Tick` delivers it, its commands among the inputs.
+    /// Returns true when a rollback happened.
     pub fn confirm(&mut self, sim: &mut S, tick: u32, inputs: &TickInputs) -> bool {
         if tick != self.confirmed {
             return false;
         }
-        for (actor, input) in inputs {
+        let mut inputs = inputs.clone();
+        let commands = take_commands(&mut inputs);
+        for (actor, input) in &inputs {
             self.last_known.insert(*actor, input.clone());
         }
         self.local_inputs.remove(&tick);
         let mut rolled = false;
         if tick >= self.head {
-            sim.step(tick, inputs);
+            sim.step(tick, &inputs, &commands);
             self.head = tick + 1;
             self.history.insert(self.head, sim.snapshot());
-        } else if self.predicted.get(&tick) != Some(inputs) {
+        } else if !commands.is_empty() || self.predicted.get(&tick) != Some(&inputs) {
             rolled = true;
             self.rollbacks += 1;
             let before = self
@@ -127,7 +134,7 @@ impl<S: Simulation> Rollback<S> {
                 .get(&tick)
                 .expect("snapshot before every predicted tick");
             sim.restore(before);
-            sim.step(tick, inputs);
+            sim.step(tick, &inputs, &commands);
             self.history.insert(tick + 1, sim.snapshot());
             let old_head = self.head;
             self.head = tick + 1;
@@ -155,24 +162,29 @@ impl<S: Simulation> Rollback<S> {
     }
 }
 
-/// Instant replay (kill cam) buffer: the inputs of at least the last `keep` confirmed ticks, back to
-/// a snapshot of the confirmed state taken every `every` ticks, so any recent moment can be
-/// re-simulated locally without asking the node. Feed it from the confirmed path (`confirm` + `confirmed_snapshot`).
+/// Instant replay (kill cam) buffer: the inputs and commands of at least the last `keep` confirmed
+/// ticks, back to a snapshot of the confirmed state taken every `every` ticks, so any recent moment
+/// can be re-simulated locally without asking the node. Feed it from the confirmed path (`confirm` +
+/// `confirmed_snapshot`).
 pub struct ReplayRing<S> {
     keep: u32,
     every: u32,
     /// Tick of `inputs[0]`.
     first: u32,
     inputs: std::collections::VecDeque<TickInputs>,
+    /// Commands of the same ticks as `inputs`.
+    commands: std::collections::VecDeque<Vec<Command>>,
     /// State *before* tick `k` for boundaries `k` that are multiples of `every` (and the first one).
     snaps: BTreeMap<u32, S>,
 }
 
-/// What `ReplayRing::window` hands back: restore `snapshot`, then step `inputs` from `start`.
+/// What `ReplayRing::window` hands back: restore `snapshot`, then step from `start`, tick by tick,
+/// with `inputs[i]` and `commands[i]`.
 pub struct ReplayWindow<'a, S> {
     pub start: u32,
     pub snapshot: &'a S,
     pub inputs: Vec<&'a TickInputs>,
+    pub commands: Vec<&'a [Command]>,
 }
 
 impl<S> ReplayRing<S> {
@@ -182,27 +194,32 @@ impl<S> ReplayRing<S> {
             every: snapshot_every.max(1),
             first: 0,
             inputs: std::collections::VecDeque::new(),
+            commands: std::collections::VecDeque::new(),
             snaps: BTreeMap::new(),
         }
     }
 
-    /// Records confirmed `tick` with its inputs and the confirmed state *before* it (taken lazily
-    /// only on snapshot boundaries). Ticks must arrive in order; a gap resets the ring.
-    pub fn record(&mut self, tick: u32, inputs: TickInputs, state_before: impl FnOnce() -> S) {
+    /// Records confirmed `tick` with its inputs as `LsEvent::Tick` delivers them, its commands
+    /// among them, and the confirmed state *before* it (taken lazily only on snapshot boundaries).
+    /// Ticks must arrive in order; a gap resets the ring.
+    pub fn record(&mut self, tick: u32, mut inputs: TickInputs, state_before: impl FnOnce() -> S) {
         if self.inputs.is_empty() || self.first + self.inputs.len() as u32 != tick {
             self.inputs.clear();
+            self.commands.clear();
             self.snaps.clear();
             self.first = tick;
         }
         if self.snaps.is_empty() || tick.is_multiple_of(self.every) {
             self.snaps.insert(tick, state_before());
         }
+        self.commands.push_back(take_commands(&mut inputs));
         self.inputs.push_back(inputs);
         // the oldest tick kept is one with a snapshot, so every tick kept can be stepped from one
         let wanted = (tick + 1).saturating_sub(self.keep);
         if let Some((&anchor, _)) = self.snaps.range(..=wanted).next_back() {
             self.snaps.retain(|tick, _| *tick >= anchor);
             self.inputs.drain(..(anchor - self.first) as usize);
+            self.commands.drain(..(anchor - self.first) as usize);
             self.first = anchor;
         }
     }
@@ -226,10 +243,12 @@ impl<S> ReplayRing<S> {
             .or_else(|| self.snaps.iter().next())?;
         let skip = start.saturating_sub(self.first) as usize;
         let inputs = self.inputs.iter().skip(skip).collect();
+        let commands = self.commands.iter().skip(skip).map(Vec::as_slice).collect();
         Some(ReplayWindow {
             start,
             snapshot,
             inputs,
+            commands,
         })
     }
 }
@@ -278,6 +297,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::lockstep::COMMAND_ACTOR;
 
     /// Order-sensitive toy sim: state = fold over (tick, actor, input byte).
     #[derive(Default, Clone, PartialEq, Debug)]
@@ -287,7 +307,14 @@ mod tests {
     }
     impl Simulation for Toy {
         type Snapshot = Toy;
-        fn step(&mut self, tick: u32, inputs: &TickInputs) {
+        fn step(&mut self, tick: u32, inputs: &TickInputs, commands: &[Command]) {
+            for command in commands {
+                let byte = command.data.first().copied().unwrap_or(0) as u64;
+                self.state = self
+                    .state
+                    .wrapping_mul(131)
+                    .wrapping_add(command.actor as u64 * 1000 + byte);
+            }
             for (actor, input) in inputs {
                 let byte = input.first().copied().unwrap_or(0) as u64;
                 self.state = self
@@ -313,10 +340,18 @@ mod tests {
             .collect()
     }
 
+    /// The entry of `COMMAND_ACTOR` with one command of one byte.
+    fn command_entry(actor: u16, byte: u8) -> Bytes {
+        let [high, low] = actor.to_be_bytes();
+        Bytes::from(vec![high, low, 0, 1, byte])
+    }
+
     fn reference(script: &[TickInputs]) -> u64 {
         let mut sim = Toy::default();
         for (tick, inputs) in script.iter().enumerate() {
-            sim.step(tick as u32, inputs);
+            let mut inputs = inputs.clone();
+            let commands = take_commands(&mut inputs);
+            sim.step(tick as u32, &inputs, &commands);
         }
         sim.state
     }
@@ -357,6 +392,92 @@ mod tests {
         sim.restore(rb.confirmed_snapshot());
         assert_eq!(sim.state, reference(&script));
         assert_eq!(rb.head(), 11);
+    }
+
+    #[test]
+    fn a_confirmed_tick_with_a_command_is_stepped_again_with_it() {
+        let mut sim = Toy::default();
+        let mut rb = Rollback::new(&sim, 1, 0, 8);
+        let mut script: Vec<TickInputs> = (0..8).map(|_| inputs(&[(1, 5), (2, 9)])).collect();
+        script[4].insert(COMMAND_ACTOR, command_entry(2, 3));
+        rb.confirm(&mut sim, 0, &script[0]);
+        for tick in 1..8u32 {
+            rb.local_input(tick, Bytes::from(vec![5]));
+            rb.predict(&mut sim, tick + 3);
+            let rolled = rb.confirm(&mut sim, tick, &script[tick as usize]);
+            assert_eq!(rolled, tick == 4, "tick {tick}");
+        }
+        assert_eq!(rb.rollbacks, 1);
+        sim.restore(rb.confirmed_snapshot());
+        assert_eq!(sim.state, reference(&script));
+    }
+
+    /// Keeps what every step was given.
+    #[derive(Default)]
+    struct Journal {
+        steps: Vec<(u32, Vec<u16>, Vec<Command>)>,
+    }
+    impl Simulation for Journal {
+        type Snapshot = usize;
+        fn step(&mut self, tick: u32, inputs: &TickInputs, commands: &[Command]) {
+            let actors = inputs.keys().copied().collect();
+            self.steps.push((tick, actors, commands.to_vec()));
+        }
+        fn snapshot(&self) -> usize {
+            self.steps.len()
+        }
+        fn restore(&mut self, snapshot: &usize) {
+            self.steps.truncate(*snapshot);
+        }
+    }
+
+    #[test]
+    fn a_command_is_not_repeated_in_predicted_ticks() {
+        let mut sim = Journal::default();
+        let mut rb = Rollback::new(&sim, 1, 0, 8);
+        let mut tick = inputs(&[(1, 5), (2, 9)]);
+        rb.confirm(&mut sim, 0, &tick);
+        tick.insert(COMMAND_ACTOR, command_entry(2, 3));
+        rb.confirm(&mut sim, 1, &tick);
+        rb.local_input(2, Bytes::from(vec![5]));
+        rb.predict(&mut sim, 6);
+
+        let mut expected: Vec<_> = (0..6u32).map(|tick| (tick, vec![1, 2], vec![])).collect();
+        expected[1].2.push(Command {
+            actor: 2,
+            data: Bytes::from_static(&[3]),
+        });
+        assert_eq!(sim.steps, expected);
+    }
+
+    #[test]
+    fn replay_ring_keeps_the_commands_of_a_tick_with_its_inputs() {
+        let mut ring: ReplayRing<u32> = ReplayRing::new(50, 10);
+        for tick in 0..30u32 {
+            let mut inputs = inputs(&[(1, tick as u8)]);
+            if tick == 23 {
+                inputs.insert(COMMAND_ACTOR, command_entry(1, 7));
+            }
+            ring.record(tick, inputs, || tick);
+        }
+        let window = ring.window(21).unwrap();
+        assert_eq!(window.start, 20);
+        assert_eq!(window.commands.len(), window.inputs.len());
+        for (index, commands) in window.commands.iter().enumerate() {
+            let expected: &[Command] = if index == 3 {
+                &[Command {
+                    actor: 1,
+                    data: Bytes::from_static(&[7]),
+                }]
+            } else {
+                &[]
+            };
+            assert_eq!(*commands, expected, "tick {}", 20 + index);
+            assert_eq!(
+                window.inputs[index].keys().copied().collect::<Vec<_>>(),
+                [1]
+            );
+        }
     }
 
     #[test]

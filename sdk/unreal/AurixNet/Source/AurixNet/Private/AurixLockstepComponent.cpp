@@ -30,6 +30,18 @@ void UAurixLockstepComponent::OnRawData(uint8, TArrayView<const uint8> Data)
 	if (Ls && N) aurix_net_lockstep_receive(Ls, N->NativeClient(), Data.GetData(), Data.Num());
 }
 
+TArray<FAurixTickCommand> UAurixLockstepComponent::ReadCommands(const TArray<uint8>& Entry)
+{
+	TArray<FAurixTickCommand> Out;
+	for (int32 P = 0; P + 4 <= Entry.Num();)
+	{
+		const int32 From = (Entry[P] << 8) | Entry[P + 1]; const int32 Len = (Entry[P + 2] << 8) | Entry[P + 3]; P += 4;
+		if (P + Len > Entry.Num()) break;
+		FAurixTickCommand& C = Out.Emplace_GetRef(); C.Actor = From; C.Data.Append(Entry.GetData() + P, Len); P += Len;
+	}
+	return Out;
+}
+
 void UAurixLockstepComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* F)
 {
 	Super::TickComponent(DeltaTime, TickType, F);
@@ -53,13 +65,7 @@ void UAurixLockstepComponent::TickComponent(float DeltaTime, ELevelTick TickType
 			for (int32 I = Inputs.Num() - 1; I >= 0; --I)
 			{
 				if (Inputs[I].Actor != 0xFFFF) continue;
-				const TArray<uint8>& C = Inputs[I].Data;
-				for (int32 P = 0; P + 4 <= C.Num();)
-				{
-					const int32 From = (C[P] << 8) | C[P + 1]; const int32 Len = (C[P + 2] << 8) | C[P + 3]; P += 4;
-					if (P + Len > C.Num()) break;
-					OnCommand.Broadcast((int64)Ev.tick, From, TArray<uint8>(C.GetData() + P, Len)); P += Len;
-				}
+				for (const FAurixTickCommand& C : ReadCommands(Inputs[I].Data)) OnCommand.Broadcast((int64)Ev.tick, C.Actor, C.Data);
 				Inputs.RemoveAt(I);
 			}
 			OnTick.Broadcast((int64)Ev.tick, Inputs);

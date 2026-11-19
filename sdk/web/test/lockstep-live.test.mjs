@@ -52,6 +52,38 @@ test("lockstep: confirmed ticks flow, margin reports arrive, a liar's desync yie
   assert.equal(await blob.text(), `ls-c@${d.tick}`);
 });
 
+test("lockstep: a tick's commands come with their senders, before the tick and apart from the players' inputs", { skip: !key }, async (t) => {
+  const room = `web-ls-apart-${process.pid}`;
+  const peers = [];
+  for (const name of ["ls-ca", "ls-cb"]) {
+    const c = await Client.connect(http, await grant(name));
+    t.after(() => c.close());
+    const joined = await c.joinOrCreate(room, "lockstep", 4, { tick_hz: 30 });
+    const ls = new LockstepClient((ch, p) => c.sendData(ch, p));
+    const p = { c, ls, actor: joined.actor, heard: [], stepped: -1, late: 0, asPlayer: 0 };
+    ls.onCommand = (tick, actor, data) => { p.heard.push([tick, actor, data[0]]); if (tick <= p.stepped) p.late++; };
+    ls.onTick = (tick, inputs) => { p.stepped = tick; if (inputs.has(65535)) p.asPlayer++; };
+    c.on("data", (_ch, _tick, payload) => ls.receive(payload));
+    peers.push(p);
+  }
+  const [a, b] = peers;
+  const timer = setInterval(() => { for (const p of peers) p.ls.sendInput(Uint8Array.of(1)); }, 1000 / 30);
+  t.after(() => clearInterval(timer));
+  await sleep(300);
+  a.ls.sendCommand(Uint8Array.of(1));
+  a.ls.sendCommand(Uint8Array.of(2));
+  b.ls.sendCommand(Uint8Array.of(3));
+  for (let i = 0; i < 100 && (a.heard.length < 3 || b.heard.length < 3); i++) await sleep(20);
+
+  assert.equal(a.heard.length, 3, JSON.stringify(a.heard));
+  assert.deepEqual(b.heard, a.heard, "both players get the commands at the same ticks, in the same order");
+  const own = a.heard.filter(([, actor]) => actor === a.actor).map(([, , byte]) => byte);
+  assert.deepEqual(own, [1, 2], "a player's commands keep the order they were sent in");
+  assert.deepEqual(a.heard.filter(([, actor]) => actor === b.actor).map(([, , byte]) => byte), [3]);
+  assert.equal(a.late + b.late, 0, "a command comes before the tick it belongs to");
+  assert.equal(a.asPlayer + b.asPlayer, 0, "the commands are not among the players' inputs");
+});
+
 test("lockstep: a command the node refuses comes back as a control error", { skip: !key }, async (t) => {
   const c = await Client.connect(http, await grant("ls-cmd"));
   t.after(() => c.close());

@@ -71,7 +71,7 @@ an event sent with one of them is not delivered.
 Lockstep rooms (deterministic, every client simulates): `Runner.Lockstep` delivers confirmed inputs
 per tick in order (`OnTick`), restores state on late join / rehost (`OnRestore`), uploads the master's
 checkpoint when the node asks (`OnCheckpointRequested` → `SendCheckpoint`); you send `SendInput(bytes)`
-every tick (the room takes one input per tick, extra calls send nothing) and `ReportHash(tick, hash)` so the node can flag desyncs. Keep the simulation integer or
+every tick (it returns the tick the input is stamped with; the room takes one input per tick, extra calls send nothing and return -1) and `ReportHash(tick, hash)` so the node can flag desyncs. Keep the simulation integer or
 fixed-point; see `Samples~/LockstepDuel/DuelSim.cs`.
 
 Samples (`Samples~`): `SyncArena/PlayerController.cs`, `RelayChat/ChatSample.cs`, `LockstepDuel/DuelSim.cs`.

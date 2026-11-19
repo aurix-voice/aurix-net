@@ -119,6 +119,7 @@ int64_t aurix_net_lockstep_send_input(AurixNetLockstep *ls, AurixNetClient *clie
 int32_t aurix_net_lockstep_report_hash(AurixNetClient *client, uint32_t tick, uint64_t hash);
 /* Reliable command outside the input stream: arrives in the next tick's inputs for every client under
    actor AURIX_NET_COMMAND_ACTOR as [u16 actor, u16 len, bytes]*; journaled, replayed, seen by the referee.
+   That actor is not a player: run its commands before the step of the tick, in their order.
    1..AURIX_NET_MAX_COMMAND bytes, the longest command a tick can carry. */
 #define AURIX_NET_COMMAND_ACTOR 0xFFFF
 #define AURIX_NET_MAX_COMMAND 251

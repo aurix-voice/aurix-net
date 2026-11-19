@@ -213,7 +213,7 @@ impl ServerSim {
     }
 
     pub fn step(&mut self, inputs: &TickInputs) {
-        for actor in inputs.keys() {
+        for actor in inputs.keys().filter(|actor| **actor != COMMAND_ACTOR) {
             if !self.avatars.contains_key(actor) {
                 // After a restore the avatar already exists in the frame: re-link, do not spawn.
                 let existing = self
@@ -237,13 +237,35 @@ impl ServerSim {
                 )
             })
             .collect();
+        let commands = commands_of(inputs);
         let logic = &mut self.logic;
-        self.frame.advance(|f| logic.step(f, &step));
+        self.frame.advance(|f| {
+            for (actor, command) in &commands {
+                logic.on_command(f, *actor, command);
+            }
+            logic.step(f, &step);
+        });
     }
 
     pub fn hash(&self) -> u64 {
         hash_bytes(&self.frame.snapshot())
     }
+}
+
+/// The commands a tick carries under `COMMAND_ACTOR`, in the order they were sent.
+pub fn commands_of(inputs: &TickInputs) -> Vec<(ActorId, &[u8])> {
+    let mut entry = inputs.get(&COMMAND_ACTOR).map_or(&[][..], Vec::as_slice);
+    let mut commands = Vec::new();
+    while entry.len() >= COMMAND_HEADER_BYTES {
+        let actor = ActorId(u16::from_be_bytes([entry[0], entry[1]]));
+        let len = usize::from(u16::from_be_bytes([entry[2], entry[3]]));
+        let Some(command) = entry.get(COMMAND_HEADER_BYTES..COMMAND_HEADER_BYTES + len) else {
+            break;
+        };
+        commands.push((actor, command));
+        entry = &entry[COMMAND_HEADER_BYTES + len..];
+    }
+    commands
 }
 
 /// Desyncs after which an actor's results should not be trusted (its hash keeps disagreeing).

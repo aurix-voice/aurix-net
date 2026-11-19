@@ -145,7 +145,7 @@ Relay is what the NetDriver uses. The other two room modes are exposed as compon
   simulate on `OnTick(Tick, Inputs)`, `ReportHash` so the cell catches desyncs; `OnRestore` and
   `OnStateRequest` handle late join / referee checkpoints.
 
-`SendCommand` sends a reliable command outside the input stream (buy, surrender, pause); the cell stamps it onto the next tick and everyone receives it through `OnCommand` right before `OnTick` of that tick, so simulations stay in step. Commands are journaled and part of replays. A command is 1 to 251 bytes; a longer one is refused (`SendCommand` returns false, the reason is in the subsystem's `GetLastError`).
+`SendCommand` sends a reliable command outside the input stream (buy, surrender, pause); the cell stamps it onto the next tick and everyone receives it through `OnCommand` right before `OnTick` of that tick, so simulations stay in step. With `AurixRollbackRunner` take the commands from `OnSimulate` instead (section 6). Commands are journaled and part of replays. A command is 1 to 251 bytes; a longer one is refused (`SendCommand` returns false, the reason is in the subsystem's `GetLastError`).
 
 **Shared mode without codegen** - `AurixSyncActorComponent` on any actor: pick the schema component
 and the UPROPERTY names (same as the field names); the owner writes changed values into the sync room
@@ -177,8 +177,11 @@ Console: `aurix.net.status`, `aurix.net.rooms [expr]`, `aurix.net.leave`. In the
   frame, it sends the input, simulates predicted ticks at `TickHz`, and on every confirmed tick
   restores the confirmed state, applies the confirmed inputs, re-simulates the predicted ticks and
   reports the hash (the cell catches desyncs). Bind `OnSimulate` (your deterministic step),
-  `SaveState` / `LoadState` (e.g. `Snapshot` / `Restore` of a sim world). Late joiners receive a
-  checkpoint through `OnRestore`; `ExportReplay` / `PlayReplay` give exact replays from inputs.
+  `SaveState` / `LoadState` (e.g. `Snapshot` / `Restore` of a sim world). `OnSimulate(Tick, Inputs,
+  Commands, bPredicted)` hands over the commands of a confirmed tick (`SendCommand`): run them
+  before the step. A predicted tick has none, so with the runner do not apply commands from the
+  lockstep component's `OnCommand`. Late joiners receive a checkpoint through `OnRestore`;
+  `ExportReplay` / `PlayReplay` give exact replays from inputs and commands.
 
 ## Engine versions
 

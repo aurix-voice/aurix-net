@@ -13,6 +13,7 @@ void UAurixRollbackRunner::BeginPlay()
 	if (!Lockstep && GetOwner()) Lockstep = GetOwner()->FindComponentByClass<UAurixLockstepComponent>();
 	if (Lockstep)
 	{
+		Lockstep->OnCommand.AddDynamic(this, &UAurixRollbackRunner::HandleCommand);
 		Lockstep->OnTick.AddDynamic(this, &UAurixRollbackRunner::HandleTick);
 		Lockstep->OnRestore.AddDynamic(this, &UAurixRollbackRunner::HandleRestore);
 		Lockstep->OnStateRequest.AddDynamic(this, &UAurixRollbackRunner::HandleStateRequest);
@@ -23,6 +24,7 @@ void UAurixRollbackRunner::EndPlay(const EEndPlayReason::Type Reason)
 {
 	if (Lockstep)
 	{
+		Lockstep->OnCommand.RemoveDynamic(this, &UAurixRollbackRunner::HandleCommand);
 		Lockstep->OnTick.RemoveDynamic(this, &UAurixRollbackRunner::HandleTick);
 		Lockstep->OnRestore.RemoveDynamic(this, &UAurixRollbackRunner::HandleRestore);
 		Lockstep->OnStateRequest.RemoveDynamic(this, &UAurixRollbackRunner::HandleStateRequest);
@@ -35,7 +37,7 @@ void UAurixRollbackRunner::Start(int64 FromTick)
 	Confirmed = Predicted = FromTick - 1;
 	ConfirmedState = SaveState.IsBound() ? SaveState.Execute() : TArray<uint8>();
 	InitialState = ConfirmedState;
-	Pending.Reset(); LastInputs.Reset(); Journal.Reset(); JournalStart = FromTick; RollbackCount = 0; Accum = 0;
+	Arriving.Reset(); Pending.Reset(); LastInputs.Reset(); Journal.Reset(); JournalStart = FromTick; RollbackCount = 0; Accum = 0;
 	bRunning = true;
 }
 void UAurixRollbackRunner::Stop() { bRunning = false; }
@@ -48,7 +50,7 @@ int64 UAurixRollbackRunner::CurrentHash()
 	return (int64)aurix_net_lockstep_fnv1a(S.GetData(), S.Num());
 }
 
-void UAurixRollbackRunner::Simulate(int64 Tick, const TArray<FAurixLockstepInput>& Inputs, bool bPredicted) { OnSimulate.Broadcast(Tick, Inputs, bPredicted); }
+void UAurixRollbackRunner::Simulate(int64 Tick, const TArray<FAurixLockstepInput>& Inputs, const TArray<FAurixTickCommand>& Commands, bool bPredicted) { OnSimulate.Broadcast(Tick, Inputs, Commands, bPredicted); }
 
 int32 UAurixRollbackRunner::LocalActor() const
 {
@@ -79,15 +81,22 @@ void UAurixRollbackRunner::TickComponent(float Dt, ELevelTick T, FActorComponent
 		if (Predicted - Confirmed >= MaxPrediction) { Accum = FMath::Min(Accum, Step); break; } // stall: too far ahead of the cell
 		const int64 Next = Predicted + 1;
 		Lockstep->SendInput(LocalInput);
-		Simulate(Next, PredictedInputs(), true);
+		Simulate(Next, PredictedInputs(), TArray<FAurixTickCommand>(), true);
 		Predicted = Next;
 	}
 }
 
+void UAurixRollbackRunner::HandleCommand(int64, int32 Actor, const TArray<uint8>& Data)
+{
+	FAurixTickCommand& C = Arriving.Emplace_GetRef(); C.Actor = Actor; C.Data = Data;
+}
+
 void UAurixRollbackRunner::HandleTick(int64 Tick, const TArray<FAurixLockstepInput>& Inputs)
 {
+	TArray<FAurixTickCommand> Commands = MoveTemp(Arriving);
 	if (!bRunning) return;
-	Pending.Add(Tick, Inputs);
+	FConfirmedTick& Entry = Pending.Add(Tick);
+	Entry.Inputs = Inputs; Entry.Commands = MoveTemp(Commands);
 	// Apply confirmed ticks in order from the confirmed state.
 	if (!Pending.Contains(Confirmed + 1)) return;
 	const int64 From = Confirmed + 1;
@@ -96,12 +105,11 @@ void UAurixRollbackRunner::HandleTick(int64 Tick, const TArray<FAurixLockstepInp
 	int64 T = From;
 	for (; Pending.Contains(T); ++T)
 	{
-		const TArray<FAurixLockstepInput>& In = Pending[T];
-		for (const FAurixLockstepInput& I : In) LastInputs.Add(I.Actor, I.Data);
-		Simulate(T, In, false);
-		if (bRecordReplay) Journal.Emplace(T, In);
+		FConfirmedTick In = Pending.FindAndRemoveChecked(T);
+		for (const FAurixLockstepInput& I : In.Inputs) LastInputs.Add(I.Actor, I.Data);
+		Simulate(T, In.Inputs, In.Commands, false);
 		Lockstep->ReportHash(T, CurrentHash());
-		Pending.Remove(T);
+		if (bRecordReplay) Journal.Add(MoveTemp(In));
 	}
 	Confirmed = T - 1;
 	ConfirmedState = SaveState.IsBound() ? SaveState.Execute() : TArray<uint8>();
@@ -109,7 +117,7 @@ void UAurixRollbackRunner::HandleTick(int64 Tick, const TArray<FAurixLockstepInp
 	int32 Resim = 0;
 	for (int64 P = Confirmed + 1; P <= WasPredicted; ++P, ++Resim)
 	{
-		Simulate(P, PredictedInputs(), true);
+		Simulate(P, PredictedInputs(), TArray<FAurixTickCommand>(), true);
 	}
 	Predicted = FMath::Max(Confirmed, WasPredicted);
 	if (Resim > 0 || WasPredicted >= From) { ++RollbackCount; OnResimulated.Broadcast(From, Resim); }
@@ -120,7 +128,7 @@ void UAurixRollbackRunner::HandleRestore(int64 Tick, int64, const TArray<uint8>&
 	// Late join / resync: the cell hands us the state before Tick, or nothing when the room has no checkpoint yet.
 	ConfirmedState = State.IsEmpty() ? InitialState : State;
 	if (LoadState.IsBound()) LoadState.Execute(ConfirmedState);
-	Confirmed = Predicted = Tick - 1; Pending.Reset();
+	Confirmed = Predicted = Tick - 1; Arriving.Reset(); Pending.Reset();
 	Journal.Reset(); JournalStart = Tick;
 	bRunning = true;
 }
@@ -137,10 +145,15 @@ TArray<uint8> UAurixRollbackRunner::ExportReplay() const
 	auto U16 = [&](uint16 V) { Out.Add(uint8(V >> 8)); Out.Add(uint8(V & 0xFF)); };
 	auto U32 = [&](uint32 V) { U16(uint16(V >> 16)); U16(uint16(V & 0xFFFF)); };
 	Out.Append((const uint8*)"AXRP", 4); U32((uint32)TickHz); U32((uint32)JournalStart);
-	for (const auto& E : Journal)
+	for (const FConfirmedTick& E : Journal)
 	{
-		U16((uint16)E.Value.Num());
-		for (const FAurixLockstepInput& I : E.Value) { U16((uint16)I.Actor); U16((uint16)I.Data.Num()); Out.Append(I.Data); }
+		U16((uint16)(E.Inputs.Num() + (E.Commands.IsEmpty() ? 0 : 1)));
+		for (const FAurixLockstepInput& I : E.Inputs) { U16((uint16)I.Actor); U16((uint16)I.Data.Num()); Out.Append(I.Data); }
+		if (E.Commands.IsEmpty()) continue;
+		int32 Len = 0;
+		for (const FAurixTickCommand& C : E.Commands) Len += 4 + C.Data.Num();
+		U16(0xFFFF); U16((uint16)Len);
+		for (const FAurixTickCommand& C : E.Commands) { U16((uint16)C.Actor); U16((uint16)C.Data.Num()); Out.Append(C.Data); }
 	}
 	return Out;
 }
@@ -159,12 +172,15 @@ bool UAurixRollbackRunner::PlayReplay(const TArray<uint8>& R, const TArray<uint8
 	{
 		uint16 N; if (!U16(N)) return false;
 		TArray<FAurixLockstepInput> In;
+		TArray<FAurixTickCommand> Commands;
 		for (uint16 I = 0; I < N; ++I)
 		{
 			uint16 A, L; if (!U16(A) || !U16(L) || O + L > R.Num()) return false;
-			FAurixLockstepInput& X = In.Emplace_GetRef(); X.Actor = A; X.Data.Append(R.GetData() + O, L); O += L;
+			if (A == 0xFFFF) Commands = UAurixLockstepComponent::ReadCommands(TArray<uint8>(R.GetData() + O, L));
+			else { FAurixLockstepInput& X = In.Emplace_GetRef(); X.Actor = A; X.Data.Append(R.GetData() + O, L); }
+			O += L;
 		}
-		Simulate(T++, In, false);
+		Simulate(T++, In, Commands, false);
 	}
 	return true;
 }

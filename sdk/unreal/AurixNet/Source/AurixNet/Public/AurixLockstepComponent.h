@@ -15,6 +15,15 @@ struct AURIXNET_API FAurixLockstepInput
 	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net|Lockstep") TArray<uint8> Data;
 };
 
+/** A command of a tick and the actor who sent it. */
+USTRUCT(BlueprintType)
+struct AURIXNET_API FAurixTickCommand
+{
+	GENERATED_BODY()
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net|Lockstep") int32 Actor = -1;
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net|Lockstep") TArray<uint8> Data;
+};
+
 /** A confirmed tick: run your deterministic simulation with these inputs, then ReportHash(Tick, Hash). */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixLockstepTick, int64, Tick, const TArray<FAurixLockstepInput>&, Inputs);
 /** A reliable command (SendCommand) from Actor, delivered to everyone at Tick; fires before OnTick of that tick. */
@@ -47,6 +56,8 @@ public:
 	/** Reliable command outside the input stream (buy, surrender, pause): the cell stamps it onto the next tick; everyone (and the referee) gets it at that tick via OnCommand; journaled and replayed. 1..251 bytes (AURIX_NET_MAX_COMMAND); a longer one is refused: false, with the reason in the subsystem's GetLastError. */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Lockstep") bool SendCommand(const TArray<uint8>& Data);
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Lockstep") FAurixLockstepCommand OnCommand;
+	/** The commands in the entry a tick keeps them in (actor 65535): (u16 actor, u16 len, bytes)*, in the order every client gets them. */
+	static TArray<FAurixTickCommand> ReadCommands(const TArray<uint8>& Entry);
 	/** Answer a checkpoint request with the state before Tick: a late joiner loads it and gets the inputs from Tick on. */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Lockstep") bool SendCheckpoint(int64 Tick, int64 Hash, const TArray<uint8>& State);
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Lockstep") bool SendDump(int64 Tick, int64 Hash, const TArray<uint8>& State);

@@ -216,7 +216,11 @@ canonical schema is returned in `joined.schema_hash`; a client that sends a diff
 Set `props.logic` to the name of a module uploaded with `PUT /v1/modules/:name` and the
 node runs it as the room's authoritative logic: `aurix_join` spawns the avatar,
 `aurix_step` reads this tick's inputs and writes components, `raise` sends game events,
-`hitbox` feeds lag compensation. Any language that targets wasm32 works; the ABI is plain
+`hitbox` feeds lag compensation. In a lockstep room a module that exports
+`aurix_command(actor, len)` gets every command of the tick before `aurix_step`, in the order
+the clients get them, and reads its bytes with `command_read(ptr, cap)`; a module without
+the export skips commands. The commands' sender `65535` is not a player: the module gets no
+`aurix_join` and no input for it. Any language that targets wasm32 works; the ABI is plain
 integers and floats (see `net-game`). Fuel and memory are capped per call/room, so one
 broken game cannot stall a shared node. Without `logic`, a custom schema runs
 owner-authoritative (clients write their own entities' components) and no schema at all runs

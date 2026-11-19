@@ -113,3 +113,13 @@ test("a command a tick cannot carry is refused at the sender", () => {
   assert.throws(() => ls.sendCommand(new Uint8Array(0)), /command/);
   assert.equal(sent.length, 1);
 });
+
+test("a tick hands its commands over apart from the players' inputs, in order", () => {
+  const ls = new LockstepClient(() => {}); const heard = []; const ticks = [];
+  ls.onCommand = (t, actor, data) => heard.push([t, actor, ...data]);
+  ls.onTick = (t, inputs, commands) => ticks.push([t, [...inputs.keys()], commands.map((c) => [c.actor, ...c.data])]);
+  const entry = [0, 2, 0, 1, 9, 0, 1, 0, 2, 7, 8];
+  ls.receive(datagram(bundle(0, [[1, [5]], [0xffff, entry]]), bundle(1, [[1, [5]]])));
+  assert.deepEqual(heard, [[0, 2, 9], [0, 1, 7, 8]]);
+  assert.deepEqual(ticks, [[0, [1], [[2, 9], [1, 7, 8]]], [1, [1], []]]);
+});

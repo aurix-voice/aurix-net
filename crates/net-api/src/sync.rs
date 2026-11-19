@@ -46,6 +46,8 @@ pub trait GameLogic: Send {
     /// `inputs`: (actor, avatar, input bytes, fresh) for every connected actor.
     fn step(&mut self, frame: &mut Frame, inputs: &[(ActorId, Option<EntityId>, Vec<u8>, bool)]);
     fn hitboxes(&self, frame: &Frame) -> Vec<(EntityId, Hitbox)>;
+    /// A lockstep command of `actor`, before the `step` of its tick.
+    fn on_command(&mut self, _frame: &mut Frame, _actor: ActorId, _command: &[u8]) {}
     /// Called after the frame was restored from a checkpoint (node failover).
     fn reset(&mut self) {}
     /// Answers to tagged spawns since the last call.
@@ -78,6 +80,9 @@ impl GameLogic for net_game::WasmLogic {
     }
     fn step(&mut self, frame: &mut Frame, inputs: &[(ActorId, Option<EntityId>, Vec<u8>, bool)]) {
         net_game::WasmLogic::step(self, frame, inputs)
+    }
+    fn on_command(&mut self, frame: &mut Frame, actor: ActorId, command: &[u8]) {
+        net_game::WasmLogic::on_command(self, frame, actor, command)
     }
     fn hitboxes(&self, _frame: &Frame) -> Vec<(EntityId, Hitbox)> {
         net_game::WasmLogic::hitboxes(self)

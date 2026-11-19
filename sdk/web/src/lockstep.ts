@@ -25,9 +25,15 @@ export const MAX_COMMAND = 251;
 
 export type TickInputs = Map<number, Uint8Array>;
 
+/** A command of a tick and the actor who sent it. */
+export interface Command {
+  actor: number;
+  data: Uint8Array;
+}
+
 export class LockstepClient {
-  /** Confirmed inputs for one tick, in tick order, every tick exactly once (empty map = nobody sent). */
-  onTick?: (tick: number, inputs: TickInputs) => void;
+  /** Confirmed inputs for one tick, in tick order, every tick exactly once (empty map = nobody sent), and the commands of that tick in the order every client gets them. */
+  onTick?: (tick: number, inputs: TickInputs, commands: Command[]) => void;
   /** Reliable command delivered to everyone at the same tick (sender actor, bytes); fires before onTick of that tick. */
   onCommand?: (tick: number, actor: number, data: Uint8Array) => void;
   /** Catch-up start: restore the game state from this checkpoint (empty state at tick 0 = fresh start). */
@@ -207,12 +213,13 @@ export class LockstepClient {
       this.pending.delete(this.next);
       const tick = this.next++;
       this.delivered++;
-      const cmds = inputs.get(COMMAND_ACTOR);
-      if (cmds) {
-        inputs.delete(COMMAND_ACTOR);
-        this.dispatchCommands(tick, cmds);
+      const entry = inputs.get(COMMAND_ACTOR);
+      inputs.delete(COMMAND_ACTOR);
+      const commands = entry ? readCommands(entry) : [];
+      for (const command of commands) {
+        this.onCommand?.(tick, command.actor, command.data);
       }
-      this.onTick?.(tick, inputs);
+      this.onTick?.(tick, inputs, commands);
     }
     for (const tick of [...this.pending.keys()].sort(
       (left, right) => left - right,
@@ -235,19 +242,6 @@ export class LockstepClient {
     bytes[0] = LS_COMMAND;
     bytes.set(data, 1);
     this.send(Channel.Reliable, bytes);
-  }
-  private dispatchCommands(tick: number, cmds: Uint8Array): void {
-    let offset = 0;
-    while (offset + 4 <= cmds.length) {
-      const actor = (cmds[offset] << 8) | cmds[offset + 1];
-      const len = (cmds[offset + 2] << 8) | cmds[offset + 3];
-      offset += 4;
-      if (offset + len > cmds.length) {
-        break;
-      }
-      this.onCommand?.(tick, actor, cmds.slice(offset, offset + len));
-      offset += len;
-    }
   }
   /** Sends this tick's input and returns the tick it is stamped with. The room takes one input per tick:
    *  called more often than that it sends nothing and returns -1, so sample the input again next time.
@@ -336,6 +330,21 @@ function u32(bytes: Uint8Array, offset: number): number {
 function u64(bytes: Uint8Array, offset: number): bigint {
   return (BigInt(u32(bytes, offset)) << 32n) | BigInt(u32(bytes, offset + 4));
 }
+function readCommands(entry: Uint8Array): Command[] {
+  const commands: Command[] = [];
+  let offset = 0;
+  while (offset + 4 <= entry.length) {
+    const actor = (entry[offset] << 8) | entry[offset + 1];
+    const len = (entry[offset + 2] << 8) | entry[offset + 3];
+    offset += 4;
+    if (offset + len > entry.length) {
+      break;
+    }
+    commands.push({ actor, data: entry.slice(offset, offset + len) });
+    offset += len;
+  }
+  return commands;
+}
 function w32(bytes: Uint8Array, offset: number, value: number): void {
   bytes[offset] = value >>> 24;
   bytes[offset + 1] = (value >>> 16) & 255;
@@ -349,7 +358,8 @@ function w64(bytes: Uint8Array, offset: number, value: bigint): void {
 
 /** The game's deterministic simulation for LockstepRollback: step one tick, snapshot, restore. */
 export interface Simulation<S = unknown> {
-  step(tick: number, inputs: TickInputs): void;
+  /** One tick: the commands in their order, then the players' inputs. A predicted tick has no commands. */
+  step(tick: number, inputs: TickInputs, commands: Command[]): void;
   snapshot(): S;
   restore(state: S): void;
 }
@@ -358,7 +368,9 @@ export interface Simulation<S = unknown> {
  * Predict/rollback on top of LockstepClient (same core as the Rust/C# SDKs): the game runs ahead of
  * the confirmed tick with predicted remote inputs (each actor's last confirmed input, repeated) and
  * its own inputs as sent, keeps a snapshot per predicted tick, and when a confirmed tick differs from
- * the prediction restores the snapshot, re-steps it and re-predicts the ticks after it.
+ * the prediction restores the snapshot, re-steps it and re-predicts the ticks after it. Commands are
+ * never predicted: a predicted tick has none, and a confirmed tick that carries some is stepped again
+ * with them.
  */
 export class LockstepRollback<S = unknown> {
   private confirmed: number;
@@ -417,15 +429,15 @@ export class LockstepRollback<S = unknown> {
     while (this.head < target) {
       const tick = this.head;
       const inputs = this.guess(tick);
-      this.sim.step(tick, inputs);
+      this.sim.step(tick, inputs, []);
       this.predicted.set(tick, inputs);
       this.head = tick + 1;
       this.history.set(this.head, this.sim.snapshot());
       this.predictedTicks++;
     }
   }
-  /** Feeds a confirmed tick (LockstepClient.onTick). Returns true when a rollback happened. */
-  confirm(tick: number, inputs: TickInputs): boolean {
+  /** Feeds a confirmed tick with its commands (LockstepClient.onTick). Returns true when a rollback happened. */
+  confirm(tick: number, inputs: TickInputs, commands: Command[]): boolean {
     if (tick !== this.confirmed) {
       return false;
     }
@@ -435,14 +447,17 @@ export class LockstepRollback<S = unknown> {
     this.localInputs.delete(tick);
     let rolled = false;
     if (tick >= this.head) {
-      this.sim.step(tick, inputs);
+      this.sim.step(tick, inputs, commands);
       this.head = tick + 1;
       this.history.set(this.head, this.sim.snapshot());
-    } else if (!sameInputs(this.predicted.get(tick), inputs)) {
+    } else if (
+      commands.length > 0 ||
+      !sameInputs(this.predicted.get(tick), inputs)
+    ) {
       rolled = true;
       this.rollbacks++;
       this.sim.restore(this.history.get(tick) as S);
-      this.sim.step(tick, inputs);
+      this.sim.step(tick, inputs, commands);
       this.history.set(tick + 1, this.sim.snapshot());
       const oldHead = this.head;
       this.head = tick + 1;
@@ -490,21 +505,23 @@ function sameInputs(left: TickInputs | undefined, right: TickInputs): boolean {
   return true;
 }
 
-/** What ReplayRing.window hands back: restore `snapshot`, then step `inputs` from `start`. */
+/** What ReplayRing.window hands back: restore `snapshot`, then step from `start`, tick by tick, with `inputs[i]` and `commands[i]`. */
 export interface ReplayWindow<S> {
   start: number;
   snapshot: S;
   inputs: TickInputs[];
+  commands: Command[][];
 }
 
 /**
- * Instant replay (kill cam) buffer: the inputs of at least the last `keep` confirmed ticks, back to a
+ * Instant replay (kill cam) buffer: the inputs and commands of at least the last `keep` confirmed ticks, back to a
  * snapshot of the confirmed state taken every `every` ticks, so any recent moment can be re-simulated
  * locally. Feed it from the confirmed path (after LockstepRollback.confirm, with confirmedSnapshot()).
  */
 export class ReplayRing<S = unknown> {
   private first = 0;
   private inputs: TickInputs[] = [];
+  private commands: Command[][] = [];
   private snaps = new Map<number, S>();
   constructor(
     private readonly keep = 300,
@@ -514,10 +531,16 @@ export class ReplayRing<S = unknown> {
     this.every = Math.max(1, every);
   }
 
-  /** Records confirmed `tick` with its inputs and the confirmed state *before* it (taken lazily on snapshot boundaries). A gap resets the ring. */
-  record(tick: number, inputs: TickInputs, stateBefore: () => S): void {
+  /** Records confirmed `tick` with its inputs, its commands and the confirmed state *before* it (taken lazily on snapshot boundaries). A gap resets the ring. */
+  record(
+    tick: number,
+    inputs: TickInputs,
+    commands: Command[],
+    stateBefore: () => S,
+  ): void {
     if (this.inputs.length === 0 || this.first + this.inputs.length !== tick) {
       this.inputs = [];
+      this.commands = [];
       this.snaps.clear();
       this.first = tick;
     }
@@ -525,6 +548,7 @@ export class ReplayRing<S = unknown> {
       this.snaps.set(tick, stateBefore());
     }
     this.inputs.push(inputs);
+    this.commands.push(commands);
     // the oldest tick kept is one with a snapshot, so every tick kept can be stepped from one
     const wanted = tick + 1 - this.keep;
     let anchor = -1;
@@ -540,6 +564,7 @@ export class ReplayRing<S = unknown> {
         }
       }
       this.inputs.splice(0, anchor - this.first);
+      this.commands.splice(0, anchor - this.first);
       this.first = anchor;
     }
   }
@@ -575,6 +600,7 @@ export class ReplayRing<S = unknown> {
       start,
       snapshot: this.snaps.get(start) as S,
       inputs: this.inputs.slice(Math.max(0, start - this.first)),
+      commands: this.commands.slice(Math.max(0, start - this.first)),
     };
   }
 }

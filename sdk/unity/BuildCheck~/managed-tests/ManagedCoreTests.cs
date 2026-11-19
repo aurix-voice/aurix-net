@@ -192,13 +192,14 @@ public class ManagedCoreTests
         var d = sent[sent.Count - 1];
         Assert.That(d.Item1 == Channel.Reliable && Hex(d.Item2) == "27000001001122334455667788" + "0707", "dump frame layout");
         // input redundancy window
-        ls.InputRedundancy = 2; ls.SendInput(new byte[] { 0 });
-        Assert.That(sent.Count == 1, "no input before the room's tick is known");
+        ls.InputRedundancy = 2; long stamped = ls.SendInput(new byte[] { 0 });
+        Assert.That(sent.Count == 1 && stamped == -1, "no input before the room's tick is known");
         ls.Receive(Catchup(9)); ls.Receive(new byte[] { 0x20, 1, 0, 6, 0x20, 0, 0, 0, 9, 0 });
-        ls.SendInput(new byte[] { 1 }); ls.SendInput(new byte[] { 2 });
+        long first = ls.SendInput(new byte[] { 1 }), second = ls.SendInput(new byte[] { 2 });
         Assert.That(sent[sent.Count - 1].Item2[5] == 2, "two inputs per datagram");
-        int frames = sent.Count; ls.SendInput(new byte[] { 3 });
-        Assert.That(sent.Count == frames, "one input per tick");
+        Assert.That(first == ls.ServerTick + ls.InputDelay && second == first + 1, $"an input returns the tick it is stamped with: {first}, {second}");
+        int frames = sent.Count; stamped = ls.SendInput(new byte[] { 3 });
+        Assert.That(sent.Count == frames && stamped == -1, "one input per tick");
         ls.Receive(new byte[] { 0x20, 1, 0, 6, 0x20, 0, 0, 0, 40, 0 });
         var ack = sent[sent.Count - 1];
         Assert.That(ack.Item1 == Channel.Unreliable && Hex(ack.Item2) == "290000000a", "a bundle frame is acknowledged with the tick needed next: 10 while 10 to 39 are missing");
@@ -238,8 +239,9 @@ public class ManagedCoreTests
     sealed class Toy : ISimulation<(ulong state, int steps)>
     {
         public ulong State; public int Steps;
-        public void Step(uint tick, Dictionary<ushort, byte[]> inputs)
+        public void Step(uint tick, Dictionary<ushort, byte[]> inputs, IReadOnlyList<LockstepCommand> commands)
         {
+            foreach (var c in commands) { ulong b = c.Data.Length > 0 ? c.Data[0] : 0UL; unchecked { State = State * 131 + c.Actor * 1000UL + b; } }
             foreach (var kv in inputs.OrderBy(k => k.Key)) { ulong b = kv.Value.Length > 0 ? kv.Value[0] : 0UL; unchecked { State = State * 31 + tick * 1000UL + kv.Key * 10UL + b; } }
             unchecked { State = State * 7 + tick; } Steps++;
         }
@@ -247,42 +249,43 @@ public class ManagedCoreTests
         public void Restore((ulong state, int steps) s) { State = s.state; Steps = s.steps; }
     }
     static Dictionary<ushort, byte[]> Inputs(params (ushort, byte)[] v) { var d = new Dictionary<ushort, byte[]>(); foreach (var (a, b) in v) d[a] = new[] { b }; return d; }
-    static ulong Reference(List<Dictionary<ushort, byte[]>> script) { var s = new Toy(); for (int t = 0; t < script.Count; t++) s.Step((uint)t, script[t]); return s.State; }
+    static ulong Reference(List<Dictionary<ushort, byte[]>> script) { var s = new Toy(); for (int t = 0; t < script.Count; t++) s.Step((uint)t, script[t], NoCommands); return s.State; }
+    static readonly LockstepCommand[] NoCommands = Array.Empty<LockstepCommand>();
 
     [Test]
     public void RollbackTests()
     {
         var sim = new Toy(); var rb = new LockstepRollback<(ulong, int)>(sim, 1, 0, 8);
         var script = new List<Dictionary<ushort, byte[]>>(); for (int i = 0; i < 10; i++) script.Add(Inputs((1, 5), (2, 9)));
-        rb.Confirm(0, script[0]); bool rolled = false;
-        for (uint t = 1; t < 10; t++) { rb.LocalInput(t, new byte[] { 5 }); rb.Predict(t + 3); rolled |= rb.Confirm(t, script[(int)t]); }
+        rb.Confirm(0, script[0], NoCommands); bool rolled = false;
+        for (uint t = 1; t < 10; t++) { rb.LocalInput(t, new byte[] { 5 }); rb.Predict(t + 3); rolled |= rb.Confirm(t, script[(int)t], NoCommands); }
         Assert.That(!rolled && rb.Rollbacks == 0 && rb.ConfirmedTick == 10 && rb.HeadTick > rb.ConfirmedTick, "rollback: correct predictions never roll back");
 
         sim = new Toy(); rb = new LockstepRollback<(ulong, int)>(sim, 1, 0, 8);
         script.Clear(); for (int i = 0; i < 8; i++) script.Add(Inputs((1, 1), (2, 2)));
         script[4] = Inputs((1, 1), (2, 7)); script[5] = Inputs((2, 7));
-        for (uint t = 0; t < 8; t++) { rb.LocalInput(t, new byte[] { 1 }); rb.Predict(t + 4); rb.Confirm(t, script[(int)t]); }
+        for (uint t = 0; t < 8; t++) { rb.LocalInput(t, new byte[] { 1 }); rb.Predict(t + 4); rb.Confirm(t, script[(int)t], NoCommands); }
         Assert.That(rb.Rollbacks == 4 && rb.ResimulatedTicks > 0 && rb.HeadTick == 11, "rollback: mispredictions roll back and re-predict (" + rb.Rollbacks + ")");
         var pure = new Toy(); var rb2 = new LockstepRollback<(ulong, int)>(pure, 1, 0, 8);
-        for (uint t = 0; t < 8; t++) rb2.Confirm(t, script[(int)t]);
+        for (uint t = 0; t < 8; t++) rb2.Confirm(t, script[(int)t], NoCommands);
         Assert.That(pure.State == Reference(script), "rollback: confirmed-only run equals pure lockstep");
 
         sim = new Toy(); rb = new LockstepRollback<(ulong, int)>(sim, 1, 0, 3);
         rb.Predict(100);
-        Assert.That(rb.HeadTick == 3 && rb.PredictedTicks == 3 && !rb.Confirm(7, Inputs()), "rollback: prediction bounded, out-of-order confirm ignored");
+        Assert.That(rb.HeadTick == 3 && rb.PredictedTicks == 3 && !rb.Confirm(7, Inputs(), NoCommands), "rollback: prediction bounded, out-of-order confirm ignored");
         rb.Reset(50); rb.Predict(52);
         Assert.That(rb.ConfirmedTick == 50 && rb.HeadTick == 52, "rollback: reset forgets history");
 
         var ring = new ReplayRing<uint>(50, 10);
-        for (uint t = 0; t < 100; t++) ring.Record(t, Inputs((1, (byte)t)), () => t * 100);
+        for (uint t = 0; t < 100; t++) ring.Record(t, Inputs((1, (byte)t)), NoCommands, () => t * 100);
         var w = ring.Window(73).Value;
         Assert.That(w.Start == 70 && w.Snapshot == 7000 && w.Inputs.Count == 30 && w.Inputs[0][1][0] == 70, "replay ring: window from nearest snapshot");
         w = ring.Window(5).Value;
         Assert.That(w.Start == 50 && w.Inputs.Count == 50 && ring.Oldest == 50, "replay ring: clamps to the oldest kept snapshot");
-        ring.Record(200, Inputs(), () => 1);
+        ring.Record(200, Inputs(), NoCommands, () => 1);
         Assert.That(ring.Oldest == 200 && ring.Window(0).Value.Inputs.Count == 1, "replay ring: gap resets");
         ring = new ReplayRing<uint>(50, 10);
-        for (uint t = 0; t < 105; t++) ring.Record(t, Inputs((1, (byte)t)), () => t * 100);
+        for (uint t = 0; t < 105; t++) ring.Record(t, Inputs((1, (byte)t)), NoCommands, () => t * 100);
         foreach (uint from in new uint[] { 0, 52, 55, 60, 104 })
         {
             w = ring.Window(from).Value;
@@ -290,6 +293,55 @@ public class ManagedCoreTests
         }
         Assert.That(ring.Oldest <= 55 && ring.Window(ring.Oldest.Value).Value.Start == ring.Oldest, "replay ring: the oldest tick can be replayed");
 
+    }
+
+    sealed class Doubling : ISimulation<int>
+    {
+        public int X = 1;
+        public void Step(uint tick, Dictionary<ushort, byte[]> inputs, IReadOnlyList<LockstepCommand> commands)
+        {
+            foreach (var c in commands) X += c.Data[0];
+            X = X * 2 + inputs.Values.Sum(input => input[0]);
+        }
+        public int Snapshot() => X;
+        public void Restore(int snapshot) { X = snapshot; }
+    }
+
+    // The game runs three ticks ahead; tick 3 carries a command that adds 100 before its step.
+    static (int reference, int confirmed, int replayed, ReplayWindow<int> window) CommandAtTick3(byte[] theirs)
+    {
+        var reference = new Doubling(); var sim = new Doubling();
+        var rb = new LockstepRollback<int>(sim, 1, 0, 8); var ring = new ReplayRing<int>(300, 2);
+        for (uint t = 0; t < 6; t++)
+        {
+            rb.LocalInput(t + 3, new byte[] { 1 }); rb.Predict(t + 3);
+            var confirmed = Inputs((1, 1), (2, theirs[t]));
+            var commands = t == 3 ? new[] { new LockstepCommand(2, new byte[] { 100 }) } : NoCommands;
+            reference.Step(t, confirmed, commands);
+            int before = rb.ConfirmedSnapshot;
+            rb.Confirm(t, confirmed, commands);
+            ring.Record(t, confirmed, commands, () => before);
+        }
+        var w = ring.Window(2).Value; var cam = new Doubling(); cam.Restore(w.Snapshot);
+        for (int i = 0; i < w.Inputs.Count; i++) cam.Step(w.Start + (uint)i, w.Inputs[i], w.Commands[i]);
+        return (reference.X, rb.ConfirmedSnapshot, cam.X, w);
+    }
+
+    [Test]
+    public void RollbackCommandTests()
+    {
+        var run = CommandAtTick3(new byte[] { 0, 0, 0, 0, 0, 0 });
+        Assert.That(run.reference == 927 && run.confirmed == 927 && run.replayed == 927, "rollback: a confirmed tick with a command is stepped again with it (" + run.confirmed + ", replayed " + run.replayed + ")");
+        var w = run.window;
+        Assert.That(w.Start == 2 && w.Commands.Count == w.Inputs.Count && w.Commands[1].Count == 1 && w.Commands[1][0].Actor == 2 && w.Commands[1][0].Data[0] == 100 && w.Commands.Count(c => c.Count > 0) == 1, "replay ring: keeps the commands of a tick with its inputs");
+        run = CommandAtTick3(new byte[] { 0, 0, 0, 0, 7, 7 });
+        Assert.That(run.reference == 948 && run.confirmed == 948 && run.replayed == 948, "rollback: a command and a mispredicted input after it give the pure lockstep state (" + run.confirmed + ", replayed " + run.replayed + ")");
+
+        var ls = new LockstepClient((ch, p) => { }); var ticks = new List<string>();
+        ls.OnTick += (t, inputs) => ticks.Add(t + ":" + string.Join(",", inputs.Keys) + ":" + string.Join(",", ls.Commands.Select(c => c.Actor + "=" + Hex(c.Data))));
+        ls.Receive(new byte[] { 0x20, 1, 0, 24, 0x20, 0, 0, 0, 0, 2, 0, 1, 1, 5, 0xFF, 0xFF, 11, 0, 2, 0, 1, 9, 0, 1, 0, 2, 7, 8 });
+        ls.Receive(new byte[] { 0x20, 1, 0, 10, 0x20, 0, 0, 0, 1, 1, 0, 1, 1, 5 });
+        Assert.That(string.Join(" ", ticks) == "0:1:2=09,1=0708 1:1:" && ls.Commands.Count == 0, "lockstep: OnTick has the commands of its tick apart from the players' inputs (" + string.Join(" ", ticks) + ")");
     }
 
 

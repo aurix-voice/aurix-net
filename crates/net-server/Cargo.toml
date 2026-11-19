@@ -39,6 +39,7 @@ mimalloc = "0.1"
 [dev-dependencies]
 net-client = { path = "../net-client" }
 net-replication = { path = "../net-replication" }
+net-rollback = { path = "../net-rollback" }
 net-sim = { path = "../net-sim" }
 net-wire = { path = "../net-wire" }
 base64 = { workspace = true }

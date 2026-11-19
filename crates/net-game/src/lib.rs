@@ -12,6 +12,8 @@
 //! aurix_init(seed: i64)                    once per instance (and after a failover restore)
 //! aurix_join(actor: i32) -> i64            optional: return the actor's avatar entity (0 = none)
 //! aurix_leave(actor: i32, entity: i64)     optional
+//! aurix_command(actor: i32, len: i32)     optional: a lockstep command of `actor`, before the
+//!                                          tick's `aurix_step`; `command_read` copies it
 //! aurix_step()                             once per tick
 //! ```
 //! Host imports (module `"aurix"`): entity handles are i64 (0 = none/invalid), actors i32
@@ -28,6 +30,7 @@
 //! set_bytes(id, comp, field, ptr, len) -> i32   (string / bytes fields)
 //! input_count() -> i32       input_actor(i) -> i32      input_entity(i) -> i64
 //! input_fresh(i) -> i32      input_read(i, ptr, cap) -> i32 (bytes copied)
+//! command_read(ptr, cap) -> i32 (bytes copied; inside `aurix_command` only)
 //! raise(code: i32, target_actor: i32, ptr, len)    event to clients (0 = everyone)
 //! hitbox(id, cx, cy, cz, hx, hy, hz)               register a lag-compensation box for this tick
 //! log(level: i32, ptr, len)                         0 error, 1 warn, 2 info, 3 debug (rate limited)
@@ -141,6 +144,7 @@ struct Host {
     /// Valid only while a guest call is in flight (set by `WasmLogic::call`).
     frame: *mut Frame,
     inputs: Vec<StepInput>,
+    command: Vec<u8>,
     hitboxes: Vec<(EntityId, Hitbox)>,
     entities: Vec<EntityId>,
     limits: StoreLimits,
@@ -224,6 +228,7 @@ pub struct WasmLogic {
     step: TypedFunc<(), ()>,
     join: Option<TypedFunc<i32, i64>>,
     leave: Option<TypedFunc<(i32, i64), ()>>,
+    command: Option<TypedFunc<(i32, i32), ()>>,
     seed: u64,
     initialized: bool,
     /// Set after a trap: the module is disabled for this room (logged once).
@@ -237,6 +242,7 @@ impl WasmLogic {
         let host = Host {
             frame: std::ptr::null_mut(),
             inputs: Vec::new(),
+            command: Vec::new(),
             hitboxes: Vec::new(),
             entities: Vec::new(),
             limits: StoreLimitsBuilder::new()
@@ -266,12 +272,16 @@ impl WasmLogic {
         let leave = instance
             .get_typed_func::<(i32, i64), ()>(&mut store, "aurix_leave")
             .ok();
+        let command = instance
+            .get_typed_func::<(i32, i32), ()>(&mut store, "aurix_command")
+            .ok();
         Ok(Self {
             store,
             init,
             step,
             join,
             leave,
+            command,
             seed,
             initialized: false,
             dead: false,
@@ -578,6 +588,19 @@ impl WasmLogic {
         )?;
         linker.func_wrap(
             "aurix",
+            "command_read",
+            |mut caller: Caller<'_, Host>, ptr: i32, cap: i32| -> i32 {
+                let data = caller.data().command.clone();
+                let len = data.len().min(cap.max(0) as usize);
+                if write_bytes(&mut caller, ptr, &data[..len]) {
+                    len as i32
+                } else {
+                    0
+                }
+            },
+        )?;
+        linker.func_wrap(
+            "aurix",
             "raise",
             |mut caller: Caller<'_, Host>, code: i32, target: i32, ptr: i32, len: i32| {
                 let Some(data) = read_bytes(&mut caller, ptr, len.min(60_000)) else {
@@ -685,6 +708,19 @@ impl WasmLogic {
         };
         let entity = avatar.map(handle).unwrap_or(0);
         self.call(frame, |s| leave.call(s, (actor.0 as i32, entity)));
+    }
+
+    /// A lockstep command of `actor`; a module without `aurix_command` skips it.
+    pub fn on_command(&mut self, frame: &mut Frame, actor: ActorId, command: &[u8]) {
+        let Some(call) = self.command.clone() else {
+            return;
+        };
+        self.ensure_init(frame);
+        self.store.data_mut().command = command.to_vec();
+        self.call(frame, |s| {
+            call.call(s, (actor.0 as i32, command.len() as i32))
+        });
+        self.store.data_mut().command.clear();
     }
 
     pub fn step(&mut self, frame: &mut Frame, inputs: &[StepInput]) {
@@ -915,5 +951,27 @@ component Score {
         // speed 6 * 1s
         assert!((pos[0] - (start[0] + 6.0)).abs() < 0.05, "x = {}", pos[0]);
         assert_eq!(logic.hitboxes().len(), 1);
+
+        frame.advance(|fr| logic.on_command(fr, actor, &[5]));
+        let moved = match &frame.get(avatar, "Transform").unwrap().fields[0] {
+            Value::Vec3(v) => *v,
+            _ => panic!(),
+        };
+        assert!((moved[0] - (pos[0] + 5.0)).abs() < 0.05, "x = {}", moved[0]);
+    }
+
+    #[test]
+    fn module_without_the_command_export_skips_commands() {
+        let eng = GameEngine::new();
+        let (_, module) = eng.load(GUEST.as_bytes()).unwrap();
+        let mut logic = eng.instantiate(&module, 42).unwrap();
+        let mut frame = frame();
+        let actor = ActorId(1);
+        let avatar = logic.on_join(&mut frame, actor).expect("avatar");
+        let before = frame.get(avatar, "Transform").unwrap().fields.clone();
+
+        frame.advance(|fr| logic.on_command(fr, actor, &[5]));
+        assert_eq!(frame.get(avatar, "Transform").unwrap().fields, before);
+        assert!(!logic.dead);
     }
 }
