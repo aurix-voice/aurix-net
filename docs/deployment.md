@@ -22,6 +22,11 @@ Step-by-step order for go-live and every release: [release-checklist.md](release
 misses three of *its own* heartbeats, so nodes with different intervals can share a fleet (a 2 s dev node
 next to a 30 s one). With every heartbeat a node also renews its rooms in the room list (`lobby_rooms`,
 `GET /v1/rooms`); the rooms of a node that stopped doing so leave the list after four heartbeats.
+A heartbeat that fails is tried again every second, and the first one that lands lists a node
+its peers had declared dead again; until then that node cannot create or take over a room.
+Each node keeps up to `database.max_connections` (default 16) connections to Postgres: the
+nodes of a fleet times that number has to fit in the `max_connections` of Postgres, or joins
+wait 5 s for a connection and are refused with `database`.
 Unknown `NET__<SECTION>__…` variables are reported with a startup warning.
 
 `server.public_host` is also what the other nodes use to reach this one for operator calls

@@ -13,6 +13,9 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
+/// How soon a heartbeat that failed is tried again.
+const HEARTBEAT_RETRY: Duration = Duration::from_secs(1);
+
 /// glibc malloc keeps per-thread arenas at their high-water mark (RSS kept climbing by tens of MB
 /// per batch of referee desyncs with nothing leaked); mimalloc returns freed pages to the OS.
 #[global_allocator]
@@ -239,11 +242,19 @@ async fn main() -> anyhow::Result<()> {
         let http_url = http_url.clone();
         tokio::spawn(async move {
             let mut iv = tokio::time::interval(Duration::from_secs(st.cfg.server.heartbeat_secs));
+            iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             iv.tick().await;
             loop {
                 iv.tick().await;
-                if let Err(e) = heartbeat(&st, &http_url, st.is_draining()).await {
-                    warn!(error = %e, "heartbeat failed");
+                // The peers drop a node that missed three heartbeats, and only a heartbeat
+                // lists it again: a failed one is not left for the next interval.
+                let mut failed = false;
+                while let Err(e) = heartbeat(&st, &http_url, st.is_draining()).await {
+                    if !failed {
+                        warn!(error = %e, "heartbeat failed; retrying");
+                        failed = true;
+                    }
+                    tokio::time::sleep(HEARTBEAT_RETRY).await;
                 }
             }
         });

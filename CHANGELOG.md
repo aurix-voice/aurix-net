@@ -312,6 +312,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   held no hash from before the move. A node keeps the whole journal of a room and its hashes
   in Redis, not the last ten seconds, and the node that takes the room over has them. The
   checkpoint of a room is deleted with the room; it used to stay ten minutes after the close.
+- A node that could not reach Postgres for three heartbeats is taken off the node list by its
+  peers, and it stayed off it for up to a whole heartbeat after Postgres was back: every
+  `create` on it was refused with `database` (59 in a row over 30 s at the default
+  interval). A heartbeat that fails is tried again every second.
 - A control message over 69 632 bytes, or over 8 192 bytes before `auth`, made the node drop
   the connection with no close frame, and the error it queued before `auth` was lost with it.
   The node closes with code 1009 and the limit in the reason, and the limit before `auth`

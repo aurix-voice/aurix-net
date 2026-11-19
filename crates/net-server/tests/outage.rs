@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{joined, refused, Node, Sink};
+use common::{joined, refused, Node, Sink, Ws};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 use tokio::io::copy_bidirectional;
@@ -663,4 +663,88 @@ async fn lockstep_room_that_ran_through_a_redis_outage_moves_with_all_of_its_tic
     joined(&bob.call(json!({"t": "join", "name": "arena"})).await);
     let (status, replay) = moved.api.get(&format!("/v1/rooms/{room}/replay")).await;
     assert_eq!((status, &replay["from_tick"]), (200, &json!(0)), "{replay}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn node_its_peers_gave_up_on_serves_again_once_the_database_is_back() {
+    const BEAT: (&str, &str) = ("NET__SERVER__HEARTBEAT_SECS", "5");
+    let relay = Relay::start().await;
+    let cut_off = Node::start_with(&[("NET__DATABASE__URL", &relay.url), BEAT]).await;
+    let mut peer = Node::start_with(&[BEAT]).await;
+    let project = cut_off.project("given-up").await;
+    let elsewhere = peer.same_project(&project);
+    let mut host = elsewhere.player("host").await;
+    joined(&host.call(json!({"t": "create", "name": "arena"})).await);
+    let grant = project.grant("ann").await;
+
+    let url = std::env::var("NET__DATABASE__URL")
+        .unwrap_or_else(|_| "postgres://aurix:aurix@127.0.0.1:5432/aurix_net".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("postgres");
+    relay.set(false);
+    // Three heartbeats missed, and the peer takes the node off the list.
+    let cut = Instant::now();
+    loop {
+        let listed: i64 = sqlx::query_scalar("SELECT count(*) FROM nodes WHERE http_url = $1")
+            .bind(&cut_off.http)
+            .fetch_one(&pool)
+            .await
+            .expect("nodes");
+        if listed == 0 {
+            break;
+        }
+        assert!(cut.elapsed() < Duration::from_secs(40), "still listed");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    relay.set(true);
+
+    let back = Instant::now();
+    let mut ann = Ws::open(&cut_off.http, &grant).await;
+    loop {
+        let reply = ann.call(json!({"t": "create", "name": "lobby"})).await;
+        if reply["t"] == "joined" {
+            break;
+        }
+        assert!(back.elapsed() < Duration::from_secs(3), "{reply}");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    // The peer sends a player of the room to the node again.
+    let mut bob = elsewhere.player("bob").await;
+    let reply = bob.call(json!({"t": "join", "name": "lobby"})).await;
+    let there = format!("conflict: room_elsewhere:{}", cut_off.http);
+    assert_eq!(reply["message"], there.as_str(), "{reply}");
+
+    // A ticket filed on the node meets one filed on the peer.
+    let ticket = |player: &str| {
+        json!({"player_id": player, "mode": "relay", "max_players": 2, "min_players": 2,
+               "max_wait_secs": 30, "props": {}})
+    };
+    let (status, reply) = project
+        .api
+        .post("/v1/matchmaking/tickets", ticket("cat"))
+        .await;
+    assert_eq!(status, 200, "{reply}");
+    let (status, reply) = elsewhere
+        .api
+        .post("/v1/matchmaking/tickets", ticket("dan"))
+        .await;
+    assert_eq!(status, 200, "{reply}");
+    let path = format!(
+        "/v1/matchmaking/tickets/{}",
+        reply["ticket"].as_str().expect("ticket")
+    );
+    let mut state = Value::Null;
+    for _ in 0..50 {
+        state = elsewhere.api.get(&path).await.1;
+        if state["state"]["state"] == "matched" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(state["state"]["state"], "matched", "{state}");
+
+    // And the node takes over a room of a peer that stops.
+    peer.terminate();
+    let mut eve = project.player("eve").await;
+    joined(&eve.call(json!({"t": "join", "name": "arena"})).await);
 }
