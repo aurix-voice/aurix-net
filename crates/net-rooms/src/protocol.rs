@@ -146,11 +146,18 @@ pub enum ClientMsg {
     Lobby {
         subscribe: bool,
     },
-    /// Project-wide live room/player counts grouped by the room prop `lobby`.
-    Stats,
+    /// Project-wide live room/player counts grouped by the room prop `lobby`. An `id` comes
+    /// back in the answer, or in the `error` that refuses this request; the same holds for
+    /// `find_friends` and `get_rooms`.
+    Stats {
+        #[serde(default)]
+        id: Option<u32>,
+    },
     /// Presence of up to 64 players of this project across the fleet (online, current room).
     FindFriends {
         players: Vec<String>,
+        #[serde(default)]
+        id: Option<u32>,
     },
     /// One-shot room list (SQL-lobby style): open, visible rooms with a free
     /// slot, optionally filtered by a SQL-like condition on lobby props, newest first, ≤ `limit`
@@ -160,6 +167,8 @@ pub enum ClientMsg {
         expr: Option<String>,
         #[serde(default)]
         limit: Option<u16>,
+        #[serde(default)]
+        id: Option<u32>,
     },
     /// Call into the game's backend through the node (WebRPC): the project's webhook
     /// subscribed to `rpc` is POSTed `{name, player_id, actor?, room?, body}` and its JSON
@@ -245,6 +254,19 @@ pub struct RoomSummary {
     pub max_players: u16,
     pub open: bool,
     pub props: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ClientMsg {
+    /// The id a request carries for its answer, if it is one that can.
+    pub fn request_id(&self) -> Option<u32> {
+        match self {
+            ClientMsg::Stats { id }
+            | ClientMsg::FindFriends { id, .. }
+            | ClientMsg::GetRooms { id, .. } => *id,
+            ClientMsg::Rpc { id, .. } => Some(*id),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -335,13 +357,19 @@ pub enum ServerMsg {
         rooms: u32,
         players: u32,
         lobbies: Vec<LobbyStats>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u32>,
     },
     Friends {
         friends: Vec<FriendInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u32>,
     },
     /// Answer to `get_rooms`.
     Rooms {
         rooms: Vec<RoomSummary>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u32>,
     },
     /// Answer to `rpc{id}`: `ok` = the endpoint answered 2xx; `body` is its JSON (null when
     /// empty); `error` explains a failed call (no endpoint, timeout, non-JSON, too large).
@@ -359,9 +387,13 @@ pub enum ServerMsg {
         ts: u64,
         server_ms: u64,
     },
+    /// `id`: the request this refuses, when that request carried one (`stats`, `find_friends`,
+    /// `get_rooms`, `rpc`).
     Error {
         code: String,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u32>,
     },
     /// Lockstep: this actor's state hash for `tick` disagreed with the majority. The actor is
     /// sent a fresh checkpoint + journal tail to reload from; after `UNTRUSTED_AFTER` strikes

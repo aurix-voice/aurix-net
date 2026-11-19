@@ -148,9 +148,10 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
             Message::Text(text) => match serde_json::from_str::<ClientMsg>(&text) {
                 Ok(msg) => {
                     let auth = matches!(msg, ClientMsg::Auth { .. });
+                    let id = msg.request_id();
                     if let Err(e) = sess.handle(msg).await {
                         let fatal = auth && matches!(e, NetError::RateLimited);
-                        sess.error(e);
+                        sess.refuse(id, e);
                         if fatal {
                             break;
                         }
@@ -174,10 +175,16 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
 
 impl Session {
     fn error(&self, e: NetError) {
+        self.refuse(None, e);
+    }
+
+    /// `id`: the one the refused request carried.
+    fn refuse(&self, id: Option<u32>, e: NetError) {
         self.st.metrics.errors.with_label_values(&[e.code()]).inc();
         let _ = self.ctl.try_send(ServerMsg::Error {
             code: e.code().to_string(),
             message: e.to_string(),
+            id,
         });
     }
 
@@ -254,7 +261,7 @@ impl Session {
                 self.grant = Some(checked);
                 Ok(())
             }
-            ClientMsg::GetRooms { expr, limit } => {
+            ClientMsg::GetRooms { expr, limit, id } => {
                 let grant = self.grant()?.clone();
                 let filter = match expr.as_deref().map(str::trim) {
                     None | Some("") => None,
@@ -272,7 +279,7 @@ impl Session {
                     .filter(|r| filter.as_ref().is_none_or(|f| f.matches(&r.props)))
                     .take(limit)
                     .collect();
-                let _ = self.ctl.try_send(ServerMsg::Rooms { rooms });
+                let _ = self.ctl.try_send(ServerMsg::Rooms { rooms, id });
                 Ok(())
             }
             ClientMsg::Rpc { id, name, body } => {
@@ -683,7 +690,7 @@ impl Session {
                 self.publish_current().await;
                 Ok(())
             }
-            ClientMsg::Stats => {
+            ClientMsg::Stats { id } => {
                 let grant = self.grant()?.clone();
                 self.lookup_budget()?;
                 let rooms: Vec<RoomSummary> = match self.st.redis.list_rooms(grant.project).await {
@@ -695,10 +702,11 @@ impl Session {
                     rooms,
                     players,
                     lobbies,
+                    id,
                 });
                 Ok(())
             }
-            ClientMsg::FindFriends { players } => {
+            ClientMsg::FindFriends { players, id } => {
                 let grant = self.grant()?.clone();
                 if players.len() > crate::presence::MAX_FRIENDS {
                     return Err(NetError::Invalid(format!(
@@ -712,7 +720,7 @@ impl Session {
                 self.lookup_budget()?;
                 let friends =
                     crate::presence::find_friends(&self.st, grant.project, &players).await;
-                let _ = self.ctl.try_send(ServerMsg::Friends { friends });
+                let _ = self.ctl.try_send(ServerMsg::Friends { friends, id });
                 Ok(())
             }
             ClientMsg::Lobby { subscribe } => {

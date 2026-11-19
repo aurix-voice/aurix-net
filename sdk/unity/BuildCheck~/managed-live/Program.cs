@@ -166,7 +166,7 @@ class P
         Console.WriteLine($"late joiner: cached events={cached}/1 chat history={history}/1");
         ra.Dispose(); rb.Dispose(); rc.Dispose();
         // over a slow link (NET_SLOW_HTTP, see README): a client that left a room joins another one
-        bool rejoined = true; var slow = Environment.GetEnvironmentVariable("NET_SLOW_HTTP");
+        bool rejoined = true, toldApart = true; var slow = Environment.GetEnvironmentVariable("NET_SLOW_HTTP");
         if (slow != null)
         {
             var sf = await ManagedClient.ConnectAsync(slow, await Grant(h, key, "cs-sf"));
@@ -187,7 +187,15 @@ class P
             }
             catch (Exception e) { Console.WriteLine($"slow link: {e.Message}"); errors++; }
             Console.WriteLine($"slow link: errors after leave={errors}, reliable events in the next room={next}/5");
-            rejoined = errors == 0 && next == 5; sf.Dispose(); sg.Dispose();
+            rejoined = errors == 0 && next == 5;
+            // two lookups in flight, both sent before either is answered: the node answers one a second, and
+            // its refusal of the second is not the first one's
+            var dust = sf.RoomsAsync("map = 'dust'"); var nuke = sf.RoomsAsync("map = 'nuke'"); string list = null, refusal = null;
+            try { list = await dust; } catch (NetException e) { list = e.Message; }
+            try { await nuke; } catch (NetException e) { refusal = e.Message; }
+            toldApart = ManagedClientTestHooks.Str(list, "t") == "rooms" && refusal != null && refusal.StartsWith("conflict");
+            Console.WriteLine($"slow link, two lookups in flight: first={(ManagedClientTestHooks.Str(list, "t") ?? list)}, second={refusal ?? "answered"} -> {(toldApart ? "ok" : "FAIL")}");
+            sf.Dispose(); sg.Dispose();
         }
         else Console.WriteLine("slow link: skipped (NET_SLOW_HTTP not set)");
         // NetRunner over the slow link: what the owner writes every tick reaches the room in time
@@ -223,7 +231,7 @@ class P
             Console.WriteLine($"slow link, NetRunner: owner moves that reached the room={reached.Count}/{moves}");
             runnerOk = moves > 0 && reached.Count >= moves * 3 / 4; runner.Client.Dispose(); watcher.Dispose();
         }
-        bool ok = lsOk && schemaOk && spawnOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && rejoined && runnerOk;
+        bool ok = lsOk && schemaOk && spawnOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && rejoined && toldApart && runnerOk;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");
         return ok ? 0 : 1;
     }

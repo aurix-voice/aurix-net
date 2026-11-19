@@ -163,6 +163,29 @@ test("rooms(expr) finds a room by the lobby props joinOrCreate published", { ski
   }
 });
 
+test("two lookups in flight: each call gets its own answer or refusal", { skip: !key }, async () => {
+  const a = await Client.connect(http, await grant("web-ids-a"));
+  const b = await Client.connect(http, await grant("web-ids-b"));
+  const c = await Client.connect(http, await grant("web-ids-c"));
+  try {
+    const dust = `web-ids-dust-${process.pid}`, nuke = `web-ids-nuke-${process.pid}`;
+    await a.joinOrCreate(dust, "relay", 4, { map: "dust" }, [], ["map"]);
+    await b.joinOrCreate(nuke, "relay", 4, { map: "nuke" }, [], ["map"]);
+    const mine = (rooms) => rooms.map((entry) => entry.name).filter((name) => name === dust || name === nuke);
+    // the node answers one lookup a second: the second of two sent at once is refused
+    const [first, second] = await Promise.allSettled([c.rooms("map = 'dust'").then(mine), c.rooms("map = 'nuke'").then(mine)]);
+    assert.deepEqual(first.value, [dust]);
+    assert.equal(second.reason?.code, "conflict", `the second call got ${JSON.stringify(second.value)}`);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    // a join in flight is not refused by the refusal of a lookup
+    const [, refused, joined] = await Promise.allSettled([c.lobbyStats(), c.lobbyStats(), c.joinOrCreate(dust, "relay", 4)]);
+    assert.equal(refused.reason?.code, "conflict");
+    assert.equal(joined.value?.name ?? joined.reason?.message, dust);
+  } finally {
+    a.close(); b.close(); c.close();
+  }
+});
+
 test("a client that left a room over a 200 ms round trip joins another one", { skip: !key }, async () => {
   const link = slowLink(http, 100);
   const a = await Client.connect(link.url, await grant("web-leave-a"));

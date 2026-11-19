@@ -303,7 +303,7 @@ impl Client {
             match client.next_event().await {
                 Some(Event::Control(ServerMsg::Authed { .. })) => break,
                 Some(Event::Control(ServerMsg::Hello { .. })) => continue,
-                Some(Event::Control(ServerMsg::Error { code, message })) => {
+                Some(Event::Control(ServerMsg::Error { code, message, .. })) => {
                     return Err(ClientError::Server { code, message })
                 }
                 Some(Event::Closed(_)) | None => return Err(ClientError::Disconnected),
@@ -422,7 +422,7 @@ impl Client {
                     };
                     break (joined, cached);
                 }
-                Some(Event::Control(ServerMsg::Error { code, message })) => {
+                Some(Event::Control(ServerMsg::Error { code, message, .. })) => {
                     return Err(ClientError::Server { code, message })
                 }
                 Some(Event::Closed(_)) | None => return Err(ClientError::Disconnected),
@@ -714,15 +714,20 @@ impl Client {
     }
 
     /// Ask for project-wide room/player counts per lobby; the answer arrives as
-    /// `Event::Control(ServerMsg::Stats { .. })`. At most one `stats`/`find_friends` per second.
-    pub async fn stats(&self) -> Result<()> {
-        self.send(ClientMsg::Stats).await
+    /// `Event::Control(ServerMsg::Stats { id, .. })`, a refusal as `ServerMsg::Error { id, .. }`,
+    /// both with the `id` given here. At most one `stats`/`find_friends` per second.
+    pub async fn stats(&self, id: u32) -> Result<()> {
+        self.send(ClientMsg::Stats { id: Some(id) }).await
     }
 
     /// Ask where up to 64 players are (online, room) across the fleet; the answer arrives as
-    /// `Event::Control(ServerMsg::Friends { .. })`.
-    pub async fn find_friends(&self, players: Vec<String>) -> Result<()> {
-        self.send(ClientMsg::FindFriends { players }).await
+    /// `Event::Control(ServerMsg::Friends { id, .. })`, a refusal as `ServerMsg::Error { id, .. }`.
+    pub async fn find_friends(&self, id: u32, players: Vec<String>) -> Result<()> {
+        self.send(ClientMsg::FindFriends {
+            players,
+            id: Some(id),
+        })
+        .await
     }
     /// Call the game's backend through the node (the project's `rpc` webhook); the answer
     /// arrives as `Event::Control(ServerMsg::RpcResult { id, .. })`. Body ≤ 8 KiB, 5 per second.

@@ -84,6 +84,13 @@ export interface ControlMessage {
   [field: string]: unknown;
 }
 
+// An `error` refuses the request whose `id` it repeats; one without an `id` may refuse any.
+function refuses(message: ControlMessage, id?: number): boolean {
+  return (
+    message.t === "error" && (message.id === undefined || message.id === id)
+  );
+}
+
 /** What `Client.on` can subscribe to, with the arguments each listener receives. */
 export interface ClientEvents {
   control: (message: ControlMessage) => void;
@@ -124,7 +131,7 @@ export class Client {
   }
   private listeners: { [K in keyof ClientEvents]?: ClientEvents[K][] } = {};
   private waiters: ((message: ControlMessage) => boolean)[] = [];
-  private rpcSeq = 0;
+  private requestSeq = 0;
   joined?: Joined;
   actor = -1;
   /** Sync rooms: the entity the room made for this client as its avatar, once the room has
@@ -241,10 +248,7 @@ export class Client {
     client.ws.onmessage = (event) => client.onMessage(event.data);
     client.ws.onclose = () => client.lost("control channel closed");
     client.send({ t: "auth", grant });
-    await client.waitFor(
-      (message) => message.t === "authed",
-      (message) => message.t === "error",
-    );
+    await client.waitFor((message) => message.t === "authed", refuses);
     return client;
   }
 
@@ -427,7 +431,7 @@ export class Client {
     this.send(msg);
     const joined = await this.waitFor<Joined>(
       (message) => message.t === "joined",
-      (message) => message.t === "error",
+      refuses,
     );
     this.joined = joined;
     this.actor = joined.actor;
@@ -618,13 +622,20 @@ export class Client {
     this.forgetRoom();
     this.send({ t: "leave" });
   }
+  /** Sends `message` under an id of its own and waits for the `answer` or the `error` that
+   *  repeats it. A node that repeats no ids answers without one, and that answer is taken. */
+  private request<T>(message: object, answer: string): Promise<T> {
+    const id = (this.requestSeq = (this.requestSeq + 1) >>> 0);
+    this.send({ ...message, id });
+    return this.waitFor<T>(
+      (reply) =>
+        reply.t === answer && (reply.id === undefined || reply.id === id),
+      (reply) => refuses(reply, id),
+    );
+  }
   /** Project-wide room/player counts per lobby (lobby statistics); at most one per second. */
   async lobbyStats(): Promise<Stats> {
-    this.send({ t: "stats" });
-    const reply = await this.waitFor<Stats>(
-      (message) => message.t === "stats",
-      (message) => message.t === "error",
-    );
+    const reply = await this.request<Stats>({ t: "stats" }, "stats");
     return {
       rooms: reply.rooms,
       players: reply.players,
@@ -633,29 +644,25 @@ export class Client {
   }
   /** Presence of up to 64 players (find friends): online and the room they are in, fleet-wide. */
   async findFriends(players: string[]): Promise<Friend[]> {
-    this.send({ t: "find_friends", players });
-    const reply = await this.waitFor<{ friends: Friend[] }>(
-      (message) => message.t === "friends",
-      (message) => message.t === "error",
+    const reply = await this.request<{ friends: Friend[] }>(
+      { t: "find_friends", players },
+      "friends",
     );
     return reply.friends;
   }
   /** One-shot room list (SQL-lobby style): open, visible rooms with a free slot, optionally filtered by a SQL-like `expr` on lobby props (`map = 'dust' AND rank_min <= 1400`); one per second. */
   async rooms(expr?: string, limit?: number): Promise<RoomSummary[]> {
-    this.send({ t: "get_rooms", expr, limit });
-    const reply = await this.waitFor<{ rooms: RoomSummary[] }>(
-      (message) => message.t === "rooms",
-      (message) => message.t === "error",
+    const reply = await this.request<{ rooms: RoomSummary[] }>(
+      { t: "get_rooms", expr, limit },
+      "rooms",
     );
     return reply.rooms;
   }
   /** Call your backend through the node (WebRPC): the project's webhook subscribed to `rpc` is POSTed `{name, player_id, actor?, room?, body}` and its JSON answer comes back. Body ≤ 8 KiB, 5 calls/s. */
   async rpc(name: string, body: unknown = null): Promise<RpcResult> {
-    const id = (this.rpcSeq = (this.rpcSeq + 1) >>> 0);
-    this.send({ t: "rpc", id, name, body });
-    const reply = await this.waitFor<RpcResult>(
-      (message) => message.t === "rpc_result" && message.id === id,
-      (message) => message.t === "error",
+    const reply = await this.request<RpcResult>(
+      { t: "rpc", name, body },
+      "rpc_result",
     );
     return {
       ok: reply.ok,

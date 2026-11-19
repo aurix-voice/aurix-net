@@ -39,12 +39,16 @@ session, both fan out across the fleet):
   `await client.findFriends(["ann", "bob"])` → `[{player, online, room?: {id, name, mode, node}}]`.
 - Unity (managed): `await client.StatsAsync()` / `await client.FindFriendsAsync(new[]{"ann","bob"})` return
   the JSON answers (`Json.Str/Num/Obj` helpers read them).
-- Rust: `client.stats().await?` / `client.find_friends(vec![...]).await?`; the answers arrive as
-  `Event::Control(ServerMsg::Stats { .. })` / `ServerMsg::Friends { .. }`.
+- Rust: `client.stats(id).await?` / `client.find_friends(id, vec![...]).await?`; the answers arrive as
+  `Event::Control(ServerMsg::Stats { id, .. })` / `ServerMsg::Friends { id, .. }`, a refusal as
+  `ServerMsg::Error { id, .. }`, each with the `id` of its request.
 - One-shot room list and WebRPC: Web `await client.rooms("map = 'dust'")` / `await client.rpc("inventory.get", {slot: 3})`
   → `{ok, status, body, error?}`; Unity `RoomsAsync(expr)` / `RpcAsync(name, bodyJson)`; Rust
   `client.rpc(id, name, body)` with the answer as `ServerMsg::RpcResult { id, .. }`. `rpc` reaches the
   project's webhook subscribed to `rpc` (docs/api.md → Webhooks); the client never sees its URL.
+- Lookups and `rpc` calls in flight at once: Web and Unity send each under an id of its own, so every
+  call gets its own answer, and the node's refusal of one (`lookup_rate`, `rpc_rate`) fails that call
+  only.
 
 A room's lobby is its room prop `lobby` (always visible in listings); rooms without one form the default
 lobby `""`. See docs/modes.md.

@@ -418,7 +418,7 @@ async fn player(
         if let Message::Text(text) = message? {
             match serde_json::from_str::<ServerMsg>(&text)? {
                 ServerMsg::Joined { data, tick_hz, .. } => break (data, tick_hz),
-                ServerMsg::Error { code, message } => anyhow::bail!("{code}: {message}"),
+                ServerMsg::Error { code, message, .. } => anyhow::bail!("{code}: {message}"),
                 _ => {}
             }
         }

@@ -8,6 +8,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 ## [Unreleased]
 
 ### Added
+- Control channel: `stats`, `find_friends` and `get_rooms` take an optional `id`, which the node
+  repeats in the answer (`stats`, `friends`, `rooms`) and in the `error` that refuses that
+  request; an `error` that refuses an `rpc` carries its `id` too. Two lookups in flight at once
+  could not be told apart before.
 - Sync: a spawn can carry a tag of the client's (op 7), and the room answers the client with
   the entity it created (`0x14`), or with the refusal. A client could not tell the entity it had
   spawned from its avatar or from another spawn, and a spawn sent twice was created twice. The
@@ -74,6 +78,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Web and Unity SDKs: of two `rooms`, `findFriends` or `lobbyStats` calls in flight at once the
+  second got the answer to the first, and in Unity the node's refusal of one call failed every
+  call in flight. Each call goes out under an id of its own now and takes the answer or the
+  refusal that repeats it; a refusal with an id no longer fails a join in flight either.
+- Rust client: `stats` and `find_friends` take the `id` their answer comes back with, as `rpc`
+  does. They sent none, so a game could not match an answer or a refusal to its request.
 - C, C++ and Godot SDKs: a client that asked one node of a region for a room hosted on another
   got `room_elsewhere` and had no call to follow it, unlike Rust, Web and C#.
   `aurix_net_connect_and_join`, `Client::connectAndJoin` and `connect_and_join` connect, join

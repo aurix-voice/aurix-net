@@ -104,16 +104,21 @@ JSON messages, `"t"` is the type (snake_case). Client → server: `auth{grant}`,
 `set_player_props{props, expected?}`, `event{code, data(base64), target, channel, cache, group}` (`target` is `{"kind": "all" | "others" | "master"}` or `{"kind": "actors", "actors": [..]}`, default others; `channel` is `unreliable_sequenced`, `reliable_ordered` (default) or `reliable_unordered`),
 `set_groups{join, leave}`, `cache_slice{op, index?}` (relay event-cache slices), `set_view{viewpoints, interest}` (sync AOI: extra viewpoints, forced entities),
 `set_master{actor}`, `kick{actor, reason}`, `lobby{subscribe}`,
-`stats` (live rooms/players per lobby), `find_friends{players}` (presence of ≤ 64 players; `stats`/`find_friends` at most once per second per session),
-`get_rooms{expr?, limit?}` (one-shot filtered room list, SQL-like `expr` on lobby props as in `join_random`; same one-per-second budget), `rpc{id, name, body}` (call your backend through the node, see Webhooks; body ≤ 8 KiB, 5 per second per session), `ping{ts}`.
+`stats{id?}` (live rooms/players per lobby), `find_friends{players, id?}` (presence of ≤ 64 players; `stats`/`find_friends` at most once per second per session),
+`get_rooms{expr?, limit?, id?}` (one-shot filtered room list, SQL-like `expr` on lobby props as in `join_random`; same one-per-second budget), `rpc{id, name, body}` (call your backend through the node, see Webhooks; body ≤ 8 KiB, 5 per second per session), `ping{ts}`.
 
 Server → client: `hello{session, version, region}`, `authed{player_id, name}`,
 `joined{room, name, mode, actor, master, max_players, props, players, data, cached, schema_hash?, tick_hz?, next_spawn_tag?}`,
 `left{reason, room?}`, `player_joined{player}`, `player_left{actor, reason}`, `room_props`,
 `player_props`, `event{code, from, data}` (control fallback), `master_changed{actor}`,
-`lobby_rooms{rooms}`, `lobby_update{room, removed}`, `stats{rooms, players, lobbies[{lobby, rooms, players}]}`,
-`friends{friends[{player, online, room?{id, name, mode, node}}]}`, `rooms{rooms[{id, name, mode, players, max_players, open, props}]}`, `rpc_result{id, ok, status?, body, error?}`, `pong{ts, server_ms}`,
-`notice{text, level}`, `error{code, message}`, `desync{tick, actor, strikes, untrusted}`.
+`lobby_rooms{rooms}`, `lobby_update{room, removed}`, `stats{rooms, players, lobbies[{lobby, rooms, players}], id?}`,
+`friends{friends[{player, online, room?{id, name, mode, node}}], id?}`, `rooms{rooms[{id, name, mode, players, max_players, open, props}], id?}`, `rpc_result{id, ok, status?, body, error?}`, `pong{ts, server_ms}`,
+`notice{text, level}`, `error{code, message, id?}`, `desync{tick, actor, strikes, untrusted}`.
+
+`id` (a number up to 2^32 − 1) tells apart the answers to requests in flight at once: the node
+repeats the `id` of a `stats`, `find_friends` or `get_rooms` in its answer, and the `id` of any
+of these or of an `rpc` in the `error` that refuses that request (`lookup_rate`, `rpc_rate`, a
+bad `expr`, name or body). A request sent without an `id` is answered without one.
 
 `left.room` is the id from `joined.room` of the room the session is out of, whatever the reason
 (`left`, `kicked` or the reason a kick gave, `room closed`, `session_replaced`, `rehost`). A

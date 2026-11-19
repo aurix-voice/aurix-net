@@ -534,8 +534,9 @@ namespace Aurix.Net.Managed
         /// <summary>Project-wide live rooms/players grouped by the room prop "lobby" (JSON: {rooms, players, lobbies:[{lobby, rooms, players}]}); one per second.</summary>
         public async Task<string> StatsAsync(int timeoutMs = 10000)
         {
-            await SendControlAsync("{\"t\":\"stats\"}");
-            return await WaitForAsync("stats", timeoutMs);
+            var id = NextRequestId();
+            await SendControlAsync("{\"t\":\"stats\",\"id\":" + id + "}");
+            return await WaitForAsync("stats", timeoutMs, id);
         }
 
         /// <summary>Presence of up to 64 players across the fleet (JSON: {friends:[{player, online, room?:{id,name,mode,node}}]}); one per second.</summary>
@@ -551,8 +552,11 @@ namespace Aurix.Net.Managed
 
                 ids.Append(Json.Str(player));
             }
-            await SendControlAsync("{\"t\":\"find_friends\",\"players\":[" + ids + "]}");
-            return await WaitForAsync("friends", timeoutMs);
+            var id = NextRequestId();
+            await SendControlAsync(
+                "{\"t\":\"find_friends\",\"players\":[" + ids + "],\"id\":" + id + "}"
+            );
+            return await WaitForAsync("friends", timeoutMs, id);
         }
 
         /// <summary>One-shot room list (JSON {rooms:[{id,name,mode,players,max_players,open,props}]}), optionally filtered by a SQL-like expr on lobby props; one per second.</summary>
@@ -562,17 +566,23 @@ namespace Aurix.Net.Managed
             int timeoutMs = 10000
         )
         {
+            var id = NextRequestId();
             await SendControlAsync(
                 "{\"t\":\"get_rooms\",\"expr\":"
                     + (expr == null ? "null" : Json.Str(expr))
                     + ",\"limit\":"
                     + limit
+                    + ",\"id\":"
+                    + id
                     + "}"
             );
-            return await WaitForAsync("rooms", timeoutMs);
+            return await WaitForAsync("rooms", timeoutMs, id);
         }
 
-        int _rpcSeq;
+        int _requestSeq;
+
+        // `stats`, `find_friends`, `get_rooms` and `rpc` share the ids: an `error` repeats only the number.
+        uint NextRequestId() => (uint)System.Threading.Interlocked.Increment(ref _requestSeq);
 
         /// <summary>Call your backend through the node (WebRPC): the project's webhook subscribed to "rpc" is POSTed {name, player_id, actor?, room?, body}; returns the raw rpc_result JSON {id, ok, status?, body, error?}. bodyJson is a JSON literal (≤ 8 KiB); 5 calls/s.</summary>
         public async Task<string> RpcAsync(
@@ -581,7 +591,7 @@ namespace Aurix.Net.Managed
             int timeoutMs = 10000
         )
         {
-            var id = (uint)System.Threading.Interlocked.Increment(ref _rpcSeq);
+            var id = NextRequestId();
             await SendControlAsync(
                 "{\"t\":\"rpc\",\"id\":"
                     + id
@@ -591,7 +601,7 @@ namespace Aurix.Net.Managed
                     + (string.IsNullOrEmpty(bodyJson) ? "null" : bodyJson)
                     + "}"
             );
-            return await WaitForAsync("rpc_result", timeoutMs, json => Json.Num(json, "id") == id);
+            return await WaitForAsync("rpc_result", timeoutMs, id);
         }
 
         /// <summary>Relay interest groups: events raised with a group reach only its members.</summary>
@@ -660,8 +670,10 @@ namespace Aurix.Net.Managed
             }
         }
 
-        /// <summary>Waits for a control message of type `t` that `match` accepts, polling the inbox (other messages are dispatched normally).</summary>
-        async Task<string> WaitForAsync(string type, int timeoutMs, Func<string, bool> match = null)
+        /// <summary>Waits for a control message of type `type`, polling the inbox (other messages are dispatched
+        /// normally). With `id`, the request's own: an answer or `error` that repeats another id is not this
+        /// request's. One without an id is taken, as a node that repeats no ids sends it.</summary>
+        async Task<string> WaitForAsync(string type, int timeoutMs, uint? id = null)
         {
             var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
             string got = null,
@@ -669,11 +681,12 @@ namespace Aurix.Net.Managed
             Action<string> handler = json =>
             {
                 var ty = Json.Str(json, "t");
-                if (ty == type && (match == null || match(json)))
+                var repeated = Json.ULong(json, "id");
+                if (ty == type && (id == null || repeated == null || repeated == id))
                 {
                     got = json;
                 }
-                else if (ty == "error")
+                else if (ty == "error" && (repeated == null || repeated == id))
                 {
                     err = Json.Str(json, "code") + ": " + Json.Str(json, "message");
                 }
