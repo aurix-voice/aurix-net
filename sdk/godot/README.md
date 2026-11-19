@@ -47,6 +47,8 @@ net.flush()
 
 A call that fails returns `false` or `-1`; `get_last_error()` has the text and `get_last_error_code()`
 the reason as one of `AurixNetClient.ERROR_*` (`ERROR_NOT_FOUND`, `ERROR_ROOM_FULL`, ...).
+`ERROR_PANIC` means the library itself failed: the node emits `closed` with `panic: <message>`
+and every later call fails the same way, so free it and connect with a new one.
 
 ## Signals added for operator messages
 

@@ -48,6 +48,7 @@ enum {
   AURIX_NET_ERR_DISCONNECTED = 5,     /* the connection is gone, or the client is not in a room */
   AURIX_NET_ERR_TIMEOUT = 6,
   AURIX_NET_ERR_PROTOCOL = 7,         /* a frame from the node could not be decoded */
+  AURIX_NET_ERR_PANIC = 8,            /* the library panicked in the call; its handles fail every call from then on, destroy them */
   /* the node refused the request */
   AURIX_NET_ERR_UNAUTHORIZED = 100,
   AURIX_NET_ERR_FORBIDDEN = 101,

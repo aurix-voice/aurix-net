@@ -52,6 +52,7 @@ enum class EAurixNetError : uint8
 	Disconnected = 5,
 	Timeout = 6,
 	Protocol = 7,
+	Panic = 8,
 	Unauthorized = 100,
 	Forbidden = 101,
 	NotFound = 102,

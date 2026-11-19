@@ -194,6 +194,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- C ABI and the clients built on it (C++, Godot, the native Unity client, Unreal): a panic
+  inside the library ended the process of the game. Every function of the C ABI now catches
+  it and fails with the new `AURIX_NET_ERR_PANIC` (`ERROR_PANIC` in Godot,
+  `EAurixNetError::Panic` in Unreal) and the text `panic: <message>`. The client, sync and
+  lockstep handles of that call fail every later call the same way until they are destroyed,
+  and the client reports one last `closed` with that text.
 - Every client: a join the master ended with a kick before it had returned (a blacklist on
   `player_joined`) did not say so. Through the WebSocket tunnel it stood for the whole 10 s of
   the join timeout and failed with `timeout`, over QUIC it failed with `disconnected`; the game

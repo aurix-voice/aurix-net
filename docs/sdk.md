@@ -111,6 +111,14 @@ from `get_last_error_code()` (`AurixNetClient.ERROR_*`). A wrapper that runs a c
 thread and reports its failure on another carries the two over with
 `aurix_net_set_last_error(code, message)`, as the Unreal plugin does for its async calls.
 
+A panic inside the library does not end the process of the game. The call it happened in fails
+with `AURIX_NET_ERR_PANIC` (`ERROR_PANIC` in Godot, `EAurixNetError::Panic` in Unreal) and the
+text `panic: <message>`. What the panic left in the client, sync or lockstep handles of that
+call is unknown, so they are stopped: every later call on them fails the same way, and a stopped
+client gives its poll one last `closed` with that text, which the wrappers pass on as they do
+for a lost connection. Destroy the handles and connect again. This holds for a library built
+with unwinding, as the released ones are; `panic = "abort"` ends the process as before.
+
 A master can kick a player the moment it sees it (a blacklist on `player_joined`), before the
 join of that player has returned. The join then fails at once with the reason of the kick, and
 the game gets no `left`: it was never in the room. Rust returns `ClientError::Left(reason)`; the C

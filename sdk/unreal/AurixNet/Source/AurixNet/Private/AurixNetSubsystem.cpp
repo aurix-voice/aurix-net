@@ -148,7 +148,8 @@ FString UAurixNetSubsystem::GetLastError() const { const char* E = aurix_net_las
 static_assert((int32)EAurixNetError::InvalidArgument == AURIX_NET_ERR_INVALID_ARGUMENT && (int32)EAurixNetError::Http == AURIX_NET_ERR_HTTP
 	&& (int32)EAurixNetError::Connection == AURIX_NET_ERR_CONNECTION && (int32)EAurixNetError::DataPath == AURIX_NET_ERR_DATA_PATH
 	&& (int32)EAurixNetError::Disconnected == AURIX_NET_ERR_DISCONNECTED && (int32)EAurixNetError::Timeout == AURIX_NET_ERR_TIMEOUT
-	&& (int32)EAurixNetError::Protocol == AURIX_NET_ERR_PROTOCOL && (int32)EAurixNetError::Unauthorized == AURIX_NET_ERR_UNAUTHORIZED
+	&& (int32)EAurixNetError::Protocol == AURIX_NET_ERR_PROTOCOL && (int32)EAurixNetError::Panic == AURIX_NET_ERR_PANIC
+	&& (int32)EAurixNetError::Unauthorized == AURIX_NET_ERR_UNAUTHORIZED
 	&& (int32)EAurixNetError::Forbidden == AURIX_NET_ERR_FORBIDDEN && (int32)EAurixNetError::NotFound == AURIX_NET_ERR_NOT_FOUND
 	&& (int32)EAurixNetError::Conflict == AURIX_NET_ERR_CONFLICT && (int32)EAurixNetError::InvalidRequest == AURIX_NET_ERR_INVALID_REQUEST
 	&& (int32)EAurixNetError::RoomFull == AURIX_NET_ERR_ROOM_FULL && (int32)EAurixNetError::RoomClosed == AURIX_NET_ERR_ROOM_CLOSED

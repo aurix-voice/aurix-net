@@ -1,7 +1,10 @@
 //! C ABI for sync rooms: a client-side replicated world (`net_sim::Frame` + the delta decoder the
 //! node itself uses), acks, redundant input frames and owner-authoritative component writes:
 //! the same shape as the Web `SyncWorld`/`SyncSession` and the Unity `SyncWorld`.
-use crate::{cstr, set_client_error, set_error, AurixNetClient, ErrorCode};
+use crate::{
+    cstr, guard, run, set_client_error, set_error, stopped, AurixNetClient, ErrorCode, Handle,
+    Stopped,
+};
 use bytes::{BufMut, Bytes, BytesMut};
 use net_client::margin::MarginControl;
 use net_common::Channel;
@@ -141,6 +144,13 @@ impl State {
 
 pub struct AurixNetSync {
     inner: Mutex<State>,
+    stopped: Stopped,
+}
+
+impl Handle for AurixNetSync {
+    fn stopped(&self) -> &Stopped {
+        &self.stopped
+    }
 }
 
 fn owner_of(frame: &Frame, id: EntityId) -> i32 {
@@ -152,44 +162,49 @@ fn owner_of(frame: &Frame, id: EntityId) -> i32 {
 
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_sync_new(schema: *const c_char) -> *mut AurixNetSync {
-    let Some(text) = cstr(schema) else {
-        set_error(ErrorCode::InvalidArgument, "schema: null or non-utf8");
-        return std::ptr::null_mut();
-    };
-    let schema = match Schema::parse(text) {
-        Ok(schema) => schema,
-        Err(error) => {
-            set_error(ErrorCode::InvalidArgument, format!("schema: {error}"));
+    guard(&[], std::ptr::null_mut(), || {
+        let Some(text) = cstr(schema) else {
+            set_error(ErrorCode::InvalidArgument, "schema: null or non-utf8");
             return std::ptr::null_mut();
-        }
-    };
-    Box::into_raw(Box::new(AurixNetSync {
-        inner: Mutex::new(State {
-            frame: Frame::new(schema, FrameConfig::default(), 1),
-            acks: AckTracker::default(),
-            server_tick: 0,
-            synced: false,
-            last_input_tick: 0,
-            margin: MarginControl::default(),
-            lead_adjust: 0,
-            recent: VecDeque::new(),
-            tail: (0, 0),
-            held: VecDeque::new(),
-            events: VecDeque::new(),
-            current: None,
-            writes: Vec::new(),
-            next_tag: 1,
-            unanswered: Vec::new(),
-            answers: VecDeque::new(),
-        }),
-    }))
+        };
+        let schema = match Schema::parse(text) {
+            Ok(schema) => schema,
+            Err(error) => {
+                set_error(ErrorCode::InvalidArgument, format!("schema: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        Box::into_raw(Box::new(AurixNetSync {
+            inner: Mutex::new(State {
+                frame: Frame::new(schema, FrameConfig::default(), 1),
+                acks: AckTracker::default(),
+                server_tick: 0,
+                synced: false,
+                last_input_tick: 0,
+                margin: MarginControl::default(),
+                lead_adjust: 0,
+                recent: VecDeque::new(),
+                tail: (0, 0),
+                held: VecDeque::new(),
+                events: VecDeque::new(),
+                current: None,
+                writes: Vec::new(),
+                next_tag: 1,
+                unanswered: Vec::new(),
+                answers: VecDeque::new(),
+            }),
+            stopped: Stopped::default(),
+        }))
+    })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_sync_destroy(sync: *mut AurixNetSync) {
-    if !sync.is_null() {
-        drop(Box::from_raw(sync));
-    }
+    run(&[], (), || {
+        if !sync.is_null() {
+            drop(Box::from_raw(sync));
+        }
+    })
 }
 
 /// Feeds one data-path payload. 1 = delta applied and `ack` (9 bytes, may be NULL) filled, send it
@@ -203,64 +218,66 @@ pub unsafe extern "C" fn aurix_net_sync_receive(
     len: usize,
     ack: *mut u8,
 ) -> i32 {
-    let Some(sync) = sync.as_ref() else { return -1 };
-    if data.is_null() || len < 7 {
-        return 0;
-    }
-    let frame = std::slice::from_raw_parts(data, len);
-    let mut st = sync.inner.lock();
-    if frame[0] == KIND_INPUT_STATS {
-        let tick = u32::from_be_bytes([frame[1], frame[2], frame[3], frame[4]]);
-        let stamped = st.last_input_tick;
-        st.lead_adjust += st.margin.adjust(tick, frame[5] as i8, stamped);
-        return 2;
-    }
-    if frame[0] == KIND_SPAWN_ANSWER && len == SPAWN_ANSWER_LEN {
-        st.take_spawn_answer(frame);
-        return 3;
-    }
-    if frame[0] != KIND_DELTA || len < 9 {
-        return 0;
-    }
-    let report = match Replicator::apply_report(&mut st.frame, &frame[1..]) {
-        Ok(report) => report,
-        Err(error) => {
-            set_error(ErrorCode::Protocol, format!("delta: {error}"));
-            return -1;
+    guard(&[stopped(sync)], -1, || {
+        let Some(sync) = sync.as_ref() else { return -1 };
+        if data.is_null() || len < 7 {
+            return 0;
         }
-    };
-    st.server_tick = report.tick.0;
-    st.synced = true;
-    st.acks.on_delta(report.tick.0, report.baseline);
-    for id in &report.despawned {
-        st.events.push_back(AurixNetSyncEvent {
-            kind: AURIX_NET_SYNC_DESPAWN,
-            entity: id.to_u64(),
-            owner: -1,
-        });
-    }
-    for (kind, ids) in [
-        (AURIX_NET_SYNC_SPAWN, &report.spawned),
-        (AURIX_NET_SYNC_CHANGE, &report.changed),
-    ] {
-        for id in ids {
-            let owner = owner_of(&st.frame, *id);
+        let frame = std::slice::from_raw_parts(data, len);
+        let mut st = sync.inner.lock();
+        if frame[0] == KIND_INPUT_STATS {
+            let tick = u32::from_be_bytes([frame[1], frame[2], frame[3], frame[4]]);
+            let stamped = st.last_input_tick;
+            st.lead_adjust += st.margin.adjust(tick, frame[5] as i8, stamped);
+            return 2;
+        }
+        if frame[0] == KIND_SPAWN_ANSWER && len == SPAWN_ANSWER_LEN {
+            st.take_spawn_answer(frame);
+            return 3;
+        }
+        if frame[0] != KIND_DELTA || len < 9 {
+            return 0;
+        }
+        let report = match Replicator::apply_report(&mut st.frame, &frame[1..]) {
+            Ok(report) => report,
+            Err(error) => {
+                set_error(ErrorCode::Protocol, format!("delta: {error}"));
+                return -1;
+            }
+        };
+        st.server_tick = report.tick.0;
+        st.synced = true;
+        st.acks.on_delta(report.tick.0, report.baseline);
+        for id in &report.despawned {
             st.events.push_back(AurixNetSyncEvent {
-                kind,
+                kind: AURIX_NET_SYNC_DESPAWN,
                 entity: id.to_u64(),
-                owner,
+                owner: -1,
             });
         }
-    }
-    if !ack.is_null() {
-        if let Some((last, bits)) = st.acks.ack() {
-            let out = std::slice::from_raw_parts_mut(ack, 9);
-            out[0] = KIND_ACK;
-            out[1..5].copy_from_slice(&last.to_be_bytes());
-            out[5..9].copy_from_slice(&bits.to_be_bytes());
+        for (kind, ids) in [
+            (AURIX_NET_SYNC_SPAWN, &report.spawned),
+            (AURIX_NET_SYNC_CHANGE, &report.changed),
+        ] {
+            for id in ids {
+                let owner = owner_of(&st.frame, *id);
+                st.events.push_back(AurixNetSyncEvent {
+                    kind,
+                    entity: id.to_u64(),
+                    owner,
+                });
+            }
         }
-    }
-    1
+        if !ack.is_null() {
+            if let Some((last, bits)) = st.acks.ack() {
+                let out = std::slice::from_raw_parts_mut(ack, 9);
+                out[0] = KIND_ACK;
+                out[1..5].copy_from_slice(&last.to_be_bytes());
+                out[5..9].copy_from_slice(&bits.to_be_bytes());
+            }
+        }
+        1
+    })
 }
 
 /// Pops the next answer to `aurix_net_sync_spawn`; 1 = `out` filled, 0 = none. The answer and
@@ -271,16 +288,18 @@ pub unsafe extern "C" fn aurix_net_sync_poll_spawn(
     sync: *const AurixNetSync,
     out: *mut AurixNetSyncSpawn,
 ) -> i32 {
-    let (Some(sync), Some(out)) = (sync.as_ref(), out.as_mut()) else {
-        return -1;
-    };
-    match sync.inner.lock().answers.pop_front() {
-        Some(answer) => {
-            *out = answer;
-            1
+    guard(&[stopped(sync)], -1, || {
+        let (Some(sync), Some(out)) = (sync.as_ref(), out.as_mut()) else {
+            return -1;
+        };
+        match sync.inner.lock().answers.pop_front() {
+            Some(answer) => {
+                *out = answer;
+                1
+            }
+            None => 0,
         }
-        None => 0,
-    }
+    })
 }
 
 /// Pops the next spawn/change/despawn; 1 = `out` filled, 0 = none.
@@ -289,37 +308,45 @@ pub unsafe extern "C" fn aurix_net_sync_poll(
     sync: *const AurixNetSync,
     out: *mut AurixNetSyncEvent,
 ) -> i32 {
-    let (Some(sync), Some(out)) = (sync.as_ref(), out.as_mut()) else {
-        return -1;
-    };
-    match sync.inner.lock().events.pop_front() {
-        Some(ev) => {
-            *out = ev;
-            1
+    guard(&[stopped(sync)], -1, || {
+        let (Some(sync), Some(out)) = (sync.as_ref(), out.as_mut()) else {
+            return -1;
+        };
+        match sync.inner.lock().events.pop_front() {
+            Some(ev) => {
+                *out = ev;
+                1
+            }
+            None => {
+                out.kind = AURIX_NET_SYNC_NONE;
+                0
+            }
         }
-        None => {
-            out.kind = AURIX_NET_SYNC_NONE;
-            0
-        }
-    }
+    })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_sync_server_tick(sync: *const AurixNetSync) -> u32 {
-    sync.as_ref()
-        .map_or(0, |sync| sync.inner.lock().server_tick)
+    guard(&[stopped(sync)], 0, || {
+        sync.as_ref()
+            .map_or(0, |sync| sync.inner.lock().server_tick)
+    })
 }
 
 /// Deltas the node sent that never arrived (unrepaired until the node resends in full).
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_sync_gaps(sync: *const AurixNetSync) -> u64 {
-    sync.as_ref().map_or(0, |sync| sync.inner.lock().acks.gaps)
+    guard(&[stopped(sync)], 0, || {
+        sync.as_ref().map_or(0, |sync| sync.inner.lock().acks.gaps)
+    })
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_sync_entity_count(sync: *const AurixNetSync) -> i32 {
-    sync.as_ref()
-        .map_or(-1, |sync| sync.inner.lock().frame.entity_count() as i32)
+    guard(&[stopped(sync)], -1, || {
+        sync.as_ref()
+            .map_or(-1, |sync| sync.inner.lock().frame.entity_count() as i32)
+    })
 }
 
 /// Entity `index` (0..count) in id order; 1 = filled, 0 = out of range.
@@ -330,21 +357,23 @@ pub unsafe extern "C" fn aurix_net_sync_entity_at(
     id: *mut u64,
     owner: *mut i32,
 ) -> i32 {
-    let Some(sync) = sync.as_ref() else { return -1 };
-    if index < 0 {
-        return 0;
-    }
-    let st = sync.inner.lock();
-    let Some(found) = st.frame.entities().nth(index as usize) else {
-        return 0;
-    };
-    if let Some(id) = id.as_mut() {
-        *id = found.id.to_u64();
-    }
-    if let Some(owner) = owner.as_mut() {
-        *owner = found.owner.map_or(-1, |actor| i32::from(actor.0));
-    }
-    1
+    guard(&[stopped(sync)], -1, || {
+        let Some(sync) = sync.as_ref() else { return -1 };
+        if index < 0 {
+            return 0;
+        }
+        let st = sync.inner.lock();
+        let Some(found) = st.frame.entities().nth(index as usize) else {
+            return 0;
+        };
+        if let Some(id) = id.as_mut() {
+            *id = found.id.to_u64();
+        }
+        if let Some(owner) = owner.as_mut() {
+            *owner = found.owner.map_or(-1, |actor| i32::from(actor.0));
+        }
+        1
+    })
 }
 
 /// Component id by schema name, -1 if unknown.
@@ -353,15 +382,17 @@ pub unsafe extern "C" fn aurix_net_sync_component(
     sync: *const AurixNetSync,
     name: *const c_char,
 ) -> i32 {
-    let (Some(sync), Some(name)) = (sync.as_ref(), cstr(name)) else {
-        return -1;
-    };
-    sync.inner
-        .lock()
-        .frame
-        .schema
-        .component(name)
-        .map_or(-1, |found| i32::from(found.id))
+    guard(&[stopped(sync)], -1, || {
+        let (Some(sync), Some(name)) = (sync.as_ref(), cstr(name)) else {
+            return -1;
+        };
+        sync.inner
+            .lock()
+            .frame
+            .schema
+            .component(name)
+            .map_or(-1, |found| i32::from(found.id))
+    })
 }
 
 /// Field index inside a component by name, -1 if unknown.
@@ -371,21 +402,23 @@ pub unsafe extern "C" fn aurix_net_sync_field(
     component: i32,
     name: *const c_char,
 ) -> i32 {
-    let (Some(sync), Some(name)) = (sync.as_ref(), cstr(name)) else {
-        return -1;
-    };
-    let st = sync.inner.lock();
-    let Some(found) = u16::try_from(component)
-        .ok()
-        .and_then(|id| st.frame.schema.by_id(id))
-    else {
-        return -1;
-    };
-    found
-        .fields
-        .iter()
-        .position(|field| field.name == name)
-        .map_or(-1, |index| index as i32)
+    guard(&[stopped(sync)], -1, || {
+        let (Some(sync), Some(name)) = (sync.as_ref(), cstr(name)) else {
+            return -1;
+        };
+        let st = sync.inner.lock();
+        let Some(found) = u16::try_from(component)
+            .ok()
+            .and_then(|id| st.frame.schema.by_id(id))
+        else {
+            return -1;
+        };
+        found
+            .fields
+            .iter()
+            .position(|field| field.name == name)
+            .map_or(-1, |index| index as i32)
+    })
 }
 
 #[no_mangle]
@@ -394,15 +427,17 @@ pub unsafe extern "C" fn aurix_net_sync_has(
     entity: u64,
     component: i32,
 ) -> i32 {
-    let Some(sync) = sync.as_ref() else { return -1 };
-    let Ok(cid) = u16::try_from(component) else {
-        return 0;
-    };
-    sync.inner
-        .lock()
-        .frame
-        .entity(EntityId::from_u64(entity))
-        .is_some_and(|found| found.components.contains_key(&cid)) as i32
+    guard(&[stopped(sync)], -1, || {
+        let Some(sync) = sync.as_ref() else { return -1 };
+        let Ok(cid) = u16::try_from(component) else {
+            return 0;
+        };
+        sync.inner
+            .lock()
+            .frame
+            .entity(EntityId::from_u64(entity))
+            .is_some_and(|found| found.components.contains_key(&cid)) as i32
+    })
 }
 
 fn field_value<R>(
@@ -432,23 +467,25 @@ pub unsafe extern "C" fn aurix_net_sync_get_number(
     field: i32,
     out: *mut f64,
 ) -> i32 {
-    let (Some(sync), Some(out)) = (sync.as_ref(), out.as_mut()) else {
-        return -1;
-    };
-    let st = sync.inner.lock();
-    match field_value(&st, entity, component, field, |value| match value {
-        Value::Bool(flag) => Some(f64::from(u8::from(*flag))),
-        Value::UInt(number) => Some(*number as f64),
-        Value::Int(number) => Some(*number as f64),
-        Value::F32(number) => Some(f64::from(*number)),
-        _ => None,
-    }) {
-        Some(number) => {
-            *out = number;
-            1
+    guard(&[stopped(sync)], -1, || {
+        let (Some(sync), Some(out)) = (sync.as_ref(), out.as_mut()) else {
+            return -1;
+        };
+        let st = sync.inner.lock();
+        match field_value(&st, entity, component, field, |value| match value {
+            Value::Bool(flag) => Some(f64::from(u8::from(*flag))),
+            Value::UInt(number) => Some(*number as f64),
+            Value::Int(number) => Some(*number as f64),
+            Value::F32(number) => Some(f64::from(*number)),
+            _ => None,
+        }) {
+            Some(number) => {
+                *out = number;
+                1
+            }
+            None => 0,
         }
-        None => 0,
-    }
+    })
 }
 
 /// Vector field into `out[4]`: returns the number of components written (2 vec2, 3 vec3, 4 quat x,y,z,w;
@@ -461,44 +498,46 @@ pub unsafe extern "C" fn aurix_net_sync_get_vector(
     field: i32,
     out: *mut f32,
 ) -> i32 {
-    let Some(sync) = sync.as_ref() else { return -1 };
-    if out.is_null() {
-        return -1;
-    }
-    let st = sync.inner.lock();
-    let out = std::slice::from_raw_parts_mut(out, 4);
-    field_value(&st, entity, component, field, |value| match value {
-        Value::Vec2(vector) => {
-            out[..2].copy_from_slice(vector);
-            Some(2)
+    guard(&[stopped(sync)], -1, || {
+        let Some(sync) = sync.as_ref() else { return -1 };
+        if out.is_null() {
+            return -1;
         }
-        Value::Vec3(vector) => {
-            out[..3].copy_from_slice(vector);
-            Some(3)
-        }
-        Value::Quat(quat) => {
-            out.copy_from_slice(quat);
-            Some(4)
-        }
-        Value::F32(number) => {
-            out[0] = *number;
-            Some(1)
-        }
-        Value::Int(number) => {
-            out[0] = *number as f32;
-            Some(1)
-        }
-        Value::UInt(number) => {
-            out[0] = *number as f32;
-            Some(1)
-        }
-        Value::Bool(flag) => {
-            out[0] = f32::from(u8::from(*flag));
-            Some(1)
-        }
-        _ => None,
+        let st = sync.inner.lock();
+        let out = std::slice::from_raw_parts_mut(out, 4);
+        field_value(&st, entity, component, field, |value| match value {
+            Value::Vec2(vector) => {
+                out[..2].copy_from_slice(vector);
+                Some(2)
+            }
+            Value::Vec3(vector) => {
+                out[..3].copy_from_slice(vector);
+                Some(3)
+            }
+            Value::Quat(quat) => {
+                out.copy_from_slice(quat);
+                Some(4)
+            }
+            Value::F32(number) => {
+                out[0] = *number;
+                Some(1)
+            }
+            Value::Int(number) => {
+                out[0] = *number as f32;
+                Some(1)
+            }
+            Value::UInt(number) => {
+                out[0] = *number as f32;
+                Some(1)
+            }
+            Value::Bool(flag) => {
+                out[0] = f32::from(u8::from(*flag));
+                Some(1)
+            }
+            _ => None,
+        })
+        .unwrap_or(0)
     })
-    .unwrap_or(0)
 }
 
 /// String/bytes field: copies up to `cap` bytes into `buf` (may be NULL to just measure) and
@@ -512,21 +551,23 @@ pub unsafe extern "C" fn aurix_net_sync_get_bytes(
     buf: *mut u8,
     cap: usize,
 ) -> i32 {
-    let Some(sync) = sync.as_ref() else { return -1 };
-    let st = sync.inner.lock();
-    field_value(&st, entity, component, field, |value| {
-        let bytes: &[u8] = match value {
-            Value::String(text) => text.as_bytes(),
-            Value::Bytes(bytes) => bytes,
-            _ => return None,
-        };
-        if !buf.is_null() && cap > 0 {
-            let copied = bytes.len().min(cap);
-            std::slice::from_raw_parts_mut(buf, copied).copy_from_slice(&bytes[..copied]);
-        }
-        Some(bytes.len() as i32)
+    guard(&[stopped(sync)], -1, || {
+        let Some(sync) = sync.as_ref() else { return -1 };
+        let st = sync.inner.lock();
+        field_value(&st, entity, component, field, |value| {
+            let bytes: &[u8] = match value {
+                Value::String(text) => text.as_bytes(),
+                Value::Bytes(bytes) => bytes,
+                _ => return None,
+            };
+            if !buf.is_null() && cap > 0 {
+                let copied = bytes.len().min(cap);
+                std::slice::from_raw_parts_mut(buf, copied).copy_from_slice(&bytes[..copied]);
+            }
+            Some(bytes.len() as i32)
+        })
+        .unwrap_or(-1)
     })
-    .unwrap_or(-1)
 }
 
 fn encode_input(first_tick: u32, inputs: &VecDeque<Vec<u8>>) -> Bytes {
@@ -645,8 +686,10 @@ pub unsafe extern "C" fn aurix_net_sync_pump(
     sync: *const AurixNetSync,
     client: *mut AurixNetClient,
 ) -> i32 {
-    let Some(sync) = sync.as_ref() else { return -1 };
-    pump(&mut sync.inner.lock(), client)
+    guard(&[stopped(sync), stopped(client)], -1, || {
+        let Some(sync) = sync.as_ref() else { return -1 };
+        pump(&mut sync.inner.lock(), client)
+    })
 }
 
 /// Raw input for server-side logic (rooms with `props.logic`): stamped ahead of the last delta by the
@@ -658,14 +701,16 @@ pub unsafe extern "C" fn aurix_net_sync_send_input(
     data: *const u8,
     len: usize,
 ) -> i64 {
-    let Some(sync) = sync.as_ref() else { return -1 };
-    let body = if data.is_null() || len == 0 {
-        Vec::new()
-    } else {
-        std::slice::from_raw_parts(data, len).to_vec()
-    };
-    let mut st = sync.inner.lock();
-    send_input_inner(&mut st, client, body, false)
+    guard(&[stopped(sync), stopped(client)], -1, || {
+        let Some(sync) = sync.as_ref() else { return -1 };
+        let body = if data.is_null() || len == 0 {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts(data, len).to_vec()
+        };
+        let mut st = sync.inner.lock();
+        send_input_inner(&mut st, client, body, false)
+    })
 }
 
 /// Starts a full write of `component` (fields default to zero until written).
@@ -674,18 +719,20 @@ pub unsafe extern "C" fn aurix_net_sync_write_begin(
     sync: *const AurixNetSync,
     component: i32,
 ) -> i32 {
-    let Some(sync) = sync.as_ref() else { return -1 };
-    let mut st = sync.inner.lock();
-    let Some(found) = u16::try_from(component)
-        .ok()
-        .and_then(|id| st.frame.schema.by_id(id))
-    else {
-        set_error(ErrorCode::InvalidArgument, "write_begin: unknown component");
-        return -1;
-    };
-    let zero = ComponentValue::zero(found);
-    st.current = Some((found.id, zero));
-    0
+    guard(&[stopped(sync)], -1, || {
+        let Some(sync) = sync.as_ref() else { return -1 };
+        let mut st = sync.inner.lock();
+        let Some(found) = u16::try_from(component)
+            .ok()
+            .and_then(|id| st.frame.schema.by_id(id))
+        else {
+            set_error(ErrorCode::InvalidArgument, "write_begin: unknown component");
+            return -1;
+        };
+        let zero = ComponentValue::zero(found);
+        st.current = Some((found.id, zero));
+        0
+    })
 }
 
 fn with_field(
@@ -728,14 +775,16 @@ pub unsafe extern "C" fn aurix_net_sync_write_number(
     field: i32,
     value: f64,
 ) -> i32 {
-    let Some(sync) = sync.as_ref() else { return -1 };
-    let mut st = sync.inner.lock();
-    with_field(&mut st, field, |ty| match ty {
-        FieldType::Bool => Some(Value::Bool(value != 0.0)),
-        FieldType::UInt { .. } => Some(Value::UInt(value.max(0.0) as u64)),
-        FieldType::Int { .. } => Some(Value::Int(value as i64)),
-        FieldType::F32 | FieldType::Quant { .. } => Some(Value::F32(value as f32)),
-        _ => None,
+    guard(&[stopped(sync)], -1, || {
+        let Some(sync) = sync.as_ref() else { return -1 };
+        let mut st = sync.inner.lock();
+        with_field(&mut st, field, |ty| match ty {
+            FieldType::Bool => Some(Value::Bool(value != 0.0)),
+            FieldType::UInt { .. } => Some(Value::UInt(value.max(0.0) as u64)),
+            FieldType::Int { .. } => Some(Value::Int(value as i64)),
+            FieldType::F32 | FieldType::Quant { .. } => Some(Value::F32(value as f32)),
+            _ => None,
+        })
     })
 }
 
@@ -747,22 +796,24 @@ pub unsafe extern "C" fn aurix_net_sync_write_vector(
     values: *const f32,
     count: i32,
 ) -> i32 {
-    let Some(sync) = sync.as_ref() else { return -1 };
-    if values.is_null() || !(1..=4).contains(&count) {
-        set_error(
-            ErrorCode::InvalidArgument,
-            "write_vector: bad pointer or count",
-        );
-        return -1;
-    }
-    let values = std::slice::from_raw_parts(values, count as usize);
-    let mut st = sync.inner.lock();
-    with_field(&mut st, field, |ty| match (ty, values.len()) {
-        (FieldType::Vec2 { .. }, 2) => Some(Value::Vec2([values[0], values[1]])),
-        (FieldType::Vec3 { .. }, 3) => Some(Value::Vec3([values[0], values[1], values[2]])),
-        (FieldType::Quat, 4) => Some(Value::Quat([values[0], values[1], values[2], values[3]])),
-        (FieldType::F32 | FieldType::Quant { .. }, 1) => Some(Value::F32(values[0])),
-        _ => None,
+    guard(&[stopped(sync)], -1, || {
+        let Some(sync) = sync.as_ref() else { return -1 };
+        if values.is_null() || !(1..=4).contains(&count) {
+            set_error(
+                ErrorCode::InvalidArgument,
+                "write_vector: bad pointer or count",
+            );
+            return -1;
+        }
+        let values = std::slice::from_raw_parts(values, count as usize);
+        let mut st = sync.inner.lock();
+        with_field(&mut st, field, |ty| match (ty, values.len()) {
+            (FieldType::Vec2 { .. }, 2) => Some(Value::Vec2([values[0], values[1]])),
+            (FieldType::Vec3 { .. }, 3) => Some(Value::Vec3([values[0], values[1], values[2]])),
+            (FieldType::Quat, 4) => Some(Value::Quat([values[0], values[1], values[2], values[3]])),
+            (FieldType::F32 | FieldType::Quant { .. }, 1) => Some(Value::F32(values[0])),
+            _ => None,
+        })
     })
 }
 
@@ -774,45 +825,49 @@ pub unsafe extern "C" fn aurix_net_sync_write_bytes(
     data: *const u8,
     len: usize,
 ) -> i32 {
-    let Some(sync) = sync.as_ref() else { return -1 };
-    let bytes = if data.is_null() || len == 0 {
-        Vec::new()
-    } else {
-        std::slice::from_raw_parts(data, len).to_vec()
-    };
-    let mut st = sync.inner.lock();
-    with_field(&mut st, field, |ty| match ty {
-        FieldType::String { max } => {
-            let mut text = String::from_utf8_lossy(&bytes).into_owned();
-            while text.len() > *max as usize {
-                text.pop();
+    guard(&[stopped(sync)], -1, || {
+        let Some(sync) = sync.as_ref() else { return -1 };
+        let bytes = if data.is_null() || len == 0 {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts(data, len).to_vec()
+        };
+        let mut st = sync.inner.lock();
+        with_field(&mut st, field, |ty| match ty {
+            FieldType::String { max } => {
+                let mut text = String::from_utf8_lossy(&bytes).into_owned();
+                while text.len() > *max as usize {
+                    text.pop();
+                }
+                Some(Value::String(text))
             }
-            Some(Value::String(text))
-        }
-        FieldType::Bytes { max } => {
-            let mut cut = bytes.clone();
-            cut.truncate(*max as usize);
-            Some(Value::Bytes(cut))
-        }
-        _ => None,
+            FieldType::Bytes { max } => {
+                let mut cut = bytes.clone();
+                cut.truncate(*max as usize);
+                Some(Value::Bytes(cut))
+            }
+            _ => None,
+        })
     })
 }
 
 /// Finishes the current component write (queued until `send_writes`).
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_sync_write_end(sync: *const AurixNetSync) -> i32 {
-    let Some(sync) = sync.as_ref() else { return -1 };
-    let mut st = sync.inner.lock();
-    match st.current.take() {
-        Some(write) => {
-            st.writes.push(write);
-            0
+    guard(&[stopped(sync)], -1, || {
+        let Some(sync) = sync.as_ref() else { return -1 };
+        let mut st = sync.inner.lock();
+        match st.current.take() {
+            Some(write) => {
+                st.writes.push(write);
+                0
+            }
+            None => {
+                set_error(ErrorCode::InvalidArgument, "write_end: nothing begun");
+                -1
+            }
         }
-        None => {
-            set_error(ErrorCode::InvalidArgument, "write_end: nothing begun");
-            -1
-        }
-    }
+    })
 }
 
 /// Queued writes as `u8 n, n × (cid, encode_full)`; -1 (with error) on a bad write.
@@ -838,14 +893,16 @@ pub unsafe extern "C" fn aurix_net_sync_send_writes(
     sync: *const AurixNetSync,
     client: *mut AurixNetClient,
 ) -> i64 {
-    let Some(sync) = sync.as_ref() else { return -1 };
-    let mut st = sync.inner.lock();
-    let mut writer = BitWriter::new();
-    if encode_queued_writes(&mut st, &mut writer) != 0 {
-        return -1;
-    }
-    let body = writer.finish();
-    send_input_inner(&mut st, client, body, false)
+    guard(&[stopped(sync), stopped(client)], -1, || {
+        let Some(sync) = sync.as_ref() else { return -1 };
+        let mut st = sync.inner.lock();
+        let mut writer = BitWriter::new();
+        if encode_queued_writes(&mut st, &mut writer) != 0 {
+            return -1;
+        }
+        let body = writer.finish();
+        send_input_inner(&mut st, client, body, false)
+    })
 }
 
 /// One owner-authoritative op as this tick's input (rooms with a schema and no `logic`):
@@ -862,31 +919,33 @@ pub unsafe extern "C" fn aurix_net_sync_send_op(
     entity: u64,
     to: i32,
 ) -> i64 {
-    let Some(sync) = sync.as_ref() else { return -1 };
-    if !(0..=6).contains(&op) {
-        set_error(ErrorCode::InvalidArgument, "send_op: op must be 0..=6");
-        return -1;
-    }
-    let mut st = sync.inner.lock();
-    let mut writer = BitWriter::new();
-    writer.write_bits(0xFF, 8);
-    writer.write_bits(1, 8);
-    writer.write_bits(op as u64, 8);
-    if op != 1 {
-        writer.write_bits(entity, 48);
-    }
-    match op {
-        0 | 1 => {
-            if encode_queued_writes(&mut st, &mut writer) != 0 {
-                return -1;
-            }
+    guard(&[stopped(sync), stopped(client)], -1, || {
+        let Some(sync) = sync.as_ref() else { return -1 };
+        if !(0..=6).contains(&op) {
+            set_error(ErrorCode::InvalidArgument, "send_op: op must be 0..=6");
+            return -1;
         }
-        3 => writer.write_bits(to.clamp(0, 0xFFFF) as u64, 16),
-        4 => writer.write_bits(to.clamp(0, 3) as u64, 8),
-        _ => {}
-    }
-    let body = writer.finish();
-    send_input_inner(&mut st, client, body, true)
+        let mut st = sync.inner.lock();
+        let mut writer = BitWriter::new();
+        writer.write_bits(0xFF, 8);
+        writer.write_bits(1, 8);
+        writer.write_bits(op as u64, 8);
+        if op != 1 {
+            writer.write_bits(entity, 48);
+        }
+        match op {
+            0 | 1 => {
+                if encode_queued_writes(&mut st, &mut writer) != 0 {
+                    return -1;
+                }
+            }
+            3 => writer.write_bits(to.clamp(0, 0xFFFF) as u64, 16),
+            4 => writer.write_bits(to.clamp(0, 3) as u64, 8),
+            _ => {}
+        }
+        let body = writer.finish();
+        send_input_inner(&mut st, client, body, true)
+    })
 }
 
 /// The input that spawns an entity with the queued writes under `tag`.
@@ -908,38 +967,40 @@ pub unsafe extern "C" fn aurix_net_sync_spawn(
     sync: *const AurixNetSync,
     client: *mut AurixNetClient,
 ) -> i64 {
-    let (Some(sync), Some(handle)) = (sync.as_ref(), client.as_ref()) else {
-        return -1;
-    };
-    let first_free = handle
-        .inner
-        .lock()
-        .joined
-        .as_ref()
-        .and_then(|joined| joined.next_spawn_tag);
-    let Some(first_free) = first_free else {
-        set_error(
-            ErrorCode::Protocol,
-            "spawn: the room does not answer tagged spawns",
-        );
-        return -1;
-    };
-    let mut st = sync.inner.lock();
-    let tag = st.next_tag.max(first_free);
-    let Some(body) = tagged_spawn(&mut st, tag) else {
-        return -1;
-    };
-    let tick = send_input_inner(&mut st, client, body.clone(), true);
-    if tick < 0 {
-        return -1;
-    }
-    st.next_tag = tag + 1;
-    st.unanswered.push(Unanswered {
-        tag,
-        body,
-        tick: tick as u32,
-    });
-    i64::from(tag)
+    guard(&[stopped(sync), stopped(client)], -1, || {
+        let (Some(sync), Some(handle)) = (sync.as_ref(), client.as_ref()) else {
+            return -1;
+        };
+        let first_free = handle
+            .inner
+            .lock()
+            .joined
+            .as_ref()
+            .and_then(|joined| joined.next_spawn_tag);
+        let Some(first_free) = first_free else {
+            set_error(
+                ErrorCode::Protocol,
+                "spawn: the room does not answer tagged spawns",
+            );
+            return -1;
+        };
+        let mut st = sync.inner.lock();
+        let tag = st.next_tag.max(first_free);
+        let Some(body) = tagged_spawn(&mut st, tag) else {
+            return -1;
+        };
+        let tick = send_input_inner(&mut st, client, body.clone(), true);
+        if tick < 0 {
+            return -1;
+        }
+        st.next_tag = tag + 1;
+        st.unanswered.push(Unanswered {
+            tag,
+            body,
+            tick: tick as u32,
+        });
+        i64::from(tag)
+    })
 }
 
 #[cfg(test)]
