@@ -151,6 +151,38 @@ public class ManagedCoreTests
     }
 
     [Test]
+    public void TheRenderTickWaitsAtTheRoomsTickForLateDeltas()
+    {
+        var clock = new RenderClock(2);
+        clock.Delta(10);
+        clock.Advance(1);
+        for (int frame = 0; frame < 3; frame++)
+        {
+            clock.Advance(1);
+            Assert.That(clock.Tick, Is.LessThanOrEqualTo(10d), "frame " + frame);
+        }
+
+        for (uint tick = 11; tick <= 14; tick++) clock.Delta(tick);
+        Assert.That(clock.Tick, Is.EqualTo(12d));
+    }
+
+    [Test]
+    public void TheRenderTickIsBackBehindARoomThatStoodStill()
+    {
+        var clock = new RenderClock(2);
+        clock.Delta(10);
+        for (int frame = 0; frame < 7; frame++) clock.Advance(1);
+        Assert.That(clock.Tick, Is.EqualTo(10d));
+        for (uint tick = 11; tick <= 20; tick++)
+        {
+            clock.Delta(tick);
+            Assert.That(clock.Tick, Is.EqualTo(tick - 2d), "tick " + tick);
+            clock.Advance(1);
+            Assert.That(clock.Tick, Is.LessThanOrEqualTo((double)tick));
+        }
+    }
+
+    [Test]
     public void CommandATickCannotCarryIsRefused()
     {
         var sent = new List<(Channel, byte[])>();

@@ -5,6 +5,7 @@ var unsequenced := false
 var t0 := 0
 # NET_LIVE_REQUIRED: a part that cannot run fails the check instead of being skipped
 var required := OS.get_environment("NET_LIVE_REQUIRED") != ""
+const FRAME := 1.0 / 60
 const SCHEMA := "component Transform {\n  pos: vec3 @range(-4096, 4096, 0.01)\n  rot: quat\n}\n"
 var grant_c := ""; var grant_d := ""; var net_http := ""; var ls_room := ""
 var c: AurixNetClient; var d: AurixNetClient
@@ -18,6 +19,30 @@ func fail(msg: String) -> void:
 	printerr("GODOT FAIL: ", msg)
 	get_tree().quit(1)
 
+func _delta(tick: int) -> PackedByteArray:
+	return PackedByteArray([0x11, 0, 0, tick >> 8, tick & 255, 0, 0, 0, 0, 0, 0, 0, 0])
+
+# no network: deltas with no entities to a world with no client behind it, late in one run and from
+# a room that stood still in the other
+func _late_deltas() -> String:
+	var world := AurixNetSync.new(); world.setup("component T {\n x: f32\n}", 60, 2)
+	world.receive(null, _delta(10)); world.advance(FRAME)
+	var ahead := 0.0
+	for i in 3: ahead = max(ahead, world.advance(FRAME) - world.get_server_tick())
+	for tick in range(11, 15): world.receive(null, _delta(tick))
+	if ahead > 0 or not is_equal_approx(world.get_render_tick(), 12): return "late deltas: %.1f ahead of serverTick=10, then %.1f at serverTick=14" % [ahead, world.get_render_tick()]
+	return ""
+
+func _stood_still() -> String:
+	var world := AurixNetSync.new(); world.setup("component T {\n x: f32\n}", 60, 2)
+	world.receive(null, _delta(10))
+	for i in 7: world.advance(FRAME)
+	if world.get_render_tick() != 10: return "room stood still: %.1f at serverTick=10" % world.get_render_tick()
+	for tick in range(11, 21):
+		world.receive(null, _delta(tick))
+		if not is_equal_approx(world.get_render_tick(), tick - 2) or world.advance(FRAME) > tick: return "room stood still: %.1f at serverTick=%d" % [world.get_render_tick(), tick]
+	return ""
+
 func _ready() -> void:
 	for c in ["AurixNetClient", "AurixNetSync", "AurixNetLockstep"]:
 		if not ClassDB.class_exists(c):
@@ -30,9 +55,11 @@ func _ready() -> void:
 	var sync := AurixNetSync.new()
 	if not sync.setup("component Transform {\n pos: vec3 @range(-4096, 4096, 0.01)\n}", 20, 2):
 		fail("sync setup: " + sync.get_last_error()); return
+	var ahead := [_late_deltas(), _stood_still()].filter(func(found): return found != "")
+	if not ahead.is_empty(): fail("render tick, " + ", ".join(ahead)); return
 	if ga == "" or gb == "":
 		if required: fail("NET_LIVE_REQUIRED is set and GRANT_A, GRANT_B are not"); return
-		print("GODOT OK (classes load, sync schema parsed; no grants -> no live check)"); get_tree().quit(0); return
+		print("GODOT OK (classes load, sync schema parsed, render tick behind the room; no grants -> no live check)"); get_tree().quit(0); return
 	var a := AurixNetClient.new(); var b := AurixNetClient.new(); add_child(a); add_child(b)
 	if not a.connect_to(http, ga, true): fail("a connect: " + a.get_last_error()); return
 	if not b.connect_to(http, gb, true): fail("b connect: " + b.get_last_error()); return

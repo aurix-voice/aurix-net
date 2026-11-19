@@ -151,6 +151,15 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   reliable message has been resent and has gone the idle timeout without acknowledgement;
   one whose time ran out before any resend is resent and waits again, as in the Web and C#
   clients.
+- SDKs, sync rooms: the render tick, the one remote entities are drawn at, could pass the
+  room's tick and stay ahead of it for the rest of the stay. It only ever moved forward: with
+  frame time, and up to `interpolationTicks` behind each delta. Deltas three frames late put it
+  two ticks ahead of the room, and after a node that stood still for 100 ms it stayed ahead for
+  good, so every remote entity was drawn at its newest sample, with nothing to interpolate, in
+  steps. The render tick now stops at the tick of the last delta, and the delta after that puts
+  it back `interpolationTicks` behind; a delta that finds it short of that tick leaves it as it
+  runs. The same in the Web `SyncSession`, C++ `Sync`, Godot `AurixNetSync` and the Unity
+  `NetRunner` ([SDKs](docs/sdk.md#sync-rooms-from-c-and-godot)).
 - Rust client and what is built on it (C, C++, Godot, the native Unity client, Unreal): a join
   right after `leave` over QUIC at times failed with `disconnected`, and every later join of
   that client failed with it: 3 runs of 9 that joined and left 150 times broke that way. The

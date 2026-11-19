@@ -181,3 +181,29 @@ test("a late margin report from the room moves the next inputs further ahead", (
   delta(20);
   assert.equal(session.sendInput(new Uint8Array([2])), 28, "two ticks, plus the lateness, plus one");
 });
+
+const FRAME = 1 / 60;
+const near = (a, b) => Math.abs(a - b) < 1e-6;
+
+test("the render tick waits at the room's tick for deltas that come late", () => {
+  const { session, delta } = recordedSession();
+  delta(10);
+  session.advance(FRAME);
+  for (let frame = 0; frame < 3; frame++) {
+    assert.ok(session.advance(FRAME) <= session.world.serverTick, `frame ${frame}: ${session.renderTick}`);
+  }
+  for (let tick = 11; tick <= 14; tick++) delta(tick);
+  assert.ok(near(session.renderTick, 12), `${session.renderTick}`);
+});
+
+test("the render tick is back two ticks behind a room that stood still", () => {
+  const { session, delta } = recordedSession();
+  delta(10);
+  for (let frame = 0; frame < 7; frame++) session.advance(FRAME);
+  assert.equal(session.renderTick, 10);
+  for (let tick = 11; tick <= 20; tick++) {
+    delta(tick);
+    assert.ok(near(session.renderTick, tick - 2), `tick ${tick}: ${session.renderTick}`);
+    assert.ok(session.advance(FRAME) <= tick);
+  }
+});

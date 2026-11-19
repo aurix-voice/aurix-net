@@ -891,7 +891,8 @@ const MAX_LEAD_TICKS = 60;
 const INPUT_REDUNDANCY = 3;
 
 /** Drives a `SyncWorld` from a joined sync-room `Client`: decodes deltas, acks them, advances a render
- *  tick `interpolationTicks` behind the server, and stamps/sends owner writes or raw inputs. */
+ *  tick `interpolationTicks` behind the server and never past it, and stamps/sends owner writes or
+ *  raw inputs. */
 /** The room's answer to `SyncSession.spawn`: the entity it made for `tag`, or why it made none.
  *  `tag` 0 names the avatar (`Client.avatar`). */
 export interface SpawnAnswer {
@@ -907,7 +908,8 @@ export interface SpawnAnswer {
 
 export class SyncSession {
   readonly world: SyncWorld;
-  renderTick = 0;
+  /** Runs with frame time; `renderTick` is this, held at the tick of the last delta. */
+  private clock = 0;
   private lastInputTick = 0;
   private recent: Uint8Array[] = [];
   /** How many repeats the last frame is owed and the room tick it last went out on. Each input
@@ -948,13 +950,17 @@ export class SyncSession {
         this.takeSpawnAnswer(payload);
         return;
       }
+      const newest = this.world.serverTick;
       const ack = this.world.receive(payload);
       if (ack) {
         client.sendData(Channel.Unreliable, ack);
-        this.renderTick = Math.max(
-          this.renderTick,
+        const behind = Math.max(
+          0,
           this.world.serverTick - this.interpolationTicks,
         );
+        if (this.clock < behind || this.clock >= newest) {
+          this.clock = behind;
+        }
         this.lastDeltaAt = performance.now();
         this.synced = true;
         this.pump();
@@ -983,9 +989,15 @@ export class SyncSession {
   /** Call once per animation frame: advances the render tick between deltas. */
   advance(dtSeconds: number): number {
     if (this.lastDeltaAt > 0) {
-      this.renderTick += dtSeconds * this.tickHz;
+      this.clock += dtSeconds * this.tickHz;
     }
     return this.renderTick;
+  }
+  /** The tick to draw remote entities at. It runs with frame time `interpolationTicks` behind the
+   *  server and stops at the tick of the last delta; the delta after that puts it back
+   *  `interpolationTicks` behind. */
+  get renderTick(): number {
+    return Math.min(this.clock, this.world.serverTick);
   }
   /** Raw input for server logic (`props.logic`); returns the tick it is stamped with. Resent with the next two inputs.
    *  The room takes one input per tick: call this every frame, the newest input of a tick is the one sent. */

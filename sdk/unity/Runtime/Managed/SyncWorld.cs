@@ -211,6 +211,43 @@ namespace Aurix.Net.Managed
         byte[] Encode() => SyncWorld.EncodeInput(LastTick - (uint)(_recent.Count - 1), _recent);
     }
 
+    /// <summary>The tick remote entities are drawn at during one stay in a room. It runs with frame time
+    /// `behind` ticks behind the server and stops at the tick of the last delta; the delta after that puts
+    /// it back `behind` ticks behind.</summary>
+    public sealed class RenderClock
+    {
+        readonly int _behind;
+        double _clock;
+        uint _serverTick;
+        bool _synced;
+
+        public RenderClock(int behind) => _behind = behind;
+
+        public double Tick => Math.Min(_clock, _serverTick);
+
+        /// <summary>Once a frame, with the ticks the frame took.</summary>
+        public void Advance(double ticks)
+        {
+            if (_synced)
+            {
+                _clock += ticks;
+            }
+        }
+
+        /// <summary>On every delta, with its tick.</summary>
+        public void Delta(uint serverTick)
+        {
+            double behind = Math.Max(0, (double)serverTick - _behind);
+            if (_clock < behind || _clock >= _serverTick)
+            {
+                _clock = behind;
+            }
+
+            _serverTick = serverTick;
+            _synced = true;
+        }
+    }
+
     public sealed class SyncWorld
     {
         public const byte KindInput = 0x10,

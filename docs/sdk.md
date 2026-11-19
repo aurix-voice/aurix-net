@@ -184,6 +184,15 @@ lateness plus one tick, three reports with ticks to spare give the excess back. 
 inside their sync helper (`aurix_net_sync_receive` returns 2 for a report, `Sync::receive` returns
 true), so a game never sees the frame.
 
+Remote entities are drawn at the render tick: `interpolationTicks` (2 by default) behind the
+last delta, moved on with frame time by `advance(dt)` once a frame. It never passes the tick of
+the last delta: when deltas come late or the node stands still it stops there, on the newest
+sample, and the next delta puts it back `interpolationTicks` behind, so there are again two
+samples to interpolate between. A delta that finds it short of the last one's tick only raises it
+when it has fallen more than `interpolationTicks` behind. Web `SyncSession.advance` /
+`renderTick`, C++ `Sync::advance` / `renderTick`, Godot `AurixNetSync.advance` /
+`get_render_tick`, Unity `NetRunner.RenderTick` (`NetSettings.InterpolationTicks`).
+
 `aurix_net_sync_*` (in `aurix_net.h`) is the client side of a sync room as pure logic: a replicated
 world (`net_sim::Frame` + the same delta decoder the node uses), acks, redundant input frames and
 owner-authoritative component writes. `aurix::net::Sync` wraps it:

@@ -1,5 +1,6 @@
 // Header-only C++17 wrapper over libaurix_net (aurix_net.h). Used by the Godot SDK.
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -550,7 +551,7 @@ private:
 /// Sync room helper (mirrors the Web `SyncSession`): feed every Data payload to receive(), which
 /// applies the delta and sends the ack, then poll() spawn/change/despawn, read fields by name, and
 /// send raw inputs (rooms with `logic`) or owner-authoritative component writes. renderTick() lags
-/// the server by `interpolationTicks` for smoothing remote entities.
+/// the server by `interpolationTicks` for smoothing remote entities and never passes it.
 class Sync {
 public:
     enum class Kind { None = 0, Spawn = 1, Change = 2, Despawn = 3 };
@@ -618,15 +619,17 @@ public:
     }
     uint32_t serverTick() const { return aurix_net_sync_server_tick(sync_); }
     uint64_t gaps() const { return aurix_net_sync_gaps(sync_); }
-    /// Call once per frame; returns the render tick (fractional, `interpolationTicks` behind the
-    /// server).
+    /// Call once per frame; returns the render tick.
     double advance(double dtSeconds) {
         if (gotDelta_) {
-            renderTick_ += dtSeconds * tickHz_;
+            clock_ += dtSeconds * tickHz_;
         }
-        return renderTick_;
+        return renderTick();
     }
-    double renderTick() const { return renderTick_; }
+    /// The tick to draw remote entities at (fractional). It runs with frame time
+    /// `interpolationTicks` behind the server and stops at the tick of the last delta; the delta
+    /// after that puts it back `interpolationTicks` behind.
+    double renderTick() const { return std::min(clock_, double(serverTick())); }
 
     int entityCount() const { return aurix_net_sync_entity_count(sync_); }
     bool entityAt(int index, uint64_t& id, int& owner) const {
@@ -729,14 +732,15 @@ private:
         }
     }
     int apply(const uint8_t* data, size_t len, uint8_t ack[9]) {
+        double newest = serverTick();
         int result = aurix_net_sync_receive(sync_, data, len, ack);
         if (result < 0) {
             throw Error::last();
         }
         if (result == 1) {
-            double lag = double(serverTick()) - interp_;
-            if (lag > renderTick_) {
-                renderTick_ = lag;
+            double behind = std::max(0.0, double(serverTick()) - interp_);
+            if (clock_ < behind || clock_ >= newest) {
+                clock_ = behind;
             }
             gotDelta_ = true;
         }
@@ -745,7 +749,7 @@ private:
     AurixNetSync* sync_;
     int tickHz_;
     double interp_;
-    double renderTick_ = 0;
+    double clock_ = 0;
     bool gotDelta_ = false;
 };
 

@@ -67,12 +67,12 @@ int main() {
     std::printf("cpp sync: serverTick=%u gaps=%llu updates=%d last=(%.2f %.2f %.2f) x=%.1f own=%d told=%d renderTick=%.1f -> %s\n", sb.serverTick(), (unsigned long long)sb.gaps(), updates, last[0], last[1], last[2], x, own, int(told), sb.renderTick(), ok ? "ok" : "FAIL");
     // a replay: the room's first delta again, to a world with no client behind it. Its render tick
     // stands still before the frame, is 2 ticks behind the frame's after it, not below 0, and runs
-    // with time from there
+    // with time from there up to the frame's tick
     Sync cam(SCHEMA);
     bool still = cam.advance(0.5) == 0;
     bool replayed = still && cam.receive(first.data(), first.size()) && cam.entityCount() > 0 && cam.serverTick() == firstTick;
     double behind = cam.renderTick();
-    replayed = replayed && behind == std::max(0.0, double(firstTick) - 2) && cam.advance(0.5) == behind + 30;
+    replayed = replayed && behind == std::max(0.0, double(firstTick) - 2) && cam.advance(0.5) == firstTick;
     std::printf("cpp sync, replay: entities=%d serverTick=%u renderTick=%.1f then %.1f -> %s\n", cam.entityCount(), cam.serverTick(), behind, cam.renderTick(), replayed ? "ok" : "FAIL");
     ok = ok && replayed;
     // over a link that loses data frames (NET_LOSSY_HTTP, see README): a write with nothing after it still arrives

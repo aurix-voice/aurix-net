@@ -32,8 +32,9 @@ namespace Aurix.Net.Unity
         public bool IsJoined { get; private set; }
         public uint ServerTick => World?.ServerTick ?? 0;
 
-        /// <summary>Server tick remote entities are rendered at (ServerTick - InterpolationTicks, advanced between deltas).</summary>
-        public float RenderTick { get; private set; }
+        /// <summary>Server tick remote entities are rendered at: InterpolationTicks behind ServerTick, advanced
+        /// between deltas and never past ServerTick.</summary>
+        public float RenderTick => (float)_renderClock.Tick;
         public readonly Dictionary<ulong, NetView> Views = new Dictionary<ulong, NetView>();
 
         public event Action OnJoined;
@@ -75,6 +76,7 @@ namespace Aurix.Net.Unity
         float _tickTimer;
         float _lastDeltaTime;
         bool _synced;
+        RenderClock _renderClock = new RenderClock(0);
         byte[] _heldInput;
         readonly Queue<byte[]> _heldOps = new Queue<byte[]>();
         PendingSpawns _spawns = new PendingSpawns();
@@ -228,6 +230,7 @@ namespace Aurix.Net.Unity
             _heldInput = null; // input ticks belong to the room just left
             _heldOps.Clear();
             _spawns = new PendingSpawns();
+            _renderClock = new RenderClock(Settings.InterpolationTicks);
             if (Mode == RoomMode.Sync)
             {
                 Schema = Schema.Parse(
@@ -286,7 +289,7 @@ namespace Aurix.Net.Unity
             if (ack != null)
             {
                 Client.SendData(Channel.Unreliable, ack);
-                RenderTick = Mathf.Max(RenderTick, World.ServerTick - Settings.InterpolationTicks);
+                _renderClock.Delta(World.ServerTick);
                 _lastDeltaTime = Time.unscaledTime;
                 _synced = true;
             }
@@ -394,7 +397,7 @@ namespace Aurix.Net.Unity
             Client?.Poll();
             if (World != null && Settings.TickHz > 0)
             {
-                RenderTick += Time.unscaledDeltaTime * Settings.TickHz; // advance between deltas
+                _renderClock.Advance(Time.unscaledDeltaTime * Settings.TickHz);
             }
         }
 

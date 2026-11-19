@@ -15,6 +15,9 @@ for t in echo_test sync_test lockstep_test; do
   g++ -std=c++17 -O1 sdk/cpp/$t.cpp -Isdk/cpp -Ltarget/release -laurix_net -lpthread \
       -Wl,-rpath,$PWD/target/release -o /tmp/$t && /tmp/$t
 done
+# no node: the render tick of a sync world under late deltas and a room that stood still
+g++ -std=c++17 sdk/cpp/render_tick_test.cpp -Isdk/cpp -Ltarget/release -laurix_net \
+    -Wl,-rpath,$PWD/target/release -o /tmp/render_tick_test && /tmp/render_tick_test
 # plain C: crates/net-ffi/ctest/echo.c (relay) and ctest/sim.c (offline, six golden hashes)
 gcc -std=c11 -Wall -Wextra -Werror crates/net-ffi/ctest/sim.c -Ltarget/release -laurix_net -lm \
     -Wl,-rpath,$PWD/target/release -o /tmp/sim_ctest && /tmp/sim_ctest
