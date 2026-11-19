@@ -24,6 +24,16 @@ meets the limit fails ([modes.md](modes.md)). The node applies the same rule to 
 messages: when it gives the link up, the game gets the same `closed` with `link dead`, over QUIC,
 WebTransport and the tunnel alike.
 
+A client that sends nothing stays connected: every client probes the control channel once a
+second, and the node closes one it has heard nothing from for 90 s ([api.md](api.md)).
+
+A game that stops polling for a while keeps its link. The Rust client, the C, C++, Godot, Unreal
+and native C# clients built on it, and the managed C# client read, acknowledge and resend off
+the game thread; the poll call only hands the game what has arrived, in order. They hold 4096
+events for the game (`ManagedClient.EventBacklog` in C#): with that many waiting they stop
+reading until the game polls, what the node sends meanwhile is not acknowledged, and by the
+rule above the link is lost after 15 s.
+
 A connected client knows the player its grant names, as the node answered the sign-in: the id
 the node uses for the player in rooms, held seats and webhooks, and the display name.
 

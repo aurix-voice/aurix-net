@@ -303,6 +303,24 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   `transport` to a frame of a tunnel it gave up, and its close of a QUIC or WebTransport
   connection with code 4, now end the data path with `closed` (`link dead`), and sends fail
   from there.
+- Web SDK: a client that sent nothing for 90 s was disconnected (`closed` with `control channel
+  closed`), in a quiet room as in a menu: the node closes a control channel it hears nothing
+  from, and the Web client probed it only when the game called `ping()`. It probes once a second
+  by itself now, as the Rust and C# clients do; `rttMs` is measured from the connect on, and a
+  sync session no longer sends probes of its own.
+- Unity SDK (managed client): the answer to a round-trip probe reached the game as a `pong`
+  control message, and was not measured, when it came after the next probe had gone out: on a
+  link slower than a second. Every probe in flight is told from a game's own `ping` now, and the
+  round trip is taken when the answer is read, not when the game polls.
+- Unity SDK (managed client): the link was worked only inside `Poll`. A game that did not call
+  it for 15 s, as during a scene load, acknowledged nothing, so the node gave the link up and
+  the game lost its room (`closed` with `link dead`). The client now reads the socket,
+  acknowledges, resends and probes the control channel on its own tasks, off the game thread;
+  `Poll` only hands the game what has arrived, on the thread that calls it.
+- Unity SDK (managed client): what the node sent was kept for `Poll` without a limit, so a game
+  that did not poll grew by all the room sent it. The client holds 4096 events
+  (`ManagedClient.EventBacklog`), as the Rust client does, and stops reading while that many
+  wait; a link left unread for 15 s is lost by the node's rule.
 - Unity SDK (native client): `Client.JoinOrCreate` had no `lobbyProps`, so a room it created
   published no props, and neither a room list nor a random join with an `expr` found it. It
   takes them as the managed client does.

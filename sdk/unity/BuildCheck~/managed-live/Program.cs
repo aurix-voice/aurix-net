@@ -48,6 +48,9 @@ sealed class GagRelay : IDisposable
     readonly CancellationTokenSource _stop = new CancellationTokenSource();
     public string Url { get; }
     public volatile bool Gagged;
+    // the client's socket is not read: what it sends fills the buffers and its sends stop completing
+    public volatile bool Stalled;
+    public volatile int DropOver = int.MaxValue;
 
     public GagRelay()
     {
@@ -80,11 +83,12 @@ sealed class GagRelay : IDisposable
         {
             while (true)
             {
+                while (fromClient && Stalled) await Task.Delay(20, _stop.Token);
                 var part = await from.ReceiveAsync(new ArraySegment<byte>(buffer), _stop.Token);
                 if (part.MessageType == WebSocketMessageType.Close) break;
                 message.Write(buffer, 0, part.Count);
                 if (!part.EndOfMessage) continue;
-                bool held = fromClient && Gagged && part.MessageType == WebSocketMessageType.Binary;
+                bool held = fromClient && part.MessageType == WebSocketMessageType.Binary && (Gagged || message.Length > DropOver);
                 if (!held) await to.SendAsync(new ArraySegment<byte>(message.GetBuffer(), 0, (int)message.Length), part.MessageType, true, _stop.Token);
                 message.SetLength(0);
             }
@@ -94,6 +98,23 @@ sealed class GagRelay : IDisposable
     }
 
     public void Dispose() { _stop.Cancel(); _listener.Close(); }
+}
+
+// Stands in for the engine's main thread: what a client awaits there resumes only when the game runs.
+sealed class GameThread : SynchronizationContext
+{
+    readonly System.Collections.Concurrent.ConcurrentQueue<(SendOrPostCallback, object)> _posted = new System.Collections.Concurrent.ConcurrentQueue<(SendOrPostCallback, object)>();
+
+    public override void Post(SendOrPostCallback callback, object state) => _posted.Enqueue((callback, state));
+
+    public void Pump() { while (_posted.TryDequeue(out var posted)) posted.Item1(posted.Item2); }
+
+    public T Run<T>(Func<Task<T>> start)
+    {
+        var task = start();
+        while (!task.IsCompleted) { Pump(); Thread.Sleep(1); }
+        return task.GetAwaiter().GetResult();
+    }
 }
 
 class P
@@ -539,7 +560,88 @@ class P
             givenUpOk = aliveBefore && answers.SequenceEqual(new[] { "transport" }) && reasons.SequenceEqual(new[] { "link dead" }) && sendRefused;
             quiet.Dispose(); talker.Dispose();
         }
-        bool ok = givenUpOk && refused && lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && failedFast && runnerOk;
+        // a game thread that is blocked for a while (a scene load) keeps its link: the client
+        // reads, acknowledges and resends without it
+        bool busyOk;
+        {
+            var stillGrant = await Grant(h, key, "cs-busy-a");
+            var talker = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-busy-b"));
+            var busyErrors = new List<string>(); var busyReasons = new List<string>(); int busyGot = 0, busyBack = 0, busySent = 0;
+            talker.OnEvent += frame => { if (frame.Code == 2) Interlocked.Increment(ref busyBack); };
+            string busyRoom = "cs-busy-" + Environment.ProcessId;
+            var inRoom = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var bothIn = new ManualResetEventSlim(); var talked = new ManualResetEventSlim();
+            var game = new Thread(() =>
+            {
+                var thread = new GameThread(); SynchronizationContext.SetSynchronizationContext(thread);
+                var still = thread.Run(() => ManagedClient.ConnectAsync("http://127.0.0.1:8090", stillGrant));
+                still.OnControl += json => { if (ManagedClientTestHooks.Str(json, "t") == "error") busyErrors.Add(ManagedClientTestHooks.Str(json, "code")); };
+                still.OnClosed += reason => busyReasons.Add(reason);
+                still.OnEvent += frame => { if (frame.Code == 1) busyGot++; };
+                thread.Run(() => still.JoinOrCreateAsync(busyRoom, "relay", 4));
+                inRoom.SetResult(true); bothIn.Wait();
+                still.SendEvent(2, new byte[8], Target.Others, reliable: true);
+                talked.Wait();
+                for (int i = 0; i < 80 && (busyGot < Volatile.Read(ref busySent) || Volatile.Read(ref busyBack) == 0) && busyReasons.Count == 0; i++) { thread.Pump(); still.Poll(); Thread.Sleep(25); }
+                still.Dispose();
+            });
+            game.Start();
+            await inRoom.Task; await talker.JoinAsync(busyRoom); bothIn.Set();
+            var busyClock = System.Diagnostics.Stopwatch.StartNew();
+            while (busyClock.ElapsedMilliseconds < 20000)
+            {
+                if (busyClock.ElapsedMilliseconds >= busySent * 500) { talker.SendEvent(1, new byte[8], Target.Others, reliable: true); Interlocked.Increment(ref busySent); }
+                talker.Poll(); await Task.Delay(10);
+            }
+            talked.Set();
+            while (game.IsAlive) { talker.Poll(); await Task.Delay(10); }
+            Console.WriteLine($"busy game: sent={busySent}, got={busyGot}, reached={busyBack}, closed=[{string.Join(",", busyReasons)}], errors=[{string.Join(",", busyErrors)}]");
+            busyOk = busyGot == busySent && busyBack == 1 && busyReasons.Count == 0 && busyErrors.Count == 0;
+            talker.Dispose();
+        }
+        // a send the game started and the socket could not take at once does not hold the link
+        // until the game thread runs again
+        bool stallOk;
+        using (var stall = new GagRelay())
+        {
+            stall.DropOver = 512;
+            var stillGrant = await Grant(h, key, "cs-stall-a");
+            var talker = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-stall-b"));
+            var stallReasons = new List<string>(); int stallGot = 0, stallSent = 0;
+            string stallRoom = "cs-stall-" + Environment.ProcessId;
+            var inRoom = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var bothIn = new ManualResetEventSlim(); var flooded = new ManualResetEventSlim(); var talked = new ManualResetEventSlim();
+            var game = new Thread(() =>
+            {
+                var thread = new GameThread(); SynchronizationContext.SetSynchronizationContext(thread);
+                var still = thread.Run(() => ManagedClient.ConnectAsync(stall.Url, stillGrant));
+                still.OnClosed += reason => stallReasons.Add(reason);
+                still.OnEvent += frame => { if (frame.Code == 1) stallGot++; };
+                thread.Run(() => still.JoinOrCreateAsync(stallRoom, "relay", 4));
+                inRoom.SetResult(true); bothIn.Wait();
+                stall.Stalled = true;
+                for (int i = 0; i < 30000; i++) { still.SendEvent(3, new byte[1000], Target.Others, reliable: false); if (i % 20 == 19) still.Flush(); }
+                flooded.Set(); talked.Wait();
+                for (int i = 0; i < 80 && stallGot < Volatile.Read(ref stallSent) && stallReasons.Count == 0; i++) { thread.Pump(); still.Poll(); Thread.Sleep(25); }
+                still.Dispose();
+            });
+            game.Start();
+            await inRoom.Task; await talker.JoinAsync(stallRoom); bothIn.Set();
+            while (!flooded.IsSet) { talker.Poll(); await Task.Delay(10); }
+            stall.Stalled = false;
+            var stallClock = System.Diagnostics.Stopwatch.StartNew();
+            while (stallClock.ElapsedMilliseconds < 20000)
+            {
+                if (stallClock.ElapsedMilliseconds >= stallSent * 500) { talker.SendEvent(1, new byte[8], Target.Others, reliable: true); Interlocked.Increment(ref stallSent); }
+                talker.Poll(); await Task.Delay(10);
+            }
+            talked.Set();
+            while (game.IsAlive) { talker.Poll(); await Task.Delay(10); }
+            Console.WriteLine($"stalled send: sent={stallSent}, got={stallGot}, closed=[{string.Join(",", stallReasons)}]");
+            stallOk = stallGot == stallSent && stallReasons.Count == 0;
+            talker.Dispose();
+        }
+        bool ok = stallOk && busyOk && givenUpOk && refused && lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && failedFast && runnerOk;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");
         return ok ? 0 : 1;
     }

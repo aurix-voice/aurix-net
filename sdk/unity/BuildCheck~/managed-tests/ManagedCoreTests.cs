@@ -8,6 +8,12 @@ using Aurix.Net.Sim;
 using Aurix.Net.Sim.Bots;
 using System.Text.Json;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Net.WebSockets;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using NUnit.Framework;
 
 [TestFixture]
@@ -572,5 +578,88 @@ public class ManagedCoreTests
         const string joined = "{\"t\":\"joined\",\"mode\":\"lockstep\",\"tick\":1,\"seed\":1795052993049961715}";
         Assert.That(Aurix.Net.Managed.ManagedClientTestHooks.ULong(joined, "seed"), Is.EqualTo(1795052993049961715UL));
         Assert.That(Aurix.Net.Managed.ManagedClientTestHooks.ULong(joined, "mode"), Is.Null);
+    }
+
+    // A node that signs the client in and, on its next message, sends it `count` notices.
+    static async Task Flood(HttpListener listener, int count)
+    {
+        var socket = (await (await listener.GetContextAsync()).AcceptWebSocketAsync(null)).WebSocket;
+        var buffer = new byte[4096];
+        Task Say(string json) => socket.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(json)), WebSocketMessageType.Text, true, CancellationToken.None);
+        try
+        {
+            await socket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+            await Say("{\"t\":\"authed\",\"player_id\":\"ann\",\"name\":\"Ann\"}");
+            await socket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+            for (int i = 0; i < count; i++) await Say("{\"t\":\"notice\",\"text\":\"" + i + "\",\"level\":\"info\"}");
+            while ((await socket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None)).MessageType != WebSocketMessageType.Close) { }
+        }
+        catch (WebSocketException) { }
+    }
+
+    [Test]
+    public async Task ClientStopsReadingWhenTheGameDoesNotPoll()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+        using var listener = new HttpListener();
+        listener.Prefixes.Add("http://127.0.0.1:" + port + "/"); listener.Start();
+        const int count = ManagedClient.EventBacklog + 2000;
+        _ = Flood(listener, count);
+        using var client = await ManagedClient.ConnectAsync("http://127.0.0.1:" + port, "grant");
+        var notices = new List<string>(); client.OnNotice += (text, level) => notices.Add(text);
+        await client.SendControlAsync("{\"t\":\"go\"}");
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (ManagedClientTestHooks.Waiting(client) < ManagedClient.EventBacklog && clock.ElapsedMilliseconds < 5000) await Task.Delay(10);
+        await Task.Delay(300);
+        Assert.That(ManagedClientTestHooks.Waiting(client), Is.EqualTo(ManagedClient.EventBacklog));
+
+        clock.Restart();
+        while (notices.Count < count && clock.ElapsedMilliseconds < 5000) { client.Poll(); await Task.Delay(1); }
+        Assert.That(notices, Is.EqualTo(Enumerable.Range(0, count).Select(i => i.ToString())));
+    }
+
+    // A node that answers a ping only when the next one arrives, as a link slower than the probes would.
+    static async Task AnswerLate(HttpListener listener)
+    {
+        var socket = (await (await listener.GetContextAsync()).AcceptWebSocketAsync(null)).WebSocket;
+        var buffer = new byte[4096];
+        Task Say(string json) => socket.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(json)), WebSocketMessageType.Text, true, CancellationToken.None);
+        string held = null;
+        try
+        {
+            while (true)
+            {
+                var read = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                if (read.MessageType == WebSocketMessageType.Close) break;
+                string json = Encoding.UTF8.GetString(buffer, 0, read.Count);
+                if (ManagedClientTestHooks.Str(json, "t") == "auth") await Say("{\"t\":\"authed\",\"player_id\":\"ann\",\"name\":\"Ann\"}");
+                if (ManagedClientTestHooks.Str(json, "t") != "ping") continue;
+                if (held != null) await Say("{\"t\":\"pong\",\"ts\":" + held + ",\"server_ms\":0}");
+                held = ((long)ManagedClientTestHooks.Num(json, "ts")).ToString();
+            }
+        }
+        catch (WebSocketException) { }
+    }
+
+    [Test]
+    public async Task LateAnswersToProbesStayWithTheClient()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+        using var listener = new HttpListener();
+        listener.Prefixes.Add("http://127.0.0.1:" + port + "/"); listener.Start();
+        _ = AnswerLate(listener);
+        using var client = await ManagedClient.ConnectAsync("http://127.0.0.1:" + port, "grant");
+        var pongs = new List<double>();
+        client.OnControl += json => { if (ManagedClientTestHooks.Str(json, "t") == "pong") pongs.Add(ManagedClientTestHooks.Num(json, "ts")); };
+        async Task Run(int ms) { var clock = System.Diagnostics.Stopwatch.StartNew(); while (clock.ElapsedMilliseconds < ms) { client.Poll(); await Task.Delay(10); } }
+
+        await Run(3300);
+        await client.SendControlAsync("{\"t\":\"ping\",\"ts\":987654321}");
+        await Run(1200);
+        Assert.That(pongs, Is.EqualTo(new[] { 987654321d }));
+        Assert.That(client.RttMs, Is.GreaterThan(0f));
     }
 }

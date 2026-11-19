@@ -28,6 +28,13 @@ namespace Aurix.Net.Managed
         ClientWebSocket _ws;
         Link _link = new Link();
 
+        // The link is worked from three places: the reader, the timer and the game's calls.
+        readonly object _linkLock = new object();
+
+        // Counts the data paths of this client: what an earlier one delivered is not the game's any more.
+        int _epoch;
+        bool _deadTold;
+
         // False between rooms: the link of a room the client has left must not go on resending to the node.
         bool _dataOpen;
 
@@ -35,6 +42,11 @@ namespace Aurix.Net.Managed
         bool _lost;
         bool _controlClosed;
         readonly ConcurrentQueue<object> _inbox = new ConcurrentQueue<object>();
+
+        /// <summary>How many events wait for the game's Poll before the client stops reading.</summary>
+        public const int EventBacklog = 4096;
+        readonly SemaphoreSlim _slots = new SemaphoreSlim(EventBacklog, EventBacklog);
+        internal int Waiting => _inbox.Count;
         readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
         CancellationTokenSource _cts;
         bool _dataReady;
@@ -81,6 +93,10 @@ namespace Aurix.Net.Managed
         readonly Stopwatch _clock = Stopwatch.StartNew();
         long _lastPingMs = -1000;
 
+        // The probes in flight, by the time each carries: only their answers are the client's own.
+        readonly ConcurrentDictionary<long, byte> _probes = new ConcurrentDictionary<long, byte>();
+        const int ProbesKept = 16;
+
         /// <summary>Data-path message (channel, server tick, payload).</summary>
         public event Action<Channel, ushort, byte[]> OnData;
 
@@ -98,11 +114,15 @@ namespace Aurix.Net.Managed
         sealed class Text
         {
             public string Json;
+
+            // when it was read, on the client's clock
+            public long At;
         }
 
-        sealed class Bin
+        sealed class Got
         {
-            public byte[] Data;
+            public int Epoch;
+            public List<Received> Items;
         }
 
         /// <summary>Opens the control channel and authenticates with a grant.</summary>
@@ -131,6 +151,7 @@ namespace Aurix.Net.Managed
                 }
 
                 _ = client.ReadLoop();
+                _ = client.TimerLoop();
                 await client.SendControlAsync(
                     "{\"t\":\"auth\",\"grant\":"
                         + Json.Str(grant)
@@ -332,8 +353,13 @@ namespace Aurix.Net.Managed
             Avatar = null;
             Cached = Json.CachedEvents(joined);
             // Every join gets its own data path, and the node starts a fresh link on it.
-            _link = new Link();
-            _dataOpen = true;
+            lock (_linkLock)
+            {
+                _link = new Link();
+                _epoch++;
+                _deadTold = false;
+                _dataOpen = true;
+            }
             _lost = false;
             _dataReady = false;
             var data = Json.Obj(joined, "data");
@@ -366,12 +392,13 @@ namespace Aurix.Net.Managed
 
         async Task SendAsync(byte[] bytes, WebSocketMessageType kind)
         {
-            await _sendLock.WaitAsync();
+            await _sendLock.WaitAsync().ConfigureAwait(false);
             try
             {
                 if (_ws.State == WebSocketState.Open)
                 {
-                    await _ws.SendAsync(new ArraySegment<byte>(bytes), kind, true, _cts.Token);
+                    await _ws.SendAsync(new ArraySegment<byte>(bytes), kind, true, _cts.Token)
+                        .ConfigureAwait(false);
                 }
             }
             finally
@@ -394,15 +421,14 @@ namespace Aurix.Net.Managed
 
             try
             {
-                _link.Send(channel, payload);
+                lock (_linkLock)
+                {
+                    _link.Send(channel, payload);
+                }
             }
             catch (InvalidOperationException error)
             {
-                if (!_lost)
-                {
-                    _inbox.Enqueue(new Closed { Reason = "link dead", Control = false });
-                }
-
+                TellDead();
                 throw new NetException(error.Message);
             }
             if (channel == Channel.Reliable || channel == Channel.ReliableUnordered)
@@ -458,51 +484,91 @@ namespace Aurix.Net.Managed
         /// <summary>Pushes queued unreliable messages; call at the end of the frame.</summary>
         public void Flush()
         {
-            _link.FlushBatch();
-            FlushLink();
+            lock (_linkLock)
+            {
+                _link.FlushBatch();
+                FlushLink();
+            }
         }
 
         void FlushLink()
         {
-            if (!_dataOpen)
+            lock (_linkLock)
             {
-                return;
-            }
+                if (!_dataOpen)
+                {
+                    return;
+                }
 
-            while (_link.TryDequeueOutgoing(out var data))
-            {
-                _ = SendBinaryAsync(data);
+                while (_link.TryDequeueOutgoing(out var data))
+                {
+                    _ = SendBinaryAsync(data);
+                }
             }
+        }
+
+        void TellDead()
+        {
+            lock (_linkLock)
+            {
+                if (_dataOpen && !_deadTold)
+                {
+                    _deadTold = true;
+                    _inbox.Enqueue(new Closed { Reason = "link dead", Control = false });
+                }
+            }
+        }
+
+        /// <summary>Keeps the link going whether or not the game polls: the probe of the control channel, the resends and the batch.</summary>
+        async Task TimerLoop()
+        {
+            try
+            {
+                while (_ws.State == WebSocketState.Open)
+                {
+                    await Task.Delay(10, _cts.Token).ConfigureAwait(false);
+                    long now = _clock.ElapsedMilliseconds;
+                    if (now - Interlocked.Read(ref _lastPingMs) >= 1000)
+                    {
+                        Interlocked.Exchange(ref _lastPingMs, now);
+                        _probes[now] = 0;
+                        if (_probes.Count > ProbesKept)
+                        {
+                            _probes.TryRemove(_probes.Keys.Min(), out _);
+                        }
+                        _ = SendControlAsync("{\"t\":\"ping\",\"ts\":" + now + "}");
+                    }
+                    lock (_linkLock)
+                    {
+                        if (_dataOpen && !_link.Poll())
+                        {
+                            TellDead();
+                        }
+                        FlushLink();
+                    }
+                }
+            }
+            catch (OperationCanceledException) { }
         }
 
         /// <summary>Dispatches pending messages on the calling thread. Call every frame.</summary>
         public int Poll(int max = 256)
         {
             int count = 0;
-            long now = _clock.ElapsedMilliseconds;
-            if (now - _lastPingMs >= 1000)
-            {
-                _lastPingMs = now;
-                _ = SendControlAsync("{\"t\":\"ping\",\"ts\":" + now + "}");
-            }
-            if (_dataOpen && !_link.Poll() && !_lost)
-            {
-                _inbox.Enqueue(new Closed { Reason = "link dead", Control = false });
-            }
-            FlushLink();
             while (count < max && _inbox.TryDequeue(out var message))
             {
                 count++;
                 switch (message)
                 {
                     case Text text:
+                        _slots.Release();
                         // The answer to the client's own probe is not the game's business.
                         if (
                             Json.Str(text.Json, "t") == "pong"
-                            && Json.Num(text.Json, "ts") == _lastPingMs
+                            && _probes.TryRemove((long)Json.Num(text.Json, "ts"), out _)
                         )
                         {
-                            float sample = Math.Max(0f, _clock.ElapsedMilliseconds - _lastPingMs);
+                            float sample = Math.Max(0f, text.At - (long)Json.Num(text.Json, "ts"));
                             RttMs = RttMs > 0f ? 0.875f * RttMs + 0.125f * sample : sample;
                             break;
                         }
@@ -551,13 +617,14 @@ namespace Aurix.Net.Managed
                         }
 
                         break;
-                    case Bin binary:
-                        if (!_dataOpen)
+                    case Got got:
+                        _slots.Release(got.Items.Count);
+                        if (got.Epoch != _epoch)
                         {
                             break;
                         }
 
-                        foreach (var received in _link.Receive(binary.Data))
+                        foreach (var received in got.Items)
                         {
                             if (received.Payload.Length == 0)
                             {
@@ -593,7 +660,6 @@ namespace Aurix.Net.Managed
                                 }
                             }
                         }
-                        FlushLink();
                         break;
                     case Closed closed:
                         _controlClosed |= closed.Control;
@@ -602,6 +668,16 @@ namespace Aurix.Net.Managed
                 }
             }
             return count;
+        }
+
+        void CloseLink()
+        {
+            lock (_linkLock)
+            {
+                _dataOpen = false;
+                _link = new Link();
+                _epoch++;
+            }
         }
 
         /// <summary>The data path is gone: the game is told once, and sends fail from here on.</summary>
@@ -613,16 +689,14 @@ namespace Aurix.Net.Managed
             }
 
             _lost = true;
-            _dataOpen = false;
-            _link = new Link();
+            CloseLink();
             OnClosed?.Invoke(reason);
         }
 
         /// <summary>The client is out of its room: by LeaveAsync, or the node took it out (kick, room closed, rehost). Its data path closes with what was queued for it.</summary>
         void ForgetRoom()
         {
-            _dataOpen = false;
-            _link = new Link();
+            CloseLink();
             Actor = -1;
             JoinedJson = null;
             RoomMode = null;
@@ -739,7 +813,8 @@ namespace Aurix.Net.Managed
             {
                 while (_ws.State == WebSocketState.Open)
                 {
-                    var result = await _ws.ReceiveAsync(new ArraySegment<byte>(buf), _cts.Token);
+                    var result = await _ws.ReceiveAsync(new ArraySegment<byte>(buf), _cts.Token)
+                        .ConfigureAwait(false);
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
                         break;
@@ -759,11 +834,37 @@ namespace Aurix.Net.Managed
                     acc.Clear();
                     if (result.MessageType == WebSocketMessageType.Text)
                     {
-                        _inbox.Enqueue(new Text { Json = Encoding.UTF8.GetString(msg) });
+                        await _slots.WaitAsync(_cts.Token).ConfigureAwait(false);
+                        _inbox.Enqueue(
+                            new Text
+                            {
+                                Json = Encoding.UTF8.GetString(msg),
+                                At = _clock.ElapsedMilliseconds,
+                            }
+                        );
+                        continue;
                     }
-                    else
+
+                    Got got = null;
+                    lock (_linkLock)
                     {
-                        _inbox.Enqueue(new Bin { Data = msg });
+                        if (_dataOpen)
+                        {
+                            var items = _link.Receive(msg);
+                            if (items.Count > 0)
+                            {
+                                got = new Got { Epoch = _epoch, Items = items };
+                            }
+                            FlushLink();
+                        }
+                    }
+                    if (got != null)
+                    {
+                        for (int i = 0; i < got.Items.Count; i++)
+                        {
+                            await _slots.WaitAsync(_cts.Token).ConfigureAwait(false);
+                        }
+                        _inbox.Enqueue(got);
                     }
                 }
                 _inbox.Enqueue(new Closed { Reason = "control channel closed" });
@@ -995,5 +1096,8 @@ namespace Aurix.Net.Managed
         public static double Num(string json, string key) => Json.Num(json, key);
 
         public static ulong? ULong(string json, string key) => Json.ULong(json, key);
+
+        /// <summary>Messages read from the node that wait for the game's Poll.</summary>
+        public static int Waiting(ManagedClient client) => client.Waiting;
     }
 }

@@ -917,7 +917,6 @@ export class SyncSession {
   private lastDeltaAt = 0;
   private synced = false;
   private held: { body: Uint8Array; keep: boolean }[] = [];
-  private lastPingAt = 0;
   private readonly margin = new MarginControl();
   /** Ticks the room's margin reports have added to the input lead (negative: taken off it). */
   private leadAdjust = 0;
@@ -958,13 +957,9 @@ export class SyncSession {
         );
         this.lastDeltaAt = performance.now();
         this.synced = true;
-        if (this.lastDeltaAt - this.lastPingAt >= 1000) {
-          this.ping();
-        }
         this.pump();
       }
     });
-    this.ping();
   }
   // An answer to a spawn already answered (the room answers every repeat) is not reported again.
   private takeSpawnAnswer(payload: Uint8Array): void {
@@ -984,10 +979,6 @@ export class SyncSession {
       entity,
       tick: view.getUint32(14),
     });
-  }
-  private ping(): void {
-    this.lastPingAt = performance.now();
-    this.client.ping();
   }
   /** Call once per animation frame: advances the render tick between deltas. */
   advance(dtSeconds: number): number {

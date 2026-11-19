@@ -92,6 +92,10 @@ c.SendEvent(1, Encoding.UTF8.GetBytes("hi"), Target.Others, reliable: true);
 void Update() { c.Poll(); }  void LateUpdate() { c.Flush(); }
 ```
 
+`Poll` raises the events on the thread that calls it. The link itself does not wait for it: the
+client reads, acknowledges and resends off the game thread, so a frame that takes seconds does
+not cost the room.
+
 ## Gameplay framework (host-authoritative)
 
 `Runtime/Framework/` is a complete netcode layer for games that want a Unity host (or a headless

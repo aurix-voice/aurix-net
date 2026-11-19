@@ -16,6 +16,9 @@ export * from "./lockstep.js";
 export * from "./chat.js";
 
 const TICKET_RESEND_MS = 100;
+// The node closes a control channel it has heard nothing from for 90 s.
+const PING_EVERY_MS = 1000;
+const PROBES_KEPT = 16;
 
 export type RoomMode = "relay" | "sync" | "lockstep";
 /** `stats` answer: live rooms/players of the project, grouped by the room prop `lobby` ("" = default lobby). */
@@ -174,9 +177,11 @@ export class Client {
   lastJoin: object | null = null;
   /** Events the room kept for late joiners, as received by the last join; also emitted as `event`. */
   cached: EventFrame[] = [];
-  /** Smoothed control round trip in milliseconds; 0 until `ping()` got its first answer. */
+  /** Smoothed control round trip in milliseconds; 0 until the first probe got its answer. */
   rttMs = 0;
   private probe = -1;
+  private probes = new Set<number>();
+  private keepalive?: ReturnType<typeof setInterval>;
   private opts: { timeoutMs?: number } = {};
   /** Region list and best-region ping: reads `/v1/regions` from the catalog (or any node), probes every
    *  live endpoint's `/healthz` and returns the fastest; pass `endpoint` to `connect`. */
@@ -268,6 +273,8 @@ export class Client {
       );
       client.playerId = authed.player_id;
       client.playerName = authed.name;
+      client.ping();
+      client.keepalive = setInterval(() => client.ping(), PING_EVERY_MS);
     } catch (error) {
       client.close();
       throw error;
@@ -278,8 +285,8 @@ export class Client {
   private onMessage(data: unknown) {
     if (typeof data === "string") {
       const message = JSON.parse(data) as ControlMessage;
-      if (message.t === "pong" && message.ts === this.probe) {
-        const sample = Math.max(0, Math.floor(performance.now()) - this.probe);
+      if (message.t === "pong" && this.probes.delete(message.ts as number)) {
+        const sample = Math.max(0, performance.now() - (message.ts as number));
         this.rttMs = this.rttMs ? 0.875 * this.rttMs + 0.125 * sample : sample;
         return;
       }
@@ -371,9 +378,16 @@ export class Client {
     this.ws.send(JSON.stringify(msg));
   }
 
-  /** Measures the control round trip into `rttMs`. The answer is not emitted as `control`. */
+  /** Measures the control round trip into `rttMs`. The client does it every second by itself,
+   *  which also keeps the node from closing a control channel it hears nothing from. The answer is
+   *  not emitted as `control`. */
   ping(): void {
-    this.probe = Math.floor(performance.now());
+    // no two probes in flight carry the same time, so each answer is told from a game's own ping
+    this.probe = Math.max(Math.floor(performance.now()), this.probe + 1);
+    this.probes.add(this.probe);
+    if (this.probes.size > PROBES_KEPT) {
+      this.probes.delete(this.probes.values().next().value as number);
+    }
     this.send({ t: "ping", ts: this.probe });
   }
 
@@ -779,6 +793,7 @@ export class Client {
     });
   }
   close() {
+    clearInterval(this.keepalive);
     this.closePath();
     this.ws.close();
   }
@@ -795,6 +810,7 @@ export class Client {
   }
   /** No answer can come any more: the calls waiting for one fail now, not at their timeout. */
   private controlClosed() {
+    clearInterval(this.keepalive);
     this.lost("control channel closed");
     const error = new Error("control channel closed");
     for (const waiter of this.waiters.splice(0)) {

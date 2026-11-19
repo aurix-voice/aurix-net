@@ -94,7 +94,7 @@ const emptyDelta = (tick) => Uint8Array.of(0x11, 0, 0, tick >>> 8, tick & 255, 0
 // a session over a client that records the input frames sent through it
 function recordedSession(joined) {
   const frames = []; const handlers = {};
-  const client = { joined, rttMs: 0, on(name, handler) { handlers[name] = handler; }, ping() {}, sendData(channel, payload) { if (payload[0] === 0x10) frames.push({ first: new DataView(payload.buffer, payload.byteOffset).getUint32(1), count: payload[5] }); } };
+  const client = { joined, rttMs: 0, on(name, handler) { handlers[name] = handler; }, sendData(channel, payload) { if (payload[0] === 0x10) frames.push({ first: new DataView(payload.buffer, payload.byteOffset).getUint32(1), count: payload[5] }); } };
   const session = new SyncSession(client, "component T {\n  x: f32\n}\n", 60, 2);
   return { session, frames, delta: (tick) => handlers.data(0, 0, emptyDelta(tick)), data: (payload) => handlers.data(0, 0, payload) };
 }

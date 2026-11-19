@@ -109,6 +109,9 @@ JSON messages, `"t"` is the type (snake_case). Client → server: `auth{grant, s
 `stats{id?}` (live rooms/players per lobby), `find_friends{players, id?}` (presence of ≤ 64 players; `stats`/`find_friends` at most once per second per session),
 `get_rooms{expr?, limit?, id?}` (one-shot filtered room list, SQL-like `expr` on lobby props as in `join_random`; same one-per-second budget), `rpc{id, name, body}` (call your backend through the node, see Webhooks; body ≤ 8 KiB, 5 per second per session), `ping{ts}`.
 
+The node closes a control connection it has heard nothing from for 90 s (10 s before `auth`);
+any message counts, so a client that sends `ping` stays connected.
+
 Server → client: `hello{session, version, region, supports?}`, `authed{player_id, name}`,
 `joined{room, name, mode, actor, master, max_players, props, players, data, cached, schema_hash?, tick_hz?, next_spawn_tag?}`,
 `left{reason, room?}`, `player_joined{player}`, `player_left{actor, reason}`, `room_props`,
