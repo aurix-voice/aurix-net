@@ -61,6 +61,11 @@ pub trait GameLogic: Send {
         Vec::new()
     }
     fn restore_spawn_tags(&mut self, _tags: Vec<(ActorId, u32, EntityId)>) {}
+    /// Entities whose ownership policy is not the default one.
+    fn policies(&self) -> Vec<(EntityId, OwnerPolicy)> {
+        Vec::new()
+    }
+    fn restore_policies(&mut self, _policies: Vec<(EntityId, OwnerPolicy)>) {}
 }
 
 /// Project-supplied logic in the WebAssembly sandbox (`net-game`).
@@ -500,6 +505,12 @@ impl GameLogic for OwnerLogic {
             self.tags.entry(actor).or_default().push_back((tag, entity));
         }
     }
+    fn policies(&self) -> Vec<(EntityId, OwnerPolicy)> {
+        self.policies.iter().map(|(id, p)| (*id, *p)).collect()
+    }
+    fn restore_policies(&mut self, policies: Vec<(EntityId, OwnerPolicy)>) {
+        self.policies = policies.into_iter().collect();
+    }
 }
 
 /// `0x14`: the entity `tag` stands for (the avatar under tag 0), or why there is none.
@@ -537,6 +548,9 @@ pub struct SyncRoom {
     margins: HashMap<ActorId, (i32, u16)>,
     /// `0x14` frames not yet sent: an actor gets its own once its data path is up.
     spawned: Vec<(ActorId, Bytes)>,
+    /// Avatars from the checkpoint the room was continued from, of players not back yet.
+    moved_avatars: HashMap<ActorId, EntityId>,
+    seed: u64,
     /// Newest input taken from each actor: (tick it was sent for, tick it runs on). An input for
     /// a tick already simulated runs on the current tick instead, so its ops are not lost: once,
     /// in the order sent, one such input a tick; the repeats in later frames bring the rest.
@@ -643,6 +657,8 @@ impl SyncRoom {
             late_inputs: 0,
             margins: HashMap::new(),
             spawned: Vec::new(),
+            moved_avatars: HashMap::new(),
+            seed,
             taken: HashMap::new(),
             resyncs: 0,
             spectators: HashSet::new(),
@@ -673,11 +689,16 @@ impl SyncRoom {
             self.announce_avatar(actor, *avatar);
             return;
         }
-        let existing = self
-            .frame
-            .entities()
-            .find(|e| e.owner == Some(actor))
-            .map(|e| e.id);
+        let owned = |id: &EntityId| {
+            self.frame
+                .entity(*id)
+                .is_some_and(|e| e.owner == Some(actor))
+        };
+        let moved = self.moved_avatars.remove(&actor).filter(owned);
+        let existing = moved.or_else(|| {
+            let mut entities = self.frame.entities();
+            entities.find(|e| e.owner == Some(actor)).map(|e| e.id)
+        });
         let avatar = match existing {
             Some(entity) => Some(entity),
             None => self.logic.on_join(&mut self.frame, actor),
@@ -736,6 +757,7 @@ impl SyncRoom {
     pub fn on_leave(&mut self, actor: ActorId) {
         self.input_tokens.remove(&actor);
         self.spawned.retain(|(of, _)| *of != actor);
+        self.moved_avatars.remove(&actor);
         self.margins.remove(&actor);
         self.taken.remove(&actor);
         self.spectators.remove(&actor);
@@ -973,7 +995,51 @@ impl SyncRoom {
         );
     }
 
-    /// Re-host from a checkpoint: avatars are re-linked by owner on the next on_join.
+    /// The seed the room and its logic were started with.
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    /// Which entity is whose avatar, for the checkpoint: (actor, entity).
+    pub fn avatar_ids(&self) -> Vec<(ActorId, u64)> {
+        let joined = self
+            .avatars
+            .iter()
+            .filter_map(|(actor, avatar)| Some((*actor, (*avatar)?)));
+        let waiting = self
+            .moved_avatars
+            .iter()
+            .map(|(actor, avatar)| (*actor, *avatar));
+        joined
+            .chain(waiting)
+            .map(|(actor, avatar)| (actor, avatar.to_u64()))
+            .collect()
+    }
+
+    pub fn restore_avatars(&mut self, avatars: Vec<(ActorId, u64)>) {
+        let avatars = avatars.into_iter();
+        self.moved_avatars = avatars
+            .map(|(actor, avatar)| (actor, EntityId::from_u64(avatar)))
+            .collect();
+    }
+
+    /// Ownership policies other than the default, for the checkpoint: (entity, policy).
+    pub fn policies(&self) -> Vec<(u64, u8)> {
+        let policies = self.logic.policies().into_iter();
+        policies
+            .map(|(entity, policy)| (entity.to_u64(), policy as u8))
+            .collect()
+    }
+
+    pub fn restore_policies(&mut self, policies: Vec<(u64, u8)>) {
+        let known = policies.into_iter().filter_map(|(entity, policy)| {
+            Some((EntityId::from_u64(entity), OwnerPolicy::from_u8(policy)?))
+        });
+        self.logic.restore_policies(known.collect());
+    }
+
+    /// Re-host from a checkpoint: avatars are re-linked on the next on_join, by `restore_avatars`
+    /// where the checkpoint has them, else by owner.
     pub fn restore(&mut self, body: &[u8]) -> Result<(), String> {
         self.frame.restore(body).map_err(|e| e.to_string())?;
         self.views.clear();

@@ -74,9 +74,18 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Sync: a room continued from a checkpoint started its logic module with seed 0
+  (`aurix_init(0)`) instead of the seed the room was created with. The seed is in the checkpoint
+  now.
 - A room continued on another node without a checkpoint always got the same seed: 1 in
   lockstep (the `seed` of `joined`), 0 in sync. It gets a random one below 2^53, as a new room
   does.
+- Sync: the room checkpoint did not say which entity was a player's avatar. A room continued on
+  another node took the first entity the player owned, which could be one the player had
+  spawned. The avatars are in the checkpoint now.
+- Sync: the ownership policy of an entity (`orphan`, `to_master`, `dynamic`) was not part of the
+  room checkpoint. After the room moved to another node, an entity meant to outlive its owner
+  was despawned when the owner left. The policies move with the room now.
 - Sync: a delta built before the client's data path was open counted as sent. An entity that
   did not change afterwards, the client's own avatar among them, never reached a client that
   sends no acks. The first delta a client gets now holds everything it should see.

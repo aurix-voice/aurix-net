@@ -452,3 +452,28 @@ async fn room_continued_without_a_checkpoint_gets_a_seed_of_its_own() {
     assert_ne!(seeds[0], seeds[1]);
     assert!(seeds.iter().all(|seed| *seed < 1 << 53), "{seeds:?}");
 }
+
+#[tokio::test]
+async fn room_continued_from_a_checkpoint_keeps_its_seed() {
+    let fast = &[("NET__SERVER__HEARTBEAT_SECS", "1")];
+    let node_a = Node::start_with(fast).await;
+    let node_b = Node::start_with(fast).await;
+    let pa = node_a.project("seed-kept").await;
+    let pb = node_b.same_project(&pa);
+    let mut ann = pa.player("ann").await;
+    ann.send(json!({"t": "create", "name": "arena", "mode": "lockstep"}))
+        .await;
+    let seed = ann.until("joined").await["seed"].clone();
+    // A lockstep room is checkpointed every five seconds.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+
+    let frozen = node_a.freeze(Duration::from_secs(8));
+    let moved = async {
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        let mut bob = pb.player("bob").await;
+        bob.send(json!({"t": "join", "name": "arena"})).await;
+        bob.until("joined").await["seed"].clone()
+    };
+    let (_, after) = tokio::join!(frozen, moved);
+    assert_eq!(after, seed);
+}

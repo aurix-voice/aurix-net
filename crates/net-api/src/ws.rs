@@ -1826,6 +1826,17 @@ pub struct RoomCheckpoint {
     /// repeated after the room moved creates nothing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spawn_tags: Vec<(ActorId, u32, u64)>,
+    /// Sync rooms: what becomes of an entity when its owner leaves, where that is not the
+    /// default (entity, policy).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policies: Vec<(u64, u8)>,
+    /// Sync rooms: which entity is whose avatar (actor, entity).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub avatars: Vec<(ActorId, u64)>,
+    /// Sync rooms: the seed the room was created with, for its logic to start from again. A
+    /// lockstep room has its own in `lockstep`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
 }
 
 impl RoomCheckpoint {
@@ -1849,6 +1860,17 @@ impl RoomCheckpoint {
                 .as_ref()
                 .map(crate::sync::SyncRoom::spawn_tags)
                 .unwrap_or_default(),
+            policies: hosted
+                .sync
+                .as_ref()
+                .map(crate::sync::SyncRoom::policies)
+                .unwrap_or_default(),
+            avatars: hosted
+                .sync
+                .as_ref()
+                .map(crate::sync::SyncRoom::avatar_ids)
+                .unwrap_or_default(),
+            seed: hosted.sync.as_ref().map(crate::sync::SyncRoom::seed),
         }
     }
 
@@ -1928,10 +1950,13 @@ pub async fn adopt_room(
     if let Some(checkpoint) = ckpt {
         room.restore_offline(checkpoint.players, checkpoint.master, Instant::now());
         if mode == RoomMode::Sync {
-            let mut sy = build_sync(st, project, &props, 0).await?;
+            let seed = checkpoint.seed.unwrap_or_else(room_seed);
+            let mut sy = build_sync(st, project, &props, seed).await?;
             if let Some(body) = checkpoint.sync {
                 sy.restore(&body).map_err(NetError::Invalid)?;
                 sy.restore_spawn_tags(checkpoint.spawn_tags);
+                sy.restore_policies(checkpoint.policies);
+                sy.restore_avatars(checkpoint.avatars);
                 restored = "sync";
             }
             sync = Some(sy);

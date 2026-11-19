@@ -201,22 +201,27 @@ fn tagged_spawn_frame(tick: u32, tag: u32, writes: &[u8]) -> Bytes {
 /// Ann's client in the `sync` room "arena", entered with `message`, and an empty mirror of the
 /// room's world.
 async fn enter(node: &Node, project: &Project, message: Value) -> (Client, Frame) {
+    enter_as(node, project, "ann", message).await
+}
+
+async fn enter_as(node: &Node, project: &Project, player: &str, message: Value) -> (Client, Frame) {
     let opts = Options {
         tunnel: true,
         ..Default::default()
     };
-    let mut ann = Client::connect(&node.http, &project.grant("ann").await, opts)
+    let mut client = Client::connect(&node.http, &project.grant(player).await, opts)
         .await
-        .expect("ann connects");
-    ann.join(serde_json::from_value(message).expect("client message"))
+        .expect("the player connects");
+    client
+        .join(serde_json::from_value(message).expect("client message"))
         .await
-        .expect("ann enters");
+        .expect("the player enters");
     let config = FrameConfig {
         tick_hz: 30,
         ..Default::default()
     };
     let world = Frame::new(Schema::parse(POSE_SCHEMA).expect("schema"), config, 0);
-    (ann, world)
+    (client, world)
 }
 
 fn create_arena() -> Value {
@@ -345,6 +350,159 @@ async fn tagged_spawn_repeated_after_the_room_moved_creates_nothing() {
         let mut both = [avatar, spawned.1];
         both.sort_unstable();
         assert_eq!(ids(&world), both);
+    };
+    tokio::join!(frozen, back);
+}
+
+/// One input frame (`0x10`) for `tick` whose input sets the policy of `entity` to `orphan`.
+fn orphan_frame(tick: u32, entity: u64) -> Bytes {
+    let mut frame = BytesMut::new();
+    frame.put_u8(0x10);
+    frame.put_u32(tick);
+    frame.put_u8(1);
+    frame.put_u8(10);
+    frame.put_slice(&[0xFF, 1, 4]);
+    frame.put_slice(&entity.to_be_bytes()[2..]);
+    frame.put_u8(2);
+    frame.freeze()
+}
+
+#[tokio::test]
+async fn entity_left_to_outlive_its_owner_does_so_after_the_room_moved() {
+    let node_a = Node::start_with(FAST).await;
+    let node_b = Node::start_with(FAST).await;
+    let pa = node_a.project("policy-moved").await;
+    let pb = node_b.same_project(&pa);
+    let (mut ann, mut world) = enter(&node_a, &pa, create_arena()).await;
+    answer(&mut ann, &mut world, 0).await;
+    let (_, kept) = spawn_tagged(&mut ann, &mut world, 5, &[0]).await;
+    let ahead = world.tick.0 + 6;
+    ann.send_data(Channel::UnreliableSequenced, orphan_frame(ahead, kept))
+        .expect("ann sends");
+    ann.flush();
+    follow(&mut ann, &mut world, |world| world.tick.0 > ahead).await;
+    // A sync room is checkpointed every two seconds.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // A falls silent; Ann and Bob reach the room through B, which continues it.
+    let frozen = node_a.freeze(Duration::from_secs(8));
+    let back = async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let join = json!({"t": "join", "name": "arena"});
+        let (mut ann, mut world) = enter(&node_b, &pb, join.clone()).await;
+        let (_, avatar) = answer(&mut ann, &mut world, 0).await;
+        let (mut bob, mut seen) = enter_as(&node_b, &pb, "bob", join).await;
+        let has = |world: &Frame, id: u64| world.entities().any(|e| e.id.to_u64() == id);
+        follow(&mut bob, &mut seen, |seen| {
+            has(seen, avatar) && has(seen, kept)
+        })
+        .await;
+
+        // Ann leaves: her avatar goes, what she left to outlive her stays, without an owner.
+        ann.leave().await.expect("ann leaves");
+        follow(&mut bob, &mut seen, |seen| !has(seen, avatar)).await;
+        let owner = seen
+            .entities()
+            .find(|e| e.id.to_u64() == kept)
+            .map(|e| e.owner);
+        assert_eq!(owner, Some(None));
+    };
+    tokio::join!(frozen, back);
+}
+
+#[tokio::test]
+async fn avatar_stays_the_avatar_after_the_room_moved() {
+    let node_a = Node::start_with(FAST).await;
+    let node_b = Node::start_with(FAST).await;
+    let pa = node_a.project("avatar-moved").await;
+    let pb = node_b.same_project(&pa);
+    let join = json!({"t": "join", "name": "arena"});
+    // Bob's avatar takes the first place in the world and frees it by leaving, so what Ann
+    // spawns next stands before her own avatar.
+    let (mut bob, mut seen) = enter_as(&node_a, &pa, "bob", create_arena()).await;
+    answer(&mut bob, &mut seen, 0).await;
+    let (mut ann, mut world) = enter(&node_a, &pa, join.clone()).await;
+    let (_, avatar) = answer(&mut ann, &mut world, 0).await;
+    bob.leave().await.expect("bob leaves");
+    follow(&mut ann, &mut world, |world| world.entities().count() == 1).await;
+    let (_, spawned) = spawn_tagged(&mut ann, &mut world, 5, &[0]).await;
+    // The low half of an id is its place in the world.
+    assert!(
+        (spawned as u32) < avatar as u32,
+        "spawned {spawned}, avatar {avatar}"
+    );
+    // A sync room is checkpointed every two seconds.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // A falls silent; Ann comes back through B, which continues the room from the checkpoint.
+    let frozen = node_a.freeze(Duration::from_secs(8));
+    let back = async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let (mut ann, mut world) = enter(&node_b, &pb, join).await;
+        assert_eq!(answer(&mut ann, &mut world, 0).await, (0, avatar));
+    };
+    tokio::join!(frozen, back);
+}
+
+/// Room logic that keeps writing the seed it was started with into the position of the first
+/// entity: three digits a coordinate, each moved down by 500.
+const SEED_IN_POSE: &str = r#"
+(module
+  (import "aurix" "spawn" (func $spawn (param i32) (result i64)))
+  (import "aurix" "component_id" (func $component (param i32 i32) (result i32)))
+  (import "aurix" "set_vec3" (func $set_vec3 (param i64 i32 i32 f32 f32 f32) (result i32)))
+  (import "aurix" "entity_count" (func $count (result i32)))
+  (import "aurix" "entity_at" (func $at (param i32) (result i64)))
+  (memory (export "memory") 1)
+  (data (i32.const 0) "Pose")
+  (global $seed (mut i64) (i64.const 0))
+  (func $digits (param $from i64) (result f32)
+    (f32.sub
+      (f32.convert_i64_u (i64.rem_u (i64.div_u (global.get $seed) (local.get $from)) (i64.const 1000)))
+      (f32.const 500)))
+  (func (export "aurix_init") (param $seed i64) (global.set $seed (local.get $seed)))
+  (func (export "aurix_join") (param $actor i32) (result i64) (call $spawn (local.get $actor)))
+  (func (export "aurix_step")
+    (if (i32.gt_s (call $count) (i32.const 0)) (then
+      (drop (call $set_vec3 (call $at (i32.const 0)) (call $component (i32.const 0) (i32.const 4)) (i32.const 0)
+        (call $digits (i64.const 1)) (call $digits (i64.const 1000)) (call $digits (i64.const 1000000))))))))
+"#;
+
+fn first_pose(world: &Frame) -> Option<net_wire::ComponentValue> {
+    let first = world.entities().next()?.id;
+    world.get(first, "Pose").cloned()
+}
+
+#[tokio::test]
+async fn room_module_gets_its_seed_again_after_the_room_moved() {
+    let node_a = Node::start_with(FAST).await;
+    let node_b = Node::start_with(FAST).await;
+    let pa = node_a.project("seed-kept").await;
+    let pb = node_b.same_project(&pa);
+    let upload = reqwest::Client::new()
+        .put(format!("{}/v1/modules/seed", pa.api.http))
+        .bearer_auth(&pa.api.token)
+        .body(SEED_IN_POSE)
+        .send()
+        .await
+        .expect("upload");
+    assert!(upload.status().is_success(), "upload: {}", upload.status());
+    let props = json!({"tick_hz": 30, "schema": POSE_SCHEMA, "logic": "seed"});
+    let create = json!({"t": "create", "name": "arena", "mode": "sync", "props": props});
+    let (mut ann, mut world) = enter(&node_a, &pa, create).await;
+    follow(&mut ann, &mut world, |world| first_pose(world).is_some()).await;
+    let seed = first_pose(&world);
+    // A sync room is checkpointed every two seconds.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // A falls silent; Ann comes back through B, which continues the room from the checkpoint.
+    let frozen = node_a.freeze(Duration::from_secs(8));
+    let back = async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let join = json!({"t": "join", "name": "arena"});
+        let (mut ann, mut world) = enter(&node_b, &pb, join).await;
+        follow(&mut ann, &mut world, |world| first_pose(world).is_some()).await;
+        assert_eq!(first_pose(&world), seed);
     };
     tokio::join!(frozen, back);
 }
