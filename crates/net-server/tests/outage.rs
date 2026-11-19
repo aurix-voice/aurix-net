@@ -4,7 +4,7 @@ mod common;
 
 use common::{joined, refused, Node, Sink};
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::copy_bidirectional;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
@@ -605,4 +605,62 @@ async fn list_sent_again_after_a_redis_outage_keeps_what_the_watcher_was_told() 
     );
     kept.send(hide).await;
     assert_eq!(removals(ann.drain(Duration::from_secs(1)).await), [kept_id]);
+}
+
+// The relay has to keep running while the node deletes its project on drop.
+#[tokio::test(flavor = "multi_thread")]
+async fn lockstep_room_that_ran_through_a_redis_outage_moves_with_all_of_its_ticks() {
+    const HZ: u32 = 30;
+    let relay = Relay::redis().await;
+    let mut cut_off = Node::start_with(&[("NET__REDIS__URL", &relay.url)]).await;
+    let host = Node::start().await;
+    let project = cut_off.project("outage-journal").await;
+    let mut ann = project.player("ann").await;
+    let props = json!({"tick_hz": HZ});
+    let create = json!({"t": "create", "name": "arena", "mode": "lockstep", "props": props});
+    let began = Instant::now();
+    let room = ann.call(create).await["room"]
+        .as_str()
+        .expect("room")
+        .to_string();
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    relay.set(false);
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    relay.set(true);
+
+    let url = std::env::var("NET__REDIS__URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".into());
+    let mut redis = redis::Client::open(url)
+        .expect("redis url")
+        .get_multiplexed_async_connection()
+        .await
+        .expect("redis");
+    let keys: Vec<String> = redis::cmd("KEYS")
+        .arg(format!("*:journal:{room}"))
+        .query_async(&mut redis)
+        .await
+        .expect("keys");
+    assert_eq!(keys.len(), 1, "{keys:?}");
+    // The room has made a tick every 1/30 s; the journal is a write behind it.
+    let mut missing = u32::MAX;
+    for _ in 0..40 {
+        let listed: u32 = redis::cmd("LLEN")
+            .arg(&keys[0])
+            .query_async(&mut redis)
+            .await
+            .expect("llen");
+        missing = (began.elapsed().as_millis() as u32 * HZ / 1000).saturating_sub(listed);
+        if missing < 2 * HZ {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(missing < 2 * HZ, "{missing} ticks are not in the journal");
+
+    cut_off.terminate();
+    let moved = host.same_project(&project);
+    let mut bob = moved.player("bob").await;
+    joined(&bob.call(json!({"t": "join", "name": "arena"})).await);
+    let (status, replay) = moved.api.get(&format!("/v1/rooms/{room}/replay")).await;
+    assert_eq!((status, &replay["from_tick"]), (200, &json!(0)), "{replay}");
 }

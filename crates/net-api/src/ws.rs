@@ -21,6 +21,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -1656,8 +1657,9 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
 /// One Redis write of a room's tick loop.
 pub enum RedisWrite {
     Checkpoint(ProjectId, Vec<u8>),
-    /// Ticks of the journal, the hashes the room has come to hold with them, how many to keep.
-    Journal(ProjectId, Vec<Vec<u8>>, Vec<Vec<u8>>, isize),
+    /// Ticks of the journal and the hashes the room has come to hold with them, how many to
+    /// keep.
+    Journal(ProjectId, crate::lockstep::JournalBatch, isize),
 }
 
 /// Per-room single writer: checkpoints and journal batches reach Redis in tick order, each
@@ -1666,9 +1668,11 @@ pub enum RedisWrite {
 pub struct RoomWriter {
     tx: mpsc::Sender<RedisWrite>,
     room: RoomId,
-    /// Set when a journal batch was lost (failed, timed out or dropped): the journal in Redis
-    /// has a gap, so the tick loop must write a fresh checkpoint before appending more.
-    journal_broken: Arc<std::sync::atomic::AtomicBool>,
+    /// The tick after the last one of the journal batches that reached Redis.
+    landed: Arc<AtomicU32>,
+    /// Set when a journal batch did not reach Redis (failed, timed out or dropped): the tick
+    /// loop gives its ticks again.
+    journal_lost: Arc<AtomicBool>,
 }
 
 impl RoomWriter {
@@ -1677,12 +1681,13 @@ impl RoomWriter {
 
     pub fn spawn(st: Shared, room: RoomId) -> Self {
         let (tx, mut rx) = mpsc::channel::<RedisWrite>(Self::QUEUE);
-        let journal_broken = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let broken = journal_broken.clone();
+        let landed = Arc::new(AtomicU32::new(0));
+        let journal_lost = Arc::new(AtomicBool::new(false));
+        let (position, lost) = (landed.clone(), journal_lost.clone());
         tokio::spawn(async move {
             while let Some(write) = rx.recv().await {
                 let redis = st.redis.clone();
-                let is_journal = matches!(write, RedisWrite::Journal(..));
+                let mut landing = None;
                 let (what, fut): (&str, std::pin::Pin<Box<dyn Future<Output = _> + Send>>) =
                     match write {
                         RedisWrite::Checkpoint(project, body) => (
@@ -1691,14 +1696,24 @@ impl RoomWriter {
                                 redis.put_checkpoint(project, room, &body, 600).await
                             }),
                         ),
-                        RedisWrite::Journal(project, entries, hashes, keep) => (
-                            "journal",
-                            Box::pin(async move {
-                                redis
-                                    .append_journal(project, room, &entries, &hashes, keep, 600)
-                                    .await
-                            }),
-                        ),
+                        RedisWrite::Journal(project, batch, keep) => {
+                            landing = Some(batch.first.wrapping_add(batch.entries.len() as u32));
+                            (
+                                "journal",
+                                Box::pin(async move {
+                                    redis
+                                        .append_journal(
+                                            project,
+                                            room,
+                                            &batch.entries,
+                                            &batch.hashes,
+                                            keep,
+                                            600,
+                                        )
+                                        .await
+                                }),
+                            )
+                        }
                     };
                 let ok = match tokio::time::timeout(Self::TIMEOUT, fut).await {
                     Ok(Ok(())) => true,
@@ -1711,35 +1726,41 @@ impl RoomWriter {
                         false
                     }
                 };
+                match landing {
+                    Some(landing) if ok => position.store(landing, Ordering::Relaxed),
+                    Some(_) => lost.store(true, Ordering::Relaxed),
+                    None => {}
+                }
                 if !ok {
                     st.metrics.errors.with_label_values(&["redis_write"]).inc();
-                    if is_journal {
-                        broken.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
                 }
             }
         });
         Self {
             tx,
             room,
-            journal_broken,
+            landed,
+            journal_lost,
         }
     }
 
-    /// True once after journal batches were lost; the caller writes a checkpoint that tick.
-    pub fn take_journal_broken(&self) -> bool {
-        self.journal_broken
-            .swap(false, std::sync::atomic::Ordering::Relaxed)
+    pub fn landed(&self) -> u32 {
+        self.landed.load(Ordering::Relaxed)
     }
 
-    /// Queues a write; when Redis is far behind the write is dropped (bounded memory) and the
-    /// next checkpoint supersedes it.
+    /// True once after a journal batch did not reach Redis.
+    pub fn take_journal_lost(&self) -> bool {
+        self.journal_lost.swap(false, Ordering::Relaxed)
+    }
+
+    /// Queues a write; when Redis is far behind the write is dropped (bounded memory): the
+    /// next checkpoint supersedes a checkpoint, and the tick loop gives the ticks of a journal
+    /// batch again.
     pub fn push(&self, write: RedisWrite) {
         let is_journal = matches!(write, RedisWrite::Journal(..));
         if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(write) {
             if is_journal {
-                self.journal_broken
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                self.journal_lost.store(true, Ordering::Relaxed);
             }
             tracing::debug!(room = %self.room, "redis write queue full, dropping write");
         }
@@ -1748,14 +1769,16 @@ impl RoomWriter {
 
 /// Lockstep input-journal entries buffered before one Redis write (ticks).
 const JOURNAL_FLUSH: usize = 6;
+/// The most one write takes (ticks): what a write that fails costs the tick that gives it.
+const JOURNAL_BATCH: usize = 1024;
 
 /// Lockstep clock: every tick bundle the inputs for that tick and fan them out.
 pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration) {
     let mut iv = tokio::time::interval(period);
     iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let checkpoint_every = (5_000_000 / period.as_micros().max(1)) as u64;
-    // Every tick's bundle goes to Redis in batches of JOURNAL_FLUSH ticks, so an adopting node
-    // loses at most that many ticks of inputs and has the ticks from before the checkpoint.
+    // Every tick's bundle goes to Redis in batches of JOURNAL_FLUSH ticks, and the room keeps
+    // a tick until it is there, so an adopting node has every tick of the room.
     let journal_keep = crate::lockstep::MAX_JOURNAL_TICKS as isize;
     let writer = RoomWriter::spawn(st.clone(), room);
     let mut ticks: u64 = 0;
@@ -1766,13 +1789,13 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
         };
         let t0 = Instant::now();
         let mut checkpoint: Option<(ProjectId, Vec<u8>)> = None;
-        let mut journal = None;
+        let journal;
         let project;
         {
             let mut hosted = handle.lock();
             project = hosted.project;
             ticks += 1;
-            if ticks.is_multiple_of(checkpoint_every) || writer.take_journal_broken() {
+            if ticks.is_multiple_of(checkpoint_every) {
                 let snap = hosted.lockstep.as_ref().map(|l| l.snapshot());
                 checkpoint = Some((
                     hosted.project,
@@ -1794,9 +1817,11 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                 };
                 ls.master = master;
                 ls.tick();
-                if ls.unlisted() >= JOURNAL_FLUSH || checkpoint.is_some() {
-                    journal = Some(ls.take_journal());
+                ls.journal_landed(writer.landed());
+                if writer.take_journal_lost() {
+                    ls.journal_lost();
                 }
+                journal = ls.journal_batch(JOURNAL_FLUSH, JOURNAL_BATCH);
                 let ckpt_req = ls.checkpoint_request();
                 let desyncs: Vec<(u32, ActorId, u8, Option<Bytes>)> = ls
                     .take_desyncs()
@@ -1932,8 +1957,8 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                 }
             }
         }
-        if let Some((entries, hashes)) = journal {
-            writer.push(RedisWrite::Journal(project, entries, hashes, journal_keep));
+        if let Some(batch) = journal {
+            writer.push(RedisWrite::Journal(project, batch, journal_keep));
         }
         let took = t0.elapsed();
         if took > period {
@@ -2188,8 +2213,7 @@ pub async fn adopt_room(
                     if let Err(e) = &hashes {
                         tracing::warn!(room = %room_id, error = %e, "hashes read failed");
                     }
-                    ls.restore_history(&entries, &hashes.unwrap_or_default());
-                    let applied = ls.apply_journal(&entries);
+                    let applied = ls.restore_journal(&entries, &hashes.unwrap_or_default());
                     tracing::info!(room = %room_id, applied, tick = ls.tick.0, "journal tail applied");
                 }
                 Err(e) => tracing::warn!(room = %room_id, error = %e, "journal read failed"),
@@ -2463,7 +2487,10 @@ pub async fn handoff_all(st: &Shared, settle_until: tokio::time::Instant) -> usi
         let (project, id, body, journal) = {
             let mut hosted = handle.lock();
             let sync = hosted.sync.as_mut().map(|s| s.checkpoint());
-            let journal = hosted.lockstep.as_mut().map(|l| l.take_journal());
+            let journal = hosted.lockstep.as_mut().and_then(|l| {
+                l.journal_lost();
+                l.journal_batch(0, usize::MAX)
+            });
             let ls = hosted.lockstep.as_ref().map(|l| l.snapshot());
             (
                 hosted.project,
@@ -2472,11 +2499,11 @@ pub async fn handoff_all(st: &Shared, settle_until: tokio::time::Instant) -> usi
                 journal,
             )
         };
-        if let Some((entries, hashes)) = journal {
+        if let Some(batch) = journal {
             let keep = crate::lockstep::MAX_JOURNAL_TICKS as isize;
-            let listed = st
-                .redis
-                .append_journal(project, id, &entries, &hashes, keep, 600);
+            let listed =
+                st.redis
+                    .append_journal(project, id, &batch.entries, &batch.hashes, keep, 600);
             if let Err(e) = listed.await {
                 tracing::warn!(room = %id, error = %e, "handoff journal failed");
             }

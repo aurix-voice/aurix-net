@@ -282,6 +282,13 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   held no hash from before the move. A node keeps the whole journal of a room and its hashes
   in Redis, not the last ten seconds, and the node that takes the room over has them. The
   checkpoint of a room is deleted with the room; it used to stay ten minutes after the close.
+- Lockstep room without a game checkpoint: the checkpoint the node writes to Redis every 5 s
+  carried the whole journal of the room, 2.4 MB after four minutes of a two-player match at
+  128 Hz, and the room missed a tick at every write from 1.5 MB on. The journal is in its
+  Redis list already, so the checkpoint carries the ticks and hashes that are not in the list
+  yet, under a kilobyte there. A write to the list that failed left a gap that only the next
+  checkpoint covered. The room keeps a tick until its write has succeeded and makes a failed
+  write again, so the list has every tick after a Redis outage.
 - Every client: a reliable message sent just before a leave could be lost without a word. The
   leave closed the data path at once, with what the node had not yet acknowledged. Of 40
   events each followed at once by a leave, over a link that loses data frames, the room got 36
