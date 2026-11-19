@@ -666,13 +666,8 @@ namespace Aurix.Net.Managed
                             _socket.Release(got.Items.Count);
                             _unfinished = got;
                         }
-                        if (got.Epoch != _epoch)
-                        {
-                            _unfinished = null;
-                            break;
-                        }
-
-                        while (got.Next < got.Items.Count)
+                        // what the room sent is not the game's once it is out of the room
+                        while (got.Next < got.Items.Count && got.Epoch == _epoch)
                         {
                             var received = got.Items[got.Next];
                             if (received.Payload.Length == 0)
@@ -683,7 +678,7 @@ namespace Aurix.Net.Managed
                                     _history = new Queue<EventFrame>(Cached);
                                     OnDataReady?.Invoke();
                                 }
-                                while (_history.Count > 0)
+                                while (_history.Count > 0 && got.Epoch == _epoch)
                                 {
                                     OnEvent?.Invoke(_history.Dequeue());
                                 }

@@ -1006,8 +1006,15 @@ impl Client {
         }
     }
 
+    /// A loss is told once, and what a room sent is not the game's once it is out of the room.
     fn reports(&mut self, event: &Event) -> bool {
-        !matches!(event, Event::Closed(_)) || !std::mem::replace(&mut self.lost, true)
+        match event {
+            Event::Closed(_) => !std::mem::replace(&mut self.lost, true),
+            Event::Data { .. } | Event::DataReady => {
+                self.joined.is_some() || self.entering.is_some()
+            }
+            _ => true,
+        }
     }
 
     /// Smoothed round trip of the control channel in milliseconds; 0 until the first sample.

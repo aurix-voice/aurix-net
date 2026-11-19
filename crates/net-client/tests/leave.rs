@@ -61,6 +61,14 @@ fn left(id: Option<u32>) -> Message {
     })
 }
 
+fn kicked(room: &str) -> Message {
+    text(&ServerMsg::Left {
+        reason: "kicked".into(),
+        room: Some(room.into()),
+        id: None,
+    })
+}
+
 fn join(name: &str) -> ClientMsg {
     ClientMsg::Join {
         name: name.into(),
@@ -72,12 +80,17 @@ fn join(name: &str) -> ClientMsg {
     }
 }
 
-/// The first frame of a data path, which tells the client the path is ready.
-fn first_frames() -> Vec<Bytes> {
+/// The first frame of a data path, which tells the client the path is ready, and `said`
+/// messages of the room after it.
+fn first_frames(said: usize) -> Vec<Bytes> {
     let now = Instant::now();
     let mut link = Link::new(now, Duration::from_secs(15));
     link.send(Channel::ReliableOrdered, Bytes::new(), now)
         .unwrap();
+    for _ in 0..said {
+        link.send(Channel::ReliableOrdered, Bytes::from_static(b"word"), now)
+            .unwrap();
+    }
     std::iter::from_fn(|| link.next_outgoing()).collect()
 }
 
@@ -105,7 +118,7 @@ async fn busy_node() -> String {
                 if connection.read_datagram().await.is_err() {
                     return;
                 }
-                for frame in first_frames() {
+                for frame in first_frames(0) {
                     let _ = connection.send_datagram(frame);
                 }
                 while connection.send_datagram(Bytes::from_static(&[0])).is_ok() {
@@ -159,6 +172,11 @@ struct Node {
     late: Option<Duration>,
     /// Loses its answer to the first leave.
     loses_left: bool,
+    /// Messages the room sends as soon as the client is in.
+    says: usize,
+    /// Takes the client out of its room when asked for `stats`, and sends this many messages
+    /// of the room after the `left`.
+    says_after_kick: usize,
 }
 
 impl Node {
@@ -194,12 +212,19 @@ impl Node {
                                 continue
                             }
                             ClientMsg::Leave { id } => left(id.filter(|_| self.join_ids)),
+                            ClientMsg::Stats { .. } => {
+                                ws.send(kicked("room")).await.unwrap();
+                                for frame in first_frames(self.says_after_kick) {
+                                    ws.send(Message::Binary(frame)).await.unwrap();
+                                }
+                                continue;
+                            }
                             _ => continue,
                         };
                         ws.send(answer).await.unwrap();
                     }
                     Message::Binary(_) => {
-                        for frame in first_frames() {
+                        for frame in first_frames(self.says) {
                             ws.send(Message::Binary(frame)).await.unwrap();
                         }
                     }
@@ -265,4 +290,48 @@ async fn an_answer_to_a_leave_the_node_lost_fails_no_join_after_it() {
         assert_eq!(client.join(join(name)).await.unwrap().name, name);
         client.leave().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn what_the_room_sent_is_not_handed_out_after_the_leave() {
+    let mut client = client_of(Node {
+        says: 3,
+        ..Node::default()
+    })
+    .await;
+    client.join(join("first")).await.unwrap();
+    tokio::time::sleep(WAIT).await;
+    let heard = std::iter::from_fn(|| client.try_next_event())
+        .filter(|event| matches!(event, Event::Data { .. }))
+        .count();
+    assert_eq!(heard, 3);
+    client.leave().await.unwrap();
+    client.join(join("second")).await.unwrap();
+    tokio::time::sleep(WAIT).await;
+    client.leave().await.unwrap();
+    let after: Vec<Event> = std::iter::from_fn(|| client.try_next_event()).collect();
+    assert!(
+        after.iter().all(|event| matches!(event, Event::Control(_))),
+        "{after:?}"
+    );
+}
+
+#[tokio::test]
+async fn what_the_room_sent_after_it_took_the_client_out_is_not_handed_out() {
+    let mut client = client_of(Node {
+        says_after_kick: 3,
+        ..Node::default()
+    })
+    .await;
+    client.join(join("room")).await.unwrap();
+    client.stats(1).await.unwrap();
+    tokio::time::sleep(WAIT).await;
+    let after: Vec<Event> = std::iter::from_fn(|| client.try_next_event()).collect();
+    assert!(
+        matches!(
+            after.as_slice(),
+            [Event::Control(ServerMsg::Left { reason, .. })] if reason == "kicked"
+        ),
+        "{after:?}"
+    );
 }

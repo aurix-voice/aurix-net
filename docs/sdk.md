@@ -49,6 +49,10 @@ Unreal the call returns then, so on a link that has stopped answering it takes u
 Closing the client does not wait and hands nothing back: a game that wants its last reliable
 messages to arrive leaves first.
 
+Once the client is out of a room, by its own leave or because the node took it out, the game
+gets nothing more that the room sent, whatever had already come and was waiting to be handed
+out. The last it hears of the room is the `left`.
+
 | SDK | Events the node did not acknowledge |
 |---|---|
 | Web | `client.on("undelivered", (events) => ...)`: `code`, `payload`, `target`, `group`, `cache` of each |

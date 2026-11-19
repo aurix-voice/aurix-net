@@ -363,6 +363,27 @@ test("a late joiner gets the cached events and the chat history", { skip: !key }
   }
 });
 
+test("a handler that leaves the room gets nothing more of it", { skip: !key }, async (t) => {
+  const a = await Client.connect(http, await grant("web-gone-a"));
+  const b = await Client.connect(http, await grant("web-gone-b"));
+  t.after(() => { a.close(); b.close(); });
+  const room = `web-gone-${process.pid}`;
+  await a.joinOrCreate(room, "relay", 4);
+  await b.joinOrCreate(room, "relay", 4);
+  let before = 0, after = 0;
+  b.on("event", (frame) => {
+    if (frame.code !== 7) return;
+    if (b.actor < 0) { after++; return; }
+    before++;
+    b.leave();
+  });
+  // one datagram: the rest of it comes to the client with the event that makes the game leave
+  for (let i = 0; i < 10; i++) a.sendEvent(7, Uint8Array.of(i), "others", false);
+  a.flush();
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.deepEqual([before, after], [1, 0]);
+});
+
 test("a call made after the control channel closed fails at once, not at its timeout", { skip: !key }, async (t) => {
   const a = await Client.connect(http, await grant("web-ended-a"));
   t.after(() => a.close());

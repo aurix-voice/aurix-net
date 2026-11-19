@@ -425,6 +425,23 @@ class P
         until = DateTime.UtcNow.AddMilliseconds(2000); while (read == null && DateTime.UtcNow < until) { ra.Poll(); rc.Poll(); await Task.Delay(5); }
         if (read != longest) throw new Exception("chat: the longest text came as " + (read?.Length.ToString() ?? "nothing"));
         ra.Dispose(); rb.Dispose(); rc.Dispose();
+        // a handler that leaves the room gets nothing more of it: not the rest of the datagram either
+        var ga = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-ga"));
+        var gb = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-gb"));
+        await ga.JoinOrCreateAsync(room + "-leaves", "relay", 4); await gb.JoinOrCreateAsync(room + "-leaves", "relay", 4);
+        int goneBefore = 0, goneAfter = 0; Task going = null;
+        gb.OnEvent += f =>
+        {
+            if (f.Code != 7) return;
+            if (gb.Actor < 0) { goneAfter++; return; }
+            goneBefore++; going = gb.LeaveAsync();
+        };
+        for (byte i = 0; i < 10; i++) ga.SendEvent(7, new[] { i }, Target.Others, reliable: false);
+        ga.Flush();
+        until = DateTime.UtcNow.AddMilliseconds(500); while (DateTime.UtcNow < until) { ga.Poll(); gb.Poll(); await Task.Delay(5); }
+        if (going != null) await going;
+        if (goneBefore != 1 || goneAfter != 0) throw new Exception("a handler that left the room got " + goneBefore + " events before the leave and " + goneAfter + " after it");
+        ga.Dispose(); gb.Dispose();
         // a handler that throws loses neither the rest of the history nor the events that came in the same datagram
         var ta = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-ta"));
         var tb = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-tb"));

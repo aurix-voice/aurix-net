@@ -628,20 +628,29 @@ export class Client {
       payload: Uint8Array.from(atob(data), (char) => char.charCodeAt(0)),
       cached: true,
     }));
+    const path = this.path;
     for (const frame of this.cached) {
+      if (this.path !== path) {
+        break;
+      }
       this.emit("event", frame);
     }
     return joined;
   }
 
   private onDatagram(bytes: Uint8Array) {
-    if (!this.path) {
+    const path = this.path;
+    if (!path) {
       return;
     }
     const recv: Received[] = this.link.receive(bytes);
     this.flushLink();
     this.acknowledged?.();
     for (const received of recv) {
+      // what the room sent is not the game's once it is out of the room
+      if (this.path !== path) {
+        return;
+      }
       if (received.payload.length === 0) {
         const ready = this.onReady;
         this.onReady = undefined;

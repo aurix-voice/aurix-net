@@ -175,5 +175,23 @@ int main() {
         std::printf("cpp join ended by a kick%s: code=%d (%s) after %ld ms, told of [%s] -> %s\n", tunnel ? ", tunnel" : "", code, why.c_str(), ms, lefts.c_str(), ok ? "ok" : "FAIL");
         turnedOut = turnedOut && ok;
     }
-    a.leave(); return (hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && threw && inRange && whole && refused && matched && shaped && rejoined && turnedOut && handedBack) ? 0 : 1;
+    // a callback that leaves the room is handed nothing more of it, however much had come
+    bool gone = true;
+    for (bool tunnel : {false, true}) {
+        Client stays, goes; int last = 0, more = 0;
+        stays.connect(http, Client::issueGrant(http, key, "cpp-stays", "Stays"), tunnel); goes.connect(http, Client::issueGrant(http, key, "cpp-goes", "Goes"), tunnel);
+        std::string name = room + (tunnel ? "-gone-tunnel" : "-gone");
+        stays.joinOrCreate(name, Mode::Relay, 4); goes.joinOrCreate(name, Mode::Relay, 4);
+        goes.onData = [&](Channel, uint16_t, const uint8_t* d, size_t n) {
+            EventFrame f; if (!EventFrame::decode(d, n, f) || f.code != 7) return;
+            if (goes.actor() < 0) { more++; return; }
+            last++; goes.leave();
+        };
+        for (uint8_t i = 0; i < 10; i++) stays.sendEvent(7, &i, 1, Target::Others, false);
+        stays.flush();
+        for (int s = 0; s < 60; s++) { stays.poll(); if (s > 30) goes.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+        std::printf("cpp callback that leaves the room%s: events before the leave=%d/1, after it=%d/0\n", tunnel ? ", tunnel" : "", last, more);
+        gone = gone && last == 1 && more == 0;
+    }
+    a.leave(); return (gone && hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && threw && inRange && whole && refused && matched && shaped && rejoined && turnedOut && handedBack) ? 0 : 1;
 }

@@ -194,6 +194,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- A game that left its room from a handler went on getting events of that room. Web and C#
+  handed out the rest of the datagram the event had come in, so how many depended on how the
+  sender's events were packed; the C library, and with it C++, Godot, the native Unity client
+  and Unreal, handed out all that was waiting until the next join. Once the client is out of
+  a room the game now gets nothing more of it, in every client.
 - Web: a call made after the control channel closed waited its whole timeout, 10 s, and failed
   with `timeout`. It now fails at once with `control channel closed`, as the calls that were
   waiting when the channel closed already did.
