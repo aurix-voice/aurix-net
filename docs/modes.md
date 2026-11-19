@@ -243,7 +243,10 @@ the inputs it received for that tick and sends the bundle (plus the two previous
 every actor. Clients simulate with `net-rollback`: predict missing inputs with the actor's
 last one, rewind and resimulate when a late input differs, hash the state every N ticks and
 report it (`Hash` frame). The server compares hashes per tick; a minority is reported to
-everyone as `desync`. The server keeps the canonical input journal, which is also the replay
+everyone as `desync`. When the players are split evenly (two players that disagree), nobody
+is in a minority: the hash of the master stands in, the players who differ from it are
+reported with their `strikes` unchanged and restored from the master, and the tick has no
+hash in the replay. The server keeps the canonical input journal, which is also the replay
 format (`net-rollback::Replay`): seed + schema hash + inputs per tick reproduces the game.
 `schema_hash` there is of the schema the node steps in a room with a `logic` module (below);
 the node knows no schema of a room without one, and the field is empty.
@@ -294,7 +297,8 @@ u32 length, state), followed by every journal bundle from that tick. The client 
 that tick whatever it has simulated since, which is why the frame is not `Catchup`: a client
 drops a `Catchup` behind the ticks it already has. `Restore` comes with each of the first three
 strikes; the third reports the client `untrusted`, and from the fourth it is no longer restored,
-so a client lying about its hash cannot make the node re-send the state every few ticks.
+so a client lying about its hash cannot make the node re-send the state every few ticks. A
+desync that is no strike, the even split above, is restored every time.
 
 `crates/net-sim-guest` is the reference module for this: `physics-arena`, avatars as fixed-point
 circles in a walled `net-sim-physics` world (input = i8 move_x, i8 move_z), built with

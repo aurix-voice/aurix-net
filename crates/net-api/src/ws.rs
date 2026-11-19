@@ -1826,18 +1826,28 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                 let desyncs: Vec<(u32, ActorId, u8, Option<Bytes>)> = ls
                     .take_desyncs()
                     .into_iter()
-                    .map(|(tick, actor)| {
-                        let strikes = ls.strike(actor);
-                        // Restore (checkpoint + journal tail) only until the actor is untrusted:
-                        // a client that keeps lying about its hash must not make the node
-                        // re-send the whole state every few ticks.
-                        let resync = if strikes <= crate::lockstep::UNTRUSTED_AFTER {
-                            ls.on_desync(actor)
-                        } else {
-                            None
-                        };
-                        (tick, actor, strikes, resync)
-                    })
+                    .map(
+                        |crate::lockstep::Desync {
+                             tick,
+                             actor,
+                             strike,
+                         }| {
+                            let strikes = if strike {
+                                ls.strike(actor)
+                            } else {
+                                ls.strikes(actor)
+                            };
+                            // Restore (checkpoint + journal tail) only until the actor is untrusted:
+                            // a client that keeps lying about its hash must not make the node
+                            // re-send the whole state every few ticks.
+                            let resync = if strikes <= crate::lockstep::UNTRUSTED_AFTER {
+                                ls.on_desync(actor)
+                            } else {
+                                None
+                            };
+                            (tick, actor, strikes, resync)
+                        },
+                    )
                     .collect();
                 let actors: Vec<ActorId> = ls.actors.keys().copied().collect();
                 let bundles: Vec<(ActorId, Option<Bytes>, Option<Vec<Bytes>>)> = actors

@@ -287,6 +287,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   held no hash from before the move. A node keeps the whole journal of a room and its hashes
   in Redis, not the last ten seconds, and the node that takes the room over has them. The
   checkpoint of a room is deleted with the room; it used to stay ten minutes after the close.
+- Lockstep: two players that reported different hashes for a tick were both a minority of
+  one, and the node named one of them at random: the master as often as the other, with a
+  strike each time, so a master could end up `untrusted` and be sent its own state to restore
+  from. The hash of the master stands in when the players are split evenly: the others are
+  reported and restored, and nobody gets a strike.
 - Lockstep room without a game checkpoint: the checkpoint the node writes to Redis every 5 s
   carried the whole journal of the room, 2.4 MB after four minutes of a two-player match at
   128 Hz, and the room missed a tick at every write from 1.5 MB on. The journal is in its

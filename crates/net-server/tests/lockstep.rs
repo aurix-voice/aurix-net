@@ -259,6 +259,70 @@ async fn desynced_client_is_sent_a_restore_frame_and_stays_trusted() {
     );
 }
 
+#[tokio::test]
+async fn two_players_that_disagree_are_settled_by_the_master_without_a_strike() {
+    let node = Node::start().await;
+    let project = node.project("split").await;
+    let message =
+        |msg: Value| -> ClientMsg { serde_json::from_value(msg).expect("client message") };
+    let create = json!({"t": "create", "name": "arena", "mode": "lockstep",
+        "props": {"tick_hz": 60}});
+    let join = json!({"t": "join", "name": "arena"});
+    let mut clients = Vec::new();
+    let mut actors = Vec::new();
+    for (player, msg) in [("ann", create), ("bob", join)] {
+        let opts = Options {
+            tunnel: true,
+            ..Default::default()
+        };
+        let mut client = Client::connect(&node.http, &project.grant(player).await, opts)
+            .await
+            .expect("connects");
+        let joined = client.join(message(msg)).await.expect("joins");
+        assert_eq!(joined.master, *actors.first().unwrap_or(&joined.actor));
+        actors.push(joined.actor);
+        clients.push(client);
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    for client in &mut clients {
+        drain(client);
+    }
+
+    let ticks = [30, 40, 50, 60, 70];
+    for tick in ticks {
+        for (client, hash) in clients.iter().zip([7, 8]) {
+            client
+                .send_data(Channel::UnreliableSequenced, hash_frame(tick, hash))
+                .expect("hash");
+            client.flush();
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    // Both hear of every tick, and it is bob, who is not the master, each time.
+    let bob = actors[1];
+    let mut restores = Vec::new();
+    for client in &mut clients {
+        let (control, reliable) = drain(client);
+        let desyncs: Vec<_> = control
+            .iter()
+            .filter_map(|message| match message {
+                ServerMsg::Desync {
+                    tick,
+                    actor,
+                    strikes,
+                    untrusted,
+                } => Some((*tick, *actor, *strikes, *untrusted)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(desyncs, ticks.map(|tick| (tick, bob, 0, false)));
+        restores.push(reliable.iter().filter(|frame| frame[0] == 0x2A).count());
+    }
+    assert_eq!(restores, [0, ticks.len()]);
+}
+
 const IDLE_MODULE: &str = "(module (memory (export \"memory\") 1) \
     (func (export \"aurix_init\") (param i64)) (func (export \"aurix_step\")))";
 

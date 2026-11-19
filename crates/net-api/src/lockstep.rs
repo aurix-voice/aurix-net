@@ -45,6 +45,15 @@ use net_wire::Schema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
+/// An actor whose hash for a tick is not the one the room goes by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Desync {
+    pub tick: u32,
+    pub actor: ActorId,
+    /// False when the actors were split evenly and the master's hash stood in.
+    pub strike: bool,
+}
+
 /// Ticks for the journal a node keeps in Redis, from tick `first` on, and hashes for the list
 /// beside it.
 pub struct JournalBatch {
@@ -204,7 +213,7 @@ pub struct LockstepRoom {
     fresh_hashes: Vec<(u32, u64)>,
     /// Of the schema the referee steps; empty in a room without one.
     schema_hash: String,
-    pub desyncs: Vec<(u32, ActorId)>,
+    pub desyncs: Vec<Desync>,
     /// Per actor since the last report: (min input margin in ticks, late inputs).
     margins: HashMap<ActorId, (i32, u16)>,
     pending_dumps: std::collections::HashSet<(u32, ActorId)>,
@@ -442,6 +451,10 @@ impl LockstepRoom {
         let strikes = self.strikes.entry(actor).or_default();
         *strikes = strikes.saturating_add(1);
         *strikes
+    }
+
+    pub fn strikes(&self, actor: ActorId) -> u8 {
+        self.strikes.get(&actor).copied().unwrap_or(0)
     }
 
     pub fn is_untrusted(&self, actor: ActorId) -> bool {
@@ -1021,7 +1034,11 @@ impl LockstepRoom {
                 if self.sim.is_some() {
                     if let Some(&sh) = self.server_hashes.get(&tick) {
                         if hash != sh {
-                            self.desyncs.push((tick, actor));
+                            self.desyncs.push(Desync {
+                                tick,
+                                actor,
+                                strike: true,
+                            });
                             if let Some(dump) = self.referee_dump(tick) {
                                 if !self
                                     .dumps
@@ -1093,7 +1110,9 @@ impl LockstepRoom {
         }
     }
 
-    /// Majority hash wins; anyone else is flagged once all current actors reported.
+    /// Once all current actors reported: the hash most of them hold wins and anyone else is
+    /// flagged. When no hash is held by more actors than every other, the master's stands in
+    /// and nobody is at fault.
     fn check_hashes(&mut self, tick: u32) {
         let Some(reports) = self.hashes.get(&tick) else {
             return;
@@ -1105,15 +1124,29 @@ impl LockstepRoom {
         for hash in reports.values() {
             *counts.entry(*hash).or_default() += 1;
         }
-        let (majority, held) = counts.iter().max_by_key(|(_, n)| **n).unwrap();
-        for (actor, hash) in reports {
-            if hash != majority {
-                self.desyncs.push((tick, *actor));
+        let held = counts.values().copied().max().unwrap_or(0);
+        let mut most = counts.iter().filter(|(_, n)| **n == held);
+        let reference = match (most.next(), most.next()) {
+            (Some((hash, _)), None) => Some((*hash, true)),
+            _ => self
+                .master
+                .and_then(|master| reports.get(&master))
+                .map(|hash| (*hash, false)),
+        };
+        if let Some((reference, strike)) = reference {
+            for (actor, hash) in reports {
+                if *hash != reference {
+                    self.desyncs.push(Desync {
+                        tick,
+                        actor: *actor,
+                        strike,
+                    });
+                }
             }
-        }
-        if held * 2 > reports.len() && tick >= self.journal.base() {
-            self.agreed.insert(tick, *majority);
-            self.fresh_hashes.push((tick, *majority));
+            if held * 2 > reports.len() && tick >= self.journal.base() {
+                self.agreed.insert(tick, reference);
+                self.fresh_hashes.push((tick, reference));
+            }
         }
         self.hashes.remove(&tick);
         // forget very old partial reports
@@ -1161,7 +1194,7 @@ impl LockstepRoom {
         }
     }
 
-    pub fn take_desyncs(&mut self) -> Vec<(u32, ActorId)> {
+    pub fn take_desyncs(&mut self) -> Vec<Desync> {
         std::mem::take(&mut self.desyncs)
     }
 
@@ -1703,7 +1736,40 @@ mod tests {
         room.handle(bob, LockstepRoom::encode_hash(Tick(1), 42));
         assert!(room.take_desyncs().is_empty());
         room.handle(carol, LockstepRoom::encode_hash(Tick(1), 43));
-        assert_eq!(room.take_desyncs(), vec![(1, carol)]);
+        let strike = true;
+        let desync = |tick, actor| Desync {
+            tick,
+            actor,
+            strike,
+        };
+        assert_eq!(room.take_desyncs(), [desync(1, carol)]);
+
+        // a and b against c and d: nobody is at fault, the master's hash stands in
+        let dave = ActorId(4);
+        room.on_join(dave);
+        room.master = Some(bob);
+        for (actor, hash) in [(alice, 1), (bob, 2), (carol, 1), (dave, 2)] {
+            room.handle(actor, LockstepRoom::encode_hash(Tick(2), hash));
+        }
+        let strike = false;
+        let mut split = room.take_desyncs();
+        split.sort_by_key(|desync| desync.actor.0);
+        assert_eq!(
+            split,
+            [alice, carol].map(|actor| Desync {
+                tick: 2,
+                actor,
+                strike
+            })
+        );
+        assert!(room.replay().hashes.iter().all(|(tick, _)| *tick != 2));
+
+        // without a master's hash to go by, nobody is flagged
+        room.master = None;
+        for (actor, hash) in [(alice, 1), (bob, 2), (carol, 1), (dave, 2)] {
+            room.handle(actor, LockstepRoom::encode_hash(Tick(3), hash));
+        }
+        assert!(room.take_desyncs().is_empty());
     }
 
     #[test]
@@ -1963,7 +2029,12 @@ mod tests {
         for actor in [alice, bob] {
             room.handle(actor, LockstepRoom::encode_hash(Tick(310), 12345));
         }
-        assert_eq!(room.take_desyncs(), vec![(310, alice), (310, bob)]);
+        let desyncs = [alice, bob].map(|actor| Desync {
+            tick: 310,
+            actor,
+            strike: true,
+        });
+        assert_eq!(room.take_desyncs(), desyncs);
         // the referee's own state is the reference dump (once per tick, actor 0)
         let dumps = room.take_dumps();
         assert_eq!(dumps.len(), 1);
