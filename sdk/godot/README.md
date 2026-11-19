@@ -3,7 +3,22 @@
 Build: `git clone -b 4.2 https://github.com/godotengine/godot-cpp` here, `cargo build --release -p net-ffi`
 in the repo root, then `scons target=template_debug` (`SConstruct` builds godot-cpp with exceptions on:
 `aurix_net.hpp` reports errors by throwing, the wrappers catch them). Copy `bin/` + `aurix_net.gdextension` to
-`addons/aurix_net/` together with `libaurix_net.so` / `aurix_net.dll`.
+`addons/aurix_net/` together with `libaurix_net.so`; a Windows build has `libaurix_net` linked in.
+
+For Windows from Linux, with MinGW: `rustup target add x86_64-pc-windows-gnu`,
+`cargo build --release -p net-ffi --target x86_64-pc-windows-gnu`, then
+`AURIX_NET_LIB=../../target/x86_64-pc-windows-gnu/release scons platform=windows target=template_debug`.
+The result is `bin/libaurixnet_godot.windows.template_debug.x86_64.dll`, the name
+`aurix_net.gdextension` lists. godot-cpp links a MinGW build statically, so `libaurix_net.a` goes
+into that file and there is no `aurix_net.dll` to copy next to it. godot-cpp needs a MinGW with
+POSIX threads. On Debian and Ubuntu the default one has none and the build stops
+at `std::mutex` in godot-cpp's `class_db.hpp`; pick the `posix` one for both compilers, as for
+[Godot itself](https://docs.godotengine.org/en/stable/engine_details/development/compiling/compiling_for_windows.html#cross-compiling-for-windows-from-other-operating-systems):
+
+```bash
+sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+```
 
 Smoke test without the editor: `check~/` is a minimal project (classes load, sync schema parses, two relay
 clients exchange an event, two more replicate a `Transform` through `AurixNetSync` with 0 gaps, then run a

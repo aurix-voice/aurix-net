@@ -181,6 +181,15 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Godot SDK: a Windows build of the extension was not found by Godot. `SConstruct` names the
+  library `libaurixnet_godot.windows.*.dll`, the way godot-cpp names its own test extension, and
+  `aurix_net.gdextension` listed it without the `lib`, so the file had to be renamed by hand. The
+  `.gdextension` file now lists the name the build gives; a library renamed to
+  `aurixnet_godot.windows.*.dll` gets its `lib` back. On macOS `SConstruct` now builds the
+  `.framework` the file lists. The file no longer names `aurix_net.dll` as a dependency on
+  Windows: the Windows library has `libaurix_net` linked in and loads without it. The README has
+  the Windows build from Linux and the MinGW it needs (POSIX threads), and CI builds the
+  extension for Windows.
 - SDKs: the native client (C, C++, Godot, Unreal, the native C# client, the Rust `net-client`)
   could not connect to a node behind TLS: `https://` failed with `websocket: URL error: TLS
   support not compiled in`, so it worked only with a node reached over plain HTTP. The control
