@@ -1,4 +1,4 @@
-//! A real node per test: the built `aurix-net-server` on free ports against the development
+//! A real node per test: the built `aurix-net-server` on ports the system picks against the development
 //! Postgres and Redis (`deploy/docker-compose.dev.yml`, the services of the CI job), with a
 //! project of its own so tests do not see each other's rooms. The node deletes the projects
 //! it created when the test ends.
@@ -7,6 +7,7 @@
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
@@ -21,12 +22,7 @@ pub struct Node {
     projects: Mutex<Vec<String>>,
 }
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .and_then(|l| l.local_addr())
-        .expect("free port")
-        .port()
-}
+static STARTED: AtomicUsize = AtomicUsize::new(0);
 
 impl Node {
     pub async fn start() -> Node {
@@ -35,12 +31,16 @@ impl Node {
 
     /// `env` overrides the node's configuration (`NET__SECTION__KEY`).
     pub async fn start_with(env: &[(&str, &str)]) -> Node {
-        let port = free_port();
-        let log =
-            std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("node-{port}.log"));
+        let name = format!(
+            "node-{}-{}.log",
+            std::process::id(),
+            STARTED.fetch_add(1, Ordering::Relaxed)
+        );
+        let log = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
         let out = std::fs::File::create(&log).expect("node log");
         let child = Command::new(env!("CARGO_BIN_EXE_aurix-net-server"))
-            .env("NET__SERVER__HTTP_ADDR", format!("127.0.0.1:{port}"))
+            .env("NET__SERVER__HTTP_ADDR", "127.0.0.1:0")
+            .env("NET__SERVER__LOG_FORMAT", "json")
             .env("NET__TRANSPORT__QUIC_ADDR", "127.0.0.1:0")
             .env("NET__TRANSPORT__WEBTRANSPORT_ADDR", "127.0.0.1:0")
             .env("NET__AUTH__ADMIN_TOKEN", ADMIN)
@@ -52,7 +52,7 @@ impl Node {
             .expect("start aurix-net-server");
         let mut node = Node {
             child,
-            http: format!("http://127.0.0.1:{port}"),
+            http: String::new(),
             log,
             projects: Mutex::default(),
         };
@@ -65,9 +65,12 @@ impl Node {
                     node.log_tail()
                 );
             }
-            let up = client.get(format!("{}/healthz", node.http)).send().await;
-            if up.is_ok_and(|r| r.status().is_success()) {
-                return node;
+            if let Some(address) = node.listening() {
+                node.http = format!("http://{address}");
+                let up = client.get(format!("{}/healthz", node.http)).send().await;
+                if up.is_ok_and(|r| r.status().is_success()) {
+                    return node;
+                }
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -81,6 +84,15 @@ impl Node {
         let _ = Command::new("kill").args(["-STOP", &pid]).status();
         tokio::time::sleep(time).await;
         let _ = Command::new("kill").args(["-CONT", &pid]).status();
+    }
+
+    /// The address the node says its HTTP listener got.
+    fn listening(&self) -> Option<String> {
+        let text = std::fs::read_to_string(&self.log).ok()?;
+        text.lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|line| line["message"] == "control plane listening")
+            .and_then(|line| line["addr"].as_str().map(String::from))
     }
 
     pub fn log_tail(&self) -> String {
@@ -111,7 +123,7 @@ impl Node {
         let (status, body) = api
             .post(
                 "/v1/operator/projects",
-                json!({"name": format!("{name}-{}", free_port())}),
+                json!({"name": format!("{name}-{}", uuid::Uuid::now_v7().simple())}),
             )
             .await;
         assert_eq!(status, 200, "create project: {body}");

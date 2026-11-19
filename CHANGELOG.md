@@ -78,6 +78,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   got `room_elsewhere` and had no call to follow it, unlike Rust, Web and C#.
   `aurix_net_connect_and_join`, `Client::connectAndJoin` and `connect_and_join` connect, join
   and move to the room's node in one call.
+- A node started with port 0 in `server.http_addr` registered itself in the fleet under port 0
+  and logged that address. It registers and logs the port it was given. The node tests start
+  their nodes this way now instead of picking a free port in advance, which another process
+  could take first (`Address already in use`).
 - Matchmaking: filing a ticket read the waiting tickets of every project. One filing took 19 ms
   with 1000 tickets waiting in another project (3 ms with none), and with a few thousand waiting
   the node answered `500` with `redis: timed out`. Waiting tickets are kept per project now and

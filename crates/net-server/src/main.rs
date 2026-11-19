@@ -141,19 +141,15 @@ async fn main() -> anyhow::Result<()> {
         .map(|a| a.port());
     info!(addr = %cfg.transport.quic_addr, fingerprint = %identity.fingerprint_sha256, "quic data plane listening");
 
+    let listener = tokio::net::TcpListener::bind(cfg.server.http_addr).await?;
+    let http_addr = listener.local_addr()?;
     let registry = NodeRegistry::new(pool.clone());
     let http_url = cfg
         .server
         .public_url
         .as_deref()
         .map(|u| u.trim_end_matches('/').to_string())
-        .unwrap_or_else(|| {
-            format!(
-                "http://{}:{}",
-                cfg.server.public_host,
-                cfg.server.http_addr.port()
-            )
-        });
+        .unwrap_or_else(|| format!("http://{}:{}", cfg.server.public_host, http_addr.port()));
     let st = Arc::new(AppState {
         grants: GrantSigner::with_previous(
             &cfg.auth.grant_secret,
@@ -279,8 +275,7 @@ async fn main() -> anyhow::Result<()> {
             &cfg.server.allowed_origins,
             &cfg.server.environment,
         ));
-    let listener = tokio::net::TcpListener::bind(cfg.server.http_addr).await?;
-    info!(addr = %cfg.server.http_addr, node = %node_id, "control plane listening");
+    info!(addr = %http_addr, node = %node_id, "control plane listening");
     let shutdown = {
         let st = st.clone();
         let http_url = http_url.clone();
