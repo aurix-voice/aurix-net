@@ -7,7 +7,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -23,9 +22,9 @@ namespace Aurix.Net.Managed
         Remove = 2,
     }
 
-    public sealed class ManagedClient : IDisposable
+    public sealed class ManagedClient : IDisposable, ISocketOwner
     {
-        ClientWebSocket _ws;
+        ISocket _socket;
         Link _link = new Link();
 
         // The link is worked from three places: the reader, the timer and the game's calls.
@@ -45,10 +44,7 @@ namespace Aurix.Net.Managed
 
         /// <summary>How many events wait for the game's Poll before the client stops reading.</summary>
         public const int EventBacklog = 4096;
-        readonly SemaphoreSlim _slots = new SemaphoreSlim(EventBacklog, EventBacklog);
         internal int Waiting => _inbox.Count;
-        readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
-        CancellationTokenSource _cts;
         bool _dataReady;
 
         public int Actor { get; private set; } = -1;
@@ -134,8 +130,11 @@ namespace Aurix.Net.Managed
         {
             var client = new ManagedClient
             {
-                _ws = new ClientWebSocket(),
-                _cts = new CancellationTokenSource(),
+#if UNITY_WEBGL && !UNITY_EDITOR
+                _socket = new BrowserSocket(EventBacklog),
+#else
+                _socket = new SystemSocket(EventBacklog),
+#endif
                 EntryUrl = httpUrl,
                 Grant = grant,
             };
@@ -145,13 +144,7 @@ namespace Aurix.Net.Managed
                 + "/ws";
             try
             {
-                using (var timeout = new CancellationTokenSource(timeoutMs))
-                {
-                    await client._ws.ConnectAsync(new Uri(url), timeout.Token);
-                }
-
-                _ = client.ReadLoop();
-                _ = client.TimerLoop();
+                await client._socket.OpenAsync(url, timeoutMs, client);
                 await client.SendControlAsync(
                     "{\"t\":\"auth\",\"grant\":"
                         + Json.Str(grant)
@@ -378,7 +371,7 @@ namespace Aurix.Net.Managed
                     throw new NetException("data path timeout");
                 }
 
-                await Task.Delay(5);
+                await _socket.Delay(5);
                 Poll();
                 ThrowIfControlClosed();
             }
@@ -386,26 +379,9 @@ namespace Aurix.Net.Managed
         }
 
         public Task SendControlAsync(string json) =>
-            SendAsync(Encoding.UTF8.GetBytes(json), WebSocketMessageType.Text);
+            _socket.SendAsync(Encoding.UTF8.GetBytes(json), true);
 
-        Task SendBinaryAsync(byte[] bytes) => SendAsync(bytes, WebSocketMessageType.Binary);
-
-        async Task SendAsync(byte[] bytes, WebSocketMessageType kind)
-        {
-            await _sendLock.WaitAsync().ConfigureAwait(false);
-            try
-            {
-                if (_ws.State == WebSocketState.Open)
-                {
-                    await _ws.SendAsync(new ArraySegment<byte>(bytes), kind, true, _cts.Token)
-                        .ConfigureAwait(false);
-                }
-            }
-            finally
-            {
-                _sendLock.Release();
-            }
-        }
+        Task SendBinaryAsync(byte[] bytes) => _socket.SendAsync(bytes, false);
 
         public void SendData(Channel channel, byte[] payload)
         {
@@ -520,35 +496,27 @@ namespace Aurix.Net.Managed
         }
 
         /// <summary>Keeps the link going whether or not the game polls: the probe of the control channel, the resends and the batch.</summary>
-        async Task TimerLoop()
+        void ISocketOwner.Tick()
         {
-            try
+            long now = _clock.ElapsedMilliseconds;
+            if (now - Interlocked.Read(ref _lastPingMs) >= 1000)
             {
-                while (_ws.State == WebSocketState.Open)
+                Interlocked.Exchange(ref _lastPingMs, now);
+                _probes[now] = 0;
+                if (_probes.Count > ProbesKept)
                 {
-                    await Task.Delay(10, _cts.Token).ConfigureAwait(false);
-                    long now = _clock.ElapsedMilliseconds;
-                    if (now - Interlocked.Read(ref _lastPingMs) >= 1000)
-                    {
-                        Interlocked.Exchange(ref _lastPingMs, now);
-                        _probes[now] = 0;
-                        if (_probes.Count > ProbesKept)
-                        {
-                            _probes.TryRemove(_probes.Keys.Min(), out _);
-                        }
-                        _ = SendControlAsync("{\"t\":\"ping\",\"ts\":" + now + "}");
-                    }
-                    lock (_linkLock)
-                    {
-                        if (_dataOpen && !_link.Poll())
-                        {
-                            TellDead();
-                        }
-                        FlushLink();
-                    }
+                    _probes.TryRemove(_probes.Keys.Min(), out _);
                 }
+                _ = SendControlAsync("{\"t\":\"ping\",\"ts\":" + now + "}");
             }
-            catch (OperationCanceledException) { }
+            lock (_linkLock)
+            {
+                if (_dataOpen && !_link.Poll())
+                {
+                    TellDead();
+                }
+                FlushLink();
+            }
         }
 
         /// <summary>Dispatches pending messages on the calling thread. Call every frame.</summary>
@@ -561,7 +529,7 @@ namespace Aurix.Net.Managed
                 switch (message)
                 {
                     case Text text:
-                        _slots.Release();
+                        _socket.Release(1);
                         // The answer to the client's own probe is not the game's business.
                         if (
                             Json.Str(text.Json, "t") == "pong"
@@ -618,7 +586,7 @@ namespace Aurix.Net.Managed
 
                         break;
                     case Got got:
-                        _slots.Release(got.Items.Count);
+                        _socket.Release(got.Items.Count);
                         if (got.Epoch != _epoch)
                         {
                             break;
@@ -805,78 +773,42 @@ namespace Aurix.Net.Managed
                     + "]}"
             );
 
-        async Task ReadLoop()
+        async Task ISocketOwner.Message(byte[] data, bool text)
         {
-            var buf = new byte[64 * 1024];
-            var acc = new List<byte>();
-            try
+            if (text)
             {
-                while (_ws.State == WebSocketState.Open)
-                {
-                    var result = await _ws.ReceiveAsync(new ArraySegment<byte>(buf), _cts.Token)
-                        .ConfigureAwait(false);
-                    if (result.MessageType == WebSocketMessageType.Close)
+                await _socket.Admit(1).ConfigureAwait(false);
+                _inbox.Enqueue(
+                    new Text
                     {
-                        break;
+                        Json = Encoding.UTF8.GetString(data),
+                        At = _clock.ElapsedMilliseconds,
                     }
-
-                    for (int i = 0; i < result.Count; i++)
-                    {
-                        acc.Add(buf[i]);
-                    }
-
-                    if (!result.EndOfMessage)
-                    {
-                        continue;
-                    }
-
-                    var msg = acc.ToArray();
-                    acc.Clear();
-                    if (result.MessageType == WebSocketMessageType.Text)
-                    {
-                        await _slots.WaitAsync(_cts.Token).ConfigureAwait(false);
-                        _inbox.Enqueue(
-                            new Text
-                            {
-                                Json = Encoding.UTF8.GetString(msg),
-                                At = _clock.ElapsedMilliseconds,
-                            }
-                        );
-                        continue;
-                    }
-
-                    Got got = null;
-                    lock (_linkLock)
-                    {
-                        if (_dataOpen)
-                        {
-                            var items = _link.Receive(msg);
-                            if (items.Count > 0)
-                            {
-                                got = new Got { Epoch = _epoch, Items = items };
-                            }
-                            FlushLink();
-                        }
-                    }
-                    if (got != null)
-                    {
-                        for (int i = 0; i < got.Items.Count; i++)
-                        {
-                            await _slots.WaitAsync(_cts.Token).ConfigureAwait(false);
-                        }
-                        _inbox.Enqueue(got);
-                    }
-                }
-                _inbox.Enqueue(new Closed { Reason = "control channel closed" });
+                );
+                return;
             }
-            catch (Exception error)
+
+            Got got = null;
+            lock (_linkLock)
             {
-                if (!_cts.IsCancellationRequested)
+                if (_dataOpen)
                 {
-                    _inbox.Enqueue(new Closed { Reason = error.Message });
+                    var items = _link.Receive(data);
+                    if (items.Count > 0)
+                    {
+                        got = new Got { Epoch = _epoch, Items = items };
+                    }
+                    FlushLink();
                 }
+            }
+            if (got != null)
+            {
+                await _socket.Admit(got.Items.Count).ConfigureAwait(false);
+                _inbox.Enqueue(got);
             }
         }
+
+        void ISocketOwner.Closed(string reason) => _inbox.Enqueue(new Closed { Reason = reason });
 
         /// <summary>Waits for a control message of type `type`, polling the inbox (other messages are dispatched
         /// normally). With `id`, the request's own: an answer or `error` that repeats another id is not this
@@ -915,7 +847,7 @@ namespace Aurix.Net.Managed
                         ThrowIfControlClosed();
                     }
 
-                    await Task.Delay(2);
+                    await _socket.Delay(2);
                 }
             }
             finally
@@ -943,8 +875,7 @@ namespace Aurix.Net.Managed
         {
             try
             {
-                _cts?.Cancel();
-                _ws?.Dispose();
+                _socket?.Dispose();
             }
             catch { }
         }

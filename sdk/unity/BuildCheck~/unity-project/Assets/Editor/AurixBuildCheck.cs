@@ -36,13 +36,18 @@ public static class AurixBuildCheck
     // A player of the editor's own platform with the probe in its scene builds.
     public static void BuildPlayer() => Build(EditorUserBuildSettings.activeBuildTarget, "player");
 
-    // A Web player builds.
-    public static void BuildWeb() => Build(BuildTarget.WebGL, "web");
+    // A Web player builds. It is not compressed, so a server that sets no headers can show its page.
+    public static void BuildWeb()
+    {
+        PlayerSettings.WebGL.compressionFormat = WebGLCompressionFormat.Disabled;
+        Build(BuildTarget.WebGL, "web");
+    }
 
     static void Build(BuildTarget target, string check)
     {
         var scene = EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
         new GameObject("probe").AddComponent<WeaveProbe>();
+        new GameObject("web").AddComponent<WebProbe>();
         Directory.CreateDirectory("Assets/Scenes");
         EditorSceneManager.SaveScene(scene, "Assets/Scenes/Probe.unity");
         var report = BuildPipeline.BuildPlayer(

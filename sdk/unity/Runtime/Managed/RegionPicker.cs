@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
+using Aurix.Net.Managed;
 using Newtonsoft.Json.Linq;
 
 namespace Aurix.Net
@@ -34,10 +34,14 @@ namespace Aurix.Net
             int timeoutMs = 3000
         )
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
             var baseUrl = catalogHttp.TrimEnd('/');
-            var json = await http.GetStringAsync(baseUrl + "/v1/regions").ConfigureAwait(false);
-            var regions = JArray.Parse(json);
+            var list = await Http.SendAsync("GET", baseUrl + "/v1/regions", timeoutMs);
+            if (!list.Ok)
+            {
+                throw new HttpRequestException("region list: " + list.Body);
+            }
+
+            var regions = JArray.Parse(list.Body);
             probes = Math.Max(1, Math.Min(10, probes));
             var tasks = new List<Task<RegionCandidate>>();
             foreach (var region in regions)
@@ -48,37 +52,10 @@ namespace Aurix.Net
                     var ep in region["endpoints"]?.Values<string>() ?? Enumerable.Empty<string>()
                 )
                 {
-                    var endpoint = ep.TrimEnd('/');
-                    tasks.Add(
-                        Task.Run(async () =>
-                        {
-                            int best = -1;
-                            for (int i = 0; i < probes; i++)
-                            {
-                                var sw = Stopwatch.StartNew();
-                                try
-                                {
-                                    using var _ = await http.GetAsync(endpoint + "/healthz")
-                                        .ConfigureAwait(false);
-                                    var ms = (int)sw.ElapsedMilliseconds;
-                                    best = best < 0 ? ms : Math.Min(best, ms);
-                                }
-                                catch
-                                { /* unreachable */
-                                }
-                            }
-                            return new RegionCandidate
-                            {
-                                Region = id,
-                                DisplayName = name,
-                                Endpoint = endpoint,
-                                RttMs = best,
-                            };
-                        })
-                    );
+                    tasks.Add(Probe(id, name, ep.TrimEnd('/'), probes, timeoutMs));
                 }
             }
-            var candidates = (await Task.WhenAll(tasks).ConfigureAwait(false)).ToList();
+            var candidates = (await Task.WhenAll(tasks)).ToList();
             var ok = candidates
                 .Where(candidate => candidate.RttMs >= 0)
                 .OrderBy(candidate => candidate.RttMs)
@@ -94,6 +71,35 @@ namespace Aurix.Net
                 Endpoint = ok[0].Endpoint,
                 RttMs = ok[0].RttMs,
                 Candidates = candidates,
+            };
+        }
+
+        static async Task<RegionCandidate> Probe(
+            string id,
+            string name,
+            string endpoint,
+            int probes,
+            int timeoutMs
+        )
+        {
+            int best = -1;
+            for (int i = 0; i < probes; i++)
+            {
+                try
+                {
+                    int ms = (await Http.SendAsync("GET", endpoint + "/healthz", timeoutMs)).Ms;
+                    best = best < 0 ? ms : Math.Min(best, ms);
+                }
+                catch
+                { /* unreachable */
+                }
+            }
+            return new RegionCandidate
+            {
+                Region = id,
+                DisplayName = name,
+                Endpoint = endpoint,
+                RttMs = best,
             };
         }
     }

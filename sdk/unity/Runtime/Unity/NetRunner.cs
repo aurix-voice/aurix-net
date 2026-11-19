@@ -775,6 +775,8 @@ namespace Aurix.Net.Unity
     /// <summary>Dev-time grant issuance from the client. Production: your backend calls POST /v1/grants.</summary>
     public static class DevGrant
     {
+        const int GrantTimeoutMs = 100000;
+
         public static async Task<string> IssueAsync(
             string http,
             string apiKey,
@@ -782,30 +784,19 @@ namespace Aurix.Net.Unity
             string name
         )
         {
-            using (var httpClient = new System.Net.Http.HttpClient())
+            var reply = await Http.SendAsync(
+                "POST",
+                http.TrimEnd('/') + "/v1/grants",
+                GrantTimeoutMs,
+                apiKey,
+                "{\"player_id\":" + Q(playerId) + ",\"name\":" + Q(name) + "}"
+            );
+            if (!reply.Ok)
             {
-                var req = new System.Net.Http.HttpRequestMessage(
-                    System.Net.Http.HttpMethod.Post,
-                    http.TrimEnd('/') + "/v1/grants"
-                );
-                req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
-                    "Bearer",
-                    apiKey
-                );
-                req.Content = new System.Net.Http.StringContent(
-                    "{\"player_id\":" + Q(playerId) + ",\"name\":" + Q(name) + "}",
-                    Encoding.UTF8,
-                    "application/json"
-                );
-                var response = await httpClient.SendAsync(req);
-                var body = await response.Content.ReadAsStringAsync();
-                if (!response.IsSuccessStatusCode)
-                {
-                    throw new NetException("grant: " + body);
-                }
-
-                return ManagedClientTestHooks.Str(body, "grant");
+                throw new NetException("grant: " + reply.Body);
             }
+
+            return ManagedClientTestHooks.Str(reply.Body, "grant");
         }
 
         static string Q(string text) =>

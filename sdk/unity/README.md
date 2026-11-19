@@ -1,8 +1,9 @@
 # Aurix Net for Unity
 
-Unity 2022.3 or newer. Pure C#, no native library, every Unity platform except Web. A Web build
-cannot run the client yet: it talks through `System.Net.WebSockets` and `System.Net.Http` and
-runs its reader and timer on threads, and Unity has none of the three in a browser. Install as a
+Unity 2022.3 or newer. Pure C#, no native library, every Unity platform. In a Web build the
+client talks through the browser's WebSocket and timers (`Runtime/Plugins/WebGL/AurixNet.jslib`)
+and makes its HTTP requests with `UnityWebRequest`: Unity has no `System.Net` sockets, no
+`HttpClient` and no threads in a browser. Install as a
 UPM package (`Packages/manifest.json` → `"com.aurix.net": "file:../../sdk/unity"` or a git URL).
 JSON is read with Newtonsoft.Json; the package pulls in Unity's `com.unity.nuget.newtonsoft-json`.
 
@@ -97,6 +98,26 @@ void Update() { c.Poll(); }  void LateUpdate() { c.Flush(); }
 `Poll` raises the events on the thread that calls it. The link itself does not wait for it: the
 client reads, acknowledges and resends off the game thread, so a frame that takes seconds does
 not cost the room.
+
+A Web build has one thread. There the client acknowledges a packet as the socket brings it, and
+the browser's timer resends, also while the page draws no frame. A browser cannot stop reading a
+socket, so one whose 4096 events wait for `Poll` closes with `event backlog full`. A connection
+that fails or times out throws `NetException`, and `RegionPicker` measures a region to within a
+frame.
+
+A browser does not draw a hidden tab, and the game all but stops there. Unity's manual says that
+with Run In Background on (Player settings of the Web platform, or
+[`Application.runInBackground`](https://docs.unity3d.com/ScriptReference/Application-runInBackground.html))
+a hidden tab still updates
+[about once a second](https://docs.unity3d.com/Manual/webgl-performance.html). Chrome did not
+give that to the builds of the check: with the setting on, the builds of Unity 2022.3 and 6000.3
+updated some 40 times in five minutes hidden, and the connection stayed open in a quiet room
+with the setting and without it. So a game cannot count on `Poll` in a hidden tab. The node goes
+on sending meanwhile, so in a busy room the client of a hidden tab closes with
+`event backlog full`, and the game has to connect again when the tab is shown. A browser slows
+the timers of a hidden tab as well, so pings and resends come later there; a timer that comes
+late resends before it gives the link up. A mobile browser may pause the page when the screen
+locks.
 
 ## Gameplay framework (host-authoritative)
 
@@ -245,7 +266,36 @@ and a `WARN` line for every warning of a build; the editor logs are in `Logs/`.
 
 Unity 2022.3 gives every such build one warning, `GfxDevice renderer is null. Unity cannot
 update the Ambient Probe and Reflection Probes that the SkyManager generates.` It comes from the
-run without graphics (`-nographics`) and not from the package; Unity 6000.3 gives none.
+run without graphics (`-nographics`) and not from the package. The Web build gives it too, as an
+`AURIX web WARN` line. Unity 6000.3 gives it to neither build.
+
+The Web build is in `Build/WebGL/probe`. What it does in a browser is shown by the probe in its
+scene, against a node and with a grant of that node:
+
+```sh
+python3 -m http.server 8000 --directory BuildCheck~/unity-project/Build/WebGL/probe
+# open http://localhost:8000/index.html?url=http://127.0.0.1:8090&grant=<grant>
+```
+
+The page and the browser's console show `AURIX web PASS` when the client connected, joined a
+room, got its own reliable event back and measured the round trip, and `AURIX web FAIL` with
+the reason otherwise. Stop the node after that: the page shows `AURIX web closed:` and the
+reason.
+
+For a hidden tab add `&watch=<seconds>` to the address: after its result the probe sends a
+reliable event that often and writes an `AURIX web alive` line with the count of its updates,
+the events that came back and the round trip. Add `&background=1` to turn Run In Background on,
+hide the tab and read the lines, with their times, in the browser's console.
+
+Two checks of the Web side need no editor. `web-check` runs the client on a page of one thread
+with the browser's socket, timers and `UnityWebRequest` played by the test; its `plugin` folder
+links the JavaScript plug-in with Emscripten, as the editor does, and runs it under Node against
+a WebSocket server. Unity 2022.3 links with Emscripten 3.1.8 and Unity 6 with 3.1.38.
+
+```sh
+dotnet test -c Release BuildCheck~/web-check/web-check.csproj
+cd BuildCheck~/web-check/plugin && npm ci && npm test       # emcc on the PATH
+```
 
 The project holds only the packages its manifest names, so a module the package uses and does
 not name fails the build. `Manifest` fails, and the check that ran is not judged, when the editor

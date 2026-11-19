@@ -1,0 +1,11 @@
+{
+  "name": "aurix-net-unity-plugin-check",
+  "private": true,
+  "scripts": {
+    "pretest": "node -e \"fs.mkdirSync('build', { recursive: true })\" && emcc driver.c --js-library ../../../Runtime/Plugins/WebGL/AurixNet.jslib -sMODULARIZE -sSINGLE_FILE -sENVIRONMENT=node -sEXPORTED_RUNTIME_METHODS=ccall -sEXPORTED_FUNCTIONS=_malloc,_free -o build/driver.js",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "ws": "^8.17.0"
+  }
+}

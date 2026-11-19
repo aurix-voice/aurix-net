@@ -133,6 +133,21 @@ jobs:
       - run: dotnet build -c Release "sdk/unity/BuildCheck~/managed-live/managed-live.csproj"
       - run: dotnet build -c Release "sdk/unity/BuildCheck~/managed-rehost/managed-rehost.csproj"
       - run: dotnet test -c Release "sdk/unity/BuildCheck~/managed-tests/managed-tests.csproj"
+      - run: dotnet test -c Release "sdk/unity/BuildCheck~/web-check/web-check.csproj"   # the Web side of the client on a page without a browser
+      - uses: actions/setup-node@v7
+        with: { node-version: 22 }
+      - name: Unity SDK Web plug-in, linked by the Emscripten of each editor
+        working-directory: sdk/unity/BuildCheck~/web-check/plugin
+        # Unity 2022.3 links a Web build with Emscripten 3.1.8 and Unity 6 with 3.1.38. The SDK is
+        # installed as its README says: https://github.com/emscripten-core/emsdk
+        run: |
+          npm ci
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          for version in 3.1.8 3.1.38; do
+            "$RUNNER_TEMP/emsdk/emsdk" install "$version"
+            "$RUNNER_TEMP/emsdk/emsdk" activate "$version"
+            (source "$RUNNER_TEMP/emsdk/emsdk_env.sh" && emcc --version && npm test)
+          done
       - run: dotnet run -c Release --project "sdk/unity/BuildCheck~/transports-check/transports-check.csproj"   # PurrNet/Mirror/FishNet transports against interface stubs; live part skips without NET_API_KEY
       - run: dotnet run -c Release --project "sdk/unity/BuildCheck~/framework-check/framework-check.csproj"   # gameplay framework (NetworkManager/SyncVar/RPC); live part skips without NET_API_KEY
 

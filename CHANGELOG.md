@@ -79,6 +79,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   `join_random` joins a random open room, as the Web and Unity SDKs do. Without `reserved` a
   matched player could not keep the seat of the other one, and a connected Godot client had no
   random join.
+- Unity SDK: the client runs in a Web build. There it talks through the browser's WebSocket
+  and timers (a `.jslib` plug-in) and makes its HTTP requests with `UnityWebRequest`; the link,
+  its resends, `ping` and `link dead` are the ones of every other platform. A Web build
+  compiled before and could not connect: Unity has no `System.Net` sockets, no `HttpClient`
+  and no threads in a browser.
 
 ### Changed
 - Lockstep rollback and instant replay (Rust, Web, C#, Unreal), breaking: the step of the
