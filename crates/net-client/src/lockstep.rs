@@ -17,6 +17,8 @@ pub const LS_COMMAND: u8 = 0x28;
 pub const LS_ACK: u8 = 0x29;
 /// Pseudo-actor whose per-tick input carries the commands.
 pub const COMMAND_ACTOR: u16 = 0xFFFF;
+/// Longest command a tick can carry.
+pub const MAX_COMMAND: usize = 251;
 pub const LS_CHECKPOINT: u8 = 0x22;
 pub const LS_CHECKPOINT_REQ: u8 = 0x23;
 pub const LS_CATCHUP: u8 = 0x24;
@@ -333,15 +335,19 @@ impl LockstepClient {
     }
     /// Reliable out-of-input-stream command; the server stamps it onto the next tick and every
     /// client (and the referee) receives it in that tick's inputs under `COMMAND_ACTOR` (65535)
-    /// as `[u16 actor, u16 len, bytes]*`.
-    pub fn command_frame(data: &[u8]) -> Outgoing {
+    /// as `[u16 actor, u16 len, bytes]*`. `None` for an empty command and for one longer than
+    /// `MAX_COMMAND`.
+    pub fn command_frame(data: &[u8]) -> Option<Outgoing> {
+        if data.is_empty() || data.len() > MAX_COMMAND {
+            return None;
+        }
         let mut frame = BytesMut::with_capacity(1 + data.len());
         frame.put_u8(LS_COMMAND);
         frame.extend_from_slice(data);
-        Outgoing {
+        Some(Outgoing {
             reliable: true,
             payload: frame.freeze(),
-        }
+        })
     }
 
     /// Master only, in answer to `CheckpointRequested`: confirmed state at `tick` (<= requested).
@@ -620,5 +626,14 @@ mod tests {
         assert_eq!(LockstepClient::hash_frame(1, 2).payload.len(), 13);
         assert_eq!(LockstepClient::fnv1a(b""), 0xcbf29ce484222325);
         assert_eq!(LockstepClient::fnv1a(b"a"), 0xaf63dc4c8601ec8c);
+    }
+
+    #[test]
+    fn a_command_a_tick_cannot_carry_makes_no_frame() {
+        let longest = LockstepClient::command_frame(&[7; MAX_COMMAND]).unwrap();
+        assert!(longest.reliable);
+        assert_eq!(longest.payload.len(), 1 + MAX_COMMAND);
+        assert!(LockstepClient::command_frame(&[7; MAX_COMMAND + 1]).is_none());
+        assert!(LockstepClient::command_frame(&[]).is_none());
     }
 }

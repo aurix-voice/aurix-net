@@ -87,7 +87,13 @@ int64 UAurixLockstepComponent::SendInput(const TArray<uint8>& Data)
 bool UAurixLockstepComponent::SendCommand(const TArray<uint8>& Data)
 {
 	UAurixNetSubsystem* N = Net();
-	return N && N->NativeClient() && Data.Num() > 0 && Data.Num() <= 1024 && aurix_net_lockstep_send_command(N->NativeClient(), Data.GetData(), Data.Num()) == 0;
+	if (!N || !N->NativeClient()) return false;
+	if (aurix_net_lockstep_send_command(N->NativeClient(), Data.GetData(), Data.Num()) != 0)
+	{
+		UE_LOG(LogAurixNet, Warning, TEXT("lockstep command of %d bytes refused: %s"), Data.Num(), *N->GetLastError());
+		return false;
+	}
+	return true;
 }
 bool UAurixLockstepComponent::ReportHash(int64 Tick, int64 Hash)
 {

@@ -385,7 +385,13 @@ stays inside the room, so moderation (kick, bans), rate limits and GDPR export/e
 `Lockstep::sendCommand`, Unreal `UAurixLockstepComponent::SendCommand`) sends a reliable message outside the input
 stream; the cell stamps it onto the next tick and everyone (and the referee) receives it at that tick:
 `OnCommand(tick, actor, bytes)` right before `OnTick`, or as the input of pseudo-actor 65535 where the SDK exposes
-raw bundles (C/C++). Commands are journaled, so replays and late-join catch-ups include them.
+raw bundles (C/C++). Commands are journaled, so replays and late-join catch-ups include them. A command is 1 to 251
+bytes (`MAX_COMMAND`, `LockstepClient.MaxCommand`, `AURIX_NET_MAX_COMMAND`); an empty or a longer one is refused at
+the sender. Commands that do not fit one tick ride the next ticks in the order they were sent. When more than
+4096 bytes of them wait, the node refuses the command and the sender gets a control message
+`{"t":"error","code":"rate_limited"}`: the `control` event in Web, `OnControl` in C#, `onControl` in C++, the
+`control` signal in Godot, `OnError` in Unreal. A command of a wrong length that reaches the node is answered the
+same way with `invalid_request`.
 
 ## Unity: TickTimer and synchronised scene load
 

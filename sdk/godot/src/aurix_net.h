@@ -116,8 +116,10 @@ int32_t aurix_net_lockstep_input(AurixNetLockstep *ls, uint16_t index, uint16_t 
 int64_t aurix_net_lockstep_send_input(AurixNetLockstep *ls, AurixNetClient *client, const uint8_t *data, size_t len); /* stamped tick; -1 on error or when this tick's input is already sent (one per room tick) */
 int32_t aurix_net_lockstep_report_hash(AurixNetClient *client, uint32_t tick, uint64_t hash);
 /* Reliable command outside the input stream: arrives in the next tick's inputs for every client under
-   actor AURIX_NET_COMMAND_ACTOR as [u16 actor, u16 len, bytes]*; journaled, replayed, seen by the referee. */
+   actor AURIX_NET_COMMAND_ACTOR as [u16 actor, u16 len, bytes]*; journaled, replayed, seen by the referee.
+   1..AURIX_NET_MAX_COMMAND bytes, the longest command a tick can carry. */
 #define AURIX_NET_COMMAND_ACTOR 0xFFFF
+#define AURIX_NET_MAX_COMMAND 251
 int32_t aurix_net_lockstep_send_command(AurixNetClient *client, const uint8_t *data, size_t len);
 int32_t aurix_net_lockstep_send_checkpoint(AurixNetClient *client, uint32_t tick, uint64_t hash, const uint8_t *state, size_t len);
 int32_t aurix_net_lockstep_send_dump(AurixNetClient *client, uint32_t tick, uint64_t hash, const uint8_t *state, size_t len);

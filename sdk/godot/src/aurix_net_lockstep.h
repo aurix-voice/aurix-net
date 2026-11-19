@@ -30,7 +30,7 @@ public:
 	bool receive(AurixNetClient *client, const PackedByteArray &payload);
 	/// Sends this tick's local input; returns the tick it was stamped with, or -1.
 	int64_t send_input(AurixNetClient *client, const PackedByteArray &data);
-	/// Reliable command outside the input stream (1..1024 bytes); everyone gets it at the same tick via `command`.
+	/// Reliable command outside the input stream (1..AURIX_NET_MAX_COMMAND bytes); everyone gets it at the same tick via `command`.
 	bool send_command(AurixNetClient *client, const PackedByteArray &data);
 	bool report_hash(AurixNetClient *client, int64_t tick, int64_t hash);
 	bool send_checkpoint(AurixNetClient *client, int64_t tick, int64_t hash, const PackedByteArray &state);

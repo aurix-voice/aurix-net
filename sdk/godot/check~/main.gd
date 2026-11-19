@@ -11,7 +11,8 @@ var c: AurixNetClient; var d: AurixNetClient
 var wc: AurixNetSync; var wd: AurixNetSync
 var sync_on := false; var acc := 0.0; var writes := 0; var updates := 0; var x := 0.0; var last := Vector3.ZERO; var drain := 0; var spawn_tag := -1; var spawned := -1; var first := PackedByteArray()
 var lc: AurixNetLockstep; var ld: AurixNetLockstep
-var ls_on := false; var ls_frames := 0; var ticks_c := 0; var ticks_d := 0; var actors := {}; var stray := 0
+var ls_on := false; var ls_frames := 0; var ticks_c := 0; var ticks_d := 0; var actors := {}; var stray := 0; var command := 0
+var carried := 0; var refusals: Array[String] = []
 
 func fail(msg: String) -> void:
 	printerr("GODOT FAIL: ", msg)
@@ -141,6 +142,15 @@ func _start_lockstep() -> void:
 		ticks_c += 1
 		for i in inputs: actors[i["actor"]] = true)
 	ld.tick.connect(func(_tick, _inputs): ticks_d += 1)
+	ld.command.connect(func(_tick, _actor, data):
+		if data.size() == 251: command = 251
+		else: carried += 1)
+	c.control.connect(func(json):
+		var message: Dictionary = JSON.parse_string(json)
+		if message.get("t") == "error": refusals.append("%s: %s" % [message.get("code"), message.get("message")]))
+	# the longest command reaches the other player whole; a longer one and an empty one are refused
+	var longest := PackedByteArray(); longest.resize(251)
+	if not lc.send_command(c, longest) or lc.send_command(c, longest + PackedByteArray([0])) or lc.send_command(c, PackedByteArray()): fail("send_command: the limit"); return
 	ls_on = true
 
 func _lockstep_step() -> void:
@@ -148,13 +158,24 @@ func _lockstep_step() -> void:
 	if ls_frames <= 240:
 		# every frame, more often than the 30 Hz room ticks: extra calls return -1 and send nothing
 		lc.send_input(c, PackedByteArray([ls_frames % 200])); ld.send_input(d, PackedByteArray([ls_frames % 200]))
+		if ls_frames == 60:
+			# a command the node refuses comes back as a control error: one sent past the sender's
+			# check, then 40 of 200 bytes in one go, of which a tick carries one and 4096 bytes may wait
+			var too_long := PackedByteArray([0x28]); too_long.resize(253)
+			c.send_data(AurixNetClient.CHANNEL_RELIABLE, too_long)
+			for i in 40:
+				var flood := PackedByteArray(); flood.resize(200); flood.fill(i)
+				lc.send_command(c, flood)
 		c.flush(); d.flush()
 		return
 	if ls_frames < 270: return
 	ls_on = false
 	var ahead: int = lc.get_server_tick() - lc.get_confirmed_tick()
-	var ok: bool = ticks_c > 20 and ticks_d > 20 and actors.size() == 2 and stray == 0 and ahead < 10
-	print("godot lockstep: ticks=%d/%d actors=%d event signals=%d confirmed=%d server=%d -> %s" % [ticks_c, ticks_d, actors.size(), stray, lc.get_confirmed_tick(), lc.get_server_tick(), "ok" if ok else "FAIL"])
+	var limited := refusals.count("rate_limited: rate limited")
+	var refused: bool = refusals.size() > 1 and refusals[0] == "invalid_request: invalid request: a lockstep command takes 1 to 251 bytes, got 252" \
+		and limited == refusals.size() - 1 and carried + limited == 40
+	var ok: bool = ticks_c > 20 and ticks_d > 20 and actors.size() == 2 and stray == 0 and ahead < 10 and command == 251 and refused
+	print("godot lockstep: ticks=%d/%d actors=%d event signals=%d confirmed=%d server=%d commands carried=%d refused=%d -> %s" % [ticks_c, ticks_d, actors.size(), stray, lc.get_confirmed_tick(), lc.get_server_tick(), carried, refusals.size(), "ok" if ok else "FAIL"])
 	if not ok: fail("lockstep"); return
 	if not await _replaced(): fail("replaced: the client still describes the room"); return
 	if not await _slow_link(): fail("slow link"); return

@@ -244,12 +244,12 @@ frame (`0x29`: `u32 next`, big-endian, over `UnreliableSequenced`; every tick be
 arrived) after each bundle datagram it receives, and the room sends it every bundle from that
 tick on in one datagram, never fewer than the last three. When they no longer fit a datagram
 (1000 bytes, 255 bundles) the room sends the last three and, once, the missing bundles on the
-reliable channel in the same layout; when its journal no longer holds them, a catch-up as on
-join. A client that sends no `Ack` gets the last three bundles each tick and stops for good
-once three datagrams in a row are lost. Spectators are served the same way up to their delayed
-tick.
+reliable channel in the same layout, a part at a time as on join; when its journal no longer
+holds them, a catch-up as on join. A client that sends no `Ack` gets the last three bundles each
+tick and stops for good once three datagrams in a row are lost. Spectators are served the same
+way up to their delayed tick.
 
-**Commands**: a reliable message outside the per-tick input stream — buy, surrender, pause. The server stamps it onto the next tick and ships it inside that tick's bundle as the input of pseudo-actor 65535, so it is in the journal, in catch-ups, in replays and in the referee's input stream; every client sees it at the same tick (`SendCommand` / `OnCommand` in the SDKs). Up to 1 KB per command, 4 KB per tick.
+**Commands**: a reliable message outside the per-tick input stream — buy, surrender, pause. The server stamps it onto the next tick and ships it inside that tick's bundle as the input of pseudo-actor 65535, so it is in the journal, in catch-ups, in replays and in the referee's input stream; every client sees it at the same tick (`SendCommand` / `OnCommand` in the SDKs). A command takes 1 to 251 bytes; the node answers a longer one with `error` `invalid_request` on the control channel. A tick carries 255 bytes of commands, 4 of them for the header of each: commands that do not fit ride the next ticks in the order they arrived, the same for clients, the journal, the replay and the referee. Up to 4096 bytes wait this way; a command past that is refused with `rate_limited`.
 
 **Instant replay for sync rooms**: room props `replay_every` (ticks between snapshots, default hz/2) and `replay_secs` (window, default 30; 0 off) keep full-world delta frames on the node; `GET /v1/rooms/{id}/replay?from=&to=` returns them (`mode: "sync"`) and any SDK sync client replays them by feeding the frames, in order, to a fresh world.
 
@@ -295,13 +295,26 @@ A lockstep room never stops for a joiner and never migrates a host. Every
 that is past tick 0 (late join, or a reconnect into an offline slot) the server sends, on the
 reliable-ordered channel, `Catchup` (the newest checkpoint, or tick 0 with an empty state
 meaning "start from the seed") followed by every journal bundle from that tick up to the
-current one, in ~32 KiB frames. Live bundles keep flowing unreliably in parallel, so the
+current one, in ~32 KiB frames. The bundles leave as fast as the joiner takes them: each tick
+the room sends as many frames as keep the joiner's link under half of its 1 MiB, and the ticks
+made in the meantime follow in the same order, so a long catch-up neither ends the link nor
+piles up on the node. Live bundles keep flowing unreliably in parallel, so the
 client buffers them until the reliable tail reaches a tick the live stream already covers
 (the tail always overlaps thanks to bundle redundancy). `joined.tick` and `joined.seed` tell
 the client where it enters; the seed is a random number below 2^53, so it survives a JSON
 reader that keeps numbers as doubles. Start the client with `Rollback::from_checkpoint(cfg, actors,
 tick, state)` and feed the tail bundles as confirmed inputs. If a joiner had to replay from a
 stale checkpoint the server asks the master for a fresh one at once, so catch-up stays bounded.
+
+The room keeps 4 hours of journal at 60 Hz (`MAX_JOURNAL_TICKS`, 864 000 ticks), from the
+newest checkpoint when it has one. A join or a return after a disconnect that the journal can
+no longer serve (no checkpoint and the journal no longer starts at tick 0, or a checkpoint
+older than the journal) is refused with `conflict` and a message that starts with
+`no_checkpoint`. The link of a joiner too slow for the catch-up ends once the journal has moved
+past the tick it waits for. A replay of a match longer than the journal does not start at
+tick 0. The journal takes 72 bytes a tick for two players with 8-byte inputs and 216 bytes
+for eight with 16-byte inputs: 16 MB and 47 MB an hour, 62 MB and 187 MB at 4 hours. A game
+that sends checkpoints keeps the catch-up of a joiner to the last seconds instead.
 
 ## Spectators
 

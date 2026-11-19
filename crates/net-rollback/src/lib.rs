@@ -317,7 +317,39 @@ where
 pub struct Journal {
     /// Tick of `ticks[0]`; everything before it was trimmed (or never known after a restore).
     base: u32,
-    ticks: std::collections::VecDeque<TickInputs>,
+    /// The inputs of a tick packed one after another: actor (u16), length (u32), bytes.
+    ticks: std::collections::VecDeque<Vec<u8>>,
+}
+
+fn pack(inputs: &TickInputs) -> Vec<u8> {
+    let mut packed = Vec::with_capacity(inputs.values().map(|data| 6 + data.len()).sum());
+    for (actor, data) in inputs {
+        pack_input(&mut packed, *actor, data);
+    }
+    packed
+}
+
+fn pack_input(packed: &mut Vec<u8>, actor: ActorId, data: &[u8]) {
+    packed.extend_from_slice(&actor.0.to_be_bytes());
+    packed.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    packed.extend_from_slice(data);
+}
+
+fn unpack(mut packed: &[u8]) -> impl Iterator<Item = (ActorId, &[u8])> {
+    std::iter::from_fn(move || {
+        let (head, rest) = packed.split_first_chunk::<6>()?;
+        let actor = ActorId(u16::from_be_bytes([head[0], head[1]]));
+        let len = u32::from_be_bytes([head[2], head[3], head[4], head[5]]) as usize;
+        let (data, rest) = rest.split_at_checked(len)?;
+        packed = rest;
+        Some((actor, data))
+    })
+}
+
+fn inputs_of(packed: &[u8]) -> TickInputs {
+    unpack(packed)
+        .map(|(actor, data)| (actor, data.to_vec()))
+        .collect()
 }
 
 impl Journal {
@@ -327,9 +359,12 @@ impl Journal {
         }
         let index = (tick.0 - self.base) as usize;
         while self.ticks.len() <= index {
-            self.ticks.push_back(TickInputs::new());
+            self.ticks.push_back(Vec::new());
         }
-        self.ticks[index].entry(actor).or_insert(data);
+        let packed = &mut self.ticks[index];
+        if unpack(packed).all(|(known, _)| known != actor) {
+            pack_input(packed, actor, &data);
+        }
     }
 
     /// Logical length: one past the last recorded tick (counts trimmed/unknown ticks too).
@@ -361,39 +396,42 @@ impl Journal {
 
     /// Every actor that ever submitted an input.
     pub fn actors(&self) -> Vec<ActorId> {
-        let mut actors: Vec<ActorId> = self.ticks.iter().flat_map(|t| t.keys().copied()).collect();
-        actors.sort();
-        actors.dedup();
-        actors
+        let actors: std::collections::BTreeSet<ActorId> = self
+            .ticks
+            .iter()
+            .flat_map(|packed| unpack(packed).map(|(actor, _)| actor))
+            .collect();
+        actors.into_iter().collect()
     }
 
-    pub fn tick(&self, at: Tick) -> Option<&TickInputs> {
+    pub fn tick(&self, at: Tick) -> Option<TickInputs> {
         if at.0 < self.base {
             return None;
         }
-        self.ticks.get((at.0 - self.base) as usize)
+        let packed = self.ticks.get((at.0 - self.base) as usize)?;
+        Some(inputs_of(packed))
     }
 
     /// Inputs from tick `from` to the end (for re-hosting from a checkpoint). Ticks before the
     /// journal's base are unknown and come back empty.
     pub fn tail(&self, from: u32) -> Vec<TickInputs> {
-        if from < self.base {
-            let mut ticks = vec![TickInputs::new(); (self.base - from) as usize];
-            ticks.extend(self.ticks.iter().cloned());
-            return ticks;
-        }
-        self.ticks
-            .iter()
-            .skip((from - self.base) as usize)
-            .cloned()
-            .collect()
+        let unknown = self.base.saturating_sub(from) as usize;
+        let known = from.saturating_sub(self.base) as usize;
+        let mut ticks = vec![TickInputs::new(); unknown];
+        ticks.extend(
+            self.ticks
+                .iter()
+                .skip(known)
+                .map(|packed| inputs_of(packed)),
+        );
+        ticks
     }
 
     /// Rebuilds a journal whose first `from` ticks are unknown and the rest is `tail`.
     pub fn from_parts(from: u32, tail: Vec<TickInputs>) -> Self {
         Self {
             base: from,
-            ticks: tail.into(),
+            ticks: tail.iter().map(pack).collect(),
         }
     }
 
@@ -411,7 +449,7 @@ impl Journal {
             tick_hz,
             actors,
             from_tick: self.base,
-            inputs: self.ticks.into(),
+            inputs: self.tail(self.base),
             hash_every,
             hashes: Vec::new(),
         }

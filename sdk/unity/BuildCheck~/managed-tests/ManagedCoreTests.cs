@@ -145,6 +145,18 @@ public class ManagedCoreTests
     }
 
     [Test]
+    public void CommandATickCannotCarryIsRefused()
+    {
+        var sent = new List<(Channel, byte[])>();
+        var ls = new LockstepClient((ch, b) => sent.Add((ch, b)));
+        ls.SendCommand(new byte[LockstepClient.MaxCommand]);
+        Assert.That(sent.Count == 1 && sent[0].Item1 == Channel.Reliable && sent[0].Item2.Length == 1 + LockstepClient.MaxCommand, "the longest command leaves whole");
+        Assert.Throws<ArgumentException>(() => ls.SendCommand(new byte[LockstepClient.MaxCommand + 1]));
+        Assert.Throws<ArgumentException>(() => ls.SendCommand(new byte[0]));
+        Assert.That(sent.Count == 1, "a refused command sends nothing");
+    }
+
+    [Test]
     public void LockstepTests()
     {
         var sent = new List<(Channel, byte[])>();

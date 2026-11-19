@@ -20,6 +20,8 @@ const LS_COMMAND = 0x28;
 const LS_ACK = 0x29;
 /** Pseudo-actor whose per-tick input carries the commands. */
 export const COMMAND_ACTOR = 0xffff;
+/** Longest command a tick can carry. */
+export const MAX_COMMAND = 251;
 
 export type TickInputs = Map<number, Uint8Array>;
 
@@ -224,10 +226,10 @@ export class LockstepClient {
   }
 
   /** Queues this tick's local input (sent with the previous ones for redundancy); returns the tick it was stamped with. */
-  /** Reliable command outside the input stream (buy, surrender, pause): stamped onto the next tick by the server, journaled, replayed, seen by the referee. 1..1024 bytes. */
+  /** Reliable command outside the input stream (buy, surrender, pause): stamped onto the next tick by the server, journaled, replayed, seen by the referee. 1..MAX_COMMAND bytes. */
   sendCommand(data: Uint8Array): void {
-    if (data.length === 0 || data.length > 1024) {
-      throw new Error("command: 1..1024 bytes");
+    if (data.length === 0 || data.length > MAX_COMMAND) {
+      throw new Error(`command: 1..${MAX_COMMAND} bytes`);
     }
     const bytes = new Uint8Array(1 + data.length);
     bytes[0] = LS_COMMAND;

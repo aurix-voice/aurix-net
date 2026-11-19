@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { LockstepClient, Channel } from "../dist/index.js";
+import { LockstepClient, Channel, MAX_COMMAND } from "../dist/index.js";
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 const bundle = (tick, inputs) => { const parts = []; for (const [a, d] of inputs) parts.push(a >> 8, a & 255, d.length, ...d); const one = [0x20, tick >>> 24, (tick >>> 16) & 255, (tick >>> 8) & 255, tick & 255, inputs.length, ...parts]; return one; };
 const datagram = (...bundles) => { const out = [0x20, bundles.length]; for (const b of bundles) out.push(b.length >> 8, b.length & 255, ...b); return Uint8Array.from(out); };
@@ -103,4 +103,13 @@ test("a restore behind the delivered ticks rewinds", () => {
   ls.receive(datagram(bundle(1, []), bundle(2, [])));
   assert.deepEqual(ticks, [0, 1, 2, 3, 1, 2]);
   assert.equal(sent.at(-1), "2900000003");
+});
+
+test("a command a tick cannot carry is refused at the sender", () => {
+  const sent = []; const ls = new LockstepClient((ch, p) => sent.push([ch, p]));
+  ls.sendCommand(new Uint8Array(MAX_COMMAND));
+  assert.deepEqual([sent.length, sent[0][0], sent[0][1].length], [1, Channel.Reliable, 1 + MAX_COMMAND]);
+  assert.throws(() => ls.sendCommand(new Uint8Array(MAX_COMMAND + 1)), /command/);
+  assert.throws(() => ls.sendCommand(new Uint8Array(0)), /command/);
+  assert.equal(sent.length, 1);
 });

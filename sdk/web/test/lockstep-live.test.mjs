@@ -2,7 +2,7 @@
 // collects state dumps. NET_API_KEY=an_... NET_HTTP=http://127.0.0.1:8099 node --test test/lockstep-live.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Client, LockstepClient, Channel } from "../dist/index.js";
+import { Client, LockstepClient, Channel, MAX_COMMAND } from "../dist/index.js";
 import WebSocket from "ws";
 import { key } from "./live.mjs";
 if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
@@ -50,4 +50,33 @@ test("lockstep: confirmed ticks flow, margin reports arrive, a liar's desync yie
   const blob = await fetch(`${http}/v1/rooms/${roomId}/desyncs/${d.tick}/${d.actor}`, { headers: hdr });
   assert.equal(blob.headers.get("content-type"), "application/octet-stream");
   assert.equal(await blob.text(), `ls-c@${d.tick}`);
+});
+
+test("lockstep: a command the node refuses comes back as a control error", { skip: !key }, async (t) => {
+  const c = await Client.connect(http, await grant("ls-cmd"));
+  t.after(() => c.close());
+  await c.joinOrCreate(`web-ls-cmd-${process.pid}`, "lockstep", 4, { tick_hz: 30 });
+  const ls = new LockstepClient((ch, p) => c.sendData(ch, p));
+  const errors = [], commands = [];
+  ls.onCommand = (tick, _actor, data) => commands.push([tick, data[0]]);
+  c.on("data", (_ch, _tick, payload) => ls.receive(payload));
+  c.on("control", (message) => { if (message.t === "error") errors.push(message); });
+  const timer = setInterval(() => ls.sendInput(Uint8Array.of(1)), 1000 / 30);
+  t.after(() => clearInterval(timer));
+  await sleep(300);
+
+  // past the sender's own check, the way an older client would send it
+  const tooLong = new Uint8Array(2 + MAX_COMMAND);
+  tooLong[0] = 0x28;
+  c.sendData(Channel.Reliable, tooLong);
+  for (let i = 0; i < 100 && !errors.length; i++) await sleep(20);
+  assert.deepEqual(errors.splice(0), [{ t: "error", code: "invalid_request", message: `invalid request: a lockstep command takes 1 to ${MAX_COMMAND} bytes, got ${MAX_COMMAND + 1}` }]);
+
+  // 40 commands of 200 bytes in one go: a tick carries one, 4096 bytes may wait, the rest is refused
+  for (let i = 0; i < 40; i++) ls.sendCommand(new Uint8Array(200).fill(i));
+  await sleep(1500);
+  assert.ok(errors.length > 0 && errors.every((error) => error.code === "rate_limited" && error.message === "rate limited"), JSON.stringify(errors.slice(0, 3)));
+  assert.equal(commands.length + errors.length, 40);
+  assert.equal(new Set(commands.map(([tick]) => tick)).size, commands.length);
+  assert.deepEqual(commands.map(([, first]) => first).slice(0, 20), Array.from({ length: 20 }, (_, i) => i));
 });

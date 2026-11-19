@@ -681,7 +681,7 @@ pub unsafe extern "C" fn aurix_net_destroy(client: *mut AurixNetClient) {
 
 // ---- lockstep rooms: a pure-logic helper next to the client (see net_client::lockstep) ----
 
-use net_client::lockstep::{LockstepClient, LsEvent, Outgoing, LS_BUNDLE};
+use net_client::lockstep::{LockstepClient, LsEvent, Outgoing, LS_BUNDLE, MAX_COMMAND};
 use std::collections::VecDeque;
 
 pub struct AurixNetLockstep {
@@ -886,12 +886,17 @@ pub unsafe extern "C" fn aurix_net_lockstep_send_command(
     data: *const u8,
     len: usize,
 ) -> i32 {
-    if data.is_null() || len == 0 || len > 1024 {
-        set_error(ErrorCode::InvalidArgument, "send_command: 1..=1024 bytes");
+    let frame = (!data.is_null())
+        .then(|| LockstepClient::command_frame(std::slice::from_raw_parts(data, len)))
+        .flatten();
+    let Some(frame) = frame else {
+        set_error(
+            ErrorCode::InvalidArgument,
+            format_args!("send_command: 1..={MAX_COMMAND} bytes"),
+        );
         return -1;
-    }
-    let command = std::slice::from_raw_parts(data, len);
-    send_frame(client, LockstepClient::command_frame(command))
+    };
+    send_frame(client, frame)
 }
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_lockstep_report_hash(

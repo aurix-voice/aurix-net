@@ -38,6 +38,7 @@
 use crate::sync::GameLogic;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use net_common::types::{ActorId, Tick};
+use net_common::NetError;
 use net_rollback::{hash_bytes, Journal, TickInputs};
 use net_sim::{EntityId, Frame, FrameConfig};
 use net_wire::Schema;
@@ -83,9 +84,13 @@ pub const KIND_ACK: u8 = 0x29;
 pub const KIND_RESTORE: u8 = 0x2A;
 /// Pseudo-actor carrying the tick's commands: `[u16 actor, u16 len, bytes]*`.
 pub const COMMAND_ACTOR: ActorId = ActorId(0xFFFF);
-/// Commands kept per tick (bytes) and per command; more are dropped (the sender sees no effect).
-pub const MAX_COMMANDS_BYTES_PER_TICK: usize = 4096;
-pub const MAX_COMMAND_BYTES: usize = 1024;
+/// The commands of one tick with their headers: a bundle carries the length of an input in
+/// one byte.
+pub const MAX_COMMANDS_BYTES_PER_TICK: usize = u8::MAX as usize;
+const COMMAND_HEADER_BYTES: usize = 4;
+pub const MAX_COMMAND_BYTES: usize = MAX_COMMANDS_BYTES_PER_TICK - COMMAND_HEADER_BYTES;
+/// Commands that wait for a later tick, with their headers; a command past this is refused.
+pub const MAX_QUEUED_COMMANDS_BYTES: usize = 4096;
 /// Ticks between input-margin reports (per actor).
 pub const INPUT_REPORT_EVERY: u32 = 30;
 const MAX_PENDING_DUMPS: usize = 16;
@@ -134,8 +139,9 @@ pub struct LockstepRoom {
     pub tick: Tick,
     pub actors: BTreeMap<ActorId, ()>,
     pending: BTreeMap<u32, TickInputs>,
-    /// Commands received since the last tick, already in `COMMAND_ACTOR` wire form.
-    pending_commands: Vec<u8>,
+    /// Commands no tick has carried yet, oldest first.
+    commands: VecDeque<(ActorId, Bytes)>,
+    commands_bytes: usize,
     pub journal: Journal,
     recent: VecDeque<Bytes>,
     /// Hash reports per tick: actor -> hash.
@@ -171,6 +177,10 @@ pub struct LockstepRoom {
     acked: HashMap<ActorId, u32>,
     /// Per actor: the tick up to which missing bundles were re-sent on the reliable channel.
     resent: HashMap<ActorId, u32>,
+    /// Per actor: the next tick of a catch-up that is still on its way over the reliable channel.
+    tails: HashMap<ActorId, u32>,
+    /// Ticks of journal the room keeps: `MAX_JOURNAL_TICKS`.
+    journal_ticks: usize,
 }
 
 /// Ticks between server state hashes; matches `RollbackConfig::default().hash_every`.
@@ -246,7 +256,8 @@ impl LockstepRoom {
             tick: Tick(0),
             actors: BTreeMap::new(),
             pending: BTreeMap::new(),
-            pending_commands: Vec::new(),
+            commands: VecDeque::new(),
+            commands_bytes: 0,
             journal: Journal::default(),
             recent: VecDeque::new(),
             hashes: BTreeMap::new(),
@@ -269,6 +280,8 @@ impl LockstepRoom {
             seen: BTreeSet::new(),
             acked: HashMap::new(),
             resent: HashMap::new(),
+            tails: HashMap::new(),
+            journal_ticks: MAX_JOURNAL_TICKS,
         }
     }
 
@@ -303,9 +316,8 @@ impl LockstepRoom {
             None if self.journal.tick(Tick(0)).is_some() || self.tick.0 == 0 => 0,
             None => return Err("no checkpoint and journal does not start at 0".into()),
         };
-        let empty = TickInputs::new();
         for t in start..self.tick.0 {
-            sim.step(self.journal.tick(Tick(t)).unwrap_or(&empty));
+            sim.step(&self.journal.tick(Tick(t)).unwrap_or_default());
         }
         self.sim = Some(sim);
         self.server_hashes.clear();
@@ -466,23 +478,55 @@ impl LockstepRoom {
         Some(buf.freeze())
     }
 
-    /// A data link attached (join or rejoin) while the room is running: everything the
-    /// client needs to reach the current tick, as reliable-ordered frames. Empty at tick 0.
-    pub fn on_late_join(&mut self) -> Vec<Bytes> {
-        self.catchup_until(KIND_CATCHUP, self.tick.0)
+    /// False when a late joiner cannot be brought to the current tick: the journal no longer
+    /// holds the ticks after the newest checkpoint, or after tick 0 when there is none.
+    pub fn takes_late_joiners(&self) -> bool {
+        self.checkpoint.as_ref().map_or(0, |c| c.tick) >= self.journal.base()
     }
 
-    /// The checkpoint and journal tail a desynced client reloads from.
-    pub fn on_desync(&mut self) -> Vec<Bytes> {
-        self.catchup_until(KIND_RESTORE, self.tick.0)
+    /// The checkpoint a desynced client reloads from; the journal tail follows through
+    /// [`Self::tail_for`].
+    pub fn on_desync(&mut self, actor: ActorId) -> Option<Bytes> {
+        self.start_catchup(actor, KIND_RESTORE, self.tick.0)
     }
 
-    /// Catch-up for a joining player, or for a spectator only up to the delayed tick. It covers
-    /// everything, so what the actor acknowledged before no longer counts.
-    pub fn catchup_for(&mut self, actor: ActorId, spectator: bool) -> Vec<Bytes> {
+    /// A data link attached (join or rejoin) while the room is running: the checkpoint the
+    /// client starts from, `None` at tick 0. The journal tail follows through
+    /// [`Self::tail_for`], for a spectator only up to the delayed tick. It covers everything,
+    /// so what the actor acknowledged before no longer counts.
+    pub fn catchup_for(&mut self, actor: ActorId, spectator: bool) -> Option<Bytes> {
         self.acked.remove(&actor);
         self.resent.remove(&actor);
-        self.catchup_until(KIND_CATCHUP, self.stream_end(spectator))
+        self.start_catchup(actor, KIND_CATCHUP, self.stream_end(spectator))
+    }
+
+    /// The next part of the catch-up of `actor`, at most `room` bytes of it: the journal goes
+    /// out as fast as the actor's link takes it, the ticks made meanwhile after the rest.
+    /// `None` when the journal no longer holds the ticks the actor needs.
+    pub fn tail_for(&mut self, actor: ActorId, room: usize) -> Option<Vec<Bytes>> {
+        let Some(&next) = self.tails.get(&actor) else {
+            return Some(Vec::new());
+        };
+        let end = self.stream_end(self.spectators.contains(&actor));
+        let mut frames = Vec::new();
+        let mut next = next;
+        if next < self.journal.base() {
+            self.tails.remove(&actor);
+            frames.push(self.start_catchup(actor, KIND_CATCHUP, end)?);
+            match self.tails.get(&actor) {
+                Some(&from) => next = from,
+                None => return Some(frames),
+            }
+        }
+        let (chunks, reached) = self.bundle_chunks(next, end, room);
+        frames.extend(chunks);
+        if reached >= end {
+            self.tails.remove(&actor);
+            self.resent.insert(actor, end);
+        } else {
+            self.tails.insert(actor, reached);
+        }
+        Some(frames)
     }
 
     /// One past the newest tick an actor may be sent.
@@ -497,7 +541,13 @@ impl LockstepRoom {
     /// What `actor` is sent after a tick: its datagram, and frames for the reliable channel when
     /// it is further behind than a datagram holds. An actor that acknowledges bundles gets every
     /// one from the tick it needs; the others get the last `BUNDLE_REDUNDANCY`.
-    pub fn bundles_for(&mut self, actor: ActorId) -> (Option<Bytes>, Vec<Bytes>) {
+    /// The reliable frames are at most `room` bytes, and `None` when the journal no longer
+    /// holds the ticks the actor needs.
+    pub fn bundles_for(
+        &mut self,
+        actor: ActorId,
+        room: usize,
+    ) -> (Option<Bytes>, Option<Vec<Bytes>>) {
         let spectator = self.spectators.contains(&actor);
         let live = if spectator {
             self.spectator_datagram()
@@ -505,27 +555,26 @@ impl LockstepRoom {
             self.past.back().cloned()
         };
         let end = self.stream_end(spectator);
+        if self.tails.contains_key(&actor) {
+            return (live, self.tail_for(actor, room));
+        }
         let Some(&next) = self.acked.get(&actor) else {
-            return (live, Vec::new());
+            return (live, Some(Vec::new()));
         };
         if next + BUNDLE_REDUNDANCY as u32 >= end {
-            return (live, Vec::new());
+            return (live, Some(Vec::new()));
         }
         if next >= self.journal.base() {
             if let Some(datagram) = self.datagram_from(next, end) {
-                return (Some(datagram), Vec::new());
+                return (Some(datagram), Some(Vec::new()));
             }
         }
         if self.resent.get(&actor).is_some_and(|until| *until > next) {
-            return (live, Vec::new());
+            return (live, Some(Vec::new()));
         }
         self.resent.insert(actor, end);
-        let frames = if next >= self.journal.base() {
-            self.bundle_chunks(next, end)
-        } else {
-            self.catchup_until(KIND_CATCHUP, end)
-        };
-        (live, frames)
+        self.tails.insert(actor, next);
+        (live, self.tail_for(actor, room))
     }
 
     /// Bundles of ticks `from..end` as one datagram, or `None` when they do not fit.
@@ -533,12 +582,12 @@ impl LockstepRoom {
         if end - from > 255 {
             return None;
         }
-        let empty = TickInputs::new();
         let mut out = BytesMut::new();
         out.put_u8(KIND_BUNDLE);
         out.put_u8((end - from) as u8);
         for tick in from..end {
-            let bundle = Self::encode_bundle(tick, self.journal.tick(Tick(tick)).unwrap_or(&empty));
+            let inputs = self.journal.tick(Tick(tick)).unwrap_or_default();
+            let bundle = Self::encode_bundle(tick, &inputs);
             if out.len() + 2 + bundle.len() > MAX_BUNDLE_DATAGRAM {
                 return None;
             }
@@ -548,10 +597,12 @@ impl LockstepRoom {
         Some(out.freeze())
     }
 
-    /// Bundles of ticks `from..end` in frames for the reliable channel.
-    fn bundle_chunks(&self, from: u32, end: u32) -> Vec<Bytes> {
+    /// Bundles of ticks from `from` in frames for the reliable channel, and the tick they stop
+    /// before: `end`, or sooner once another frame may not fit `room` bytes.
+    fn bundle_chunks(&self, from: u32, end: u32, room: usize) -> (Vec<Bytes>, u32) {
         let mut frames = Vec::new();
-        let empty = TickInputs::new();
+        let mut used = 0usize;
+        let mut reached = end.max(from);
         let mut chunk: Vec<Bytes> = Vec::new();
         let mut chunk_bytes = 0usize;
         let flush = |chunk: &mut Vec<Bytes>, frames: &mut Vec<Bytes>| {
@@ -568,22 +619,30 @@ impl LockstepRoom {
             frames.push(out.freeze());
         };
         for t in from..end {
-            let inputs = self.journal.tick(Tick(t)).unwrap_or(&empty);
-            let bundle = Self::encode_bundle(t, inputs);
+            let inputs = self.journal.tick(Tick(t)).unwrap_or_default();
+            let bundle = Self::encode_bundle(t, &inputs);
             if chunk.len() == 255 || chunk_bytes + bundle.len() + 2 > CATCHUP_CHUNK_BYTES {
+                used += chunk_bytes;
                 flush(&mut chunk, &mut frames);
                 chunk_bytes = 0;
+            }
+            if chunk.is_empty() && used + CATCHUP_CHUNK_BYTES > room {
+                reached = t;
+                break;
             }
             chunk_bytes += bundle.len() + 2;
             chunk.push(bundle);
         }
         flush(&mut chunk, &mut frames);
-        frames
+        (frames, reached)
     }
 
-    fn catchup_until(&mut self, kind: u8, end: u32) -> Vec<Bytes> {
-        if end == 0 {
-            return Vec::new();
+    /// The first frame of a catch-up of `actor` up to `end`, whose journal tail then goes out
+    /// through [`Self::tail_for`]. `None` when there is nothing to catch up with.
+    fn start_catchup(&mut self, actor: ActorId, kind: u8, end: u32) -> Option<Bytes> {
+        self.tails.remove(&actor);
+        if end == 0 || !self.takes_late_joiners() {
+            return None;
         }
         let (from, hash, state) = match &self.checkpoint {
             Some(checkpoint) => (checkpoint.tick, checkpoint.hash, checkpoint.state.clone()),
@@ -592,16 +651,14 @@ impl LockstepRoom {
         if self.tick.0.saturating_sub(from) > 2 * self.checkpoint_every() {
             self.want_checkpoint = true;
         }
-        let mut frames = Vec::new();
         let mut buf = BytesMut::with_capacity(17 + state.len());
         buf.put_u8(kind);
         buf.put_u32(from);
         buf.put_u64(hash);
         buf.put_u32(state.len() as u32);
         buf.extend_from_slice(&state);
-        frames.push(buf.freeze());
-        frames.extend(self.bundle_chunks(from, end));
-        frames
+        self.tails.insert(actor, from);
+        Some(buf.freeze())
     }
 
     fn encode_bundle(tick: u32, inputs: &TickInputs) -> Bytes {
@@ -675,9 +732,48 @@ impl LockstepRoom {
         self.actors.remove(&actor);
         self.acked.remove(&actor);
         self.resent.remove(&actor);
+        self.tails.remove(&actor);
     }
 
-    /// Client data frame. Returns true when handled here.
+    /// Takes a command (the frame without its kind byte) for the next tick with room for it.
+    pub fn command(&mut self, actor: ActorId, command: Bytes) -> Result<(), NetError> {
+        if command.is_empty() || command.len() > MAX_COMMAND_BYTES {
+            return Err(NetError::Invalid(format!(
+                "a lockstep command takes 1 to {MAX_COMMAND_BYTES} bytes, got {}",
+                command.len()
+            )));
+        }
+        if !self.actors.contains_key(&actor) {
+            return Ok(());
+        }
+        let bytes = COMMAND_HEADER_BYTES + command.len();
+        if self.commands_bytes + bytes > MAX_QUEUED_COMMANDS_BYTES {
+            return Err(NetError::RateLimited);
+        }
+        self.commands_bytes += bytes;
+        self.commands.push_back((actor, command));
+        Ok(())
+    }
+
+    /// The commands of the tick being closed: the oldest that fit one input of a bundle. The
+    /// rest wait for the next tick, in order.
+    fn take_commands(&mut self) -> Vec<u8> {
+        let mut entry = Vec::new();
+        while let Some((actor, command)) = self.commands.front() {
+            let bytes = COMMAND_HEADER_BYTES + command.len();
+            if entry.len() + bytes > MAX_COMMANDS_BYTES_PER_TICK {
+                break;
+            }
+            entry.put_u16(actor.0);
+            entry.put_u16(command.len() as u16);
+            entry.extend_from_slice(command);
+            self.commands_bytes -= bytes;
+            self.commands.pop_front();
+        }
+        entry
+    }
+
+    /// Client data frame other than a command. Returns true when handled here.
     pub fn handle(&mut self, actor: ActorId, mut payload: Bytes) -> bool {
         let Some(&kind) = payload.first() else {
             return false;
@@ -730,20 +826,6 @@ impl LockstepRoom {
                         .entry(actor)
                         .or_insert(data);
                 }
-                true
-            }
-            KIND_COMMAND => {
-                payload.advance(1);
-                if payload.is_empty()
-                    || payload.len() > MAX_COMMAND_BYTES
-                    || self.pending_commands.len() + 4 + payload.len() > MAX_COMMANDS_BYTES_PER_TICK
-                    || !self.actors.contains_key(&actor)
-                {
-                    return true;
-                }
-                self.pending_commands.put_u16(actor.0);
-                self.pending_commands.put_u16(payload.len() as u16);
-                self.pending_commands.extend_from_slice(&payload);
                 true
             }
             KIND_HASH => {
@@ -944,19 +1026,21 @@ impl LockstepRoom {
                 inputs.entry(*actor).or_default();
             }
         }
-        if !self.pending_commands.is_empty() {
-            inputs.insert(COMMAND_ACTOR, std::mem::take(&mut self.pending_commands));
+        let commands = self.take_commands();
+        if !commands.is_empty() {
+            inputs.insert(COMMAND_ACTOR, commands);
         }
         for (actor, data) in inputs.iter().take(255) {
             self.journal.record(Tick(tick), *actor, data.clone());
         }
-        if self.journal.live_len() > MAX_JOURNAL_TICKS {
-            if let Some(checkpoint) = &self.checkpoint {
-                let keep_from = checkpoint
+        if self.journal.live_len() > self.journal_ticks {
+            let newest = (tick + 1).saturating_sub(self.journal_ticks as u32);
+            let after_checkpoint = self.checkpoint.as_ref().map_or(0, |checkpoint| {
+                checkpoint
                     .tick
-                    .saturating_sub(self.hz as u32 * CHECKPOINT_EVERY_SECS);
-                self.journal.trim_before(keep_from);
-            }
+                    .saturating_sub(self.hz as u32 * CHECKPOINT_EVERY_SECS)
+            });
+            self.journal.trim_before(newest.max(after_checkpoint));
         }
         if let Some(sim) = self.sim.as_mut() {
             sim.step(&inputs);
@@ -1081,6 +1165,16 @@ pub fn window_replay(replay: &mut net_rollback::Replay, from: u32, to: Option<u3
 
 #[cfg(test)]
 mod tests {
+    /// The whole catch-up of `actor`: its first frame and the journal tail.
+    fn catchup(room: &mut LockstepRoom, actor: ActorId, spectator: bool) -> Vec<Bytes> {
+        let mut frames: Vec<Bytes> = room.catchup_for(actor, spectator).into_iter().collect();
+        frames.extend(
+            room.tail_for(actor, usize::MAX)
+                .expect("journal holds the ticks"),
+        );
+        frames
+    }
+
     #[test]
     fn commands_ride_the_next_bundle_as_the_command_actor() {
         let mut room = LockstepRoom::new(30, 1);
@@ -1088,10 +1182,10 @@ mod tests {
         room.on_join(alice);
         room.on_join(bob);
         let _ = room.tick();
-        assert!(room.handle(alice, Bytes::from_static(&[KIND_COMMAND, b'x', b'y'])));
-        assert!(room.handle(bob, Bytes::from_static(&[KIND_COMMAND, 7])));
+        room.command(alice, Bytes::from_static(b"xy")).unwrap();
+        room.command(bob, Bytes::from_static(&[7])).unwrap();
         // unknown actor: dropped
-        assert!(room.handle(ActorId(9), Bytes::from_static(&[KIND_COMMAND, 1])));
+        room.command(ActorId(9), Bytes::from_static(&[1])).unwrap();
         let out = room.tick();
         let bundles = LockstepRoom::decode_bundles(out);
         let (_, inputs) = bundles.last().unwrap();
@@ -1103,6 +1197,83 @@ mod tests {
         let out = room.tick();
         let bundles = LockstepRoom::decode_bundles(out);
         assert!(!bundles.last().unwrap().1.contains_key(&COMMAND_ACTOR));
+    }
+
+    /// The commands of the tick `room` closes, as (actor, length).
+    fn tick_commands(room: &mut LockstepRoom) -> Vec<(u16, usize)> {
+        let tick = room.tick;
+        let bundles = LockstepRoom::decode_bundles(room.tick());
+        let sent = bundles.last().unwrap().1.get(&COMMAND_ACTOR).cloned();
+        let kept = room
+            .journal
+            .tick(tick)
+            .unwrap_or_default()
+            .remove(&COMMAND_ACTOR);
+        assert_eq!(sent, kept, "clients and the journal got different commands");
+        let mut entry = Bytes::from(sent.unwrap_or_default());
+        let mut commands = Vec::new();
+        while entry.has_remaining() {
+            let actor = entry.get_u16();
+            let len = entry.get_u16() as usize;
+            entry.advance(len);
+            commands.push((actor, len));
+        }
+        commands
+    }
+
+    #[test]
+    fn command_longer_than_a_bundle_carries_is_refused() {
+        let mut room = LockstepRoom::new(30, 1);
+        let alice = ActorId(1);
+        room.on_join(alice);
+        let _ = room.tick();
+        let refused = room.command(alice, Bytes::from(vec![7; MAX_COMMAND_BYTES + 1]));
+        assert_eq!(
+            refused.unwrap_err().to_string(),
+            "invalid request: a lockstep command takes 1 to 251 bytes, got 252"
+        );
+        assert!(room.command(alice, Bytes::new()).is_err());
+        room.command(alice, Bytes::from(vec![7; MAX_COMMAND_BYTES]))
+            .unwrap();
+        assert_eq!(tick_commands(&mut room), [(1, MAX_COMMAND_BYTES)]);
+    }
+
+    #[test]
+    fn commands_that_do_not_fit_a_tick_ride_the_next_in_order() {
+        let mut room = LockstepRoom::new(30, 1);
+        let (alice, bob) = (ActorId(1), ActorId(2));
+        room.on_join(alice);
+        room.on_join(bob);
+        let _ = room.tick();
+        for (actor, len) in [
+            (alice, 100),
+            (bob, 100),
+            (alice, 100),
+            (bob, 200),
+            (alice, 40),
+        ] {
+            room.command(actor, Bytes::from(vec![7; len])).unwrap();
+        }
+        assert_eq!(tick_commands(&mut room), [(1, 100), (2, 100)]);
+        assert_eq!(tick_commands(&mut room), [(1, 100)]);
+        assert_eq!(tick_commands(&mut room), [(2, 200), (1, 40)]);
+        assert_eq!(tick_commands(&mut room), []);
+    }
+
+    #[test]
+    fn commands_past_the_queue_are_refused() {
+        let mut room = LockstepRoom::new(30, 1);
+        let alice = ActorId(1);
+        room.on_join(alice);
+        let _ = room.tick();
+        let fit = MAX_QUEUED_COMMANDS_BYTES / (COMMAND_HEADER_BYTES + 100);
+        for _ in 0..fit {
+            room.command(alice, Bytes::from(vec![7; 100])).unwrap();
+        }
+        let refused = room.command(alice, Bytes::from(vec![7; 100]));
+        assert!(matches!(refused, Err(NetError::RateLimited)));
+        assert_eq!(tick_commands(&mut room), [(1, 100), (1, 100)]);
+        room.command(alice, Bytes::from(vec![7; 100])).unwrap();
     }
 
     #[test]
@@ -1194,7 +1365,7 @@ mod tests {
             }
         }
         assert_eq!(room.checkpoint.as_ref().map(|c| c.tick), Some(300));
-        let frames = room.on_late_join();
+        let frames = catchup(&mut room, ActorId(99), false);
         let ck = LockstepRoom::decode_catchup(frames[0].clone()).unwrap();
         assert_eq!(
             (ck.tick, ck.hash, &ck.state[..]),
@@ -1221,7 +1392,7 @@ mod tests {
             let _ = r2.tick();
             let _ = r2.checkpoint_request();
         }
-        let frames = r2.on_late_join();
+        let frames = catchup(&mut r2, ActorId(99), false);
         let ck = LockstepRoom::decode_catchup(frames[0].clone()).unwrap();
         assert_eq!((ck.tick, ck.state.len()), (0, 0));
         let total: usize = frames[1..]
@@ -1245,7 +1416,7 @@ mod tests {
         let mut r3 = LockstepRoom::restore(serde_json::from_slice(&json).unwrap());
         assert_eq!(r3.tick, Tick(400));
         let _ = r3.tick();
-        let frames = r3.on_late_join();
+        let frames = catchup(&mut r3, ActorId(99), false);
         let ck = LockstepRoom::decode_catchup(frames[0].clone()).unwrap();
         assert_eq!(ck.tick, 300);
         let total: usize = frames[1..]
@@ -1286,7 +1457,7 @@ mod tests {
             (600, 300, 254)
         );
         let mut r2 = LockstepRoom::restore(snap);
-        let frames = r2.on_late_join();
+        let frames = catchup(&mut r2, ActorId(99), false);
         assert_eq!(
             LockstepRoom::decode_catchup(frames[0].clone())
                 .unwrap()
@@ -1365,9 +1536,9 @@ mod tests {
         }
         // 60 ticks of delay: at tick 69 the spectator gets the datagram of tick 9
         assert_eq!(room.spectator_datagram(), Some(live[9].clone()));
-        assert!(room.journal.tick(Tick(0)).unwrap().get(&watcher).is_none());
+        assert!(!room.journal.tick(Tick(0)).unwrap().contains_key(&watcher));
         // catch-up for a spectator stops at the delayed tick
-        let frames = room.catchup_for(watcher, true);
+        let frames = catchup(&mut room, watcher, true);
         let mut last = 0;
         for frame in &frames[1..] {
             for (tick, _) in LockstepRoom::decode_bundles(frame.clone()) {
@@ -1467,11 +1638,13 @@ mod tests {
         assert!(room.handle(alice, ack(5)));
         room.tick();
 
-        let (datagram, reliable) = room.bundles_for(alice);
+        let (datagram, reliable) = room.bundles_for(alice, usize::MAX);
+        let reliable = reliable.expect("journal holds the ticks");
         assert_eq!(ticks_of(datagram.unwrap()), (5..=20).collect::<Vec<_>>());
         assert!(reliable.is_empty());
         // bob acknowledges nothing and gets the last three, as before
-        let (datagram, reliable) = room.bundles_for(bob);
+        let (datagram, reliable) = room.bundles_for(bob, usize::MAX);
+        let reliable = reliable.expect("journal holds the ticks");
         assert_eq!(ticks_of(datagram.unwrap()), [18, 19, 20]);
         assert!(reliable.is_empty());
     }
@@ -1486,19 +1659,22 @@ mod tests {
         }
         room.handle(alice, ack(2));
 
-        let (datagram, reliable) = room.bundles_for(alice);
+        let (datagram, reliable) = room.bundles_for(alice, usize::MAX);
+        let reliable = reliable.expect("journal holds the ticks");
         assert_eq!(ticks_of(datagram.unwrap()), [297, 298, 299]);
         let resent: Vec<u32> = reliable.into_iter().flat_map(ticks_of).collect();
         assert_eq!(resent, (2..300).collect::<Vec<_>>());
 
         room.tick();
-        let (datagram, reliable) = room.bundles_for(alice);
+        let (datagram, reliable) = room.bundles_for(alice, usize::MAX);
+        let reliable = reliable.expect("journal holds the ticks");
         assert_eq!(ticks_of(datagram.unwrap()), [298, 299, 300]);
         assert!(reliable.is_empty(), "resent again before the ack moved");
 
         room.handle(alice, ack(300));
         room.tick();
-        let (datagram, reliable) = room.bundles_for(alice);
+        let (datagram, reliable) = room.bundles_for(alice, usize::MAX);
+        let reliable = reliable.expect("journal holds the ticks");
         assert_eq!(ticks_of(datagram.unwrap()), [299, 300, 301]);
         assert!(reliable.is_empty());
     }
@@ -1601,5 +1777,62 @@ mod tests {
         );
         room.handle(alice, LockstepRoom::encode_dump(7, 0xabc, b"again"));
         assert!(room.take_dumps().is_empty());
+    }
+
+    #[test]
+    fn catch_up_goes_out_in_parts_and_takes_in_the_ticks_made_meanwhile() {
+        let mut room = LockstepRoom::new(60, 1);
+        let (alice, bob) = (ActorId(1), ActorId(2));
+        room.on_join(alice);
+        for _ in 0..1000 {
+            room.tick();
+        }
+        room.on_join(bob);
+        let head = room.catchup_for(bob, false).expect("past tick 0");
+        assert_eq!(LockstepRoom::decode_catchup(head).unwrap().tick, 0);
+        assert_eq!(room.tail_for(bob, 0), Some(vec![]), "no room, nothing sent");
+
+        let mut ticks = Vec::new();
+        let mut parts = 0;
+        loop {
+            let frames = room.tail_for(bob, CATCHUP_CHUNK_BYTES).unwrap();
+            if frames.is_empty() {
+                break;
+            }
+            assert_eq!(frames.len(), 1, "one frame fits the room");
+            ticks.extend(frames.into_iter().flat_map(ticks_of));
+            parts += 1;
+            room.tick();
+        }
+        assert_eq!(parts, 4);
+        assert_eq!(ticks, (0..1003).collect::<Vec<_>>());
+        // the live datagrams take over from here
+        let (datagram, reliable) = room.bundles_for(bob, usize::MAX);
+        assert_eq!(ticks_of(datagram.unwrap()), [1001, 1002, 1003]);
+        assert_eq!(reliable, Some(vec![]));
+    }
+
+    #[test]
+    fn journal_past_its_limit_takes_no_late_joiners_without_a_checkpoint() {
+        let mut room = LockstepRoom::new(60, 1);
+        room.journal_ticks = 100;
+        let (alice, bob) = (ActorId(1), ActorId(2));
+        room.on_join(alice);
+        for _ in 0..100 {
+            room.handle(alice, SyncRoom::encode_input(room.tick, &[vec![7]]));
+            room.tick();
+        }
+        assert_eq!(room.journal.base(), 0);
+        assert!(room.takes_late_joiners());
+        room.on_join(bob);
+        assert!(room.catchup_for(bob, false).is_some());
+
+        room.handle(alice, SyncRoom::encode_input(room.tick, &[vec![7]]));
+        room.tick();
+        assert_eq!(room.journal.base(), 1);
+        assert!(!room.takes_late_joiners());
+        // bob has not been sent tick 0 yet and never will be
+        assert_eq!(room.tail_for(bob, usize::MAX), None);
+        assert_eq!(room.catchup_for(bob, false), None);
     }
 }

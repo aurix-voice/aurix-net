@@ -27,6 +27,9 @@ namespace Aurix.Net.Managed
         /// <summary>Pseudo-actor whose input carries the tick's commands (see SendCommand).</summary>
         public const ushort CommandActor = 0xFFFF;
 
+        /// <summary>Longest command a tick can carry.</summary>
+        public const int MaxCommand = 251;
+
         /// <summary>Reliable command delivered to everyone at the same tick: (tick, sender actor, bytes). Raised before OnTick of that tick.</summary>
         public event Action<uint, ushort, byte[]> OnCommand;
 
@@ -322,12 +325,12 @@ namespace Aurix.Net.Managed
             );
         }
 
-        /// <summary>Reliable command outside the input stream (buy, surrender, pause): the server stamps it onto the next tick and every client and the referee get it via OnCommand, journaled and replayed. 1..1024 bytes.</summary>
+        /// <summary>Reliable command outside the input stream (buy, surrender, pause): the server stamps it onto the next tick and every client and the referee get it via OnCommand, journaled and replayed. 1..MaxCommand bytes.</summary>
         public void SendCommand(byte[] data)
         {
-            if (data == null || data.Length == 0 || data.Length > 1024)
+            if (data == null || data.Length == 0 || data.Length > MaxCommand)
             {
-                throw new ArgumentException("1..1024 bytes", nameof(data));
+                throw new ArgumentException("1.." + MaxCommand + " bytes", nameof(data));
             }
 
             var bytes = new byte[1 + data.Length];

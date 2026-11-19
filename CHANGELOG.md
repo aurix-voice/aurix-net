@@ -70,6 +70,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   random join.
 
 ### Changed
+- Lockstep: the journal keeps the inputs of a tick packed in one buffer: 72 bytes a tick
+  instead of 408 for two players with 8-byte inputs, 216 instead of 600 for eight with 16-byte
+  ones.
 - Dates: the node reads and writes dates as strict RFC 3339 through the `time` crate; its own
   parser and formatter are gone. What clients see:
   - webhook `at`, the usage and audit CSV exports and ban messages end in `Z`, as JSON already
@@ -110,6 +113,23 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   that wait for the window (`RELIABLE_BACKLOG_BYTES`); a sender that outruns its peer by more
   loses the link with `LinkError::Backlog`. `Link::new` takes the idle timeout of its carrier.
   `LinkStats::retransmits` counted first sends that had waited for the window as repeats.
+- Lockstep: a command longer than 251 bytes reached no client, and of several that came to more
+  than 255 bytes in one tick with their headers only the first ones did: the bundle carries the
+  length of an input in one byte and cut the commands of the tick to 255 bytes, while the
+  journal, the replay and the referee kept all of them. The sender heard nothing. The node now
+  refuses a command of more than 251 bytes with `invalid_request`, and commands that do not fit
+  a tick ride the next ones in order, the same for clients, the journal, the replay and the
+  referee. More than 4096 bytes of commands waiting for a tick is refused with `rate_limited`.
+  The documented 1 KB a command and 4 KB a tick never worked ([modes](docs/modes.md)).
+- Lockstep: a late joiner, a player recovering from a desync and one far behind had the whole
+  catch-up queued at once (537 KB after 5 minutes at 60 Hz), and one that took it slowly kept it
+  on the node: eight joiners that acknowledged nothing grew the node by about 90 MB in 40 s.
+  The catch-up now leaves a part at a time, each tick as many frames as keep the player's link
+  under half of its 1 MiB, and the ticks made meanwhile follow in order ([modes](docs/modes.md)).
+- Lockstep: a match whose last checkpoint was long ago, or that had none, never trimmed its
+  journal. It now keeps `MAX_JOURNAL_TICKS` (4 hours at 60 Hz) in every case, and a join the
+  journal can no longer serve is refused with `conflict` and a message that starts with
+  `no_checkpoint`.
 - Rooms: closing a room whose node did not answer was reported as done (`204` on
   `DELETE /v1/rooms/:id`, a `room.closed` webhook, `closed_rooms` of a deleted project) while
   the room went on, and a room of a deleted project stayed for good, out of the operator's
@@ -179,11 +199,17 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   so a room's replay could not be played without one: `Sync::receive` threw `disconnected` on
   every frame, and `AurixNetSync.receive` raised no `spawn` or `change`. `Sync::receive(data,
   len)` and `receive(null, frame)` apply a frame with no client.
+- Lockstep commands (all SDKs): `SendCommand` took up to 1024 bytes, but a tick carries at most
+  251. A longer command left the sender without an error and reached nobody in Web, C# and
+  Godot, and reached C and C++ games cut short, while the node's journal kept it whole. A command
+  over 251 bytes (`MAX_COMMAND`) is refused at the sender.
 - Client core (C, C++, Unity native, Godot, Unreal): what the node said while `connect` or a
   join waited for its own answer never reached the game. A game that left a room and joined the
   next at once got no `left`, and a notice, a player joining or a change of props sent during
   the join was lost. They are handed to the game after the call, in the order they came, before
   the room's cached events. Web and the managed C# client were not affected.
+- Unreal SDK: `SendCommand` checked for 1024 bytes; it refuses a command over 251 with the
+  reason in `GetLastError`.
 - Web and C# SDKs: their link gave the node up after 10 repeats of one packet, 3.3 s on a path
   with no round-trip sample yet, went on taking messages once it was dead and queued reliable
   messages without limit. It follows the rule of the node and the Rust client: lost when its

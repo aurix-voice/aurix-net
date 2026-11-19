@@ -493,6 +493,23 @@ pub fn handle_data_frame(
         }
     }
     if let Some(ls) = hosted.lockstep.as_mut() {
+        if payload.first() == Some(&crate::lockstep::KIND_COMMAND) {
+            let refused = ls.command(actor, payload.slice(1..)).err();
+            hosted
+                .room
+                .count_input(actor, payload.len(), Instant::now());
+            // The same answer on every transport: a refusal returned from here reaches only
+            // a player on the tunnel.
+            if let Some((e, session)) = refused.zip(hosted.sessions.get(&actor)) {
+                metrics.errors.with_label_values(&[e.code()]).inc();
+                let _ = session.control.try_send(ServerMsg::Error {
+                    code: e.code().to_string(),
+                    message: e.public_message(),
+                    id: None,
+                });
+            }
+            return Ok(());
+        }
         if ls.handle(actor, payload.clone()) {
             hosted
                 .room

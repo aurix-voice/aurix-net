@@ -211,6 +211,24 @@ class P
         // two calls to the backend in flight: each gets its own answer
         var first = ra.RpcAsync("first"); var second = ra.RpcAsync("second");
         if (ManagedClientTestHooks.Num(await first, "id") == ManagedClientTestHooks.Num(await second, "id")) throw new Exception("rpc: two calls in flight got the same answer");
+        // a command the node refuses comes back as a control error
+        var cmd = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-cmd"));
+        await cmd.JoinOrCreateAsync(room + "-cmd", "lockstep", 8);
+        var cmdLs = new LockstepClient((ch, b) => cmd.SendData(ch, b)); var refusals = new List<string>(); int carried = 0;
+        cmdLs.OnCommand += (t, actor, data) => carried++;
+        cmd.OnData += (ch, t, p) => cmdLs.Receive(p);
+        cmd.OnControl += json => { if (ManagedClientTestHooks.Str(json, "t") == "error") refusals.Add(ManagedClientTestHooks.Str(json, "code") + ": " + ManagedClientTestHooks.Str(json, "message")); };
+        // past the sender's own check, the way an older client would send it
+        var tooLong = new byte[2 + LockstepClient.MaxCommand]; tooLong[0] = 0x28; cmd.SendData(Channel.Reliable, tooLong);
+        until = DateTime.UtcNow.AddSeconds(2); while (DateTime.UtcNow < until && refusals.Count == 0) { cmdLs.SendInput(new byte[] { 1 }); cmd.Poll(); await Task.Delay(16); }
+        if (refusals.Count != 1 || refusals[0] != "invalid_request: invalid request: a lockstep command takes 1 to 251 bytes, got 252") throw new Exception("command over the limit: " + string.Join(" | ", refusals));
+        refusals.Clear();
+        // 40 commands of 200 bytes in one go: a tick carries one, 4096 bytes may wait, the rest is refused
+        for (int i = 0; i < 40; i++) cmdLs.SendCommand(Enumerable.Repeat((byte)i, 200).ToArray());
+        until = DateTime.UtcNow.AddSeconds(2); while (DateTime.UtcNow < until) { cmdLs.SendInput(new byte[] { 1 }); cmd.Poll(); await Task.Delay(16); }
+        if (refusals.Count == 0 || refusals.Any(r => r != "rate_limited: rate limited") || carried + refusals.Count != 40) throw new Exception($"command flood: carried={carried} refused={refusals.Count} {refusals.FirstOrDefault()}");
+        Console.WriteLine($"lockstep commands the node refuses: over the limit invalid_request, flood carried={carried} rate_limited={refusals.Count}");
+        cmd.Dispose();
         // the node takes a client out of its room: the client no longer describes it
         var gone = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-gone"));
         await gone.JoinOrCreateAsync(room + "-gone", "lockstep", 8);

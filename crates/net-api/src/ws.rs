@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// How far a lockstep catch-up may fill a player's link; the rest stays for live frames.
+const CATCHUP_BACKLOG_BYTES: usize = net_common::limits::RELIABLE_BACKLOG_BYTES / 2;
 /// A connection that has not authenticated within this window is dropped.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 /// Largest text frame accepted before `auth` succeeded (a grant is ~1 KB).
@@ -1112,6 +1114,15 @@ impl Session {
             if hr.project != grant.project {
                 return Err(NetError::NotFound("room".into()));
             }
+            if hr
+                .lockstep
+                .as_ref()
+                .is_some_and(|ls| !ls.takes_late_joiners())
+            {
+                return Err(NetError::Conflict(
+                    "no_checkpoint: the journal no longer holds the ticks after the last saved state of the match; the game has to send checkpoints to take players this late".into(),
+                ));
+            }
             // Same player from a second connection: the new session takes the slot, the old
             // one is told and ignored from here on (see `owns_slot`).
             if let Some(old) = hr.room.online_actor(&grant.player_id) {
@@ -1367,7 +1378,7 @@ pub fn attach_data(
     ds.send(net_common::Channel::ReliableOrdered, Bytes::new());
     let spectator = hosted.room.player(actor).is_some_and(|p| p.spectator);
     if let Some(ls) = hosted.lockstep.as_mut() {
-        for frame in ls.catchup_for(actor, spectator) {
+        if let Some(frame) = ls.catchup_for(actor, spectator) {
             ds.send(net_common::Channel::ReliableOrdered, frame);
         }
     }
@@ -1617,6 +1628,14 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                 ));
             }
             let master = hosted.room.master();
+            let backlogs: std::collections::HashMap<ActorId, usize> = hosted
+                .sessions
+                .iter()
+                .filter_map(|(actor, session)| {
+                    let data = session.data.as_ref().filter(|data| !data.lost())?;
+                    Some((*actor, data.backlog()))
+                })
+                .collect();
             let (bundles, desyncs, actors, ckpt_req, reports, dump_reqs, dumps) = {
                 let Some(ls) = hosted.lockstep.as_mut() else {
                     return;
@@ -1627,7 +1646,7 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                     journal_buf.push(bundle.to_vec());
                 }
                 let ckpt_req = ls.checkpoint_request();
-                let desyncs: Vec<(u32, ActorId, u8, Vec<Bytes>)> = ls
+                let desyncs: Vec<(u32, ActorId, u8, Option<Bytes>)> = ls
                     .take_desyncs()
                     .into_iter()
                     .map(|(tick, actor)| {
@@ -1636,20 +1655,23 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                         // a client that keeps lying about its hash must not make the node
                         // re-send the whole state every few ticks.
                         let resync = if strikes <= crate::lockstep::UNTRUSTED_AFTER {
-                            ls.on_desync()
+                            ls.on_desync(actor)
                         } else {
-                            Vec::new()
+                            None
                         };
                         (tick, actor, strikes, resync)
                     })
                     .collect();
                 let actors: Vec<ActorId> = ls.actors.keys().copied().collect();
-                let bundles: Vec<(ActorId, Option<Bytes>, Vec<Bytes>)> = actors
+                let bundles: Vec<(ActorId, Option<Bytes>, Option<Vec<Bytes>>)> = actors
                     .iter()
                     .copied()
                     .chain(ls.spectators())
                     .map(|actor| {
-                        let (datagram, resent) = ls.bundles_for(actor);
+                        let room = backlogs
+                            .get(&actor)
+                            .map_or(0, |held| CATCHUP_BACKLOG_BYTES.saturating_sub(*held));
+                        let (datagram, resent) = ls.bundles_for(actor, room);
                         (actor, datagram, resent)
                     })
                     .collect();
@@ -1708,8 +1730,21 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                     ds.send(net_common::Channel::ReliableOrdered, req);
                 }
             }
+            // The desynced client reloads from the master's confirmed state; the journal tail
+            // follows with the bundles.
+            for (_, actor, _, resync) in &desyncs {
+                let data = hosted.sessions.get(actor).and_then(|s| s.data.as_ref());
+                if let Some((ds, frame)) = data.zip(resync.clone()) {
+                    ds.send(net_common::Channel::ReliableOrdered, frame);
+                }
+            }
             for (actor, datagram, resent) in bundles {
                 let Some(ds) = hosted.sessions.get(&actor).and_then(|s| s.data.as_ref()) else {
+                    continue;
+                };
+                let Some(resent) = resent else {
+                    // Too slow for the journal to wait: the player comes back by rejoining.
+                    ds.close();
                     continue;
                 };
                 for frame in resent {
@@ -1725,15 +1760,9 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                     }
                 }
             }
-            for (tick, actor, strikes, resync) in desyncs {
+            for (tick, actor, strikes, _) in desyncs {
                 let untrusted = strikes >= crate::lockstep::UNTRUSTED_AFTER;
                 st.metrics.lockstep_desyncs.inc();
-                // The desynced client reloads from the master's confirmed state + journal tail.
-                if let Some(ds) = hosted.sessions.get(&actor).and_then(|s| s.data.as_ref()) {
-                    for frame in resync {
-                        ds.send(net_common::Channel::ReliableOrdered, frame);
-                    }
-                }
                 st.webhooks.emit(
                     hosted.project,
                     "desync",

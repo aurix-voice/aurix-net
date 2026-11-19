@@ -44,7 +44,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Lockstep") int64 SendInput(const TArray<uint8>& Data);
 	/** Report the state hash after simulating Tick; the cell detects desyncs and can referee. */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Lockstep") bool ReportHash(int64 Tick, int64 Hash);
-	/** Reliable command outside the input stream (buy, surrender, pause): the cell stamps it onto the next tick; everyone (and the referee) gets it at that tick via OnCommand; journaled and replayed. 1..1024 bytes. */
+	/** Reliable command outside the input stream (buy, surrender, pause): the cell stamps it onto the next tick; everyone (and the referee) gets it at that tick via OnCommand; journaled and replayed. 1..251 bytes (AURIX_NET_MAX_COMMAND); a longer one is refused: false, with the reason in the subsystem's GetLastError. */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Lockstep") bool SendCommand(const TArray<uint8>& Data);
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net|Lockstep") FAurixLockstepCommand OnCommand;
 	/** Answer a checkpoint request with the state before Tick: a late joiner loads it and gets the inputs from Tick on. */
