@@ -654,7 +654,7 @@ impl Session {
                     self.st.webhooks.emit(
                         h.project,
                         "player.left",
-                        serde_json::json!({"room": h.room.id().to_string(), "actor": actor.0}),
+                        serde_json::json!({"room": h.room.id().to_string(), "actor": actor.0, "kicked": true}),
                     );
                     if let Some(sy) = h.sync.as_mut() {
                         sy.on_leave(actor);

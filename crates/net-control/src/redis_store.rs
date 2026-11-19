@@ -104,6 +104,20 @@ impl RedisStore {
         format!("net:p:{project}:lobby")
     }
 
+    pub fn webhooks_channel(project: ProjectId) -> String {
+        format!("net:p:{project}:webhooks")
+    }
+
+    /// Tells every node that the project's webhooks changed.
+    pub async fn webhooks_changed(&self, project: ProjectId) -> Result<()> {
+        let mut c = self.conn.clone();
+        let _: () = c
+            .publish(Self::webhooks_channel(project), "")
+            .await
+            .map_err(|e| NetError::Redis(e.to_string()))?;
+        Ok(())
+    }
+
     /// Writes/refreshes a room's live record (call on every change and every 30 s).
     pub async fn put_room(&self, project: ProjectId, r: &LiveRoom) -> Result<()> {
         let mut c = self.conn.clone();

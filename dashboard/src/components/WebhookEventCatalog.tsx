@@ -12,6 +12,7 @@ export const WEBHOOK_EVENTS = [
   { name: "player.left", data: `{"room":"<uuid>","actor":3,"kicked":true}`, when: "a player left or timed out (player_ttl); kicked is present only for kicks" },
   { name: "join.validate", data: `{"room":"<uuid>","name":"ranked-7","mode":"sync","room_props":{},"player_id":"p1","player_name":"Ann","player_props":{},"spectator":false}`, when: "synchronous pre-join check: answer 2xx with {\"allow\":true} within 2 s, or {\"allow\":false,\"reason\":\"…\"} to refuse; receiver down = join refused. Subscribe explicitly (`*` does not include it)" },
   { name: "match.found", data: `{"room":"lobby-7f3a","mode":"sync","players":["p1","p2"],"tickets":["<uuid>","<uuid>"],"bots":0}`, when: "matchmaking grouped tickets (`bots` = seats the game should fill with AI when the group started short-handed); `room` is the room name the players will join with their grants (`tickets` lists the matched ticket ids)" },
+  { name: "desync", data: `{"room":"<uuid>","tick":310,"actor":3,"strikes":1,"untrusted":false}`, when: "lockstep: the state hash this actor reported for the tick differs from the majority" },
   { name: "test", data: `{"webhook":"<uuid>"}`, when: "sent by POST /v1/webhooks/:id/test or the console; ignores the event filter" },
 ] as const;
 

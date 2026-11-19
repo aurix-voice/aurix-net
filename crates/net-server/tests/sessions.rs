@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{joined, refused, Node};
+use common::{joined, refused, Node, Sink};
 use serde_json::json;
 use std::time::Duration;
 
@@ -276,4 +276,34 @@ async fn expired_offline_slot_leaves_the_others_connected() {
     bob.send(json!({"t": "set_room_props", "props": {"round": 3}}))
         .await;
     assert_eq!(alice.until("room_props").await["props"]["round"], 3);
+}
+
+#[tokio::test]
+async fn player_left_webhook_tells_a_kick_from_a_leave() {
+    let node = Node::start().await;
+    let p = node.project("kick-hook").await;
+    let mut sink = Sink::start().await;
+    let (status, reply) = p
+        .api
+        .post(
+            "/v1/webhooks",
+            json!({"url": sink.url, "events": ["player.left"]}),
+        )
+        .await;
+    assert_eq!(status, 200, "{reply}");
+    let mut alice = p.player("alice").await;
+    let master = joined(&alice.call(json!({"t": "create", "name": "arena"})).await);
+    let mut bob = p.player("bob").await;
+    let kicked = joined(&bob.call(json!({"t": "join", "name": "arena"})).await);
+    alice.until("player_joined").await;
+
+    alice.send(json!({"t": "kick", "actor": kicked})).await;
+    let data = sink.next("player.left").await["data"].clone();
+    assert_eq!(data["actor"], kicked);
+    assert_eq!(data["kicked"], true, "{data}");
+
+    alice.send(json!({"t": "leave"})).await;
+    let data = sink.next("player.left").await["data"].clone();
+    assert_eq!(data["actor"], master);
+    assert!(data.get("kicked").is_none(), "{data}");
 }

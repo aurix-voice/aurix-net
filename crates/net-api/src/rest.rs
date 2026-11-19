@@ -365,6 +365,7 @@ async fn op_create_alert_webhook(
     let secret = ApiKeyMaterial::generate().plaintext;
     let row = queries::insert_operator_webhook(&st.pool, &req.url, &secret, &req.events, &op.actor)
         .await?;
+    webhooks_changed(&st, Uuid::nil()).await;
     audit_log(
         &st,
         None,
@@ -388,7 +389,7 @@ async fn op_delete_alert_webhook(
     if !queries::delete_operator_webhook(&st.pool, id).await? {
         return Err(NetError::NotFound("webhook not found".into()).into());
     }
-    st.webhooks.invalidate(ProjectId::from_uuid(Uuid::nil()));
+    webhooks_changed(&st, Uuid::nil()).await;
     audit_log(
         &st,
         None,
@@ -638,6 +639,15 @@ async fn audit_log(
 ) {
     if let Err(e) = queries::audit(&st.pool, project, actor, action, target, details).await {
         tracing::warn!(error = %e, action, "audit insert failed");
+    }
+}
+
+/// Drops this node's copy of the project's webhooks and tells the other nodes to drop theirs.
+async fn webhooks_changed(st: &Shared, project: Uuid) {
+    let project = ProjectId::from_uuid(project);
+    st.webhooks.invalidate(project).await;
+    if let Err(e) = st.redis.webhooks_changed(project).await {
+        tracing::warn!(%project, error = %e, "other nodes not told of a webhook change");
     }
 }
 
@@ -2267,6 +2277,7 @@ async fn create_webhook(
     let secret = ApiKeyMaterial::generate().plaintext;
     let row =
         queries::insert_webhook(&st.pool, key.project_id, &req.url, &secret, &req.events).await?;
+    webhooks_changed(&st, key.project_id).await;
     audit_log(
         &st,
         Some(key.project_id),
@@ -2296,6 +2307,7 @@ async fn delete_webhook(
 ) -> ApiResult<StatusCode> {
     let key = api_key(&st, &h, Scope::Admin).await?;
     if queries::delete_webhook(&st.pool, key.project_id, id).await? {
+        webhooks_changed(&st, key.project_id).await;
         audit_log(
             &st,
             Some(key.project_id),
@@ -2509,7 +2521,7 @@ async fn rotate_webhook(
     let row = queries::rotate_webhook_secret(&st.pool, project, wid, &secret, grace)
         .await?
         .ok_or_else(|| NetError::NotFound("webhook not found".into()))?;
-    st.webhooks.invalidate(ProjectId::from_uuid(project));
+    webhooks_changed(st, project).await;
     audit_log(
         st,
         Some(project),
@@ -3107,6 +3119,7 @@ async fn op_delete_project(
     }
     let revoked = queries::revoke_all_api_keys(&st.pool, id).await?;
     let webhooks = queries::delete_webhooks_of_project(&st.pool, id).await?;
+    webhooks_changed(&st, id).await;
     let modules = queries::delete_modules_of_project(&st.pool, id).await?;
     let details = json!({"closed_rooms": closed, "revoked_keys": revoked, "webhooks": webhooks, "modules": modules});
     audit_log(
@@ -3540,6 +3553,7 @@ async fn op_delete_webhook(
 ) -> ApiResult<StatusCode> {
     let op = operator(&st, &h).await?;
     if queries::delete_webhook(&st.pool, id, wid).await? {
+        webhooks_changed(&st, id).await;
         audit_log(
             &st,
             Some(id),
@@ -3598,7 +3612,7 @@ async fn op_create_webhook(
     crate::webhooks::validate_events(&req.events)?;
     let secret = ApiKeyMaterial::generate().plaintext;
     let row = queries::insert_webhook(&st.pool, id, &req.url, &secret, &req.events).await?;
-    st.webhooks.invalidate(ProjectId::from_uuid(id));
+    webhooks_changed(&st, id).await;
     audit_log(
         &st,
         Some(id),

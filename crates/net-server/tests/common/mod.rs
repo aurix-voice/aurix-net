@@ -299,17 +299,17 @@ pub fn refused(reply: &Value, code: &str) {
 /// Receives the node's webhook deliveries on a local port.
 pub struct Sink {
     pub url: String,
-    rx: tokio::sync::mpsc::UnboundedReceiver<Value>,
+    rx: tokio::sync::mpsc::UnboundedReceiver<(axum::http::HeaderMap, Value)>,
 }
 
 impl Sink {
     pub async fn start() -> Sink {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let app = axum::Router::new().fallback(axum::routing::post(
-            move |axum::Json(body): axum::Json<Value>| {
+            move |headers: axum::http::HeaderMap, axum::Json(body): axum::Json<Value>| {
                 let tx = tx.clone();
                 async move {
-                    let _ = tx.send(body);
+                    let _ = tx.send((headers, body));
                 }
             },
         ));
@@ -325,14 +325,23 @@ impl Sink {
 
     /// The next delivery of `event`: the whole body (`event`, `project`, `at`, `data`).
     pub async fn next(&mut self, event: &str) -> Value {
+        self.next_with_headers(event).await.1
+    }
+
+    pub async fn next_with_headers(&mut self, event: &str) -> (axum::http::HeaderMap, Value) {
         loop {
-            let body = tokio::time::timeout(WAIT, self.rx.recv())
+            let delivery = tokio::time::timeout(WAIT, self.rx.recv())
                 .await
                 .unwrap_or_else(|_| panic!("no `{event}` webhook from the node"))
                 .expect("webhook sink closed");
-            if body["event"] == event {
-                return body;
+            if delivery.1["event"] == event {
+                return delivery;
             }
         }
+    }
+
+    /// True when nothing is delivered for `time`.
+    pub async fn quiet(&mut self, time: Duration) -> bool {
+        tokio::time::timeout(time, self.rx.recv()).await.is_err()
     }
 }

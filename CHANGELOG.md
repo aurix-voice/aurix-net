@@ -88,6 +88,16 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   for someone who had left. A ticket now leaves `searching` once: whichever of the cancel and the
   pass comes second sees that and backs off, and a room that lost a player this way is not
   started; its other tickets are matched again on the next pass.
+- Webhooks: a webhook created through the project API got no events for up to 30 seconds if the
+  project had already produced one, and a deleted webhook kept being called for as long. Both,
+  and a rotated secret, take effect at once on every node: the node that handled the request
+  tells the others through Redis.
+- Webhooks: a failed read of a project's webhook list is no longer remembered as "no webhooks".
+  After a short database outage the project's events were dropped for up to 30 seconds with
+  nothing in the log; the node now warns and keeps the list it had.
+- Webhooks: `player.left` carries `"kicked": true` when the room's master kicks a player, as
+  documented. Before this only a kick through the REST API was marked, so a backend could not tell
+  a master's kick from a player leaving.
 - Web and Unity SDKs: a reliable burst longer than 32 packets (a message over about 35 KB, or many
   reliable sends in one frame) no longer ends the connection when one packet of it is lost. The
   send window counted unacked packets instead of the span of their sequence numbers, so the node
@@ -113,6 +123,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   rooms are stated as they are (`0x10–0x2F`, in those rooms only).
 - Godot SDK: the `event` signal no longer fires for sync and lockstep frames in rooms of those
   modes. Only relay events reach it, as in the Web SDK.
+- Webhooks: `desync` can be named in a webhook's `events`. The node sent it only to webhooks
+  without an event filter and refused the name as unknown.
 - Node: `create` on the control channel holds the seats listed in `reserved`, as REST room
   creation and `join_or_create` do. The field was ignored there.
 - Console: the nodes, rooms, projects, keys and modules tables sort by a column when its header

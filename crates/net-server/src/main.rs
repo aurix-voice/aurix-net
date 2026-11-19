@@ -228,7 +228,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
-    tokio::spawn(lobby_forwarder(st.clone(), cfg.redis.clone()));
+    tokio::spawn(fleet_listener(st.clone(), cfg.redis.clone()));
     tokio::spawn(net_api::alerts::run(st.clone()));
     {
         let st = st.clone();
@@ -360,31 +360,39 @@ async fn heartbeat(st: &Arc<AppState>, http_url: &str, draining: bool) -> anyhow
     Ok(())
 }
 
-/// Forwards Redis lobby publications (from every node) to local lobby subscribers.
-async fn lobby_forwarder(st: Arc<AppState>, redis: RedisConfig) {
+/// Applies what the nodes publish in Redis: lobby changes go to the local lobby subscribers,
+/// and a change of a project's webhooks drops this node's copy of them.
+async fn fleet_listener(st: Arc<AppState>, redis: RedisConfig) {
     loop {
-        if let Err(e) = lobby_forward_once(&st, &redis).await {
-            warn!(error = %e, "lobby forwarder stopped; retrying");
+        if let Err(e) = fleet_listen_once(&st, &redis).await {
+            warn!(error = %e, "fleet listener stopped; retrying");
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
 
-async fn lobby_forward_once(st: &Arc<AppState>, redis: &RedisConfig) -> anyhow::Result<()> {
+async fn fleet_listen_once(st: &Arc<AppState>, redis: &RedisConfig) -> anyhow::Result<()> {
     use futures::StreamExt;
     let client = net_control::redis_store::redis_client(&redis.url, &redis.ca_cert)?;
     let mut ps = client.get_async_pubsub().await?;
     ps.psubscribe("net:p:*:lobby").await?;
+    ps.psubscribe("net:p:*:webhooks").await?;
     let mut stream = ps.on_message();
     while let Some(msg) = stream.next().await {
-        let channel: String = msg.get_channel_name().to_string();
-        let Some(pid) = channel
+        let Some((project, topic)) = msg
+            .get_channel_name()
             .strip_prefix("net:p:")
-            .and_then(|s| s.strip_suffix(":lobby"))
-            .and_then(|s| s.parse::<net_common::ProjectId>().ok())
+            .and_then(|s| s.split_once(':'))
         else {
             continue;
         };
+        let Ok(pid) = project.parse::<net_common::ProjectId>() else {
+            continue;
+        };
+        if topic == "webhooks" {
+            st.webhooks.invalidate(pid).await;
+            continue;
+        }
         let payload: String = match msg.get_payload() {
             Ok(p) => p,
             Err(_) => continue,

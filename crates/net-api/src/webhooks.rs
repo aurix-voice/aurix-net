@@ -4,13 +4,13 @@
 //! After a secret rotation `X-Aurix-Signature-Previous` carries the old secret's signature
 //! until the grace period ends, so receivers can switch without dropping events.
 
+use backon::{ExponentialBuilder, Retryable};
 use hmac::{Hmac, KeyInit, Mac};
 use net_common::ipnet::is_public_ip;
 use net_common::NetError;
 use net_common::ProjectId;
 use net_db::{queries, DbPool};
 use sha2::Sha256;
-use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -25,6 +25,7 @@ pub const EVENTS: &[&str] = &[
     "player.joined",
     "player.left",
     "match.found",
+    "desync",
     "rpc",
     "test",
 ];
@@ -81,12 +82,7 @@ pub struct WebhookEvent {
 #[derive(Clone)]
 pub struct Dispatcher {
     tx: mpsc::Sender<WebhookEvent>,
-    /// Projects whose hook list changed (e.g. secret rotation): the worker drops its cache for them.
-    dirty: Arc<std::sync::Mutex<HashSet<ProjectId>>>,
-    /// Hooks subscribed to `join.validate`, per project (30 s cache, dropped on `invalidate`).
-    validators: Arc<std::sync::Mutex<HashMap<ProjectId, Cached>>>,
-    /// Hooks subscribed to `rpc`, per project (same caching).
-    rpc_hooks: Arc<std::sync::Mutex<HashMap<ProjectId, Cached>>>,
+    hooks: Hooks,
     pool: Option<DbPool>,
     http: reqwest::Client,
     allow_private: bool,
@@ -132,13 +128,11 @@ impl Dispatcher {
     /// `allow_private`: development only, lets webhooks target loopback/private addresses.
     pub fn start(pool: DbPool, allow_private: bool) -> Self {
         let (tx, rx) = mpsc::channel(4096);
-        let dirty = Arc::new(std::sync::Mutex::new(HashSet::new()));
-        tokio::spawn(worker(pool.clone(), rx, allow_private, dirty.clone()));
+        let hooks = hooks_cache();
+        tokio::spawn(worker(pool.clone(), rx, allow_private, hooks.clone()));
         Self {
             tx,
-            dirty,
-            validators: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            rpc_hooks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            hooks,
             pool: Some(pool),
             http: validate_client(),
             allow_private,
@@ -150,9 +144,7 @@ impl Dispatcher {
         let (tx, _rx) = mpsc::channel(1);
         Self {
             tx,
-            dirty: Arc::new(std::sync::Mutex::new(HashSet::new())),
-            validators: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            rpc_hooks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            hooks: hooks_cache(),
             pool: None,
             http: validate_client(),
             allow_private: true,
@@ -160,16 +152,9 @@ impl Dispatcher {
     }
 
     /// Call after a project's webhooks change so the next event reloads them from the database.
-    pub fn invalidate(&self, project: ProjectId) {
-        if let Ok(mut d) = self.dirty.lock() {
-            d.insert(project);
-        }
-        if let Ok(mut v) = self.validators.lock() {
-            v.remove(&project);
-        }
-        if let Ok(mut v) = self.rpc_hooks.lock() {
-            v.remove(&project);
-        }
+    pub async fn invalidate(&self, project: ProjectId) {
+        self.hooks.fresh.invalidate(&project).await;
+        self.hooks.last_known.invalidate(&project).await;
     }
 
     /// Synchronous pre-join check (fine-grained validation): every webhook of the
@@ -185,7 +170,7 @@ impl Dispatcher {
         let Some(pool) = &self.pool else {
             return JoinVerdict::Allow;
         };
-        let hooks = match self.validator_hooks(pool, project).await {
+        let hooks = match subscribed(&self.hooks, pool, project, "join.validate").await {
             Ok(h) => h,
             Err(e) => return JoinVerdict::Unavailable(format!("validator lookup failed: {e}")),
         };
@@ -223,55 +208,6 @@ impl Dispatcher {
         JoinVerdict::Allow
     }
 
-    async fn validator_hooks(
-        &self,
-        pool: &DbPool,
-        project: ProjectId,
-    ) -> net_common::Result<Vec<Hook>> {
-        self.hooks_for(pool, project, "join.validate", &self.validators)
-            .await
-    }
-    /// Enabled hooks of `project` subscribed to `event`, cached 30 s (dropped on `invalidate`).
-    async fn hooks_for(
-        &self,
-        pool: &DbPool,
-        project: ProjectId,
-        event: &str,
-        cache: &std::sync::Mutex<HashMap<ProjectId, Cached>>,
-    ) -> net_common::Result<Vec<Hook>> {
-        if let Ok(v) = cache.lock() {
-            if let Some(c) = v.get(&project) {
-                if c.at.elapsed() < Duration::from_secs(30) {
-                    return Ok(c.hooks.clone());
-                }
-            }
-        }
-        let hooks: Vec<Hook> = queries::list_webhooks(pool, project.0)
-            .await?
-            .into_iter()
-            .filter(|r| r.enabled && r.events.iter().any(|e| e == event))
-            .map(|r| Hook {
-                id: r.id,
-                url: r.url,
-                secret: r.secret,
-                previous: r.previous_secret.filter(|_| {
-                    r.previous_secret_expires_at
-                        .is_some_and(|t| t > net_db::Timestamp::now())
-                }),
-                events: r.events,
-            })
-            .collect();
-        if let Ok(mut v) = cache.lock() {
-            v.insert(
-                project,
-                Cached {
-                    at: Instant::now(),
-                    hooks: hooks.clone(),
-                },
-            );
-        }
-        Ok(hooks)
-    }
     /// Client-initiated call into the game's backend (WebRPC): the first webhook of the
     /// project subscribed to `rpc` is POSTed `payload`; its JSON answer (≤ 16 KiB, within 5 s)
     /// goes back to the caller. One attempt: RPCs are not assumed idempotent. Lands in the
@@ -280,7 +216,7 @@ impl Dispatcher {
         let Some(pool) = &self.pool else {
             return RpcOutcome::failed(None, "rpc: no database");
         };
-        let hooks = match self.hooks_for(pool, project, "rpc", &self.rpc_hooks).await {
+        let hooks = match subscribed(&self.hooks, pool, project, "rpc").await {
             Ok(h) => h,
             Err(e) => return RpcOutcome::failed(None, format!("rpc endpoint lookup failed: {e}")),
         };
@@ -497,9 +433,83 @@ struct Hook {
     events: Vec<String>,
 }
 
-struct Cached {
-    at: Instant,
-    hooks: Vec<Hook>,
+type HookList = Arc<Vec<Hook>>;
+
+/// The webhooks of each project (the nil project: the operator's).
+#[derive(Clone)]
+struct Hooks {
+    /// Read from the database at most 30 s ago.
+    fresh: moka::future::Cache<ProjectId, HookList>,
+    /// The last list read, for deliveries while the database is away.
+    last_known: moka::future::Cache<ProjectId, HookList>,
+}
+
+fn hooks_cache() -> Hooks {
+    Hooks {
+        fresh: moka::future::Cache::builder()
+            .time_to_live(Duration::from_secs(30))
+            .build(),
+        last_known: moka::future::Cache::builder().build(),
+    }
+}
+
+/// A failed read is not kept: the next caller asks the database again.
+async fn hooks_of(
+    hooks: &Hooks,
+    pool: &DbPool,
+    project: ProjectId,
+) -> Result<HookList, Arc<NetError>> {
+    hooks
+        .fresh
+        .try_get_with(project, async {
+            let listed = if project.0.is_nil() {
+                queries::list_operator_webhooks(pool)
+                    .await?
+                    .into_iter()
+                    .map(|r| Hook {
+                        id: r.id,
+                        url: r.url,
+                        secret: r.secret,
+                        previous: None,
+                        events: r.events,
+                    })
+                    .collect()
+            } else {
+                queries::list_webhooks(pool, project.0)
+                    .await?
+                    .into_iter()
+                    .map(|r| Hook {
+                        id: r.id,
+                        url: r.url,
+                        secret: r.secret,
+                        previous: r.previous_secret.filter(|_| {
+                            r.previous_secret_expires_at
+                                .is_some_and(|t| t > net_db::Timestamp::now())
+                        }),
+                        events: r.events,
+                    })
+                    .collect()
+            };
+            let listed: HookList = Arc::new(listed);
+            hooks.last_known.insert(project, listed.clone()).await;
+            Ok(listed)
+        })
+        .await
+}
+
+/// The project's webhooks that name `event`.
+async fn subscribed(
+    hooks: &Hooks,
+    pool: &DbPool,
+    project: ProjectId,
+    event: &str,
+) -> Result<Vec<Hook>, Arc<NetError>> {
+    Ok(hooks_of(hooks, pool, project)
+        .await?
+        .iter()
+        .filter(|h| h.events.iter().any(|e| e == event))
+        .cloned()
+        .collect())
 }
 
 /// Rejects URLs a tenant must not make the node call: non-http(s), credentials in the URL,
@@ -567,65 +577,22 @@ async fn worker(
     pool: DbPool,
     mut rx: mpsc::Receiver<WebhookEvent>,
     allow_private: bool,
-    dirty: Arc<std::sync::Mutex<HashSet<ProjectId>>>,
+    hooks: Hooks,
 ) {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("reqwest");
-    let mut cache: HashMap<ProjectId, Cached> = HashMap::new();
     while let Some(ev) = rx.recv().await {
-        if dirty
-            .lock()
-            .map(|mut d| d.remove(&ev.project))
-            .unwrap_or(false)
-        {
-            cache.remove(&ev.project);
+        if ev.only.is_some() {
+            hooks.fresh.invalidate(&ev.project).await;
         }
-        let hooks = match cache.get(&ev.project) {
-            Some(c) if c.at.elapsed() < Duration::from_secs(30) && ev.only.is_none() => {
-                c.hooks.clone()
-            }
-            _ => {
-                let hooks: Vec<Hook> = if ev.project.0.is_nil() {
-                    queries::list_operator_webhooks(&pool)
-                        .await
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|r| Hook {
-                            id: r.id,
-                            url: r.url,
-                            secret: r.secret,
-                            previous: None,
-                            events: r.events,
-                        })
-                        .collect()
-                } else {
-                    queries::list_webhooks(&pool, ev.project.0)
-                        .await
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|r| Hook {
-                            id: r.id,
-                            url: r.url,
-                            secret: r.secret,
-                            previous: r.previous_secret.filter(|_| {
-                                r.previous_secret_expires_at
-                                    .is_some_and(|t| t > net_db::Timestamp::now())
-                            }),
-                            events: r.events,
-                        })
-                        .collect()
-                };
-                cache.insert(
-                    ev.project,
-                    Cached {
-                        at: Instant::now(),
-                        hooks: hooks.clone(),
-                    },
-                );
-                hooks
+        let hooks = match hooks_of(&hooks, &pool, ev.project).await {
+            Ok(hooks) => hooks,
+            Err(e) => {
+                tracing::warn!(project = %ev.project, event = %ev.event, error = %e, "webhook list unavailable");
+                hooks.last_known.get(&ev.project).await.unwrap_or_default()
             }
         };
         if hooks.is_empty() {
@@ -649,7 +616,7 @@ async fn worker(
             secret,
             previous,
             events,
-        } in hooks
+        } in hooks.iter().cloned()
         {
             match ev.only {
                 Some(only) if only != id => continue,
@@ -727,7 +694,7 @@ struct Outcome {
     error: Option<String>,
 }
 
-/// Up to three attempts with backoff; 4xx stops early (the receiver rejected it on purpose).
+/// Up to three attempts, 0.5 s and 1 s apart; 4xx stops early (the receiver rejected it on purpose).
 async fn deliver(
     http: &reqwest::Client,
     url: &str,
@@ -747,55 +714,76 @@ async fn deliver(
             error: Some("target is not a public host".into()),
         };
     }
-    let mut last_err = None;
-    let mut status = None;
-    for attempt in 0..3u32 {
-        let mut req = http
-            .post(url)
-            .header("content-type", "application/json")
-            .header("x-aurix-event", event)
-            .header("x-aurix-signature", sig);
-        if let Some(p) = sig_prev {
-            req = req.header("x-aurix-signature-previous", p);
-        }
-        let r = req.body(body.to_string()).send().await;
-        match r {
-            Ok(resp) if resp.status().is_success() => {
-                return Outcome {
-                    ok: true,
-                    status: Some(resp.status().as_u16() as i16),
-                    attempts: attempt as i16 + 1,
-                    error: None,
-                };
+    let mut attempts = 0;
+    let sent = (|| {
+        attempts += 1;
+        attempt(http, url, event, sig, sig_prev, body)
+    })
+    .retry(
+        ExponentialBuilder::default()
+            .with_min_delay(Duration::from_millis(500))
+            .with_max_times(2),
+    )
+    .when(|refused| refused.again)
+    .await;
+    match sent {
+        Ok(status) => Outcome {
+            ok: true,
+            status: Some(status),
+            attempts,
+            error: None,
+        },
+        Err(refused) => {
+            if refused.again {
+                tracing::debug!(%url, event, "webhook gave up");
+            } else {
+                tracing::debug!(%url, status = ?refused.status, "webhook rejected");
             }
-            Ok(resp) if resp.status().is_client_error() => {
-                tracing::debug!(%url, status = %resp.status(), "webhook rejected");
-                return Outcome {
-                    ok: false,
-                    status: Some(resp.status().as_u16() as i16),
-                    attempts: attempt as i16 + 1,
-                    error: Some(format!("receiver answered {}", resp.status())),
-                };
+            Outcome {
+                ok: false,
+                status: refused.status,
+                attempts,
+                error: Some(refused.error),
             }
-            Ok(resp) => {
-                status = Some(resp.status().as_u16() as i16);
-                last_err = Some(format!("receiver answered {}", resp.status()));
-            }
-            Err(e) => {
-                status = None;
-                last_err = Some(describe_err(&e));
-            }
-        }
-        if attempt < 2 {
-            tokio::time::sleep(Duration::from_millis(500 * (1 << attempt))).await;
         }
     }
-    tracing::debug!(%url, event, "webhook gave up");
-    Outcome {
-        ok: false,
-        status,
-        attempts: 3,
-        error: last_err,
+}
+
+/// A failed attempt; `again` when another one is worth it.
+struct Refused {
+    status: Option<i16>,
+    error: String,
+    again: bool,
+}
+
+async fn attempt(
+    http: &reqwest::Client,
+    url: &str,
+    event: &str,
+    sig: &str,
+    sig_prev: Option<&str>,
+    body: &str,
+) -> Result<i16, Refused> {
+    let mut req = http
+        .post(url)
+        .header("content-type", "application/json")
+        .header("x-aurix-event", event)
+        .header("x-aurix-signature", sig);
+    if let Some(p) = sig_prev {
+        req = req.header("x-aurix-signature-previous", p);
+    }
+    match req.body(body.to_string()).send().await {
+        Ok(resp) if resp.status().is_success() => Ok(resp.status().as_u16() as i16),
+        Ok(resp) => Err(Refused {
+            status: Some(resp.status().as_u16() as i16),
+            error: format!("receiver answered {}", resp.status()),
+            again: !resp.status().is_client_error(),
+        }),
+        Err(e) => Err(Refused {
+            status: None,
+            error: describe_err(&e),
+            again: true,
+        }),
     }
 }
 
@@ -930,6 +918,12 @@ mod tests {
             .await
             .error
             .is_some());
+    }
+
+    #[test]
+    fn desync_can_be_subscribed_to() {
+        assert!(super::validate_events(&["desync".to_string()]).is_ok());
+        assert!(super::validate_events(&["nope".to_string()]).is_err());
     }
 
     #[test]
