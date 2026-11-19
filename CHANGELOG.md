@@ -166,6 +166,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   so a room's replay could not be played without one: `Sync::receive` threw `disconnected` on
   every frame, and `AurixNetSync.receive` raised no `spawn` or `change`. `Sync::receive(data,
   len)` and `receive(null, frame)` apply a frame with no client.
+- Client core (C, C++, Unity native, Godot, Unreal): what the node said while `connect` or a
+  join waited for its own answer never reached the game. A game that left a room and joined the
+  next at once got no `left`, and a notice, a player joining or a change of props sent during
+  the join was lost. They are handed to the game after the call, in the order they came, before
+  the room's cached events. Web and the managed C# client were not affected.
 - Unity SDK (native client): `Client.JoinOrCreate` had no `lobbyProps`, so a room it created
   published no props, and neither a room list nor a random join with an `expr` found it. It
   takes them as the managed client does.

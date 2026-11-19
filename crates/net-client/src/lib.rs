@@ -140,7 +140,8 @@ pub struct Client {
     ctl: mpsc::Sender<Message>,
     events: mpsc::Receiver<Event>,
     events_tx: mpsc::Sender<Event>,
-    /// Events the room kept for late joiners, handed out before anything from the data path.
+    /// Events handed out before anything newer: what the node said while a call waited for its
+    /// own answer, then the events the room kept for late joiners.
     replay: VecDeque<Event>,
     /// One lost connection is reported once, whichever of the link, the data path and the
     /// control channel notices it first.
@@ -310,6 +311,7 @@ impl Client {
             .await?;
         // wait for Authed (or Error)
         let deadline = tokio::time::Instant::now() + client.opts.connect_timeout;
+        let mut passed = VecDeque::new();
         loop {
             match client.answer_by(deadline).await? {
                 Event::Control(ServerMsg::Authed { .. }) => break,
@@ -319,9 +321,10 @@ impl Client {
                 Event::Control(ServerMsg::Error { code, message, .. }) => {
                     return Err(ClientError::Server { code, message })
                 }
-                _ => continue,
+                event => passed.push_back(event),
             }
         }
+        client.replay = passed;
         Ok(client)
     }
 
@@ -401,13 +404,16 @@ impl Client {
 
     pub async fn join(&mut self, msg: ClientMsg) -> Result<Joined> {
         self.last_join = Some(msg.clone());
-        self.replay.clear();
+        // what the room before this one sent is not the new room's
+        self.replay
+            .retain(|event| !matches!(event, Event::Data { .. }));
         self.lost = false;
         self.send(msg).await?;
         let deadline = tokio::time::Instant::now() + self.opts.connect_timeout;
-        let (joined, cached) = loop {
-            match self.answer_by(deadline).await? {
-                Event::Control(ServerMsg::Joined {
+        let mut passed = VecDeque::new();
+        let answer = loop {
+            match self.answer_by(deadline).await {
+                Ok(Event::Control(ServerMsg::Joined {
                     room,
                     name,
                     mode,
@@ -424,7 +430,7 @@ impl Client {
                     next_spawn_tag,
                     cached,
                     ..
-                }) => {
+                })) => {
                     let joined = Joined {
                         room,
                         name,
@@ -441,38 +447,40 @@ impl Client {
                         next_spawn_tag,
                         data,
                     };
-                    break (joined, cached);
+                    break Ok((joined, cached));
                 }
-                Event::Control(ServerMsg::Error { code, message, .. }) => {
-                    return Err(ClientError::Server { code, message })
+                Ok(Event::Control(ServerMsg::Error { code, message, .. })) => {
+                    break Err(ClientError::Server { code, message })
                 }
-                _ => continue,
+                Ok(Event::Data { .. } | Event::DataReady) => {}
+                Ok(event) => passed.push_back(event),
+                Err(error) => break Err(error),
             }
         };
+        self.keep(passed);
+        let (joined, cached) = answer?;
         // the room announces the avatar as soon as the data path is up
         self.avatar = None;
         self.open_data(&joined.data).await?;
-        self.replay = cached
-            .into_iter()
-            .filter_map(|(code, from, data)| {
-                let payload = base64::engine::general_purpose::STANDARD
-                    .decode(data)
-                    .ok()?;
-                let frame = EventFrame {
-                    code,
-                    target: EventTarget::Others,
-                    cache: CacheOp::Add,
-                    group: None,
-                    from,
-                    payload: payload.into(),
-                };
-                Some(Event::Data {
-                    channel: Channel::ReliableOrdered,
-                    tick: 0,
-                    payload: frame.encode(),
-                })
+        let cached = cached.into_iter().filter_map(|(code, from, data)| {
+            let payload = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .ok()?;
+            let frame = EventFrame {
+                code,
+                target: EventTarget::Others,
+                cache: CacheOp::Add,
+                group: None,
+                from,
+                payload: payload.into(),
+            };
+            Some(Event::Data {
+                channel: Channel::ReliableOrdered,
+                tick: 0,
+                payload: frame.encode(),
             })
-            .collect();
+        });
+        self.replay.extend(cached);
         self.joined = Some(joined.clone());
         Ok(joined)
     }
@@ -586,11 +594,23 @@ impl Client {
         self.data = Some(dp);
         // wait for the server's empty ack frame
         let deadline = tokio::time::Instant::now() + self.opts.connect_timeout;
-        loop {
-            if let Event::DataReady = self.answer_by(deadline).await? {
-                return Ok(());
+        let mut passed = VecDeque::new();
+        let ready = loop {
+            match self.answer_by(deadline).await {
+                Ok(Event::DataReady) => break Ok(()),
+                Ok(event) => passed.push_back(event),
+                Err(error) => break Err(error),
             }
-        }
+        };
+        self.keep(passed);
+        ready
+    }
+
+    /// Hands the game what a call read while it waited for its own answer, in the order it came
+    /// and before anything newer.
+    fn keep(&mut self, mut passed: VecDeque<Event>) {
+        passed.append(&mut self.replay);
+        self.replay = passed;
     }
 
     /// The next event while a call waits for the node's answer: the wait ends with the
