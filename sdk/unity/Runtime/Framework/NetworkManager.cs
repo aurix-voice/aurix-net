@@ -1609,11 +1609,20 @@ namespace Aurix.Net.Unity.Framework
         }
 
         // ---- framing ----
+        const int MaxMessage = 65535;
+
         void Send(int actor, Msg kind, Action<BitWriter> write)
         {
             var writer = new BitWriter();
             write(writer);
             var body = writer.Finish();
+            if (body.Length > MaxMessage)
+            {
+                throw new NetException(
+                    $"{kind} message of {body.Length} bytes is over the {MaxMessage}-byte limit; send large data with SyncBigData"
+                );
+            }
+
             var buf =
                 actor < 0
                     ? _toServer

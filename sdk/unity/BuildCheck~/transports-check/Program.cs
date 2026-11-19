@@ -9,6 +9,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Threading.Tasks;
+using Nito.AsyncEx;
 
 interface IDriver
 {
@@ -186,7 +187,10 @@ static class Program
         return ok;
     }
 
-    static async Task<int> Main()
+    // The engine runs the SDK's continuations on its main thread; this context does the same here.
+    static int Main() => AsyncContext.Run(Run);
+
+    static async Task<int> Run()
     {
         Console.WriteLine("TRANSPORT ADAPTERS COMPILE OK: " + typeof(Aurix.Net.PurrNet.AurixNetTransport).Name + ", " + typeof(Aurix.Net.MirrorTransport.AurixNetMirrorTransport).Name + ", " + typeof(Aurix.Net.FishNetTransport.AurixNetFishNetTransport).Name);
         var key = Environment.GetEnvironmentVariable("NET_API_KEY");

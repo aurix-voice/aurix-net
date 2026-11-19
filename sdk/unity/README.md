@@ -126,8 +126,13 @@ compilation by the weaver in `Editor/CodeGen` (an `ILPostProcessor`): calling
 `CmdHit(10)` sends the RPC and the body runs where it should; without the weaver (or from code you do
 not own) use `Rpc(nameof(CmdHit), 10)` / `RpcTo(player, …)`. Interest management: add `INetworkVisibilityRule`s to `NetworkManager.visibilityRules` (e.g. `new DistanceRule(manager, 50f)`) or set `NetworkIdentity.visibilityRule`; clients only hold objects they can see. Client-side prediction: derive from `PredictedBehaviour<INPUT, STATE>`, implement `GetInput`, a deterministic `Simulate(input, ref state, dt)` and `SetUnityState`; the owner predicts and reconciles, the server verifies, observers interpolate. Static RPCs work too: put `[ServerRpc]`/`[ObserversRpc]`/`[TargetRpc]` on a static method of any class (no NetworkIdentity needed); they route through `NetworkManager.main`. Lag compensation: add `ColliderRollback` to hittable objects and wrap server-side hit checks in `networkManager.Rollback(info.sender, () => Physics.Raycast(...))`. `StartAuto()` is quick match: join a random open room (`matchFilterJson`, `matchExpr`) or host a new one with `roomPropsJson`. Host migration is on by default: if the host leaves, the new room master becomes the server with the world it can see and the others re-attach.
 
+One framework message (an RPC call, a state update of one object) holds up to 65535 bytes; a larger one
+throws `NetException` where it is sent. `SyncBigData` streams larger payloads in chunks.
+
 Check without Unity: `cd BuildCheck~/framework-check && NET_API_KEY=an_… dotnet run -c Release`;
 with `NET_SLOW_HTTP` (a delaying proxy, see `sdk/cpp/README.md`) it also runs prediction over the slow link.
+Like the transport check below, it runs on a single-threaded synchronization context, so the SDK's
+`async` continuations come back to the thread that pumps `NetworkUpdate`, as they do in the engine.
 
 More of the framework, all covered by `BuildCheck~/framework-check` against a live node: generic RPCs (`Show<T>(T v)`),
 static RPCs on any class, `compression:`/`deltaPack:` RPC options, `StateMachine`/`StateNode<T>`, `NetworkLOD`
@@ -192,7 +197,7 @@ a custom-schema owner room (vec3/quat/string/u8 decode, acks with 0 gaps) and a 
 (identical confirmed input streams on 3 clients, late join catch-up from the master's checkpoint). The Unity layer is
 compiled there against `Stubs/UnityEngine.cs`; the real editor build is a separate step.
 With `NET_SLOW_HTTP` set (a delaying proxy, see `sdk/cpp/README.md`) it also leaves a room and joins
-another one over the slow link.
+another one over the slow link, and drives a `NetRunner` whose owner moves every tick.
 
 Lockstep tuning: `Runner.Lockstep.InputDelay` adapts between `InputDelayMin`/`InputDelayMax` from the node's
 input-margin reports (late inputs raise it at once to cover the round trip, steady slack lowers it again;

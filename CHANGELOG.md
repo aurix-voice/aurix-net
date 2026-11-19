@@ -131,6 +131,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   restored and the room saw a desync at every hash, 30 in 12 s; now it is restored at the
   first one. A late joiner whose `Catchup` comes 400 ms after its first bundles still gets
   every tick once, 3 runs of 3.
+- Unity framework: a message over 65535 bytes (an RPC with a 70 KB `byte[]`, for one) broke the
+  framing of the outgoing buffer: `NetworkUpdate` threw `ArgumentException` on every call from
+  then on and nothing else was sent. Such a message is now refused where it is sent, with a
+  `NetException` that names its size; large payloads go through `SyncBigData`.
 - SDKs, lockstep: a client that lost more than three bundle packets in a row stopped getting
   ticks for good. The clients now acknowledge every bundle frame (`0x29`), so the room resends
   from the tick they need. With 10 % of packets lost a client stalled in 5 runs of 8 in the Web

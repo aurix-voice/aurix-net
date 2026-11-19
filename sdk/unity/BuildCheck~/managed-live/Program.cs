@@ -2,10 +2,13 @@ using System.Collections.Generic;
 using System;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using Aurix.Net;
 using Aurix.Net.Managed;
+using Aurix.Net.Unity;
+using UnityEngine;
 
 class P
 {
@@ -156,7 +159,40 @@ class P
             rejoined = errors == 0 && next == 5; sf.Dispose(); sg.Dispose();
         }
         else Console.WriteLine("slow link: skipped (NET_SLOW_HTTP not set)");
-        bool ok = lsOk && schemaOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && rejoined;
+        // NetRunner over the slow link: what the owner writes every tick reaches the room in time
+        bool runnerOk = true;
+        if (slow != null)
+        {
+            var runner = new NetRunner { Settings = new NetSettings { ServerUrl = slow } };
+            await runner.ConnectAsync(await Grant(h, key, "cs-runner"));
+            await runner.JoinOrCreateAsync(room + "-runner", RoomMode.Sync);
+            var transformDef = runner.Schema.ByName("Transform");
+            var watched = new SyncWorld(runner.Schema); var reached = new HashSet<int>();
+            var watcher = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-watcher"));
+            watcher.OnData += (ch, t, p) => { var ack = watched.Receive(p); if (ack != null) watcher.SendData(Channel.Unreliable, ack); };
+            watched.OnChange += entity => { if (entity.Owner == runner.Actor && entity.Get(transformDef) is ComponentValue value) reached.Add((int)Math.Round(value.Fields[0].X)); };
+            await watcher.JoinAsync(room + "-runner", ManagedClientTestHooks.Str(runner.Client.JoinedJson, "schema_hash"));
+            // the stubs have no prefabs to instantiate, so the owner's view is bound by hand
+            NetTransform mine = null;
+            runner.World.OnSpawn += entity =>
+            {
+                if (entity.Owner != runner.Actor) return;
+                var view = new NetView { Runner = runner, Entity = entity, EntityId = entity.Id, Owner = entity.Owner };
+                mine = new NetTransform(); view.Behaviours.Add(mine); mine.Bind(view); runner.Views[entity.Id] = view;
+            };
+            var update = typeof(NetRunner).GetMethod("Update", BindingFlags.Instance | BindingFlags.NonPublic);
+            var lateUpdate = typeof(NetRunner).GetMethod("LateUpdate", BindingFlags.Instance | BindingFlags.NonPublic);
+            int moves = 0;
+            for (int step = 0; step < 420; step++)
+            {
+                if (step >= 120 && step < 360 && mine != null) mine.Position = new Vector3(++moves, 1, -2);
+                update.Invoke(runner, null); lateUpdate.Invoke(runner, null);
+                watcher.Flush(); watcher.Poll(); await Task.Delay(16);
+            }
+            Console.WriteLine($"slow link, NetRunner: owner moves that reached the room={reached.Count}/{moves}");
+            runnerOk = moves > 0 && reached.Count >= moves * 3 / 4; runner.Client.Dispose(); watcher.Dispose();
+        }
+        bool ok = lsOk && schemaOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && rejoined && runnerOk;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");
         return ok ? 0 : 1;
     }

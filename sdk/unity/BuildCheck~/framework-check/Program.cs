@@ -12,6 +12,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Threading.Tasks;
 using Aurix.Net.Unity.Framework;
+using Nito.AsyncEx;
 using UnityEngine;
 
 struct Loadout : INetSerializable
@@ -150,7 +151,10 @@ static class Program
     static void Check(bool ok, string what) { Console.WriteLine((ok ? "  ok   " : "  FAIL ") + what); if (!ok) fails++; }
     static Player P(NetworkManager m, uint oid) => m.TryGetIdentity(oid, out var id) ? ((TestIdentity)id).player : null;
 
-    static async Task<int> Main()
+    // The engine runs the SDK's continuations on its main thread; this context does the same here.
+    static int Main() => AsyncContext.Run(Run);
+
+    static async Task<int> Run()
     {
         Console.WriteLine("RPC methods woven: " + Player.Woven);
         Console.WriteLine("FRAMEWORK COMPILE OK: " + string.Join(", ", new[] { typeof(NetworkManager), typeof(NetworkIdentity), typeof(NetworkBehaviour), typeof(SyncVar<>), typeof(SyncList<>), typeof(SyncDictionary<,>) }.Select(t => t.Name)));
@@ -439,6 +443,10 @@ static class Program
             giC.g.Push(3.5f); giC.g.Push("from client");
             await Until(() => gi.g.pushed.Count == 2, 3000, hostG, cG);
             Check(gi.g.pushed.Count == 2 && gi.g.pushed[0] == cG.localPlayer + ":3.5" && gi.g.pushed[1] == cG.localPlayer + ":from client" && giC.g.pushed.Count == 0, $"generic ServerRpc with RpcInfo reached the server ({string.Join(" | ", gi.g.pushed)})");
+            bool refused = false; try { gi.g.Show(new byte[70_000]); } catch (Aurix.Net.NetException) { refused = true; }
+            int seenBefore = giC.g.seen.Count; gi.g.Show(7);
+            await Until(() => giC.g.seen.Count == seenBefore + 1, 3000, hostG, cG);
+            Check(refused && giC.g.seen.Count == seenBefore + 1 && giC.g.seen[seenBefore] is int i7 && i7 == 7, "an RPC over 65535 bytes is refused with an error and the next one still arrives");
             hostG.Stop(); cG.Stop(); await Pump(300, hostG, cG);
         }
 
