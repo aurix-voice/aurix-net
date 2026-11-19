@@ -902,16 +902,13 @@ export const distVec = (from: number[], to: number[]): number =>
 // ---------------- client glue ----------------
 import { MarginControl } from "./margin.js";
 import { Channel } from "./packet.js";
-import type { Client } from "./index.js";
+import type { Client, Joined } from "./index.js";
 
 // The room drops inputs more than 64 ticks ahead of it.
 const MAX_LEAD_TICKS = 60;
 // Frames an input rides in: its own and the next ones, as in lockstep.
 const INPUT_REDUNDANCY = 3;
 
-/** Drives a `SyncWorld` from a joined sync-room `Client`: decodes deltas, acks them, advances a render
- *  tick `interpolationTicks` behind the server and never past it, and stamps/sends owner writes or
- *  raw inputs. */
 /** The room's answer to `SyncSession.spawn`: the entity it made for `tag`, or why it made none.
  *  `tag` 0 names the avatar (`Client.avatar`). */
 export interface SpawnAnswer {
@@ -925,8 +922,14 @@ export interface SpawnAnswer {
   tick: number;
 }
 
+/** Drives a `SyncWorld` from a joined sync-room `Client`: decodes deltas, acks them, advances a render
+ *  tick `interpolationTicks` behind the server and never past it, and stamps/sends owner writes or
+ *  raw inputs. A session is of one stay in a room: once the client is out of that room it takes
+ *  nothing in and sends nothing, and the next room gets a session of its own. */
 export class SyncSession {
   readonly world: SyncWorld;
+  /** The stay this session is of: the one the client is in when the session is first used. */
+  private room?: Joined;
   /** Runs with frame time; `renderTick` is this, held at the tick of the last delta. */
   private clock = 0;
   private lastInputTick = 0;
@@ -955,7 +958,11 @@ export class SyncSession {
     this.world = new SyncWorld(
       typeof schema === "string" ? Schema.parse(schema) : schema,
     );
+    this.room = client.joined;
     client.on("data", (_ch: Channel, _tick: number, payload: Uint8Array) => {
+      if (!this.inRoom()) {
+        return;
+      }
       if (payload.length >= 7 && payload[0] === KIND_INPUT_STATS) {
         const view = new DataView(payload.buffer, payload.byteOffset);
         this.leadAdjust += this.margin.adjust(
@@ -985,6 +992,10 @@ export class SyncSession {
         this.pump();
       }
     });
+  }
+  private inRoom(): boolean {
+    this.room ??= this.client.joined;
+    return this.client.joined === this.room;
   }
   // An answer to a spawn already answered (the room answers every repeat) is not reported again.
   private takeSpawnAnswer(payload: Uint8Array): void {
@@ -1036,6 +1047,9 @@ export class SyncSession {
   // the rest waits for the next delta, and everything waits for the first one, which tells the room's tick.
   // Waiting writes and raw inputs are replaced by newer ones, ops are kept.
   private queue(body: Uint8Array, keep: boolean): number {
+    if (!this.inRoom()) {
+      throw new SyncError("the client is out of the room of this session");
+    }
     if (body.length > MAX_INPUT) {
       throw new RangeError(
         `input of ${body.length} bytes: at most ${MAX_INPUT} a tick`,

@@ -193,3 +193,46 @@ test("the round-trip probes of a sync session stay out of the control events", {
     a.close();
   }
 });
+
+test("sync room: the session of a room the client left takes nothing of the next room", { skip: !key }, async (t) => {
+  const a = await Client.connect(http, await grant("web-stay-a"));
+  const b = await Client.connect(http, await grant("web-stay-b"));
+  t.after(() => { a.close(); b.close(); });
+  const errors = [];
+  const before = globalThis.reportError;
+  globalThis.reportError = (error) => errors.push(error.message);
+  t.after(() => { globalThis.reportError = before; });
+  const sends = [];
+  const sendData = b.sendData.bind(b);
+  b.sendData = (channel, bytes) => { sends.push(bytes); return sendData(channel, bytes); };
+  // a match: both in a room of the schema, a writes its avatar, b takes a second of deltas
+  const match = async (name, schema, value) => {
+    const room = `web-stay-${name}-${process.pid}`;
+    await a.joinOrCreate(room, "sync", 4, { schema });
+    await b.joinOrCreate(room, "sync", 4, { schema });
+    const sa = new SyncSession(a, schema, 60, 2), sb = new SyncSession(b, schema, 60, 2);
+    const writing = setInterval(() => sa.sendWrites([[sa.world.schema.components[0], new ComponentValue(value)]]), 1000 / 30);
+    t.after(() => clearInterval(writing));
+    await until(`match ${name} on b`, () => sb.world.entities.size === 2);
+    const from = sb.world.serverTick;
+    sends.length = 0;
+    await until(`a second of match ${name}`, () => sb.world.serverTick >= from + 60);
+    const deltas = sb.world.serverTick - from, sent = sends.length;
+    clearInterval(writing);
+    await a.leave();
+    await b.leave();
+    return { session: sb, deltas, sent };
+  };
+  const pose = [[1, 0, 0], [0, 0, 0, 1]];
+
+  const first = await match("one", SCHEMA, pose);
+  const left = { tick: first.session.world.serverTick, entities: first.session.world.entities.size };
+  // the same schema: the first session could read the room, and must not answer it
+  const second = await match("two", SCHEMA, pose);
+  assert.ok(second.sent <= second.deltas, `${second.sent} sends for ${second.deltas} deltas: one acknowledgement each`);
+  assert.deepEqual({ tick: first.session.world.serverTick, entities: first.session.world.entities.size }, left);
+  // another schema: neither earlier session can read the room, and must not try
+  await match("three", "component Health {\n  hp: u8\n}\n", [7]);
+  assert.deepEqual(errors, []);
+  assert.throws(() => first.session.sendWrites([[first.session.world.schema.components[0], new ComponentValue(pose)]]), /out of the room/);
+});

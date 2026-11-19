@@ -194,6 +194,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Web: a `SyncSession` went on listening after the client had left its room, so in the next
+  sync room it answered every delta a second time and, when the schema was another, threw on
+  each one; under Node that ended the process. A session is now of one stay in a room: out of
+  it, it takes nothing in and sends nothing.
 - A game that left its room from a handler went on getting events of that room. Web and C#
   handed out the rest of the datagram the event had come in, so how many depended on how the
   sender's events were packed; the C library, and with it C++, Godot, the native Unity client

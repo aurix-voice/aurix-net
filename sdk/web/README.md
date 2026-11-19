@@ -39,6 +39,10 @@ setInterval(() => s.sendWrites([[tr, new ComponentValue([[x, y, z], [0, 0, 0, 1]
 function frame(dt: number) { const t = s.advance(dt); for (const [, b] of remote) draw(b.sample(t)); }
 ```
 
+A session is of one stay in a room. Once the client is out of that room, by a leave or because
+the node took it out, the session takes nothing in and sends nothing, and its `sendWrites`,
+`sendInput` and entity calls throw; the next room gets a new `SyncSession`.
+
 With a WASM `logic` module driving entities, send raw inputs (`s.sendInput(bytes)` returns the tick) and
 reconcile your own entity when its server state arrives (`onChange` where `e.owner === joined.actor`).
 The room takes one input per tick, so `sendWrites` and `sendInput` can be called every frame: the
