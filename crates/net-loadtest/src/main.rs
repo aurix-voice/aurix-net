@@ -390,7 +390,11 @@ async fn player(
     let (ws, _) = tokio_tungstenite::connect_async(ws_url).await?;
     let (mut tx, mut rx) = ws.split();
     let send = |m: &ClientMsg| Message::Text(serde_json::to_string(m).unwrap().into());
-    tx.send(send(&ClientMsg::Auth { grant })).await?;
+    tx.send(send(&ClientMsg::Auth {
+        grant,
+        supports: Vec::new(),
+    }))
+    .await?;
     let room_name = format!("lt-{}-{room}", cli.run);
     tx.send(send(&ClientMsg::JoinOrCreate {
         name: room_name,

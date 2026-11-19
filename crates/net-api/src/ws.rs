@@ -13,7 +13,7 @@ use net_auth::Grant;
 use net_common::{ActorId, NetError, ProjectId, Result, RoomId, RoomMode, SessionId};
 use net_control::redis_store::LiveRoom;
 use net_db::queries;
-use net_rooms::protocol::{ClientMsg, DataEndpoint, RoomSummary, ServerMsg};
+use net_rooms::protocol::{ClientMsg, DataEndpoint, RoomSummary, ServerMsg, UNSEQUENCED};
 use net_rooms::{EventFrame, Room, RoomConfig, RoomError};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -71,6 +71,8 @@ struct Session {
     room: Option<InRoom>,
     data: Option<Arc<DataSession>>,
     lobby: Option<ProjectId>,
+    /// From `auth.supports`.
+    unsequenced: bool,
     ip: std::net::IpAddr,
     /// Last `stats` / `find_friends` (fleet fan-out): at most one per second.
     last_lookup: Option<Instant>,
@@ -116,6 +118,7 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
         room: None,
         data: None,
         lobby: None,
+        unsequenced: false,
         ip,
         last_lookup: None,
         rpc_tokens: RPC_BURST,
@@ -125,6 +128,7 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
         session: sess.id.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         region: st.region.to_string(),
+        supports: vec![UNSEQUENCED.to_string()],
     });
 
     loop {
@@ -237,7 +241,8 @@ impl Session {
             }
         }
         match msg {
-            ClientMsg::Auth { grant } => {
+            ClientMsg::Auth { grant, supports } => {
+                self.unsequenced = supports.iter().any(|s| s == UNSEQUENCED);
                 let checked = match self.st.grants.verify(&grant) {
                     Ok(verified) => verified,
                     Err(e) => {
@@ -1122,6 +1127,7 @@ impl Session {
                     control: self.ctl.clone(),
                     session: self.id,
                     data: None,
+                    unsequenced: self.unsequenced,
                 },
             );
             self.st.webhooks.emit(

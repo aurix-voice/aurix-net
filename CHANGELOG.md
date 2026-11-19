@@ -8,6 +8,20 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 ## [Unreleased]
 
 ### Added
+- Data path: channel 4, unreliable and unsequenced. It delivers every datagram that arrives,
+  in the order it arrives, where channel 0 drops one that comes after a later one: under a
+  delay of 100±30 ms with no loss about half of the unreliable relay events were dropped
+  that way. An event picks it with `"channel": "unreliable_unsequenced"`, the Rust client
+  with `send_event_on`; channel 0 stays the default and the one for state. The node and the
+  client announce it in the new `supports` list of `hello` and `auth`, and fall back to
+  channel 0 with a peer that does not.
+- SDKs: `sendEventOn` sends a relay event on a channel of the caller's choice, which is how one
+  goes on channel 4: Web `sendEventOn`, Unity `SendEventOn`, C `aurix_net_send_event_on`, C++
+  `sendEventOn`, Godot `send_event_on`, each with the new value of its channel list
+  (`Channel.UnreliableUnsequenced`, `AURIX_NET_CH_UNRELIABLE_UNSEQUENCED`,
+  `CHANNEL_UNRELIABLE_UNSEQUENCED`). The Web and managed C# clients list `unsequenced` in `auth`
+  and send on channel 0 to a node that does not list it. In Unreal `SendEventEx` takes
+  `EAurixNetChannel::UnreliableUnsequenced`.
 - Control channel: `stats`, `find_friends` and `get_rooms` take an optional `id`, which the node
   repeats in the answer (`stats`, `friends`, `rooms`) and in the `error` that refuses that
   request; an `error` that refuses an `rpc` carries its `id` too. Two lookups in flight at once
@@ -78,6 +92,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Unreal SDK: `SendEventEx` sent an event for `EAurixNetChannel::ReliableUnordered` on the
+  reliable ordered channel. It goes on the channel it is given.
 - Web and Unity SDKs: of two `rooms`, `findFriends` or `lobbyStats` calls in flight at once the
   second got the answer to the first, and in Unity the node's refusal of one call failed every
   call in flight. Each call goes out under an id of its own now and takes the answer or the

@@ -62,7 +62,8 @@ mismatch is corrected by replaying the unconfirmed inputs on the server state (`
 Owner-authoritative rooms (no `logic`) do not need prediction: the owner's `[Sync]` values are the truth.
 
 Relay rooms (no simulation): `Runner.SendEvent(code, bytes, Target.All, reliable: true)` and
-`Runner.OnEvent`. In sync and lockstep rooms event codes `0x10–0x2F` belong to the room's own frames:
+`Runner.OnEvent`. An unreliable event that arrives after a newer one is dropped;
+`Runner.SendEventOn(Channel.UnreliableUnsequenced, code, bytes)` sends one that still arrives. In sync and lockstep rooms event codes `0x10–0x2F` belong to the room's own frames:
 an event sent with one of them is not delivered.
 
 Lockstep rooms (deterministic, every client simulates): `Runner.Lockstep` delivers confirmed inputs
@@ -199,7 +200,10 @@ compiled there against `Stubs/UnityEngine.cs`; the real editor build is a separa
 With `NET_SLOW_HTTP` set (a delaying proxy, see `sdk/cpp/README.md`) it also leaves a room and joins
 another one over the slow link, sends two room lookups at once, and drives a `NetRunner` whose owner
 moves every tick. With `NET_LOSSY_HTTP` set (the same proxy losing data frames, see
-`sdk/cpp/README.md`) it also sends single writes over the lossy link.
+`sdk/cpp/README.md`) it also sends single writes over the lossy link. With `NET_PLAIN_HTTP` set
+(the same proxy hiding the node's `supports`, see `sdk/cpp/README.md`) it also sends events for the
+unsequenced channel that have to arrive on channel 0, from the managed client and, when
+`libaurix_net` is on the library path (`LD_LIBRARY_PATH=target/release`), from the native one.
 
 Lockstep tuning: `Runner.Lockstep.InputDelay` adapts between `InputDelayMin`/`InputDelayMax` from the node's
 input-margin reports (late inputs raise it at once to cover the round trip, steady slack lowers it again;

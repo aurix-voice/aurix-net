@@ -1,11 +1,12 @@
 # @aurix/net
 
 ```ts
-import { Client } from "@aurix/net";
+import { Channel, Client } from "@aurix/net";
 const client = await Client.connect("https://<node>", grantFromYourBackend);
 client.on("event", (f) => console.log(f.code, f.from, f.payload));
 await client.joinOrCreate("lobby-1", "relay", 8);
-client.sendEvent(1, new TextEncoder().encode("hi"));   // unreliable
+client.sendEvent(1, new TextEncoder().encode("hi"));   // unreliable, a late one is dropped
+client.sendEventOn(Channel.UnreliableUnsequenced, 2, new Uint8Array([7])); // a late one still arrives
 client.flush();                                        // once per frame
 ```
 

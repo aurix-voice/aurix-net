@@ -7,7 +7,15 @@ UENUM(BlueprintType)
 enum class EAurixNetRoomMode : uint8 { Relay, Sync, Lockstep };
 
 UENUM(BlueprintType)
-enum class EAurixNetChannel : uint8 { Unreliable = 0, Reliable = 1, ReliableUnordered = 2 };
+enum class EAurixNetChannel : uint8
+{
+	/** Unreliable; a message that arrives after a newer one is dropped. */
+	Unreliable = 0,
+	Reliable = 1,
+	ReliableUnordered = 2,
+	/** Unreliable; every message that arrives is delivered, in the order of arrival. */
+	UnreliableUnsequenced = 4
+};
 
 UENUM(BlueprintType)
 enum class EAurixNetTarget : uint8 { All = 0, Others = 1, Master = 2 };

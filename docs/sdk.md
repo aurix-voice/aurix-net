@@ -15,6 +15,22 @@ All SDKs share one shape: `connect(http, grant)` → `joinOrCreate/join` → per
 `sendEvent/sendData`, `flush()`; events `control` (JSON), `event` (relay frame), `data` (raw
 sync/lockstep frames), `closed`. Grants always come from the developer's backend.
 
+`sendEvent` chooses between reliable and unreliable; `sendEventOn` takes the channel, which is how an
+event goes on the unsequenced one (docs/modes.md):
+
+| SDK | Call |
+|---|---|
+| Web | `client.sendEventOn(Channel.UnreliableUnsequenced, code, payload)` |
+| Unity | `client.SendEventOn(Channel.UnreliableUnsequenced, code, payload)`, also on `NetRunner` |
+| C | `aurix_net_send_event_on(client, AURIX_NET_CH_UNRELIABLE_UNSEQUENCED, code, ...)` |
+| C++ | `client.sendEventOn(Channel::UnreliableUnsequenced, code, data, len)` |
+| Godot | `net.send_event_on(AurixNetClient.CHANNEL_UNRELIABLE_UNSEQUENCED, code, payload)` |
+| Unreal | `SendEventEx` with `EAurixNetChannel::UnreliableUnsequenced` |
+| Rust | `client.send_event_on(Channel::UnreliableUnsequenced, code, ...)` |
+
+With a node that does not list `unsequenced` in its `hello` the SDK sends the same event on the
+sequenced channel. Sync and lockstep input always goes on the sequenced channel.
+
 A relay event sent with `cache: add` stays in the room for late joiners. They receive it as an
 ordinary `event` right after the join, before anything sent later (Web and the managed C# client
 mark it `cached`).

@@ -76,7 +76,7 @@ impl DataSession {
                 return;
             }
             // Unreliable messages are coalesced and leave on the next flusher pass.
-            if channel == Channel::UnreliableSequenced {
+            if !channel.is_reliable() {
                 return;
             }
             std::iter::from_fn(|| link.next_outgoing()).collect()
@@ -146,6 +146,8 @@ pub struct Attached {
     /// Control session owning this slot; a newer session of the same player replaces it.
     pub session: net_common::SessionId,
     pub data: Option<Arc<DataSession>>,
+    /// The client announced that it takes the unsequenced channel.
+    pub unsequenced: bool,
 }
 
 pub struct HostedRoom {
@@ -399,6 +401,12 @@ pub fn dispatch(hosted: &HostedRoom, out: Vec<Outgoing>, metrics: &Metrics) {
                 let Some(session) = hosted.sessions.get(&actor) else {
                     continue;
                 };
+                let channel = match channel {
+                    Channel::UnreliableUnsequenced if !session.unsequenced => {
+                        Channel::UnreliableSequenced
+                    }
+                    channel => channel,
+                };
                 metrics
                     .events
                     .with_label_values(&[channel_name(channel)])
@@ -425,6 +433,7 @@ pub fn channel_name(channel: Channel) -> &'static str {
         Channel::UnreliableSequenced => "unreliable_sequenced",
         Channel::ReliableOrdered => "reliable_ordered",
         Channel::ReliableUnordered => "reliable_unordered",
+        Channel::UnreliableUnsequenced => "unreliable_unsequenced",
     }
 }
 

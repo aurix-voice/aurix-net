@@ -13,8 +13,18 @@ decides who runs the game simulation and what travels on the data path.
 | Typical use | lobbies, turn-based, co-op, chat-like traffic | shooters, MMO-lite, anything server-authoritative | RTS, fighting, physics sims, anything that must replay bit-exactly |
 
 All modes share: WebSocket control channel, QUIC/WebTransport data path (WebSocket tunnel
-when UDP is blocked), three channels (unreliable-sequenced, reliable-ordered,
-reliable-unordered), rooms/lobby/properties/master client, grants and quotas.
+when UDP is blocked), four channels (unreliable-sequenced, unreliable-unsequenced,
+reliable-ordered, reliable-unordered), rooms/lobby/properties/master client, grants and quotas.
+
+The two unreliable channels differ in what a late datagram costs. On the sequenced one each link
+(client to node, node to receiver) numbers its own datagrams and drops one that comes after a
+newer one, so a message passed on by the node can be dropped on either link. That suits state,
+where a newer message replaces an older one (a position), and is what `sendEvent` uses. On a path
+that reorders packets it costs more than the packet loss: with 100 ± 30 ms of delay and no loss
+about half of 60 relay events a second reached the other client. Events that are all wanted (a
+shot, a hit) go on the unsequenced channel with `sendEventOn` (docs/sdk.md): it delivers every
+datagram that arrives, in the order it arrives, and under the same delay all of them arrived.
+Neither channel sends again, so a lost datagram is lost on both; reliable messages all arrive.
 
 ## Topologies
 

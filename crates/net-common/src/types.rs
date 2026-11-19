@@ -143,6 +143,8 @@ pub enum Channel {
     ReliableOrdered = 1,
     /// Delivered exactly once, any order.
     ReliableUnordered = 2,
+    /// Whatever arrives is delivered, in the order it arrives. 3 is a fragment on the wire.
+    UnreliableUnsequenced = 4,
 }
 
 impl Channel {
@@ -151,11 +153,12 @@ impl Channel {
             0 => Some(Self::UnreliableSequenced),
             1 => Some(Self::ReliableOrdered),
             2 => Some(Self::ReliableUnordered),
+            4 => Some(Self::UnreliableUnsequenced),
             _ => None,
         }
     }
     pub fn is_reliable(self) -> bool {
-        !matches!(self, Self::UnreliableSequenced)
+        matches!(self, Self::ReliableOrdered | Self::ReliableUnordered)
     }
 }
 

@@ -121,7 +121,9 @@ namespace Aurix.Net.Managed
             }
 
             _ = client.ReadLoop();
-            await client.SendControlAsync("{\"t\":\"auth\",\"grant\":" + Json.Str(grant) + "}");
+            await client.SendControlAsync(
+                "{\"t\":\"auth\",\"grant\":" + Json.Str(grant) + ",\"supports\":[\"unsequenced\"]}"
+            );
             await client.WaitForAsync("authed", timeoutMs);
             return client;
         }
@@ -349,8 +351,13 @@ namespace Aurix.Net.Managed
 
         public void SendData(Channel channel, byte[] payload)
         {
+            if (channel == Channel.UnreliableUnsequenced && !_nodeTakesUnsequenced)
+            {
+                channel = Channel.Unreliable;
+            }
+
             _link.Send(channel, payload);
-            if (channel != Channel.Unreliable)
+            if (channel == Channel.Reliable || channel == Channel.ReliableUnordered)
             {
                 FlushLink();
             }
@@ -366,10 +373,29 @@ namespace Aurix.Net.Managed
             ushort? group = null,
             CacheOp cache = CacheOp.None
         ) =>
-            SendData(
+            SendEventOn(
                 reliable || cache != CacheOp.None ? Channel.Reliable : Channel.Unreliable,
-                Event.Encode(code, payload, target, actors, group, cache)
+                code,
+                payload,
+                target,
+                actors,
+                group,
+                cache
             );
+
+        /// <summary><see cref="SendEvent"/> on a channel of the caller's choice: <see cref="Channel.Unreliable"/>
+        /// for state, where a newer event replaces an older one, <see cref="Channel.UnreliableUnsequenced"/>
+        /// for events that are all wanted. A node that does not know the unsequenced channel gets them on
+        /// the sequenced one.</summary>
+        public void SendEventOn(
+            Channel channel,
+            byte code,
+            byte[] payload,
+            Target target = Target.Others,
+            ushort[] actors = null,
+            ushort? group = null,
+            CacheOp cache = CacheOp.None
+        ) => SendData(channel, Event.Encode(code, payload, target, actors, group, cache));
 
         /// <summary>Relay event-cache slices: "increase" opens the next slice, "set" picks one, "purge" drops one slice, "purge_up_to" every slice up to index.</summary>
         public Task CacheSliceAsync(string op, ushort? index = null) =>
@@ -441,6 +467,15 @@ namespace Aurix.Net.Managed
                         {
                             ForgetRoom();
                         }
+                        if (Json.Str(text.Json, "t") == "hello")
+                        {
+                            _nodeTakesUnsequenced = Json.Lists(
+                                text.Json,
+                                "supports",
+                                "unsequenced"
+                            );
+                        }
+
                         OnControl?.Invoke(text.Json);
                         if (
                             Json.Str(text.Json, "t") == "left"
@@ -494,7 +529,9 @@ namespace Aurix.Net.Managed
                             {
                                 if (Event.TryDecode(received.Payload, out var frame))
                                 {
-                                    frame.Reliable = received.Channel != Channel.Unreliable;
+                                    frame.Reliable =
+                                        received.Channel == Channel.Reliable
+                                        || received.Channel == Channel.ReliableUnordered;
                                     OnEvent?.Invoke(frame);
                                 }
                             }
@@ -580,6 +617,7 @@ namespace Aurix.Net.Managed
         }
 
         int _requestSeq;
+        bool _nodeTakesUnsequenced;
 
         // `stats`, `find_friends`, `get_rooms` and `rpc` share the ids: an `error` repeats only the number.
         uint NextRequestId() => (uint)System.Threading.Interlocked.Increment(ref _requestSeq);
@@ -817,6 +855,12 @@ namespace Aurix.Net.Managed
 
         public static string Str(string json, string key) =>
             Field(json, key) is JValue { Type: JTokenType.String } value ? (string)value : null;
+
+        public static bool Lists(string json, string key, string item) =>
+            Field(json, key) is JArray list
+            && list.Any(entry =>
+                entry is JValue { Type: JTokenType.String } value && (string)value == item
+            );
 
         public static double Num(string json, string key) =>
             Field(json, key) is JValue { Type: JTokenType.Integer or JTokenType.Float } value

@@ -115,11 +115,51 @@ namespace Aurix.Net.Managed
             public double Started;
         }
 
-        ushort _seqTx;
+        /// <summary>The messages of one unreliable channel that leave in the next datagram.</summary>
+        sealed class Batch
+        {
+            public ushort Seq;
+            readonly List<byte[]> _messages = new List<byte[]>();
+            int _length;
+
+            public bool Fits(byte[] message) =>
+                _length + 2 + message.Length <= Packet.MaxUnfragmented;
+
+            public void Add(byte[] message)
+            {
+                _messages.Add(message);
+                _length += 2 + message.Length;
+            }
+
+            public byte[] Take()
+            {
+                if (_messages.Count == 0)
+                {
+                    return null;
+                }
+
+                var payload = new byte[_length];
+                int offset = 0;
+                foreach (var message in _messages)
+                {
+                    payload[offset++] = (byte)(message.Length >> 8);
+                    payload[offset++] = (byte)message.Length;
+                    Array.Copy(message, 0, payload, offset, message.Length);
+                    offset += message.Length;
+                }
+                _messages.Clear();
+                _length = 0;
+                return payload;
+            }
+        }
+
         bool _hasSeqRx;
         ushort _seqRx;
-        readonly List<byte[]> _batch = new List<byte[]>();
-        int _batchLen;
+        readonly SortedDictionary<byte, Batch> _batches = new SortedDictionary<byte, Batch>
+        {
+            [(byte)Channel.Unreliable] = new Batch(),
+            [(byte)Channel.UnreliableUnsequenced] = new Batch(),
+        };
         readonly Dictionary<byte, Stream> _streams = new Dictionary<byte, Stream>();
         ushort _fragId;
         readonly Dictionary<ushort, Partial> _partial = new Dictionary<ushort, Partial>();
@@ -201,15 +241,14 @@ namespace Aurix.Net.Managed
                 Pump(Now());
                 return;
             }
-            if (channel == Channel.Unreliable)
+            if (_batches.TryGetValue((byte)channel, out var batch))
             {
-                if (_batchLen + 2 + msg.Length > Packet.MaxUnfragmented)
+                if (!batch.Fits(msg))
                 {
                     FlushBatch();
                 }
 
-                _batch.Add(msg);
-                _batchLen += 2 + msg.Length;
+                batch.Add(msg);
                 return;
             }
             _streams[(byte)channel].Pending.Enqueue(msg);
@@ -218,23 +257,14 @@ namespace Aurix.Net.Managed
 
         public void FlushBatch()
         {
-            if (_batch.Count == 0)
+            foreach (var entry in _batches)
             {
-                return;
+                var payload = entry.Value.Take();
+                if (payload != null)
+                {
+                    Push(Header(entry.Key, entry.Value.Seq++, false, true), payload);
+                }
             }
-
-            var payload = new byte[_batchLen];
-            int offset = 0;
-            foreach (var message in _batch)
-            {
-                payload[offset++] = (byte)(message.Length >> 8);
-                payload[offset++] = (byte)message.Length;
-                Array.Copy(message, 0, payload, offset, message.Length);
-                offset += message.Length;
-            }
-            _batch.Clear();
-            _batchLen = 0;
-            Push(Header((byte)Channel.Unreliable, _seqTx++, false, true), payload);
         }
 
         void Pump(double now)
@@ -405,12 +435,18 @@ namespace Aurix.Net.Managed
 
             double now = Now();
             Recv++;
-            if (header.Kind == (byte)Channel.Unreliable)
+            if (_batches.ContainsKey(header.Kind))
             {
-                if (!_hasSeqRx || Packet.SeqNewer(header.Seq, _seqRx))
+                var channel = (Channel)header.Kind;
+                bool sequenced = channel == Channel.Unreliable;
+                if (!sequenced || !_hasSeqRx || Packet.SeqNewer(header.Seq, _seqRx))
                 {
-                    _hasSeqRx = true;
-                    _seqRx = header.Seq;
+                    if (sequenced)
+                    {
+                        _hasSeqRx = true;
+                        _seqRx = header.Seq;
+                    }
+
                     if (header.Batch)
                     {
                         int offset = payload.Offset,
@@ -431,7 +467,7 @@ namespace Aurix.Net.Managed
                             outp.Add(
                                 new Received
                                 {
-                                    Channel = Channel.Unreliable,
+                                    Channel = channel,
                                     Tick = header.Tick,
                                     Payload = message,
                                 }
@@ -445,7 +481,7 @@ namespace Aurix.Net.Managed
                         outp.Add(
                             new Received
                             {
-                                Channel = Channel.Unreliable,
+                                Channel = channel,
                                 Tick = header.Tick,
                                 Payload = message,
                             }

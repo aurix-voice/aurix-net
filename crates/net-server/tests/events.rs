@@ -202,3 +202,71 @@ async fn event_over_the_limit_is_dropped_and_the_connection_stays() {
     flooder.send(json!({"t": "ping", "ts": 1})).await;
     flooder.until("pong").await;
 }
+
+/// The `net_events_total` count of events sent on `channel`.
+async fn events_on(node: &Node, channel: &str) -> u64 {
+    let metrics = reqwest::get(format!("{}/metrics", node.http))
+        .await
+        .expect("metrics")
+        .text()
+        .await
+        .expect("metrics text");
+    let line = format!("net_events_total{{channel=\"{channel}\"}} ");
+    metrics
+        .lines()
+        .find_map(|l| l.strip_prefix(&line))
+        .map_or(0, |count| count.parse().expect("count"))
+}
+
+#[tokio::test]
+async fn unsequenced_event_reaches_a_client_that_takes_the_channel_on_it() {
+    use net_common::Channel;
+    use net_rooms::event::CacheOp;
+
+    let node = Node::start().await;
+    let project = node.project("relay-loose").await;
+    let mut ann = connect(&node, &project.grant("ann").await).await;
+    ann.join(msg(json!({"t": "create", "name": "arena"})))
+        .await
+        .expect("ann creates");
+    let mut bob = connect(&node, &project.grant("bob").await).await;
+    bob.join(msg(json!({"t": "join", "name": "arena"})))
+        .await
+        .expect("bob joins");
+    // A client from before the channel: its `auth` announces nothing.
+    let mut old = project.player("old").await;
+    common::joined(&old.call(json!({"t": "join", "name": "arena"})).await);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while bob.try_next_event().is_some() {}
+    old.drain(Duration::from_millis(100)).await;
+
+    for code in 1..=5 {
+        ann.send_event_on(
+            Channel::UnreliableUnsequenced,
+            code,
+            EventTarget::Others,
+            Bytes::from_static(b"shot"),
+            None,
+            CacheOp::None,
+        )
+        .expect("ann sends");
+        ann.flush();
+    }
+
+    let mut got = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while got.len() < 5 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        while let Some(event) = bob.try_next_event() {
+            if let Event::Data { channel, .. } = event {
+                got.push(channel);
+            }
+        }
+    }
+    assert_eq!(got, [Channel::UnreliableUnsequenced; 5]);
+    for code in 1..=5 {
+        assert_eq!(old.until("event").await["code"], code);
+    }
+    assert_eq!(events_on(&node, "unreliable_unsequenced").await, 5);
+    assert_eq!(events_on(&node, "unreliable_sequenced").await, 5);
+}

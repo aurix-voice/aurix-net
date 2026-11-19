@@ -412,7 +412,8 @@ pub unsafe extern "C" fn aurix_net_avatar(client: *mut AurixNetClient, entity: *
     }
 }
 
-/// Raw data-path message. channel: 0 unreliable-sequenced, 1 reliable-ordered, 2 reliable-unordered.
+/// Raw data-path message. channel: 0 unreliable-sequenced, 1 reliable-ordered, 2 reliable-unordered,
+/// 4 unreliable-unsequenced.
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_send_data(
     client: *mut AurixNetClient,
@@ -503,7 +504,40 @@ pub unsafe extern "C" fn aurix_net_send_event_ex(
     group: i32,
     cache: i32,
 ) -> i32 {
+    aurix_net_send_event_on(
+        client,
+        if reliable != 0 { 1 } else { 0 },
+        code,
+        target,
+        actors,
+        n_actors,
+        data,
+        len,
+        group,
+        cache,
+    )
+}
+/// `aurix_net_send_event_ex` on a channel of the caller's choice, numbered as in `aurix_net_send_data`:
+/// 0 for state, where a newer event replaces an older one, 4 for events that are all wanted. A node
+/// that does not take channel 4 gets its events on channel 0.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_send_event_on(
+    client: *mut AurixNetClient,
+    channel: u8,
+    code: u8,
+    target: i32,
+    actors: *const u16,
+    n_actors: usize,
+    data: *const u8,
+    len: usize,
+    group: i32,
+    cache: i32,
+) -> i32 {
     let Some(client) = client.as_ref() else {
+        return -1;
+    };
+    let Some(channel) = Channel::from_u8(channel) else {
+        set_error(ErrorCode::InvalidArgument, "bad channel");
         return -1;
     };
     let target = match target {
@@ -526,11 +560,11 @@ pub unsafe extern "C" fn aurix_net_send_event_ex(
     } else {
         Bytes::copy_from_slice(std::slice::from_raw_parts(data, len))
     };
-    match client.inner.lock().send_event_ex(
+    match client.inner.lock().send_event_on(
+        channel,
         code,
         target,
         payload,
-        reliable != 0,
         (0..=0xFFFF).contains(&group).then_some(group as u16),
         match cache {
             1 => CacheOp::Add,

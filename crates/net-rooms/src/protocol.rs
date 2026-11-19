@@ -4,12 +4,18 @@ use crate::event::{CacheOp, EventTarget};
 use net_common::{ActorId, Channel, RoomMode};
 use serde::{Deserialize, Serialize};
 
+/// In `supports` of `hello` and `auth`: the side takes [`Channel::UnreliableUnsequenced`].
+pub const UNSEQUENCED: &str = "unsequenced";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ClientMsg {
     /// First message: the join grant issued by the developer's backend.
     Auth {
         grant: String,
+        /// What the client can do beyond the base protocol, see [`UNSEQUENCED`].
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        supports: Vec<String>,
     },
     Create {
         name: Option<String>,
@@ -277,6 +283,9 @@ pub enum ServerMsg {
         session: String,
         version: String,
         region: String,
+        /// What the node can do beyond the base protocol, see [`UNSEQUENCED`].
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        supports: Vec<String>,
     },
     Authed {
         player_id: String,

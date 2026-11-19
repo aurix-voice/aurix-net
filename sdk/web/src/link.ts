@@ -18,10 +18,40 @@ const MIN_RTO = 50;
 const MAX_RTO = 2000;
 /** Packet kind of fragment packets (their own reliable stream); channels use their own value. */
 export const KIND_FRAGMENT = 3;
-const KIND_UNRELIABLE: number = Channel.Unreliable;
 const FRAG_HDR = 5;
 const FRAG_PAYLOAD = MAX_UNFRAGMENTED - FRAG_HDR;
 const MAX_MESSAGE = 64 * 1024;
+
+/** The messages of one unreliable channel that leave in the next datagram. */
+class Batch {
+  seq = 0;
+  private messages: Uint8Array[] = [];
+  private length = 0;
+
+  fits(message: Uint8Array): boolean {
+    return this.length + 2 + message.length <= MAX_UNFRAGMENTED;
+  }
+  add(message: Uint8Array) {
+    this.messages.push(message);
+    this.length += 2 + message.length;
+  }
+  take(): Uint8Array | undefined {
+    if (this.messages.length === 0) {
+      return undefined;
+    }
+    const packet = new Uint8Array(this.length);
+    let offset = 0;
+    for (const message of this.messages) {
+      packet[offset++] = message.length >> 8;
+      packet[offset++] = message.length & 0xff;
+      packet.set(message, offset);
+      offset += message.length;
+    }
+    this.messages = [];
+    this.length = 0;
+    return packet;
+  }
+}
 
 class ReliableTx {
   seq = 0;
@@ -97,13 +127,14 @@ class Stream {
   ) {}
 }
 
-/** Mirrors net-transport::Link: unreliable-sequenced batches, reliable-ordered, reliable-unordered,
- *  and fragmentation of messages up to 64 KiB over a dedicated reliable fragment stream. */
+/** Mirrors net-transport::Link: unreliable batches (sequenced and unsequenced), reliable-ordered,
+ *  reliable-unordered, and fragmentation of messages up to 64 KiB over a dedicated reliable fragment stream. */
 export class Link {
-  private seqTx = 0;
   private seqRx: number | null = null;
-  private batch: Uint8Array[] = [];
-  private batchLen = 0;
+  private batches = new Map<number, Batch>([
+    [Channel.Unreliable, new Batch()],
+    [Channel.UnreliableUnsequenced, new Batch()],
+  ]);
   private streams = new Map<number, Stream>([
     [1, new Stream(1, true)],
     [2, new Stream(2, false)],
@@ -175,34 +206,26 @@ export class Link {
       this.pump(performance.now());
       return;
     }
-    if (channel === Channel.Unreliable) {
-      if (this.batchLen + 2 + msg.length > MAX_UNFRAGMENTED) {
+    const batch = this.batches.get(channel);
+    if (batch) {
+      if (!batch.fits(msg)) {
         this.flushBatch();
       }
-      this.batch.push(msg);
-      this.batchLen += 2 + msg.length;
+      batch.add(msg);
       return;
     }
     this.streams.get(channel)!.tx.pending.push(msg);
     this.pump(performance.now());
   }
   flushBatch() {
-    if (this.batch.length === 0) {
-      return;
+    for (const [channel, batch] of this.batches) {
+      const packet = batch.take();
+      if (packet) {
+        const seq = batch.seq;
+        batch.seq = (batch.seq + 1) & 0xffff;
+        this.push(this.header(channel, seq, false, true), packet);
+      }
     }
-    const packet = new Uint8Array(this.batchLen);
-    let offset = 0;
-    for (const message of this.batch) {
-      packet[offset++] = message.length >> 8;
-      packet[offset++] = message.length & 0xff;
-      packet.set(message, offset);
-      offset += message.length;
-    }
-    this.batch = [];
-    this.batchLen = 0;
-    const seq = this.seqTx;
-    this.seqTx = (this.seqTx + 1) & 0xffff;
-    this.push(this.header(Channel.Unreliable, seq, false, true), packet);
   }
   private pump(now: number) {
     for (const stream of this.streams.values()) {
@@ -312,9 +335,17 @@ export class Link {
     const { h: header, payload } = dec;
     this.stats.recv++;
     const out: Received[] = [];
-    if (header.kind === KIND_UNRELIABLE) {
-      if (this.seqRx === null || seqNewer(header.seq, this.seqRx)) {
-        this.seqRx = header.seq;
+    if (this.batches.has(header.kind)) {
+      const channel: Channel = header.kind;
+      const sequenced = channel === Channel.Unreliable;
+      if (
+        !sequenced ||
+        this.seqRx === null ||
+        seqNewer(header.seq, this.seqRx)
+      ) {
+        if (sequenced) {
+          this.seqRx = header.seq;
+        }
         if (header.batch) {
           let offset = 0;
           while (offset + 2 <= payload.length) {
@@ -324,14 +355,14 @@ export class Link {
               break;
             }
             out.push({
-              channel: Channel.Unreliable,
+              channel,
               tick: header.tick,
               payload: payload.subarray(offset, offset + length),
             });
             offset += length;
           }
         } else {
-          out.push({ channel: Channel.Unreliable, tick: header.tick, payload });
+          out.push({ channel, tick: header.tick, payload });
         }
       } else {
         this.stats.dropped++;

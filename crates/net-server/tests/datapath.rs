@@ -202,3 +202,53 @@ async fn events_fall_back_to_the_control_channel_when_webtransport_ends() {
     }
     assert!(event.is_some(), "ann got no event after her path closed");
 }
+
+#[tokio::test]
+async fn unsequenced_event_goes_sequenced_to_a_path_whose_client_did_not_announce_it() {
+    use net_client::{Client, Options};
+    use net_rooms::event::{CacheOp, EventTarget};
+
+    let node = Node::start().await;
+    let project = node.project("datapath").await;
+    let mut ann = Client::connect(&node.http, &project.grant("ann").await, Options::default())
+        .await
+        .expect("ann connects");
+    let create = serde_json::from_value(json!({"t": "create", "name": "room"})).expect("create");
+    ann.join(create).await.expect("ann creates");
+    // A client from before the channel: its `auth` announces nothing.
+    let mut old = project.player("old").await;
+    let reply = old.call(json!({"t": "join", "name": "room"})).await;
+    joined(&reply);
+    let path = connect(&reply).await;
+    let mut link = Link::new(Instant::now());
+    path.conn.send_datagram(path.ticket.clone()).expect("send");
+    assert!(path.opened(&mut link).await, "the path did not open");
+
+    for code in 1..=5 {
+        ann.send_event_on(
+            Channel::UnreliableUnsequenced,
+            code,
+            EventTarget::Others,
+            Bytes::from_static(b"shot"),
+            None,
+            CacheOp::None,
+        )
+        .expect("ann sends");
+        ann.flush();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let mut got = Vec::new();
+    let all = async {
+        while got.len() < 5 {
+            let datagram = path.conn.read_datagram().await.expect("the path closed");
+            for message in link.receive(datagram, Instant::now()) {
+                if !message.payload.is_empty() {
+                    got.push(message.channel);
+                }
+            }
+        }
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(5), all).await;
+    assert_eq!(got, [Channel::UnreliableSequenced; 5]);
+}

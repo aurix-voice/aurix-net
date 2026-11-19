@@ -1,7 +1,7 @@
 // Two clients over the WS tunnel against a local node: NET_API_KEY=an_... node --test test/
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Client, Chat, encodeEvent } from "../dist/index.js";
+import { Channel, Client, Chat, encodeEvent } from "../dist/index.js";
 import WebSocket, { WebSocketServer } from "ws";
 import { slowLink } from "./slow-link.mjs";
 if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket; // Node < 22
@@ -161,6 +161,40 @@ test("rooms(expr) finds a room by the lobby props joinOrCreate published", { ski
   } finally {
     a.close(); b.close();
   }
+});
+
+test("events on the unsequenced channel arrive on it", { skip: !key }, async (t) => {
+  const a = await Client.connect(http, await grant("web-unseq-a"));
+  t.after(() => a.close());
+  const b = await Client.connect(http, await grant("web-unseq-b"));
+  t.after(() => b.close());
+  const room = `web-unseq-${process.pid}`;
+  await a.joinOrCreate(room, "relay", 4);
+  await b.joinOrCreate(room, "relay", 4);
+  const channels = []; b.on("data", (channel) => channels.push(channel));
+  const codes = []; b.on("event", (frame) => codes.push(frame.code));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  for (let i = 0; i < 10; i++) { a.sendEventOn(Channel.UnreliableUnsequenced, 9, new Uint8Array([i])); a.flush(); await new Promise((resolve) => setTimeout(resolve, 16)); }
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.deepEqual(codes, Array(10).fill(9));
+  assert.deepEqual(channels, Array(10).fill(Channel.UnreliableUnsequenced));
+});
+
+test("a node that does not list the unsequenced channel gets its events on the sequenced one", { skip: !key }, async (t) => {
+  const link = slowLink(http, 0); link.plainHello();
+  t.after(() => link.close());
+  const a = await Client.connect(link.url, await grant("web-plain-a"));
+  t.after(() => a.close());
+  const b = await Client.connect(http, await grant("web-plain-b"));
+  t.after(() => b.close());
+  const room = `web-plain-${process.pid}`;
+  await a.joinOrCreate(room, "relay", 4);
+  await b.joinOrCreate(room, "relay", 4);
+  const channels = []; b.on("data", (channel) => channels.push(channel));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  for (let i = 0; i < 10; i++) { a.sendEventOn(Channel.UnreliableUnsequenced, 9, new Uint8Array([i])); a.flush(); await new Promise((resolve) => setTimeout(resolve, 16)); }
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.deepEqual(channels, Array(10).fill(Channel.Unreliable));
 });
 
 test("two lookups in flight: each call gets its own answer or refusal", { skip: !key }, async () => {

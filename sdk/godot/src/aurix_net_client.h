@@ -23,6 +23,10 @@ public:
 	enum Mode { MODE_RELAY = 0,
 		MODE_SYNC = 1,
 		MODE_LOCKSTEP = 2 };
+	enum Channel { CHANNEL_UNRELIABLE = 0,
+		CHANNEL_RELIABLE = 1,
+		CHANNEL_RELIABLE_UNORDERED = 2,
+		CHANNEL_UNRELIABLE_UNSEQUENCED = 4 };
 	enum Target { TARGET_ALL = 0,
 		TARGET_OTHERS = 1,
 		TARGET_MASTER = 2 };
@@ -56,6 +60,7 @@ public:
 	bool set_view(const PackedInt64Array &viewpoints, const PackedInt64Array &interest);
 	bool set_groups(const PackedInt32Array &join, const PackedInt32Array &leave);
 	bool send_event(int code, const PackedByteArray &payload, int target = TARGET_OTHERS, bool reliable = false);
+	bool send_event_on(int channel, int code, const PackedByteArray &payload, int target = TARGET_OTHERS);
 	bool send_data(int channel, const PackedByteArray &payload);
 	void flush();
 	int poll(int max_events = 256);
@@ -79,5 +84,6 @@ public:
 
 } // namespace godot
 VARIANT_ENUM_CAST(godot::AurixNetClient::Mode);
+VARIANT_ENUM_CAST(godot::AurixNetClient::Channel);
 VARIANT_ENUM_CAST(godot::AurixNetClient::Target);
 VARIANT_ENUM_CAST(godot::AurixNetClient::ErrorCode);

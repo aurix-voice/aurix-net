@@ -97,17 +97,17 @@ rate_limited`; a failure inside the node answers 500 with `internal`, `database`
 
 ## WebSocket control channel `/ws`
 
-JSON messages, `"t"` is the type (snake_case). Client → server: `auth{grant}`,
+JSON messages, `"t"` is the type (snake_case). Client → server: `auth{grant, supports?}`,
 `create{...}`, `join{name, player_props, rejoin_actor?, schema_hash?, spectator?}`,
 `join_or_create{name, mode, max_players, props, lobby_props, region, player_props}`,
 `join_random{...}`, `leave`, `set_room_props{props, expected?, visible?, open?}`,
-`set_player_props{props, expected?}`, `event{code, data(base64), target, channel, cache, group}` (`target` is `{"kind": "all" | "others" | "master"}` or `{"kind": "actors", "actors": [..]}`, default others; `channel` is `unreliable_sequenced`, `reliable_ordered` (default) or `reliable_unordered`),
+`set_player_props{props, expected?}`, `event{code, data(base64), target, channel, cache, group}` (`target` is `{"kind": "all" | "others" | "master"}` or `{"kind": "actors", "actors": [..]}`, default others; `channel` is `unreliable_sequenced`, `reliable_ordered` (default), `reliable_unordered` or `unreliable_unsequenced`),
 `set_groups{join, leave}`, `cache_slice{op, index?}` (relay event-cache slices), `set_view{viewpoints, interest}` (sync AOI: extra viewpoints, forced entities),
 `set_master{actor}`, `kick{actor, reason}`, `lobby{subscribe}`,
 `stats{id?}` (live rooms/players per lobby), `find_friends{players, id?}` (presence of ≤ 64 players; `stats`/`find_friends` at most once per second per session),
 `get_rooms{expr?, limit?, id?}` (one-shot filtered room list, SQL-like `expr` on lobby props as in `join_random`; same one-per-second budget), `rpc{id, name, body}` (call your backend through the node, see Webhooks; body ≤ 8 KiB, 5 per second per session), `ping{ts}`.
 
-Server → client: `hello{session, version, region}`, `authed{player_id, name}`,
+Server → client: `hello{session, version, region, supports?}`, `authed{player_id, name}`,
 `joined{room, name, mode, actor, master, max_players, props, players, data, cached, schema_hash?, tick_hz?, next_spawn_tag?}`,
 `left{reason, room?}`, `player_joined{player}`, `player_left{actor, reason}`, `room_props`,
 `player_props`, `event{code, from, data}` (control fallback), `master_changed{actor}`,
@@ -133,13 +133,32 @@ the ticket. A connection that shows no valid ticket within 5 s is closed with co
 UDP is blocked send the ticket as the first binary WebSocket frame and use binary frames as
 datagrams.
 
+### Capabilities
+
+What a side can do beyond the base protocol it lists by name in `supports` of its first
+message: the node in `hello`, the client in `auth`. A side uses a capability only with a peer
+that listed it and ignores the names it does not know; a message without `supports` lists
+none. Every later addition to the protocol is announced this way.
+
+| Name | The side |
+|---|---|
+| `unsequenced` | takes channel 4 (`unreliable_unsequenced`), see Data path |
+
 ## Data path
 
 12-byte header: `u8 version, u8 kind, u16 seq, u16 ack, u32 ack_bits, u16 tick`. `kind`
-low bits = channel (0 unreliable-sequenced, 1 reliable-ordered, 2 reliable-unordered) and
-fragment flags; `0x40` has-ack, `0x20` batch (payload = `u16 len, bytes` repeated), `0x80`
-ack-only. Max datagram 1100 bytes, messages up to 64 KiB fragmented. Frames inside: relay
-event frame or a mode frame (`docs/modes.md`).
+low bits = channel (0 unreliable-sequenced, 1 reliable-ordered, 2 reliable-unordered,
+4 unreliable-unsequenced) or 3 for a fragment; `0x40` has-ack, `0x20` batch (payload =
+`u16 len, bytes` repeated), `0x80` ack-only. Max datagram 1100 bytes, messages up to 64 KiB
+fragmented. Frames inside: relay event frame or a mode frame (`docs/modes.md`).
+
+The two unreliable channels differ in what happens to a datagram that arrives after a later
+one. Channel 0 drops it: use it for state, where a newer message replaces an older one
+(a position). Channel 4 delivers everything that arrives, in the order it arrives: use it for
+events that are all wanted (a shot, a hit). A channel 4 datagram always has `0x20` set and
+counts `seq` on its own; the receiver does not check it. A client sends on channel 4 only to a
+node that listed `unsequenced`, and on channel 0 otherwise. The node passes an event on by the
+channel it came on, and by channel 0 to a client that did not list `unsequenced`.
 
 ### WebTransport (browsers)
 

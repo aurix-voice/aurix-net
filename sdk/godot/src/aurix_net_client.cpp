@@ -25,6 +25,7 @@ void AurixNetClient::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_view", "viewpoints", "interest"), &AurixNetClient::set_view, DEFVAL(PackedInt64Array()));
 	ClassDB::bind_method(D_METHOD("set_groups", "join", "leave"), &AurixNetClient::set_groups, DEFVAL(PackedInt32Array()));
 	ClassDB::bind_method(D_METHOD("send_event", "code", "payload", "target", "reliable"), &AurixNetClient::send_event, DEFVAL(TARGET_OTHERS), DEFVAL(false));
+	ClassDB::bind_method(D_METHOD("send_event_on", "channel", "code", "payload", "target"), &AurixNetClient::send_event_on, DEFVAL(TARGET_OTHERS));
 	ClassDB::bind_method(D_METHOD("send_data", "channel", "payload"), &AurixNetClient::send_data);
 	ClassDB::bind_method(D_METHOD("flush"), &AurixNetClient::flush);
 	ClassDB::bind_method(D_METHOD("poll", "max_events"), &AurixNetClient::poll, DEFVAL(256));
@@ -46,6 +47,10 @@ void AurixNetClient::_bind_methods() {
 	BIND_ENUM_CONSTANT(MODE_RELAY);
 	BIND_ENUM_CONSTANT(MODE_SYNC);
 	BIND_ENUM_CONSTANT(MODE_LOCKSTEP);
+	BIND_ENUM_CONSTANT(CHANNEL_UNRELIABLE);
+	BIND_ENUM_CONSTANT(CHANNEL_RELIABLE);
+	BIND_ENUM_CONSTANT(CHANNEL_RELIABLE_UNORDERED);
+	BIND_ENUM_CONSTANT(CHANNEL_UNRELIABLE_UNSEQUENCED);
 	BIND_ENUM_CONSTANT(TARGET_ALL);
 	BIND_ENUM_CONSTANT(TARGET_OTHERS);
 	BIND_ENUM_CONSTANT(TARGET_MASTER);
@@ -123,6 +128,9 @@ bool AurixNetClient::send_control(const String &json) {
 }
 bool AurixNetClient::send_event(int code, const PackedByteArray &payload, int target, bool reliable) {
 	AURIX_TRY(client_.sendEvent((uint8_t)code, payload.ptr(), payload.size(), (aurix::net::Target)target, reliable); return true, false);
+}
+bool AurixNetClient::send_event_on(int channel, int code, const PackedByteArray &payload, int target) {
+	AURIX_TRY(client_.sendEventOn((aurix::net::Channel)channel, (uint8_t)code, payload.ptr(), payload.size(), (aurix::net::Target)target); return true, false);
 }
 
 bool AurixNetClient::set_view(const PackedInt64Array &viewpoints, const PackedInt64Array &interest) {

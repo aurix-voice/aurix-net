@@ -22,7 +22,9 @@ var net := AurixNetClient.new(); add_child(net)   # polls in _process
 net.event.connect(func(code, from, payload): print(code, from, payload))
 net.connect_to("https://<node>", grant_from_backend)
 net.join_or_create("lobby-1", AurixNetClient.MODE_RELAY, 8)
-net.send_event(1, "hi".to_utf8_buffer()); net.flush()
+net.send_event(1, "hi".to_utf8_buffer()) # unreliable, a late one is dropped
+net.send_event_on(AurixNetClient.CHANNEL_UNRELIABLE_UNSEQUENCED, 2, PackedByteArray([7])) # a late one still arrives
+net.flush()
 ```
 
 A call that fails returns `false` or `-1`; `get_last_error()` has the text and `get_last_error_code()`

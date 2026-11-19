@@ -12,7 +12,14 @@
 
 namespace aurix::net {
 
-enum class Channel : uint8_t { Unreliable = 0, Reliable = 1, ReliableUnordered = 2 };
+/// Unreliable drops a message that arrives after a newer one; UnreliableUnsequenced delivers every
+/// message that arrives, in the order of arrival.
+enum class Channel : uint8_t {
+    Unreliable = 0,
+    Reliable = 1,
+    ReliableUnordered = 2,
+    UnreliableUnsequenced = 4
+};
 enum class Target : int32_t { All = 0, Others = 1, Master = 2, Actors = 3 };
 enum class Mode { Relay, Sync, Lockstep };
 
@@ -272,6 +279,18 @@ public:
         if (aurix_net_send_event_ex(handle_, code, (int32_t)target,
                                     actors.empty() ? nullptr : actors.data(), actors.size(), data,
                                     len, reliable ? 1 : 0, group, cache) != 0) {
+            throw Error::last();
+        }
+    }
+    /// sendEvent on a channel of the caller's choice: Channel::Unreliable for state, where a newer
+    /// event replaces an older one, Channel::UnreliableUnsequenced for events that are all wanted.
+    /// A node that does not take the unsequenced channel gets them on the sequenced one.
+    void sendEventOn(Channel channel, uint8_t code, const uint8_t* data, size_t len,
+                     Target target = Target::Others, const std::vector<uint16_t>& actors = {},
+                     int group = -1, int cache = 0) {
+        if (aurix_net_send_event_on(handle_, uint8_t(channel), code, int32_t(target),
+                                    actors.empty() ? nullptr : actors.data(), actors.size(), data,
+                                    len, group, cache) != 0) {
             throw Error::last();
         }
     }

@@ -357,8 +357,8 @@ bool UAurixNetSubsystem::SendEventEx(uint8 Code, const TArray<uint8>& Payload, E
 	}
 	const int32 NativeTarget = ActorIds.Num() ? AURIX_NET_TARGET_ACTORS : static_cast<int32>(Target);
 	const int32 NativeGroup = Group > 0 ? Group : -1;
-	return aurix_net_send_event_ex(Client, Code, NativeTarget, ActorIds.GetData(), ActorIds.Num(), Payload.GetData(), Payload.Num(),
-		Channel != EAurixNetChannel::Unreliable, NativeGroup, static_cast<int32>(Cache)) == 0;
+	return aurix_net_send_event_on(Client, static_cast<uint8>(Channel), Code, NativeTarget, ActorIds.GetData(), ActorIds.Num(),
+		Payload.GetData(), Payload.Num(), NativeGroup, static_cast<int32>(Cache)) == 0;
 }
 
 bool UAurixNetSubsystem::SetView(const TArray<int64>& Viewpoints, const TArray<int64>& Interest)

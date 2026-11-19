@@ -106,7 +106,7 @@ with loss, latency and tick reports.
 | Crate | Role |
 |---|---|
 | `net-common` | ids, errors, config, protocol limits |
-| `net-transport` | 12-byte datagram header, channels (unreliable-sequenced, reliable-ordered, reliable-unordered) with own acks/retransmits, fragmentation, batching, QUIC endpoints (pinned certs), data tickets |
+| `net-transport` | 12-byte datagram header, channels (unreliable-sequenced, unreliable-unsequenced, reliable-ordered, reliable-unordered) with own acks/retransmits, fragmentation, batching, QUIC endpoints (pinned certs), data tickets |
 | `net-auth` | API keys (SHA-256 at rest), join grants (JWT HS256), operator token |
 | `net-db` | PostgreSQL (sqlx), migrations in `migrations/` |
 | `net-control` | node registry/placement, project quotas, Redis live room directory + lobby pub/sub |

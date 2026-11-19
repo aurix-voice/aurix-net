@@ -415,6 +415,31 @@ public class ManagedCoreTests
         Assert.That(Math.Sqrt((st.X - 7.5) * (st.X - 7.5) + (st.Y - 0.5) * (st.Y - 0.5)) < 0.5, "nav: agent reached the goal (" + st.X.ToString("F2") + "," + st.Y.ToString("F2") + ")");
     }
 
+    // One datagram per message on `channel`, and what the far side delivers when they arrive in `order`.
+    static int[] Delivered(Channel channel, params int[] order)
+    {
+        var near = new Link(); var far = new Link(); var datagrams = new List<byte[]>();
+        for (int i = 0; i < 3; i++) { near.Send(channel, new[] { (byte)i }); near.FlushBatch(); while (near.TryDequeueOutgoing(out var d)) datagrams.Add(d); }
+        return order.SelectMany(i => far.Receive(datagrams[i])).Select(m => m.Channel == channel ? (int)m.Payload[0] : -1).ToArray();
+    }
+
+    [Test]
+    public void TheUnsequencedChannelDeliversWhatArrivesOutOfOrder()
+    {
+        Assert.That(Delivered(Channel.UnreliableUnsequenced, 2, 0, 1), Is.EqualTo(new[] { 2, 0, 1 }));
+        Assert.That(Delivered(Channel.Unreliable, 2, 0, 1), Is.EqualTo(new[] { 2 }));
+    }
+
+    [Test]
+    public void TheUnsequencedChannelHasADatagramAndACounterOfItsOwn()
+    {
+        var near = new Link(); var datagrams = new List<byte[]>();
+        near.Send(Channel.Unreliable, new byte[] { 1 }); near.Send(Channel.UnreliableUnsequenced, new byte[] { 2 }); near.FlushBatch();
+        while (near.TryDequeueOutgoing(out var d)) datagrams.Add(d);
+        // version 1, kind | batch flag, seq 0: each channel counts from 0
+        Assert.That(datagrams.Select(d => d.Take(4).ToArray()), Is.EqualTo(new[] { new byte[] { 1, 0x20, 0, 0 }, new byte[] { 1, 0x24, 0, 0 } }));
+    }
+
     // One packet of a 60 KB message is lost: the retransmit must still be acked and the message arrive.
     [Test]
     public void LinkTests()

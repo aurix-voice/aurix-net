@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Reflection;
@@ -171,6 +172,11 @@ class P
         for (int i = 0; i < 5; i++) ra.SendEvent(2, new byte[] { (byte)i }, Target.Others, reliable: true);
         until = DateTime.UtcNow.AddSeconds(3); while (DateTime.UtcNow < until && again < 5) { ra.Poll(); rb.Poll(); await Task.Delay(5); }
         Console.WriteLine($"second room on the same client: reliable={again}/5");
+        // events on the unsequenced channel arrive on it
+        int unsequenced = 0; rb.OnData += (channel, _, payload) => { if (channel == Channel.UnreliableUnsequenced) unsequenced++; };
+        for (int i = 0; i < 10; i++) { ra.SendEventOn(Channel.UnreliableUnsequenced, 9, new[] { (byte)i }); ra.Flush(); ra.Poll(); rb.Poll(); await Task.Delay(16); }
+        until = DateTime.UtcNow.AddSeconds(2); while (DateTime.UtcNow < until && unsequenced < 10) { ra.Poll(); rb.Poll(); await Task.Delay(5); }
+        Console.WriteLine($"unsequenced channel: events={unsequenced}/10");
         // two calls to the backend in flight: each gets its own answer
         var first = ra.RpcAsync("first"); var second = ra.RpcAsync("second");
         if (ManagedClientTestHooks.Num(await first, "id") == ManagedClientTestHooks.Num(await second, "id")) throw new Exception("rpc: two calls in flight got the same answer");
@@ -227,6 +233,46 @@ class P
             sf.Dispose(); sg.Dispose();
         }
         else Console.WriteLine("slow link: skipped (NET_SLOW_HTTP not set)");
+        // a node whose hello does not list the unsequenced channel (NET_PLAIN_HTTP, see README): events for
+        // that channel go on the sequenced one, from the managed client and from the one over the native core
+        bool fellBack = true; var plain = Environment.GetEnvironmentVariable("NET_PLAIN_HTTP");
+        if (plain != null)
+        {
+            var listener = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-plain-l"));
+            await listener.JoinOrCreateAsync(room + "-plain", "relay", 4);
+            var arrived = new Dictionary<byte, List<Channel>>();
+            listener.OnData += (channel, _, payload) =>
+            {
+                if (EventFrame.TryDecode(payload, out var f) && arrived.TryGetValue(f.Code, out var channels)) channels.Add(channel);
+            };
+            async Task<string> Sent(byte code, Action<byte> send, Action poll)
+            {
+                arrived[code] = new List<Channel>();
+                for (int i = 0; i < 10; i++) { send(code); poll(); listener.Poll(); await Task.Delay(16); }
+                until = DateTime.UtcNow.AddSeconds(2); while (DateTime.UtcNow < until && arrived[code].Count < 10) { poll(); listener.Poll(); await Task.Delay(5); }
+                return $"{arrived[code].Count}/10 on channel {string.Join(",", arrived[code].Distinct().Select(c => (int)c))}";
+            }
+            var one = new byte[] { 1 };
+            var managed = await ManagedClient.ConnectAsync(plain, await Grant(h, key, "cs-plain-m"));
+            await managed.JoinAsync(room + "-plain");
+            string viaManaged = await Sent(11, code => { managed.SendEventOn(Channel.UnreliableUnsequenced, code, one); managed.Flush(); }, () => managed.Poll());
+            managed.Dispose();
+            string viaCore, viaCoreDirect;
+            try
+            {
+                using var core = Client.Connect(plain, await Grant(h, key, "cs-plain-c"));
+                core.Join(room + "-plain");
+                viaCore = await Sent(12, code => { core.SendEventOn(Channel.UnreliableUnsequenced, code, one); core.Flush(); }, () => core.Poll());
+                using var direct = Client.Connect("http://127.0.0.1:8090", await Grant(h, key, "cs-plain-d"));
+                direct.Join(room + "-plain");
+                viaCoreDirect = await Sent(13, code => { direct.SendEventOn(Channel.UnreliableUnsequenced, code, one); direct.Flush(); }, () => direct.Poll());
+            }
+            catch (DllNotFoundException) { viaCore = viaCoreDirect = "skipped (libaurix_net is not on the library path)"; }
+            Console.WriteLine($"node without the unsequenced channel: managed={viaManaged}, native core={viaCore}; native core, node with it={viaCoreDirect}");
+            fellBack = viaManaged == "10/10 on channel 0" && (viaCore.StartsWith("skipped") || (viaCore == "10/10 on channel 0" && viaCoreDirect == "10/10 on channel 4"));
+            listener.Dispose();
+        }
+        else Console.WriteLine("node without the unsequenced channel: skipped (NET_PLAIN_HTTP not set)");
         // NetRunner over the slow link: what the owner writes every tick reaches the room in time
         bool runnerOk = true;
         if (slow != null)
@@ -260,7 +306,7 @@ class P
             Console.WriteLine($"slow link, NetRunner: owner moves that reached the room={reached.Count}/{moves}");
             runnerOk = moves > 0 && reached.Count >= moves * 3 / 4; runner.Client.Dispose(); watcher.Dispose();
         }
-        bool ok = lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && rejoined && toldApart && runnerOk;
+        bool ok = lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && runnerOk;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");
         return ok ? 0 : 1;
     }

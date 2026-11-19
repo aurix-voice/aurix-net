@@ -59,6 +59,10 @@ pub struct Link {
     /// Small unreliable messages waiting to share one datagram (`u16 len` prefixed).
     batch: BytesMut,
     batch_n: usize,
+    /// The same for the unsequenced channel, which has datagrams and a counter of its own.
+    loose: BytesMut,
+    loose_n: usize,
+    loose_tx: u16,
     stats: LinkStats,
     srtt: Option<Duration>,
     rttvar: Duration,
@@ -86,6 +90,9 @@ impl Link {
             out: VecDeque::new(),
             batch: BytesMut::with_capacity(MAX_UNFRAGMENTED),
             batch_n: 0,
+            loose: BytesMut::with_capacity(MAX_UNFRAGMENTED),
+            loose_n: 0,
+            loose_tx: 0,
             stats: LinkStats::default(),
             srtt: None,
             rttvar: Duration::ZERO,
@@ -123,7 +130,7 @@ impl Link {
             Kind::Channel(Channel::ReliableOrdered) => self.ordered_rx.ack_state(),
             Kind::Channel(Channel::ReliableUnordered) => self.unordered_rx.ack_state(),
             Kind::Fragment => self.frag_rx.ack_state(),
-            Kind::Channel(Channel::UnreliableSequenced) => None,
+            Kind::Channel(Channel::UnreliableSequenced | Channel::UnreliableUnsequenced) => None,
         }
     }
 
@@ -180,6 +187,15 @@ impl Link {
                 self.batch.extend_from_slice(&msg);
                 self.batch_n += 1;
             }
+            Channel::UnreliableUnsequenced => {
+                if self.loose.len() + 2 + msg.len() > MAX_UNFRAGMENTED {
+                    self.flush_loose();
+                }
+                self.loose
+                    .extend_from_slice(&(msg.len() as u16).to_be_bytes());
+                self.loose.extend_from_slice(&msg);
+                self.loose_n += 1;
+            }
             Channel::ReliableOrdered => {
                 for (seq, payload) in self.ordered_tx.push(msg, now) {
                     self.emit(Kind::Channel(channel), seq, &payload, false);
@@ -212,6 +228,38 @@ impl Link {
         self.stats.rtt_var = self.rttvar;
     }
 
+    /// The messages of one unreliable datagram.
+    fn unbatch(
+        &mut self,
+        channel: Channel,
+        header: &Header,
+        payload: Bytes,
+        out: &mut Vec<Received>,
+    ) {
+        if !header.batch {
+            out.push(Received {
+                channel,
+                tick: header.tick,
+                payload,
+            });
+            return;
+        }
+        let mut rest = payload;
+        while rest.len() >= 2 {
+            let len = u16::from_be_bytes([rest[0], rest[1]]) as usize;
+            rest.advance(2);
+            if rest.len() < len {
+                self.stats.decode_errors += 1;
+                break;
+            }
+            out.push(Received {
+                channel,
+                tick: header.tick,
+                payload: rest.split_to(len),
+            });
+        }
+    }
+
     /// Feeds one incoming datagram; returns messages ready for the application.
     pub fn receive(&mut self, datagram: Bytes, now: Instant) -> Vec<Received> {
         self.stats.recv_datagrams += 1;
@@ -233,31 +281,16 @@ impl Link {
                     return out;
                 }
                 if self.seq_rx.accept(header.seq) {
-                    if header.batch {
-                        let mut rest = payload;
-                        while rest.len() >= 2 {
-                            let len = u16::from_be_bytes([rest[0], rest[1]]) as usize;
-                            rest.advance(2);
-                            if rest.len() < len {
-                                self.stats.decode_errors += 1;
-                                break;
-                            }
-                            out.push(Received {
-                                channel: Channel::UnreliableSequenced,
-                                tick: header.tick,
-                                payload: rest.split_to(len),
-                            });
-                        }
-                    } else {
-                        out.push(Received {
-                            channel: Channel::UnreliableSequenced,
-                            tick: header.tick,
-                            payload,
-                        });
-                    }
+                    self.unbatch(Channel::UnreliableSequenced, &header, payload, &mut out);
                 } else {
                     self.stats.dropped_old += 1;
                 }
+            }
+            Kind::Channel(Channel::UnreliableUnsequenced) => {
+                if header.ack_only {
+                    return out;
+                }
+                self.unbatch(Channel::UnreliableUnsequenced, &header, payload, &mut out);
             }
             Kind::Channel(Channel::ReliableOrdered) => {
                 if header.has_ack {
@@ -364,18 +397,31 @@ impl Link {
         Ok(())
     }
 
-    /// Emits the pending unreliable batch as one datagram. Called by `poll()`; call it
-    /// directly when a message must leave immediately.
+    /// Emits the pending unreliable batches, a datagram for each channel. Called by `poll()`;
+    /// call it directly when a message must leave immediately.
     pub fn flush_batch(&mut self) {
-        if self.batch_n == 0 {
+        if self.batch_n > 0 {
+            let seq = self.seq_tx;
+            self.seq_tx = self.seq_tx.wrapping_add(1);
+            let mut header = self.header(Kind::Channel(Channel::UnreliableSequenced), seq, false);
+            header.batch = true;
+            let payload = self.batch.split().freeze();
+            self.batch_n = 0;
+            self.push_datagram(header, &payload);
+        }
+        self.flush_loose();
+    }
+
+    fn flush_loose(&mut self) {
+        if self.loose_n == 0 {
             return;
         }
-        let seq = self.seq_tx;
-        self.seq_tx = self.seq_tx.wrapping_add(1);
-        let mut header = self.header(Kind::Channel(Channel::UnreliableSequenced), seq, false);
+        let seq = self.loose_tx;
+        self.loose_tx = self.loose_tx.wrapping_add(1);
+        let mut header = self.header(Kind::Channel(Channel::UnreliableUnsequenced), seq, false);
         header.batch = true;
-        let payload = self.batch.split().freeze();
-        self.batch_n = 0;
+        let payload = self.loose.split().freeze();
+        self.loose_n = 0;
         self.push_datagram(header, &payload);
     }
 
@@ -461,6 +507,30 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].channel, Channel::ReliableUnordered);
         assert_eq!(got[0].payload, msg);
+    }
+
+    #[test]
+    fn unsequenced_delivers_what_arrives_in_any_order() {
+        let t0 = Instant::now();
+        let mut near = Link::new(t0);
+        let mut far = Link::new(t0);
+        for msg in [&b"1"[..], b"2", b"3"] {
+            near.send(Channel::UnreliableUnsequenced, Bytes::from_static(msg), t0)
+                .unwrap();
+            near.flush_batch();
+        }
+        let sent: Vec<Bytes> = std::iter::from_fn(|| near.next_outgoing()).collect();
+        assert_eq!(sent.len(), 3);
+        let mut got = Vec::new();
+        for datagram in [&sent[2], &sent[0], &sent[1]] {
+            got.extend(far.receive(datagram.clone(), t0));
+        }
+        let payloads: Vec<&[u8]> = got.iter().map(|m| &m.payload[..]).collect();
+        assert_eq!(payloads, [&b"3"[..], b"1", b"2"]);
+        assert!(got
+            .iter()
+            .all(|m| m.channel == Channel::UnreliableUnsequenced));
+        assert_eq!(far.stats().dropped_old, 0);
     }
 
     #[test]

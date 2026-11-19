@@ -566,6 +566,14 @@ namespace Aurix.Net.Unity
             bool reliable = false
         ) => Client.SendEvent(code, payload, target, reliable);
 
+        /// <summary><see cref="SendEvent"/> on a channel of the caller's choice, see <see cref="ManagedClient.SendEventOn"/>.</summary>
+        public void SendEventOn(
+            Channel channel,
+            byte code,
+            byte[] payload,
+            Target target = Target.Others
+        ) => Client.SendEventOn(channel, code, payload, target);
+
         internal void SendRpc(NetView view, string method, object[] args)
         {
             var writer = new BitWriter();

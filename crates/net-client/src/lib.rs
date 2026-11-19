@@ -10,7 +10,7 @@ use base64::Engine;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use net_common::{Channel, RoomMode};
-use net_rooms::protocol::{ClientMsg, DataEndpoint, ServerMsg};
+use net_rooms::protocol::{ClientMsg, DataEndpoint, ServerMsg, UNSEQUENCED};
 use net_transport::{quic, Link};
 use parking_lot::Mutex;
 use std::collections::VecDeque;
@@ -146,6 +146,8 @@ pub struct Client {
     /// control channel notices it first.
     lost: bool,
     data: Option<Arc<DataPath>>,
+    /// The node takes the unsequenced channel (`hello.supports`).
+    unsequenced: bool,
     opts: Options,
     pub joined: Option<Joined>,
     /// Sync rooms: the entity the room made for this client as its avatar, once the room has
@@ -213,6 +215,7 @@ impl Client {
             lost: false,
             events_tx: events_tx.clone(),
             data: None,
+            unsequenced: false,
             opts,
             joined: None,
             avatar: None,
@@ -296,13 +299,16 @@ impl Client {
         client
             .send(ClientMsg::Auth {
                 grant: grant.to_string(),
+                supports: vec![UNSEQUENCED.to_string()],
             })
             .await?;
         // wait for Authed (or Error)
         loop {
             match client.next_event().await {
                 Some(Event::Control(ServerMsg::Authed { .. })) => break,
-                Some(Event::Control(ServerMsg::Hello { .. })) => continue,
+                Some(Event::Control(ServerMsg::Hello { supports, .. })) => {
+                    client.unsequenced = supports.iter().any(|s| s == UNSEQUENCED);
+                }
                 Some(Event::Control(ServerMsg::Error { code, message, .. })) => {
                     return Err(ClientError::Server { code, message })
                 }
@@ -578,8 +584,14 @@ impl Client {
 
     /// Queues a data-path message; unreliable messages leave on the next timer tick (or
     /// immediately with `flush`).
+    /// A message for [`Channel::UnreliableUnsequenced`] goes on the sequenced channel to a node
+    /// that does not take it.
     pub fn send_data(&self, channel: Channel, payload: Bytes) -> Result<()> {
         let dp = self.data.as_ref().ok_or(ClientError::Disconnected)?;
+        let channel = match channel {
+            Channel::UnreliableUnsequenced if !self.unsequenced => Channel::UnreliableSequenced,
+            channel => channel,
+        };
         dp.link
             .lock()
             .send(channel, payload, Instant::now())
@@ -616,6 +628,25 @@ impl Client {
         group: Option<u16>,
         cache: CacheOp,
     ) -> Result<()> {
+        let channel = if reliable {
+            Channel::ReliableOrdered
+        } else {
+            Channel::UnreliableSequenced
+        };
+        self.send_event_on(channel, code, target, payload, group, cache)
+    }
+    /// [`Self::send_event_ex`] on a channel of the caller's choice: the sequenced one for state,
+    /// where a newer event replaces an older one, the unsequenced one for events that are all
+    /// wanted.
+    pub fn send_event_on(
+        &self,
+        channel: Channel,
+        code: u8,
+        target: EventTarget,
+        payload: Bytes,
+        group: Option<u16>,
+        cache: CacheOp,
+    ) -> Result<()> {
         let frame = EventFrame {
             code,
             target,
@@ -624,14 +655,7 @@ impl Client {
             from: net_common::ActorId(0),
             payload,
         };
-        self.send_data(
-            if reliable {
-                Channel::ReliableOrdered
-            } else {
-                Channel::UnreliableSequenced
-            },
-            frame.encode(),
-        )
+        self.send_data(channel, frame.encode())
     }
 
     pub async fn next_event(&mut self) -> Option<Event> {

@@ -8,9 +8,13 @@ namespace Aurix.Net
 {
     public enum Channel : byte
     {
+        /// <summary>Unreliable; a message that arrives after a newer one is dropped.</summary>
         Unreliable = 0,
         Reliable = 1,
         ReliableUnordered = 2,
+
+        /// <summary>Unreliable; every message that arrives is delivered, in the order of arrival.</summary>
+        UnreliableUnsequenced = 4,
     }
 
     public enum Target
@@ -245,6 +249,36 @@ namespace Aurix.Net
                 data,
                 (UIntPtr)(data?.Length ?? 0),
                 reliable ? 1 : 0
+            );
+            if (result != 0)
+            {
+                throw new NetException(Native.LastError());
+            }
+        }
+
+        /// <summary><see cref="SendEvent"/> on a channel of the caller's choice: <see cref="Channel.Unreliable"/>
+        /// for state, where a newer event replaces an older one, <see cref="Channel.UnreliableUnsequenced"/>
+        /// for events that are all wanted. A node that does not know the unsequenced channel gets them on
+        /// the sequenced one.</summary>
+        public void SendEventOn(
+            Channel channel,
+            byte code,
+            byte[] data,
+            Target target = Target.Others,
+            ushort[] actors = null
+        )
+        {
+            var result = Native.aurix_net_send_event_on(
+                _h,
+                (byte)channel,
+                code,
+                (int)target,
+                actors,
+                (UIntPtr)(actors?.Length ?? 0),
+                data,
+                (UIntPtr)(data?.Length ?? 0),
+                -1,
+                0
             );
             if (result != 0)
             {

@@ -23,7 +23,7 @@ Redis). Build once: `cargo build --release`. Create a project and key with the o
 | browser WebTransport | serve `sdk/web` (`python3 -m http.server 8765`), open `test/browser.html?http=...&ga=<grant>&gb=<grant>&room=x` in Chrome | `path=webtransport/webtransport hello=1 ticks=10/10` |
 | browser WebTransport, sync | same server, open `test/browser-sync.html` with the same query | `path=webtransport/webtransport avatars=1 answer=created spawned=1` |
 | Web SDK (Node, tunnel) | `cd sdk/web && NET_API_KEY=... npm test` | pass |
-| C / C++ ABI | `crates/net-ffi/ctest/echo.c`, `sdk/cpp/echo_test.cpp` against a live node | `hello=1 ticks=10/10` |
+| C / C++ ABI | `crates/net-ffi/ctest/echo.c`, `sdk/cpp/echo_test.cpp` against a live node | `hello=1 ticks=10/10`, `unsequenced channel: events=10/10` |
 | C ABI, aurix-sim | `crates/net-ffi/ctest/sim.c` against `libaurix_net.so` (offline) | six golden hashes equal to Rust/wasm32, 2D/3D rest + sphere cast |
 
 Known limits of the local setup: bots and server share CPU, so the 2000 events/s/room figure
@@ -35,8 +35,9 @@ the fingerprint from `joined.data`, nothing to install).
 ```
 cd sdk/unity/BuildCheck~/managed-live && NET_API_KEY=an_… dotnet run -c Release
 ```
-Expects `MANAGED OK`: 1 reliable, 10 unreliable and one 5 KB fragmented relay event delivered
-between two clients, and >60 sync deltas in 2 s. Needs a node on 127.0.0.1:8090 with the tunnel on.
+Expects `MANAGED OK`: 1 reliable, 10 unreliable, 10 unsequenced and one 5 KB fragmented relay
+event delivered between two clients, and >60 sync deltas in 2 s. Needs a node on 127.0.0.1:8090
+with the tunnel on.
 
 ## Rolling deploy (SIGTERM handoff)
 

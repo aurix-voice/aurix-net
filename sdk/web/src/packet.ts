@@ -7,9 +7,12 @@ export const FLAG_ACK_ONLY = 0x80;
 export const FLAG_HAS_ACK = 0x40;
 export const FLAG_BATCH = 0x20;
 export enum Channel {
+  /** Unreliable; a message that arrives after a newer one is dropped. */
   Unreliable = 0,
   Reliable = 1,
   ReliableUnordered = 2,
+  /** Unreliable; every message that arrives is delivered, in the order of arrival. */
+  UnreliableUnsequenced = 4,
 }
 export const KIND_FRAGMENT = 3;
 

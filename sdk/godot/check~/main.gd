@@ -1,6 +1,7 @@
 extends Node
 
 var got := false
+var unsequenced := false
 var t0 := 0
 const SCHEMA := "component Transform {\n  pos: vec3 @range(-4096, 4096, 0.01)\n  rot: quat\n}\n"
 var grant_c := ""; var grant_d := ""; var net_http := ""; var ls_room := ""
@@ -37,6 +38,8 @@ func _ready() -> void:
 	b.event.connect(func(code, from, payload): 
 		print("b got event code=%d from=%d payload=%s" % [code, from, payload.get_string_from_utf8()])
 		got = true)
+	b.data.connect(func(channel, _tick, _payload):
+		if channel == AurixNetClient.CHANNEL_UNRELIABLE_UNSEQUENCED: unsequenced = true)
 	t0 = Time.get_ticks_msec()
 
 func _process(dt: float) -> void:
@@ -45,11 +48,12 @@ func _process(dt: float) -> void:
 	if t0 == 0: return
 	var a := get_child(0) as AurixNetClient
 	if (Time.get_ticks_msec() - t0) % 200 < 20:
-		a.send_event(1, "hi".to_utf8_buffer()); a.flush()
-	if got:
+		a.send_event(1, "hi".to_utf8_buffer())
+		a.send_event_on(AurixNetClient.CHANNEL_UNRELIABLE_UNSEQUENCED, 6, "hi".to_utf8_buffer()); a.flush()
+	if got and unsequenced:
 		print("relay ok: joined=", a.get_joined_json().substr(0, 60)); t0 = 0; _start_sync()
 	elif Time.get_ticks_msec() - t0 > 10000:
-		fail("no event within 10 s; a.err=" + a.get_last_error()); t0 = 0
+		fail("event=%s, event on the unsequenced channel=%s within 10 s; a.err=%s" % [got, unsequenced, a.get_last_error()]); t0 = 0
 
 func _start_sync() -> void:
 	if grant_c == "" or grant_d == "":

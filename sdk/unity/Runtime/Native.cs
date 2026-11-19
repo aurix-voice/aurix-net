@@ -79,6 +79,20 @@ namespace Aurix.Net
         );
 
         [DllImport(Lib)]
+        public static extern int aurix_net_send_event_on(
+            IntPtr handle,
+            byte channel,
+            byte code,
+            int target,
+            ushort[] actors,
+            UIntPtr nActors,
+            byte[] data,
+            UIntPtr len,
+            int group,
+            int cache
+        );
+
+        [DllImport(Lib)]
         public static extern void aurix_net_flush(IntPtr handle);
 
         [DllImport(Lib)]

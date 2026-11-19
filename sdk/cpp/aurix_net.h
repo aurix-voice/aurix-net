@@ -17,7 +17,14 @@ enum {
     AURIX_NET_EVENT_CLOSED = 4      /* json = reason */
 };
 
-enum { AURIX_NET_CH_UNRELIABLE = 0, AURIX_NET_CH_RELIABLE = 1, AURIX_NET_CH_RELIABLE_UNORDERED = 2 };
+/* AURIX_NET_CH_UNRELIABLE drops a message that arrives after a newer one; AURIX_NET_CH_UNRELIABLE_UNSEQUENCED
+ * delivers every message that arrives, in the order of arrival. */
+enum {
+    AURIX_NET_CH_UNRELIABLE = 0,
+    AURIX_NET_CH_RELIABLE = 1,
+    AURIX_NET_CH_RELIABLE_UNORDERED = 2,
+    AURIX_NET_CH_UNRELIABLE_UNSEQUENCED = 4
+};
 enum { AURIX_NET_TARGET_ALL = 0, AURIX_NET_TARGET_OTHERS = 1, AURIX_NET_TARGET_MASTER = 2, AURIX_NET_TARGET_ACTORS = 3 };
 
 typedef struct AurixNetEvent {
@@ -79,6 +86,10 @@ int32_t aurix_net_send_event(AurixNetClient *client, uint8_t code, int32_t targe
 /* send_event + interest group (-1 = none) and cache (0 none, 1 add for late joiners, 2 remove) */
 int32_t aurix_net_send_event_ex(AurixNetClient *client, uint8_t code, int32_t target, const uint16_t *actors, size_t n_actors,
                                 const uint8_t *data, size_t len, int32_t reliable, int32_t group, int32_t cache);
+/* send_event_ex on a channel of the caller's choice; a node that does not take AURIX_NET_CH_UNRELIABLE_UNSEQUENCED
+ * gets its events on AURIX_NET_CH_UNRELIABLE */
+int32_t aurix_net_send_event_on(AurixNetClient *client, uint8_t channel, uint8_t code, int32_t target, const uint16_t *actors,
+                                size_t n_actors, const uint8_t *data, size_t len, int32_t group, int32_t cache);
 void aurix_net_flush(AurixNetClient *client);
 int32_t aurix_net_poll(AurixNetClient *client, AurixNetEvent *out);          /* 1 = event filled */
 void aurix_net_event_free(AurixNetEvent *ev);

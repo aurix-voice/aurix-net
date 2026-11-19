@@ -84,6 +84,9 @@ export interface ControlMessage {
   [field: string]: unknown;
 }
 
+// What this client names in `auth`, so the node sends it nothing it does not know.
+const SUPPORTS = ["unsequenced"];
+
 // An `error` refuses the request whose `id` it repeats; one without an `id` may refuse any.
 function refuses(message: ControlMessage, id?: number): boolean {
   return (
@@ -120,6 +123,7 @@ export interface RegionPick {
 export class Client {
   private ws!: WebSocket;
   private link = new Link();
+  private nodeSupports = new Set<string>();
   private timer?: ReturnType<typeof setInterval>;
   private path?: DataPath;
   private onReady?: () => void;
@@ -247,7 +251,7 @@ export class Client {
     });
     client.ws.onmessage = (event) => client.onMessage(event.data);
     client.ws.onclose = () => client.lost("control channel closed");
-    client.send({ t: "auth", grant });
+    client.send({ t: "auth", grant, supports: SUPPORTS });
     await client.waitFor((message) => message.t === "authed", refuses);
     return client;
   }
@@ -259,6 +263,9 @@ export class Client {
         const sample = Math.max(0, Math.floor(performance.now()) - this.probe);
         this.rttMs = this.rttMs ? 0.875 * this.rttMs + 0.125 * sample : sample;
         return;
+      }
+      if (message.t === "hello" && Array.isArray(message.supports)) {
+        this.nodeSupports = new Set(message.supports as string[]);
       }
       if (
         message.t === "left" &&
@@ -584,8 +591,15 @@ export class Client {
     }
   }
 
-  /** Queue a data message; unreliable ones leave on flush()/timer. */
+  /** Queue a data message; unreliable ones leave on flush()/timer. A node that does not know the
+   *  unsequenced channel gets its messages on the sequenced one. */
   sendData(channel: Channel, payload: Uint8Array) {
+    if (
+      channel === Channel.UnreliableUnsequenced &&
+      !this.nodeSupports.has("unsequenced")
+    ) {
+      channel = Channel.Unreliable;
+    }
     this.link.send(channel, payload);
     if (channel === Channel.Reliable) {
       this.flushLink();
@@ -599,8 +613,25 @@ export class Client {
     reliable = false,
     opts: { group?: number; cache?: CacheOp } = {},
   ) {
-    this.sendData(
+    this.sendEventOn(
       reliable || opts.cache ? Channel.Reliable : Channel.Unreliable,
+      code,
+      payload,
+      target,
+      opts,
+    );
+  }
+  /** `sendEvent` on a channel of the caller's choice: `Channel.Unreliable` for state, where a newer
+   *  event replaces an older one, `Channel.UnreliableUnsequenced` for events that are all wanted. */
+  sendEventOn(
+    channel: Channel,
+    code: number,
+    payload: Uint8Array,
+    target: Target = "others",
+    opts: { group?: number; cache?: CacheOp } = {},
+  ) {
+    this.sendData(
+      channel,
       encodeEvent(code, payload, target, opts.group, opts.cache),
     );
   }
