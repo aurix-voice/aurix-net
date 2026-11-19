@@ -131,7 +131,32 @@ class P
         await rc.JoinAsync(room + "-second"); await chatC.JoinAsync(1);
         Console.WriteLine($"late joiner: cached events={cached}/1 chat history={history}/1");
         ra.Dispose(); rb.Dispose(); rc.Dispose();
-        bool ok = lsOk && schemaOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1;
+        // over a slow link (NET_SLOW_HTTP, see README): a client that left a room joins another one
+        bool rejoined = true; var slow = Environment.GetEnvironmentVariable("NET_SLOW_HTTP");
+        if (slow != null)
+        {
+            var sf = await ManagedClient.ConnectAsync(slow, await Grant(h, key, "cs-sf"));
+            var sg = await ManagedClient.ConnectAsync(slow, await Grant(h, key, "cs-sg"));
+            int errors = 0, next = 0;
+            sf.OnControl += json => { if (json.Contains("\"t\":\"error\"")) errors++; };
+            sg.OnEvent += f => { if (f.Code == 5) next++; };
+            await sf.JoinOrCreateAsync(room + "-slow", "relay", 4); await sg.JoinOrCreateAsync(room + "-slow", "relay", 4);
+            // events on their way to `sf` when it leaves must not make it answer the room it has left
+            for (int i = 0; i < 30; i++) { sg.SendEvent(4, new byte[] { 9 }, Target.Others, reliable: true); sf.Poll(); sg.Poll(); await Task.Delay(10); }
+            await sf.LeaveAsync();
+            for (int i = 0; i < 30; i++) { sg.SendEvent(4, new byte[] { 9 }, Target.Others, reliable: true); sf.Poll(); sg.Poll(); await Task.Delay(10); }
+            try
+            {
+                await sf.JoinOrCreateAsync(room + "-slow2", "relay", 4); await sg.LeaveAsync(); await sg.JoinAsync(room + "-slow2");
+                for (int i = 0; i < 5; i++) sf.SendEvent(5, new byte[] { (byte)i }, Target.Others, reliable: true);
+                until = DateTime.UtcNow.AddSeconds(2); while (DateTime.UtcNow < until && next < 5) { sf.Poll(); sg.Poll(); await Task.Delay(5); }
+            }
+            catch (Exception e) { Console.WriteLine($"slow link: {e.Message}"); errors++; }
+            Console.WriteLine($"slow link: errors after leave={errors}, reliable events in the next room={next}/5");
+            rejoined = errors == 0 && next == 5; sf.Dispose(); sg.Dispose();
+        }
+        else Console.WriteLine("slow link: skipped (NET_SLOW_HTTP not set)");
+        bool ok = lsOk && schemaOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && rejoined;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");
         return ok ? 0 : 1;
     }

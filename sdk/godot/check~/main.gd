@@ -122,5 +122,34 @@ func _lockstep_step() -> void:
 	var ahead: int = lc.get_server_tick() - lc.get_confirmed_tick()
 	var ok: bool = ticks_c > 20 and ticks_d > 20 and actors.size() == 2 and stray == 0 and ahead < 10
 	print("godot lockstep: ticks=%d/%d actors=%d event signals=%d confirmed=%d server=%d -> %s" % [ticks_c, ticks_d, actors.size(), stray, lc.get_confirmed_tick(), lc.get_server_tick(), "ok" if ok else "FAIL"])
-	if ok: print("GODOT OK"); get_tree().quit(0)
-	else: fail("lockstep")
+	if not ok: fail("lockstep"); return
+	if await _slow_link(): print("GODOT OK"); get_tree().quit(0)
+	else: fail("slow link")
+
+# Over a slow link (NET_SLOW_HTTP with GRANT_E and GRANT_F, see README): a client that left a room joins another one.
+func _slow_link() -> bool:
+	var slow := OS.get_environment("NET_SLOW_HTTP")
+	if slow == "":
+		print("godot slow link: skipped (NET_SLOW_HTTP not set)"); return true
+	var e := AurixNetClient.new(); var f := AurixNetClient.new(); add_child(e); add_child(f)
+	if not e.connect_to(slow, OS.get_environment("GRANT_E"), true) or not f.connect_to(slow, OS.get_environment("GRANT_F"), true): return false
+	var errors := [0]; var next := [0]
+	e.control.connect(func(json): if json.contains('"t":"error"'): errors[0] += 1)
+	f.event.connect(func(code, _from, _payload): if code == 5: next[0] += 1)
+	var room := "godot-slow-%d" % (Time.get_ticks_msec() % 100000)
+	if e.join_or_create(room, AurixNetClient.MODE_RELAY, 4) < 0 or f.join_or_create(room, AurixNetClient.MODE_RELAY, 4) < 0: return false
+	# events on their way to `e` when it leaves must not make it answer the room it has left
+	for i in 60:
+		if i == 30: e.leave()
+		f.send_event(4, PackedByteArray([9]), AurixNetClient.TARGET_OTHERS, true); f.flush()
+		await get_tree().create_timer(0.01).timeout
+	var joined := e.join_or_create(room + "-2", AurixNetClient.MODE_RELAY, 4) > 0
+	f.leave()
+	joined = joined and f.join(room + "-2") > 0
+	if joined:
+		for i in 5: e.send_event(5, PackedByteArray([i]), AurixNetClient.TARGET_OTHERS, true)
+		e.flush()
+		var until := Time.get_ticks_msec() + 2000
+		while Time.get_ticks_msec() < until and next[0] < 5: await get_tree().process_frame
+	print("godot slow link: joined=%s errors after leave=%d reliable events in the next room=%d/5" % [joined, errors[0], next[0]])
+	return joined and errors[0] == 0 and next[0] == 5

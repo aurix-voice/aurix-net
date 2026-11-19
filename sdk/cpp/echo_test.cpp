@@ -36,5 +36,25 @@ int main() {
     try { e.join(room + "-one"); } catch (const Error& error) { full = error.code; }
     std::printf("cpp refused joins: missing room code=%d, full room code=%d\n", missing, full);
     bool refused = missing == AURIX_NET_ERR_NOT_FOUND && full == AURIX_NET_ERR_ROOM_FULL;
-    a.leave(); return (hello && ticks == 10 && cached == 1 && history == 1 && early == 0 && refused) ? 0 : 1;
+    // over a slow link (NET_SLOW_HTTP, see README): a client that left a room joins another one
+    bool rejoined = true;
+    if (const char* slow = std::getenv("NET_SLOW_HTTP")) {
+        Client f, g; f.connect(slow, Client::issueGrant(http, key, "cpp-f", "F"), true); g.connect(slow, Client::issueGrant(http, key, "cpp-g", "G"), true);
+        int errors = 0, second = 0;
+        f.onControl = [&](const std::string& json) { if (Client::jsonStr(json, "t") == "error") errors++; };
+        g.onData = [&](Channel, uint16_t, const uint8_t* d, size_t n) { EventFrame frame; if (EventFrame::decode(d, n, frame) && frame.code == 5) second++; };
+        f.joinOrCreate(room + "-slow", Mode::Relay, 4); g.joinOrCreate(room + "-slow", Mode::Relay, 4);
+        const uint8_t nine = 9;
+        // events on their way to `f` when it leaves must not make it answer the room it has left
+        auto chatter = [&](int rounds, bool both) { for (int s = 0; s < rounds; s++) { g.sendEvent(4, &nine, 1, Target::Others, true); g.flush(); g.poll(); if (both) { f.flush(); } f.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); } };
+        chatter(30, true); f.leave(); chatter(30, false);
+        f.joinOrCreate(room + "-slow2", Mode::Relay, 4); g.leave(); g.join(room + "-slow2");
+        for (uint8_t i = 0; i < 5; i++) f.sendEvent(5, &i, 1, Target::Others, true);
+        for (int s = 0; s < 150 && second < 5; s++) { f.flush(); f.poll(); g.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+        std::printf("cpp slow link: errors after leave=%d, reliable events in the next room=%d/5\n", errors, second);
+        rejoined = errors == 0 && second == 5;
+    } else {
+        std::printf("cpp slow link: skipped (NET_SLOW_HTTP not set)\n");
+    }
+    a.leave(); return (hello && ticks == 10 && cached == 1 && history == 1 && early == 0 && refused && rejoined) ? 0 : 1;
 }

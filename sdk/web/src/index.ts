@@ -402,10 +402,7 @@ export class Client {
       char.charCodeAt(0),
     );
     // every join gets its own data path, and the node starts a fresh link on it
-    this.stop();
-    const old = this.path;
-    this.path = undefined;
-    old?.close();
+    this.closePath();
     this.link = new Link();
     this.isLost = false;
     const ready = new Promise<void>((res, rej) => {
@@ -441,6 +438,9 @@ export class Client {
   }
 
   private onDatagram(bytes: Uint8Array) {
+    if (!this.path) {
+      return;
+    }
     const recv: Received[] = this.link.receive(bytes);
     this.flushLink();
     for (const received of recv) {
@@ -566,6 +566,7 @@ export class Client {
   }
 
   leave() {
+    this.closePath();
     this.send({ t: "leave" });
   }
   /** Project-wide room/player counts per lobby (lobby statistics); at most one per second. */
@@ -649,6 +650,14 @@ export class Client {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+  }
+  /** Closes the data path of the room the client is leaving. Left open, it would go on resending
+   *  what the room has not acknowledged, to a node that no longer expects it. */
+  private closePath() {
+    this.stop();
+    const old = this.path;
+    this.path = undefined;
+    old?.close();
   }
 }
 

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Client, Chat, encodeEvent } from "../dist/index.js";
 import WebSocket, { WebSocketServer } from "ws";
+import { slowLink } from "./slow-link.mjs";
 if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket; // Node < 22
 
 const http = process.env.NET_HTTP ?? "http://127.0.0.1:8090";
@@ -138,5 +139,27 @@ test("rooms(expr) finds a room by the lobby props joinOrCreate published", { ski
     assert.deepEqual(found?.props, { map: "dust" });
   } finally {
     a.close(); b.close();
+  }
+});
+
+test("a client that left a room over a 200 ms round trip joins another one", { skip: !key }, async () => {
+  const link = slowLink(http, 100);
+  const a = await Client.connect(link.url, await grant("web-leave-a"));
+  const b = await Client.connect(link.url, await grant("web-leave-b"));
+  let chatter;
+  try {
+    const room = `web-leave-${process.pid}`;
+    await a.joinOrCreate(room, "relay", 4); await b.joinOrCreate(room, "relay", 4);
+    const errors = [];
+    a.on("control", (message) => { if (message.t === "error") errors.push(message.message); });
+    // events on their way to `a` when it leaves must not make it answer the room it has left
+    chatter = setInterval(() => b.sendEvent(3, Uint8Array.of(9), "others", true), 10);
+    await new Promise((r) => setTimeout(r, 300));
+    a.leave();
+    await new Promise((r) => setTimeout(r, 300));
+    await a.joinOrCreate(`${room}-2`, "relay", 4);
+    assert.deepEqual(errors, []);
+  } finally {
+    clearInterval(chatter); a.close(); b.close(); link.close();
   }
 });

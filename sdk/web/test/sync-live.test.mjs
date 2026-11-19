@@ -2,7 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Client, SyncSession, ComponentValue } from "../dist/index.js";
-import WebSocket, { WebSocketServer } from "ws";
+import WebSocket from "ws";
+import { slowLink } from "./slow-link.mjs";
 if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
 
 const http = process.env.NET_HTTP ?? "http://127.0.0.1:8090";
@@ -66,21 +67,8 @@ test("sync room: writes sent every frame in a slower room are not delayed", { sk
   assert.equal(Math.round(seen), x, "the last write arrives");
 });
 
-// A WebSocket proxy in front of the node that holds every frame for `delayMs` in each direction.
-function slowLink(delayMs) {
-  const server = new WebSocketServer({ port: 0 });
-  server.on("connection", (near, request) => {
-    const far = new WebSocket(http.replace(/^http/, "ws") + request.url);
-    const opened = new Promise((resolve) => far.on("open", resolve));
-    near.on("message", (data, binary) => setTimeout(async () => { await opened; if (far.readyState === 1) far.send(binary ? data : data.toString()); }, delayMs));
-    far.on("message", (data, binary) => setTimeout(() => { if (near.readyState === 1) near.send(binary ? data : data.toString()); }, delayMs));
-    far.on("close", () => near.close()); near.on("close", () => far.close());
-  });
-  return { url: `http://127.0.0.1:${server.address().port}`, close: () => server.close() };
-}
-
 test("sync room: writes and spawns arrive over a 200 ms round trip", { skip: !key }, async () => {
-  const link = slowLink(100);
+  const link = slowLink(http, 100);
   const a = await Client.connect(link.url, await grant("web-slow-a"));
   const b = await Client.connect(link.url, await grant("web-slow-b"));
   try {

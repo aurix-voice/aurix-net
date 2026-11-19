@@ -20,5 +20,10 @@ gcc -std=c11 -Wall -Wextra -Werror crates/net-ffi/ctest/sim.c -Ltarget/release -
     -Wl,-rpath,$PWD/target/release -o /tmp/sim_ctest && /tmp/sim_ctest
 ```
 
+`echo_test` also leaves a room and joins another one over a slow link when `NET_SLOW_HTTP` points
+at a delaying proxy in front of the node: `node sdk/web/test/slow-link.mjs 100 8197` (100 ms each
+way), then `NET_SLOW_HTTP=http://127.0.0.1:8197`. The managed C# and Godot checks take the same
+variable.
+
 API walk-through: [docs/sdk.md](../../docs/sdk.md) (sections "Lockstep rooms from Rust, C++ and Godot",
 "Sync rooms from C++ and Godot", "aurix-sim from C / C++ / Godot").

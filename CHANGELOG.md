@@ -107,6 +107,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   left, so a session shorter than a minute counted no `bytes_in` or `bytes_out` at all and every
   longer one lost its tail, in `/v1/usage`, the billing report and the monthly byte cap alike.
   The node now adds it when the data session closes.
+- SDKs: a client that left a room kept its data path running: it went on acknowledging and
+  resending the room's reliable traffic. Over a real network the node got those frames after the
+  leave, answered each with an `unauthorized: bad data ticket` error, and the next `join` on the
+  same client failed with it (or its first reliable events were lost). `leave` now closes the data
+  path in the Rust, Web and managed C# clients.
 - SDKs, lockstep rooms: with a round trip of about 130 ms and more every input arrived late, and
   the room then confirmed some inputs twice and dropped others (36 of 581 lost at 200 ms). The
   input delay could not grow past 8 ticks, less than such a round trip takes at 60 Hz. It now

@@ -189,6 +189,8 @@ adapters that have it (compile-only without the key).
 a custom-schema owner room (vec3/quat/string/u8 decode, acks with 0 gaps) and a lockstep room
 (identical confirmed input streams on 3 clients, late join catch-up from the master's checkpoint). The Unity layer is
 compiled there against `Stubs/UnityEngine.cs`; the real editor build is a separate step.
+With `NET_SLOW_HTTP` set (a delaying proxy, see `sdk/cpp/README.md`) it also leaves a room and joins
+another one over the slow link.
 
 Lockstep tuning: `Runner.Lockstep.InputDelay` adapts between `InputDelayMin`/`InputDelayMax` from the node's
 input-margin reports (late inputs raise it at once to cover the round trip, steady slack lowers it again;

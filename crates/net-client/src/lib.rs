@@ -147,6 +147,8 @@ pub struct Client {
     opts: Options,
     pub joined: Option<Joined>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// Tasks of the current data path; they end with it.
+    data_tasks: Vec<tokio::task::JoinHandle<()>>,
     tunnel_slot: Option<Arc<Mutex<Option<Arc<DataPath>>>>>,
     /// What `rejoin` needs after a rehost: the URL given to `connect`, the grant, the last join.
     entry_url: String,
@@ -199,6 +201,7 @@ impl Client {
             opts,
             joined: None,
             tasks: vec![writer],
+            data_tasks: Vec::new(),
             tunnel_slot: None,
             entry_url: http_url.to_string(),
             grant: grant.to_string(),
@@ -430,7 +433,24 @@ impl Client {
         Ok(joined)
     }
 
+    /// Stops the data path of the room the client is leaving. Left running, it would go on
+    /// resending what the room has not acknowledged, to a node that no longer expects it.
+    fn close_data(&mut self) {
+        for task in self.data_tasks.drain(..) {
+            task.abort();
+        }
+        if let Some(slot) = &self.tunnel_slot {
+            *slot.lock() = None;
+        }
+        if let Some(dp) = self.data.take() {
+            if let Sink::Quic(conn) = &dp.sink {
+                conn.close(0u32.into(), b"bye");
+            }
+        }
+    }
+
     async fn open_data(&mut self, ep: &DataEndpoint) -> Result<()> {
+        self.close_data();
         let ticket = base64::engine::general_purpose::STANDARD
             .decode(&ep.ticket)
             .map_err(|e| ClientError::Data(e.to_string()))?;
@@ -438,7 +458,7 @@ impl Client {
         let dp: Arc<DataPath> = if self.opts.tunnel {
             let (ws_tx, mut ws_rx) = mpsc::channel::<Message>(1024);
             let ctl = self.ctl.clone();
-            self.tasks.push(tokio::spawn(async move {
+            self.data_tasks.push(tokio::spawn(async move {
                 while let Some(m) = ws_rx.recv().await {
                     if ctl.send(m).await.is_err() {
                         break;
@@ -484,7 +504,7 @@ impl Client {
                 sink: Sink::Quic(conn.clone()),
             });
             let (dp2, ev) = (dp.clone(), self.events_tx.clone());
-            self.tasks.push(tokio::spawn(async move {
+            self.data_tasks.push(tokio::spawn(async move {
                 while let Ok(d) = conn.read_datagram().await {
                     deliver(&dp2, d, &ev).await;
                 }
@@ -494,7 +514,7 @@ impl Client {
         };
         // link timer
         let (dp2, tick, ev) = (dp.clone(), self.opts.tick, self.events_tx.clone());
-        self.tasks.push(tokio::spawn(async move {
+        self.data_tasks.push(tokio::spawn(async move {
             let mut iv = tokio::time::interval(tick);
             loop {
                 iv.tick().await;
@@ -615,6 +635,7 @@ impl Client {
     }
 
     pub async fn leave(&mut self) -> Result<()> {
+        self.close_data();
         self.send(ClientMsg::Leave).await
     }
 
@@ -658,13 +679,9 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
+        self.close_data();
         for t in &self.tasks {
             t.abort();
-        }
-        if let Some(dp) = &self.data {
-            if let Sink::Quic(c) = &dp.sink {
-                c.close(0u32.into(), b"bye");
-            }
         }
     }
 }

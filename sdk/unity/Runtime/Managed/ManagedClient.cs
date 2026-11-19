@@ -28,6 +28,9 @@ namespace Aurix.Net.Managed
         ClientWebSocket _ws;
         Link _link = new Link();
 
+        // False between rooms: the link of a room the client has left must not go on resending to the node.
+        bool _dataOpen;
+
         // One lost connection is reported once, whichever of the link and the control channel notices it first.
         bool _lost;
         readonly ConcurrentQueue<object> _inbox = new ConcurrentQueue<object>();
@@ -285,6 +288,7 @@ namespace Aurix.Net.Managed
             Cached = Json.CachedEvents(joined);
             // Every join gets its own data path, and the node starts a fresh link on it.
             _link = new Link();
+            _dataOpen = true;
             _lost = false;
             _dataReady = false;
             var data = Json.Obj(joined, "data");
@@ -373,6 +377,11 @@ namespace Aurix.Net.Managed
 
         void FlushLink()
         {
+            if (!_dataOpen)
+            {
+                return;
+            }
+
             while (_link.TryDequeueOutgoing(out var data))
             {
                 _ = SendBinaryAsync(data);
@@ -389,7 +398,7 @@ namespace Aurix.Net.Managed
                 _lastPingMs = now;
                 _ = SendControlAsync("{\"t\":\"ping\",\"ts\":" + now + "}");
             }
-            if (!_link.Poll() && !_lost)
+            if (_dataOpen && !_link.Poll() && !_lost)
             {
                 _inbox.Enqueue(new Closed { Reason = "link dead" });
             }
@@ -429,6 +438,11 @@ namespace Aurix.Net.Managed
 
                         break;
                     case Bin binary:
+                        if (!_dataOpen)
+                        {
+                            break;
+                        }
+
                         foreach (var received in _link.Receive(binary.Data))
                         {
                             if (received.Payload.Length == 0)
@@ -469,7 +483,11 @@ namespace Aurix.Net.Managed
             return count;
         }
 
-        public Task LeaveAsync() => SendControlAsync("{\"t\":\"leave\"}");
+        public Task LeaveAsync()
+        {
+            _dataOpen = false;
+            return SendControlAsync("{\"t\":\"leave\"}");
+        }
 
         /// <summary>Sync rooms: steer area-of-interest: extra viewpoints (camera, scope target) and entities forced into view (team mates, objectives). Entity ids as in deltas.</summary>
         /// <summary>Project-wide live rooms/players grouped by the room prop "lobby" (JSON: {rooms, players, lobbies:[{lobby, rooms, players}]}); one per second.</summary>
