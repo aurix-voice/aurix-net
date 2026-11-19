@@ -586,6 +586,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   rooms", and a project page showed a spinner for ten seconds before the error. All three show
   the node's error with Retry from the first failed request, and keep it on screen while they
   repeat the request, until one succeeds.
+- `wasmtime`, which runs game modules on the node, goes from 50.0.1 to 50.0.2. RustSec published
+  eight advisories against 50.0.1 on 16 November (RUSTSEC-2026-0566 to 0573); one of them lets a
+  Wasm guest abort the host process (RUSTSEC-2026-0568).
 
 ### CI
 - `ci.yml`: a new job, `sdk-live`, runs the live checks of the Web, C#, C++ and C SDKs against the
