@@ -315,7 +315,8 @@ class P
             Console.WriteLine($"closed control channel: connect failed after {clock.ElapsedMilliseconds} ms: {failure} -> {(failedFast ? "ok" : "FAIL")}");
         }
         else failedFast = Skip("closed control channel: skipped (NET_CUT_HTTP not set)");
-        // outside a room and on a connection that is gone a send is refused, by the managed client and by the native core
+        // outside a room, also one the node closed, and on a connection that is gone a send is refused,
+        // by the managed client and by the native core
         bool refused;
         using (var relay = new Relay())
         {
@@ -327,25 +328,41 @@ class P
             string outside = Refusal(viaManaged);
             await managed.JoinOrCreateAsync(room + "-lost", "relay", 4);
             string inside = Refusal(viaManaged);
-            Client core = null; bool coreClosed = false; Action viaCore = null; string coreOutside = "skipped", coreInside = "skipped", coreGone = "skipped";
+            Client core = null; bool coreClosed = false, coreOut = false; Action viaCore = null;
+            string coreOutside = "skipped", coreInside = "skipped", coreTaken = "skipped", coreBack = "skipped", coreGone = "skipped";
             try
             {
                 core = Client.Connect(relay.Url, await Grant(h, key, "cs-lost-c"));
                 core.OnClosed += _ => coreClosed = true;
+                core.OnControl += json => coreOut |= ManagedClientTestHooks.Str(json, "t") == "left";
                 viaCore = () => core.SendEvent(1, one, Target.Others, reliable: true);
                 coreOutside = Refusal(viaCore);
                 core.Join(room + "-lost");
                 coreInside = Refusal(viaCore);
+                core.Leave();
+                if (core.Actor != -1 || core.JoinedJson != null) throw new Exception("leave: the native client still describes the room");
+                core.Join(room + "-lost");
             }
             catch (DllNotFoundException) { core = null; }
-            relay.Dispose();
+            var close = new HttpRequestMessage(HttpMethod.Delete, "http://127.0.0.1:8090/v1/rooms/" + ManagedClientTestHooks.Str(managed.JoinedJson, "room"));
+            close.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+            if (!(await h.SendAsync(close)).IsSuccessStatusCode) throw new Exception("close refused");
             var limit = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < limit && (managed.JoinedJson != null || (core != null && !coreOut))) { managed.Poll(); core?.Poll(); await Task.Delay(5); }
+            if (core != null && (core.Actor != -1 || core.JoinedJson != null)) throw new Exception("close: the native client still describes the room");
+            string taken = Refusal(viaManaged);
+            await managed.JoinOrCreateAsync(room + "-lost", "relay", 4);
+            string back = Refusal(viaManaged);
+            if (core != null) { coreTaken = Refusal(viaCore); core.Join(room + "-lost"); coreBack = Refusal(viaCore); }
+            relay.Dispose();
+            limit = DateTime.UtcNow.AddSeconds(5);
             while (DateTime.UtcNow < limit && !(managedClosed && (core == null || coreClosed))) { managed.Poll(); core?.Poll(); await Task.Delay(5); }
             string lost = Refusal(viaManaged);
             if (core != null) coreGone = Refusal(viaCore);
             managed.Dispose(); core?.Dispose();
-            Console.WriteLine($"send outside a room / in it / on a closed connection: managed={outside} / {inside} / {lost}, native core={coreOutside} / {coreInside} / {coreGone}");
-            refused = outside == "disconnected" && inside == "sent" && lost == "disconnected" && ((core == null && !Required) || (coreOutside == "disconnected" && coreInside == "sent" && coreGone == "disconnected"));
+            Console.WriteLine($"send outside a room / in it / out of a closed room / in the next room / on a closed connection: managed={outside} / {inside} / {taken} / {back} / {lost}, native core={coreOutside} / {coreInside} / {coreTaken} / {coreBack} / {coreGone}");
+            string expected = "disconnected sent disconnected sent disconnected";
+            refused = $"{outside} {inside} {taken} {back} {lost}" == expected && ((core == null && !Required) || $"{coreOutside} {coreInside} {coreTaken} {coreBack} {coreGone}" == expected);
         }
         // NetRunner over the slow link: every frame the owner sends reaches the room, the last move among them,
         // and it sends one a tick: the moves are a step of the stub's clock apart, so `moves * step * TickHz` of them

@@ -571,9 +571,11 @@ namespace Aurix.Net.Managed
             return count;
         }
 
-        /// <summary>The client is out of its room: by LeaveAsync, or the node took it out (kick, room closed).</summary>
+        /// <summary>The client is out of its room: by LeaveAsync, or the node took it out (kick, room closed, rehost). Its data path closes with what was queued for it.</summary>
         void ForgetRoom()
         {
+            _dataOpen = false;
+            _link = new Link();
             Actor = -1;
             JoinedJson = null;
             RoomMode = null;
@@ -584,7 +586,6 @@ namespace Aurix.Net.Managed
 
         public Task LeaveAsync()
         {
-            _dataOpen = false;
             ForgetRoom();
             return SendControlAsync("{\"t\":\"leave\"}");
         }

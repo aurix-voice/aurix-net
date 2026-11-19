@@ -707,6 +707,7 @@ impl Client {
         if reason != "left" && current.is_some() && current == room {
             self.joined = None;
             self.avatar = None;
+            self.close_data();
         }
     }
 

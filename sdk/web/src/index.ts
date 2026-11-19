@@ -282,6 +282,7 @@ export class Client {
         this.joined &&
         message.room === this.joined.room
       ) {
+        this.closePath();
         this.forgetRoom();
       }
       this.emit("control", message);
@@ -465,7 +466,6 @@ export class Client {
     );
     // every join gets its own data path, and the node starts a fresh link on it
     this.closePath();
-    this.link = new Link();
     this.isLost = false;
     const ready = new Promise<void>((res, rej) => {
       const timer = setTimeout(
@@ -749,8 +749,7 @@ export class Client {
     });
   }
   close() {
-    this.stop();
-    this.path?.close();
+    this.closePath();
     this.ws.close();
   }
   // One lost connection is reported once, whichever of the link, the data path and the control channel
@@ -761,7 +760,6 @@ export class Client {
     }
     this.isLost = true;
     this.closePath();
-    this.link = new Link();
     this.failReady?.(new Error(why));
     this.emit("closed", why);
   }
@@ -779,13 +777,15 @@ export class Client {
       this.timer = undefined;
     }
   }
-  /** Closes the data path of the room the client is leaving. Left open, it would go on resending
-   *  what the room has not acknowledged, to a node that no longer expects it. */
+  /** Closes the data path of a room the client is no longer in and drops what is queued for it.
+   *  Left open, it would go on resending what the room has not acknowledged, to a node that no
+   *  longer expects it. */
   private closePath() {
     this.stop();
     const old = this.path;
     this.path = undefined;
     old?.close();
+    this.link = new Link();
   }
 }
 

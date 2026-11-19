@@ -1,4 +1,4 @@
-//! A connection that is gone refuses what the game sends on it.
+//! A client whose connection or room is gone refuses what the game sends.
 
 use base64::Engine;
 use bytes::Bytes;
@@ -15,8 +15,9 @@ fn text(message: &ServerMsg) -> Message {
     Message::Text(serde_json::to_string(message).unwrap().into())
 }
 
-/// A node that lets a client into a room over the WebSocket tunnel and closes the connection.
-async fn closing_node() -> String {
+/// A node that lets a client into a room over the WebSocket tunnel, then takes it out of the
+/// room with `left` when it has one to send, and closes the connection when it has not.
+async fn node(left: Option<ServerMsg>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move {
@@ -67,7 +68,10 @@ async fn closing_node() -> String {
                     while let Some(datagram) = link.next_outgoing() {
                         ws.send(Message::Binary(datagram)).await.unwrap();
                     }
-                    break;
+                    match &left {
+                        Some(left) => ws.send(text(left)).await.unwrap(),
+                        None => break,
+                    }
                 }
                 _ => {}
             }
@@ -76,14 +80,12 @@ async fn closing_node() -> String {
     url
 }
 
-#[tokio::test]
-async fn a_lost_connection_refuses_what_is_sent_on_it() {
-    let node = closing_node().await;
+async fn in_a_room(node: &str) -> Client {
     let options = Options {
         tunnel: true,
         ..Options::default()
     };
-    let mut client = Client::connect(&node, "grant", options).await.unwrap();
+    let mut client = Client::connect(node, "grant", options).await.unwrap();
     let join = ClientMsg::Join {
         name: "room".into(),
         player_props: Default::default(),
@@ -92,8 +94,30 @@ async fn a_lost_connection_refuses_what_is_sent_on_it() {
         spectator: false,
     };
     client.join(join).await.unwrap();
+    client
+}
+
+#[tokio::test]
+async fn a_lost_connection_refuses_what_is_sent_on_it() {
+    let mut client = in_a_room(&node(None).await).await;
     while let Some(event) = client.next_event().await {
         if matches!(event, Event::Closed(_)) {
+            break;
+        }
+    }
+    let sent = client.send_event(1, EventTarget::Others, Bytes::new(), true);
+    assert!(matches!(sent, Err(ClientError::Disconnected)));
+}
+
+#[tokio::test]
+async fn a_client_the_node_took_out_of_its_room_refuses_what_is_sent() {
+    let kicked = ServerMsg::Left {
+        reason: "kicked".into(),
+        room: Some("id".into()),
+    };
+    let mut client = in_a_room(&node(Some(kicked)).await).await;
+    while let Some(event) = client.next_event().await {
+        if matches!(event, Event::Control(ServerMsg::Left { .. })) {
             break;
         }
     }

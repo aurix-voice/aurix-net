@@ -226,10 +226,20 @@ namespace Aurix.Net
             }
 
             Actor = actor;
+            ReadRoom();
+            return actor;
+        }
+
+        /// <summary>Takes from the core what it knows of the room; outside a room that is nothing.</summary>
+        void ReadRoom()
+        {
             var pointer = Native.aurix_net_joined_json(_h);
             JoinedJson = Native.Utf8(pointer);
             Native.aurix_net_string_free(pointer);
-            return actor;
+            if (JoinedJson == null)
+            {
+                Actor = -1;
+            }
         }
 
         public void SendEvent(
@@ -312,7 +322,13 @@ namespace Aurix.Net
                     switch (ev.kind)
                     {
                         case Native.EventControl:
-                            OnControl?.Invoke(Native.Utf8(ev.json));
+                            var json = Native.Utf8(ev.json);
+                            if (Managed.Json.Str(json, "t") == "left")
+                            {
+                                ReadRoom();
+                            }
+
+                            OnControl?.Invoke(json);
                             break;
                         case Native.EventData:
                             var len = (int)ev.dataLen;
@@ -345,6 +361,7 @@ namespace Aurix.Net
             if (_h != IntPtr.Zero)
             {
                 Native.aurix_net_leave(_h);
+                ReadRoom();
             }
         }
 

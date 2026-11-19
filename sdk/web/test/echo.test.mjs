@@ -157,6 +157,12 @@ test("a client outside a room or without its connection refuses what is sent", {
   send();
   a.leave();
   assert.throws(send, /disconnected/);
+  const joined = await a.joinOrCreate(`web-gone-${process.pid}`, "relay", 4);
+  send();
+  const left = new Promise((resolve) => a.on("control", (message) => { if (message.t === "left") resolve(); }));
+  await fetch(`${http}/v1/rooms/${joined.room}/players/${joined.actor}`, { method: "DELETE", headers: { authorization: `Bearer ${key}` } });
+  await left;
+  assert.throws(send, /disconnected/);
   await a.joinOrCreate(`web-gone-${process.pid}`, "relay", 4);
   send();
   const closed = new Promise((resolve) => a.on("closed", resolve));

@@ -138,6 +138,15 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   `disconnected`, and the queue of the lost connection is dropped. The Web SDK and the managed
   Unity client also accepted sends outside a room, before a join and after `leave`, and held
   them until the next join threw them away; they refuse those too, as the native core did.
+- All SDKs: a client the node took out of its room (kick, room closed, `session_replaced`,
+  rehost) kept the room's data path and went on accepting sends. One reliable event sent after
+  the `left` failed that client's next join (`conflict: session_replaced` in the Web SDK and the
+  managed Unity client, `disconnected` in the native core over QUIC), and a few seconds later
+  the client reported `closed` (`link dead`) with its control channel still open. The data path
+  closes with the `left`, and a send fails with `disconnected` until the next join.
+- Unity SDK (native client): `Client.Actor` and `Client.JoinedJson` went on describing a room
+  after `Leave` and after the node took the client out of it. They are `-1` and `null` outside
+  a room.
 - Unreal SDK: `SendEventEx` sent an event for `EAurixNetChannel::ReliableUnordered` on the
   reliable ordered channel. It goes on the channel it is given.
 - Lobby: a node that lost its Redis connection heard no room changes for about 2 s, and a room
