@@ -58,9 +58,9 @@ async fn inputs_behind_the_room_tick_are_counted() {
     client.join(create).await.expect("ann creates");
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    for _ in 0..5 {
+    for tick in 1..=5 {
         client
-            .send_data(Channel::UnreliableSequenced, input_frame(1))
+            .send_data(Channel::UnreliableSequenced, input_frame(tick))
             .expect("ann sends");
         client.flush();
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -72,15 +72,20 @@ async fn inputs_behind_the_room_tick_are_counted() {
     assert_eq!(late_inputs(&node).await, 5);
 }
 
-/// The input reports (`0x25`: tick, least margin, late frames) `client` has received.
+/// An input report (`0x25`): tick, least margin, late frames.
+fn input_report(payload: &[u8]) -> Option<(u32, i8, u8)> {
+    (payload.len() == 7 && payload[0] == 0x25).then(|| {
+        let tick = u32::from_be_bytes(payload[1..5].try_into().expect("four bytes"));
+        (tick, payload[5] as i8, payload[6])
+    })
+}
+
+/// The input reports `client` has received.
 fn input_reports(client: &mut Client) -> Vec<(u32, i8, u8)> {
     let mut reports = Vec::new();
     while let Some(event) = client.try_next_event() {
         if let Event::Data { payload, .. } = event {
-            if payload.len() == 7 && payload[0] == 0x25 {
-                let tick = u32::from_be_bytes(payload[1..5].try_into().expect("four bytes"));
-                reports.push((tick, payload[5] as i8, payload[6]));
-            }
+            reports.extend(input_report(&payload));
         }
     }
     reports
@@ -111,8 +116,8 @@ async fn sender_of_late_inputs_is_told_how_late_they_are() {
     };
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    for _ in 0..60 {
-        ann.send_data(Channel::UnreliableSequenced, input_frame(1))
+    for tick in 1..=60 {
+        ann.send_data(Channel::UnreliableSequenced, input_frame(tick))
             .expect("ann sends");
         ann.flush();
         tokio::time::sleep(Duration::from_millis(33)).await;
@@ -132,17 +137,35 @@ const POSE_SCHEMA: &str = "component Pose {\n    pos: vec3 @range(-512, 512, 0.0
 
 /// One input frame (`0x10`) for `tick` whose input is a single spawn op.
 fn spawn_frame(tick: u32) -> Bytes {
+    spawns_frame(tick, 1)
+}
+
+/// One input frame (`0x10`) with `inputs` inputs, for `first` and the ticks after it, each a
+/// single spawn op.
+fn spawns_frame(first: u32, inputs: u8) -> Bytes {
     let mut frame = BytesMut::new();
     frame.put_u8(0x10);
-    frame.put_u32(tick);
-    frame.put_u8(1);
-    frame.put_u8(4);
-    frame.put_slice(&[0xFF, 1, 1, 0]);
+    frame.put_u32(first);
+    frame.put_u8(inputs);
+    for _ in 0..inputs {
+        frame.put_u8(4);
+        frame.put_slice(&[0xFF, 1, 1, 0]);
+    }
     frame.freeze()
 }
 
 /// Applies the deltas `client` receives to `world` until `done` holds.
 async fn follow(client: &mut Client, world: &mut Frame, done: impl Fn(&Frame) -> bool) {
+    follow_noting(client, world, &mut Vec::new(), done).await;
+}
+
+/// As [`follow`], keeping the input reports that come meanwhile in `reports`.
+async fn follow_noting(
+    client: &mut Client,
+    world: &mut Frame,
+    reports: &mut Vec<(u32, i8, u8)>,
+    done: impl Fn(&Frame) -> bool,
+) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while !done(world) {
         let event = tokio::time::timeout_at(deadline, client.next_event())
@@ -153,6 +176,7 @@ async fn follow(client: &mut Client, world: &mut Frame, done: impl Fn(&Frame) ->
             if payload.first() == Some(&0x11) {
                 Replicator::apply(world, &payload[1..]).expect("delta");
             }
+            reports.extend(input_report(&payload));
         }
     }
 }
@@ -182,6 +206,87 @@ async fn spawn_sent_for_a_tick_already_simulated_happens_once() {
     let seen = world.tick.0;
     follow(&mut ann, &mut world, |world| world.tick.0 >= seen + 15).await;
     assert_eq!(world.entities().count(), 2);
+}
+
+#[tokio::test]
+async fn spawn_sent_twice_for_a_tick_still_ahead_happens_once() {
+    let node = Node::start().await;
+    let project = node.project("early-spawn").await;
+    let (mut ann, mut world) = enter(&node, &project, create_arena()).await;
+    follow(&mut ann, &mut world, |world| world.entities().count() == 1).await;
+
+    let ahead = world.tick.0 + 10;
+    for _ in 0..2 {
+        ann.send_data(Channel::UnreliableSequenced, spawn_frame(ahead))
+            .expect("ann sends");
+        ann.flush();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    follow(&mut ann, &mut world, |world| world.entities().count() == 2).await;
+    let seen = world.tick.0;
+    follow(&mut ann, &mut world, |world| world.tick.0 >= seen + 15).await;
+    assert_eq!(world.entities().count(), 2);
+}
+
+#[tokio::test]
+async fn late_frame_is_the_last_one_and_all_its_inputs_run() {
+    let node = Node::start().await;
+    let project = node.project("late-tail").await;
+    let (mut ann, mut world) = enter(&node, &project, create_arena()).await;
+    follow(&mut ann, &mut world, |world| {
+        world.entities().count() == 1 && world.tick.0 > 8
+    })
+    .await;
+
+    // The frames before it were lost and nothing follows: no repeat brings the rest.
+    let behind = world.tick.0 - 8;
+    ann.send_data(Channel::UnreliableSequenced, spawns_frame(behind, 3))
+        .expect("ann sends");
+    ann.flush();
+    let seen = world.tick.0;
+    follow(&mut ann, &mut world, |world| world.tick.0 >= seen + 30).await;
+    assert_eq!(world.entities().count(), 4);
+}
+
+#[tokio::test]
+async fn repeat_of_a_frame_the_room_has_taken_is_not_counted_late() {
+    let node = Node::start().await;
+    let project = node.project("tail-repeat").await;
+    let (mut ann, mut world) = enter(&node, &project, create_arena()).await;
+    follow(&mut ann, &mut world, |world| world.entities().count() == 1).await;
+
+    // In time, then again on the ticks after its own, as a client repeats its last frame.
+    let ahead = world.tick.0 + 10;
+    ann.send_data(Channel::UnreliableSequenced, input_frame(ahead))
+        .expect("ann sends");
+    ann.flush();
+    follow(&mut ann, &mut world, |world| world.tick.0 >= ahead + 2).await;
+    for _ in 0..2 {
+        ann.send_data(Channel::UnreliableSequenced, input_frame(ahead))
+            .expect("ann sends");
+        ann.flush();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    let mut reports = Vec::new();
+    follow_noting(&mut ann, &mut world, &mut reports, |world| {
+        world.tick.0 >= ahead + 40
+    })
+    .await;
+    assert_eq!(late_inputs(&node).await, 0);
+    assert!(!reports.is_empty(), "ann got no report");
+    for (_, margin, late) in reports {
+        assert!(margin >= 0 && late == 0, "margin {margin}, late {late}");
+    }
+
+    // A frame behind the room that brings an input it has not seen is late as before.
+    ann.send_data(Channel::UnreliableSequenced, input_frame(world.tick.0 - 3))
+        .expect("ann sends");
+    ann.flush();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while late_inputs(&node).await < 1 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(late_inputs(&node).await, 1);
 }
 
 /// One input frame (`0x10`) for `tick` whose input is a single tagged spawn op with `writes`

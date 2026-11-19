@@ -25,6 +25,10 @@ at a delaying proxy in front of the node: `node sdk/web/test/slow-link.mjs 100 8
 way), then `NET_SLOW_HTTP=http://127.0.0.1:8197`. The managed C# and Godot checks take the same
 variable.
 
+`sync_test` also sends single writes over a link that loses data frames when `NET_LOSSY_HTTP`
+points at the same proxy started with a loss pattern: `node sdk/web/test/slow-link.mjs 0 8198 10 70`
+(the first 10 ms of every 70 ms), then `NET_LOSSY_HTTP=http://127.0.0.1:8198`.
+
 `rehost_test.cpp` and the plain C `ctest/rehost.c` need two nodes and are built and run by
 `scripts/sdk-rehost-test.sh`: the node hands the room over, the client forgets it and joins it again
 through the other node.

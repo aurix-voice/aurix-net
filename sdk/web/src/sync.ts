@@ -887,6 +887,8 @@ import type { Client } from "./index.js";
 
 // The room drops inputs more than 64 ticks ahead of it.
 const MAX_LEAD_TICKS = 60;
+// Frames an input rides in: its own and the next ones, as in lockstep.
+const INPUT_REDUNDANCY = 3;
 
 /** Drives a `SyncWorld` from a joined sync-room `Client`: decodes deltas, acks them, advances a render
  *  tick `interpolationTicks` behind the server, and stamps/sends owner writes or raw inputs. */
@@ -908,6 +910,10 @@ export class SyncSession {
   renderTick = 0;
   private lastInputTick = 0;
   private recent: Uint8Array[] = [];
+  /** How many repeats the last frame is owed and the room tick it last went out on. Each input
+   *  rides in `INPUT_REDUNDANCY` frames; with no input after it, only repeats of its own frame
+   *  carry it. */
+  private tail = { left: 0, sentAt: 0 };
   private lastDeltaAt = 0;
   private synced = false;
   private held: { body: Uint8Array; keep: boolean }[] = [];
@@ -1044,13 +1050,14 @@ export class SyncSession {
         );
       }
     }
+    let sent = false;
     while (this.held.length) {
       const tick = Math.max(
         this.world.serverTick + lead,
         this.lastInputTick + 1,
       );
       if (tick > this.world.serverTick + lead + 1) {
-        return;
+        break;
       }
       // a frame carries inputs for consecutive ticks, so earlier ones are resent only without a gap
       if (tick !== this.lastInputTick + 1) {
@@ -1058,12 +1065,29 @@ export class SyncSession {
       }
       this.lastInputTick = tick;
       this.recent.push(this.held.shift()!.body);
-      while (this.recent.length > 3) {
+      while (this.recent.length > INPUT_REDUNDANCY) {
         this.recent.shift();
       }
       this.client.sendData(
         Channel.Unreliable,
         SyncWorld.encodeInput(tick - (this.recent.length - 1), this.recent),
+      );
+      this.tail = { left: INPUT_REDUNDANCY - 1, sentAt: this.world.serverTick };
+      sent = true;
+    }
+    if (
+      !sent &&
+      this.tail.left > 0 &&
+      this.tail.sentAt !== this.world.serverTick &&
+      this.recent.length
+    ) {
+      this.tail = { left: this.tail.left - 1, sentAt: this.world.serverTick };
+      this.client.sendData(
+        Channel.Unreliable,
+        SyncWorld.encodeInput(
+          this.lastInputTick - (this.recent.length - 1),
+          this.recent,
+        ),
       );
     }
   }

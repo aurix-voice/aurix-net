@@ -198,7 +198,8 @@ a custom-schema owner room (vec3/quat/string/u8 decode, acks with 0 gaps) and a 
 compiled there against `Stubs/UnityEngine.cs`; the real editor build is a separate step.
 With `NET_SLOW_HTTP` set (a delaying proxy, see `sdk/cpp/README.md`) it also leaves a room and joins
 another one over the slow link, sends two room lookups at once, and drives a `NetRunner` whose owner
-moves every tick.
+moves every tick. With `NET_LOSSY_HTTP` set (the same proxy losing data frames, see
+`sdk/cpp/README.md`) it also sends single writes over the lossy link.
 
 Lockstep tuning: `Runner.Lockstep.InputDelay` adapts between `InputDelayMin`/`InputDelayMax` from the node's
 input-margin reports (late inputs raise it at once to cover the round trip, steady slack lowers it again;

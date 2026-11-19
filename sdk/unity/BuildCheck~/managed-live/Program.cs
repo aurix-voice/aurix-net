@@ -93,6 +93,35 @@ class P
         bool spawnOk = oa.NextSpawnTag != null && made?.Tag == spawnTag && made?.Status == SpawnStatus.Created && oa.Avatar != null && made?.Entity != oa.Avatar
             && wa.Entities.TryGetValue(made.Value.Entity, out var spawned) && spawned.Owner == actA && wa.Entities.ContainsKey(oa.Avatar.Value);
         Console.WriteLine($"tagged spawn: tag={spawnTag} status={made?.Status} entity={made?.Entity} avatar={oa.Avatar} -> {(spawnOk ? "ok" : "FAIL")}");
+        // over a link that loses data frames (NET_LOSSY_HTTP, see README): a write with nothing after it still arrives
+        bool tailOk = true; var lossy = Environment.GetEnvironmentVariable("NET_LOSSY_HTTP");
+        if (lossy != null)
+        {
+            var wc = new SyncWorld(schema); var oc = await ManagedClient.ConnectAsync(lossy, await Grant(h, key, "cs-oc"));
+            oc.OnData += (ch, t, p) => { var ack = wc.Receive(p); if (ack != null) oc.SendData(Channel.Unreliable, ack); };
+            int actC = await oc.JoinAsync("cs-owner-" + room, hash);
+            var frames = new InputFrames(); int arrived = 0; const int rounds = 30;
+            for (int round = 0; round <= rounds; round++)
+            {
+                if (round > 0)
+                {
+                    var pos = ComponentValue.Zero(tr); pos.Fields[0] = new Value { X = round, Y = 1.5f, Z = -2 }; pos.Fields[1] = new Value { W = 1 };
+                    var body = wc.EncodeWrites(new List<(ComponentDef, ComponentValue)> { (tr, pos) });
+                    oc.SendData(Channel.Unreliable, frames.Frame(Math.Max(wc.ServerTick + 2, frames.LastTick + 1), body, wc.ServerTick));
+                }
+                for (int i = 0; i < 15; i++)
+                {
+                    oc.Flush(); ob.Flush(); await Task.Delay(16); oc.Poll(); ob.Poll();
+                    var tail = frames.Tail(wc.ServerTick);
+                    if (tail != null) oc.SendData(Channel.Unreliable, tail);
+                }
+                foreach (var e in wb.Entities.Values) if (round > 0 && e.Owner == actC && Math.Round(e.Get(tr)?.Fields[0].X ?? 0) == round) arrived++;
+            }
+            tailOk = arrived == rounds;
+            Console.WriteLine($"lossy link: {arrived} of {rounds} single writes arrived -> {(tailOk ? "ok" : "FAIL")}");
+            await oc.LeaveAsync(); oc.Dispose();
+        }
+        else Console.WriteLine("lossy link: skipped (NET_LOSSY_HTTP not set)");
         await oa.LeaveAsync(); await ob.LeaveAsync(); oa.Dispose(); ob.Dispose();
         // lockstep: A (master) and B confirm identical input streams, C joins late and catches up contiguously
         var lsRoom = "cs-ls-" + room; var clients = new List<ManagedClient>(); var ls = new List<LockstepClient>(); var journals = new List<List<string>>(); var seenTicks = new List<HashSet<uint>>();
@@ -231,7 +260,7 @@ class P
             Console.WriteLine($"slow link, NetRunner: owner moves that reached the room={reached.Count}/{moves}");
             runnerOk = moves > 0 && reached.Count >= moves * 3 / 4; runner.Client.Dispose(); watcher.Dispose();
         }
-        bool ok = lsOk && schemaOk && spawnOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && rejoined && toldApart && runnerOk;
+        bool ok = lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && rejoined && toldApart && runnerOk;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");
         return ok ? 0 : 1;
     }

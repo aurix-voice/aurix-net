@@ -48,13 +48,12 @@ namespace Aurix.Net.Unity
         public event Action<NetView, NetEntity, uint> OnOwnEntityUpdated;
 
         /// <summary>Tick stamped on the last input sent (what to pass to <c>Predictor.Record</c>).</summary>
-        public uint LastInputTick => _lastInputTick;
+        public uint LastInputTick => _inputs.LastTick;
 
         const byte RpcEventCode = 0xF0;
         readonly List<(ComponentDef, ComponentValue)> _writes =
             new List<(ComponentDef, ComponentValue)>();
-        readonly List<byte[]> _recentInputs = new List<byte[]>();
-        uint _lastInputTick;
+        InputFrames _inputs = new InputFrames();
 
         // The room drops an input whose tick it has already simulated, and one more than 64 ticks ahead.
         // A frame carries inputs for consecutive ticks, so earlier ones are resent only without a gap.
@@ -213,9 +212,8 @@ namespace Aurix.Net.Unity
 
         void AfterJoin()
         {
-            _lastInputTick = 0;
+            _inputs = new InputFrames();
             _synced = false;
-            _recentInputs.Clear();
             _heldInput = null; // input ticks belong to the room just left
             _heldOps.Clear();
             _spawns = new PendingSpawns();
@@ -260,7 +258,7 @@ namespace Aurix.Net.Unity
                     | ((uint)payload[2] << 16)
                     | ((uint)payload[3] << 8)
                     | payload[4];
-                _leadAdjust += _margin.Adjust(reportTick, (sbyte)payload[5], _lastInputTick);
+                _leadAdjust += _margin.Adjust(reportTick, (sbyte)payload[5], _inputs.LastTick);
                 return;
             }
 
@@ -415,6 +413,11 @@ namespace Aurix.Net.Unity
                     }
 
                     SendOwnerInputs();
+                    var tail = _inputs.Tail(World.ServerTick);
+                    if (tail != null)
+                    {
+                        Client.SendData(Channel.Unreliable, tail);
+                    }
                 }
             }
             Client.Flush();
@@ -438,34 +441,21 @@ namespace Aurix.Net.Unity
                 }
             }
 
-            uint tick = Math.Max(World.ServerTick + InputLead, _lastInputTick + 1);
-            if (tick != _lastInputTick + 1)
-            {
-                _recentInputs.Clear();
-            }
-
-            _lastInputTick = tick;
-            var body = _writes.Count > 0 ? World.EncodeWrites(_writes) : Array.Empty<byte>();
-            _recentInputs.Add(body);
-            while (_recentInputs.Count > 3)
-            {
-                _recentInputs.RemoveAt(0);
-            }
-
-            if (_writes.Count == 0 && _recentInputs.TrueForAll(bytes => bytes.Length == 0))
+            if (_writes.Count == 0)
             {
                 return;
             }
 
-            Client.SendData(
-                Channel.Unreliable,
-                SyncWorld.EncodeInput(tick - (uint)(_recentInputs.Count - 1), _recentInputs)
+            SendAt(
+                Math.Max(World.ServerTick + InputLead, _inputs.LastTick + 1),
+                World.EncodeWrites(_writes)
             );
         }
 
         /// <summary>Sends a raw input frame for the current tick to the server logic (`props.logic`); returns the
-        /// tick it is stamped with. Resent with the next two inputs for loss tolerance. The room takes one input
-        /// per tick: call this every frame, the newest input of a tick is the one sent.</summary>
+        /// tick it is stamped with. Resent with the next two inputs, or alone on the next two ticks when none
+        /// follows, for loss tolerance. The room takes one input per tick: call this every frame, the newest
+        /// input of a tick is the one sent.</summary>
         public uint SendInput(byte[] body)
         {
             if (World == null || Client == null)
@@ -474,7 +464,7 @@ namespace Aurix.Net.Unity
             }
 
             _heldInput = body ?? Array.Empty<byte>();
-            return SendHeldInput() ? _lastInputTick : _lastInputTick + 1;
+            return SendHeldInput() ? _inputs.LastTick : _inputs.LastTick + 1;
         }
 
         // An input stamped far ahead of the room is applied that much later, so it waits for the room instead,
@@ -487,7 +477,7 @@ namespace Aurix.Net.Unity
             }
 
             uint lead = InputLead;
-            uint tick = Math.Max(World.ServerTick + lead, _lastInputTick + 1);
+            uint tick = Math.Max(World.ServerTick + lead, _inputs.LastTick + 1);
             if (tick > World.ServerTick + lead + 1)
             {
                 return false;
@@ -498,25 +488,8 @@ namespace Aurix.Net.Unity
             return true;
         }
 
-        void SendAt(uint tick, byte[] body)
-        {
-            if (tick != _lastInputTick + 1)
-            {
-                _recentInputs.Clear();
-            }
-
-            _lastInputTick = tick;
-            _recentInputs.Add(body);
-            while (_recentInputs.Count > 3)
-            {
-                _recentInputs.RemoveAt(0);
-            }
-
-            Client.SendData(
-                Channel.Unreliable,
-                SyncWorld.EncodeInput(tick - (uint)(_recentInputs.Count - 1), _recentInputs)
-            );
-        }
+        void SendAt(uint tick, byte[] body) =>
+            Client.SendData(Channel.Unreliable, _inputs.Frame(tick, body, World.ServerTick));
 
         /// <summary>Owner-authoritative ops on entities you own; returns the tick they are stamped with. Unlike
         /// an input, ops are not replaced by newer ones: each waits for its own tick.</summary>
@@ -549,7 +522,7 @@ namespace Aurix.Net.Unity
         {
             _heldOps.Enqueue(ops);
             SendHeldOps();
-            return _lastInputTick + (uint)_heldOps.Count;
+            return _inputs.LastTick + (uint)_heldOps.Count;
         }
 
         void SendHeldOps()
@@ -567,12 +540,15 @@ namespace Aurix.Net.Unity
                 body =>
                 {
                     _heldOps.Enqueue(body);
-                    return Math.Max(World.ServerTick + lead, _lastInputTick + (uint)_heldOps.Count);
+                    return Math.Max(
+                        World.ServerTick + lead,
+                        _inputs.LastTick + (uint)_heldOps.Count
+                    );
                 }
             );
             while (_heldOps.Count > 0)
             {
-                uint tick = Math.Max(World.ServerTick + lead, _lastInputTick + 1);
+                uint tick = Math.Max(World.ServerTick + lead, _inputs.LastTick + 1);
                 if (tick > World.ServerTick + lead + 1)
                 {
                     return;

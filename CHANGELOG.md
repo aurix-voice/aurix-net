@@ -84,6 +84,22 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   refusal that repeats it; a refusal with an id no longer fails a join in flight either.
 - Rust client: `stats` and `find_friends` take the `id` their answer comes back with, as `rpc`
   does. They sent none, so a game could not match an answer or a refusal to its request.
+- Sync: a frame repeated after its tick, with no input the room had not taken, was counted as
+  late in the input report (`0x25`) and in `net_sync_late_inputs_total`, so a client that
+  repeats its last frame raised its input lead for nothing. Such a frame is left out of both.
+- Sync: of a frame whose inputs were all for ticks already simulated the room ran the first new
+  input and left the others to the repeats in later frames; when that frame was the last one a
+  client sent, its last writes never reached the room. The inputs of such a frame run on the
+  ticks that follow, one a tick, in the order sent. An input sent for a tick that a late input
+  already held replaced it; it runs after it now.
+- C, C++, Godot and Web SDKs, sync rooms: the last write, input or op before a pause went out in
+  one frame only, while every earlier one rode in three. When that frame was lost or came late,
+  the room kept the value before it for good. The client sends the last frame again on each of
+  the next two room ticks now.
+- Unity SDK, sync rooms: `NetRunner` followed the last write, input or op with two frames that
+  carried an empty input for the next ticks, so a room with logic ran the empty input instead of
+  holding the player's last one. It sends the last frame again on the next two room ticks, as
+  the other SDKs do.
 - C, C++ and Godot SDKs: a client that asked one node of a region for a room hosted on another
   got `room_elsewhere` and had no call to follow it, unlike Rust, Web and C#.
   `aurix_net_connect_and_join`, `Client::connectAndJoin` and `connect_and_join` connect, join

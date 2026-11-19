@@ -95,6 +95,33 @@ test("sync room: writes and spawns arrive over a 200 ms round trip", { skip: !ke
   }
 });
 
+test("sync room: a last write whose frame is lost still arrives", { skip: !key }, async () => {
+  const link = slowLink(http, 0);
+  const a = await Client.connect(link.url, await grant("web-tail-a"));
+  const b = await Client.connect(http, await grant("web-tail-b"));
+  try {
+    const room = `web-tail-${process.pid}`;
+    const ja = await a.joinOrCreate(room, "sync", 4, { schema: SCHEMA });
+    await b.joinOrCreate(room, "sync", 4, { schema: SCHEMA });
+    const sa = new SyncSession(a, SCHEMA, 60, 2), sb = new SyncSession(b, SCHEMA, 60, 2);
+    const tr = sa.world.schema.byName("Transform");
+    let seen = 0;
+    sb.world.onChange = (e) => { if (e.owner === ja.actor) seen = sb.world.get(e, tr)?.fields[0][0] ?? seen; };
+    sb.world.onSpawn = sb.world.onChange;
+    const write = (x) => { sa.sendWrites([[tr, new ComponentValue([[x, 1, -2], [0, 0, 0, 1]])]]); a.flush(); };
+    await sleep(500);
+    write(1);
+    await sleep(500);
+    assert.equal(Math.round(seen), 1);
+    link.lose(10);
+    write(2);
+    await sleep(500);
+    assert.equal(Math.round(seen), 2, "the room got the write from a repeat of its frame");
+  } finally {
+    a.close(); b.close(); link.close();
+  }
+});
+
 async function until(what, cond, ms = 4000) {
   const t0 = Date.now(); while (Date.now() - t0 < ms) { if (cond()) return; await sleep(20); }
   throw new Error(`timed out waiting for ${what}`);

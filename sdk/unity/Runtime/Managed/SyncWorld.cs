@@ -161,6 +161,56 @@ namespace Aurix.Net.Managed
         }
     }
 
+    /// <summary>The input frames of one stay in a room. A frame carries the inputs of its tick and the two
+    /// before it, so each input rides in three frames; the last frame is sent again on the next two room
+    /// ticks, because no later input carries it.</summary>
+    public sealed class InputFrames
+    {
+        const int Redundancy = 3;
+        readonly List<byte[]> _recent = new List<byte[]>();
+        int _repeats;
+        uint _sentAt;
+
+        /// <summary>The tick of the newest input sent.</summary>
+        public uint LastTick { get; private set; }
+
+        /// <summary>The frame for `body` at `tick`; `serverTick` is the room tick it goes out on.</summary>
+        public byte[] Frame(uint tick, byte[] body, uint serverTick)
+        {
+            // a frame carries inputs for consecutive ticks, so earlier ones are resent only without a gap
+            if (tick != LastTick + 1)
+            {
+                _recent.Clear();
+            }
+
+            LastTick = tick;
+            _recent.Add(body);
+            while (_recent.Count > Redundancy)
+            {
+                _recent.RemoveAt(0);
+            }
+
+            _repeats = Redundancy - 1;
+            _sentAt = serverTick;
+            return Encode();
+        }
+
+        /// <summary>The last frame again, once a room tick while it is owed a repeat; else null.</summary>
+        public byte[] Tail(uint serverTick)
+        {
+            if (_repeats == 0 || _sentAt == serverTick || _recent.Count == 0)
+            {
+                return null;
+            }
+
+            _repeats--;
+            _sentAt = serverTick;
+            return Encode();
+        }
+
+        byte[] Encode() => SyncWorld.EncodeInput(LastTick - (uint)(_recent.Count - 1), _recent);
+    }
+
     public sealed class SyncWorld
     {
         public const byte KindInput = 0x10,

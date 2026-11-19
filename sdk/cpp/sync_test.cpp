@@ -54,5 +54,26 @@ int main() {
     bool ok = sb.serverTick() > 30 && sb.gaps() == 0 && updates >= 20 && std::fabs(last[0] - x) < 3 && std::fabs(last[1] - 1) < 0.02 && std::fabs(last[2] + 2) < 0.02 && own == 2 && told
               && sb.renderTick() > 0 && sb.renderTick() <= sb.serverTick();
     std::printf("cpp sync: serverTick=%u gaps=%llu updates=%d last=(%.2f %.2f %.2f) x=%.1f own=%d told=%d renderTick=%.1f -> %s\n", sb.serverTick(), (unsigned long long)sb.gaps(), updates, last[0], last[1], last[2], x, own, int(told), sb.renderTick(), ok ? "ok" : "FAIL");
+    // over a link that loses data frames (NET_LOSSY_HTTP, see README): a write with nothing after it still arrives
+    if (const char* lossy = std::getenv("NET_LOSSY_HTTP")) {
+        Client c; c.connect(lossy, Client::issueGrant(http, key, "cpp-sync-c", "C"), true);
+        int actorC = c.joinOrCreate(room, Mode::Sync, 4, props);
+        Sync sc(SCHEMA);
+        c.onData = [&](Channel, uint16_t, const uint8_t* d, size_t n) { sc.receive(c, d, n); };
+        const int rounds = 30; int arrived = 0; float seen[4] = {0, 0, 0, 0};
+        for (int round = 0; round <= rounds; round++) {
+            if (round > 0) { float p[3] = {float(round), 1, -2}, q[4] = {0, 0, 0, 1}; sc.begin(tr).write(pos, p, 3).write(rot, q, 4).end().sendWrites(c); }
+            for (int i = 0; i < 15; i++) {
+                c.flush(); std::this_thread::sleep_for(std::chrono::milliseconds(16)); c.poll(); b.poll(); sb.advance(0.016);
+                for (auto e = sb.poll(); e.kind != Sync::Kind::None; e = sb.poll())
+                    if (e.owner == actorC && e.kind != Sync::Kind::Despawn) sb.vector(e.entity, tr, pos, seen);
+            }
+            if (round > 0 && std::lround(seen[0]) == round) arrived++;
+        }
+        std::printf("cpp sync, lossy link: %d of %d single writes arrived -> %s\n", arrived, rounds, arrived == rounds ? "ok" : "FAIL");
+        ok = ok && arrived == rounds; c.leave();
+    } else {
+        std::printf("cpp sync, lossy link: skipped (NET_LOSSY_HTTP not set)\n");
+    }
     a.leave(); b.leave(); return ok ? 0 : 1;
 }

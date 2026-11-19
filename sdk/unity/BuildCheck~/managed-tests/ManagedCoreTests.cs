@@ -123,6 +123,28 @@ public class ManagedCoreTests
     }
 
     [Test]
+    public void TheLastInputFrameIsSentOnTheNextTwoTicks()
+    {
+        var inputs = new InputFrames();
+        var one = new byte[] { 1 };
+        var two = new byte[] { 2 };
+        Assert.That(Hex(inputs.Frame(12, one, 10)), Is.EqualTo(Hex(SyncWorld.EncodeInput(12, new[] { one }))));
+        var frame = inputs.Frame(13, two, 10);
+        Assert.That(Hex(frame), Is.EqualTo(Hex(SyncWorld.EncodeInput(12, new[] { one, two }))));
+        Assert.That(inputs.LastTick, Is.EqualTo(13));
+
+        Assert.That(inputs.Tail(10), Is.Null, "repeated within the tick it was sent on");
+        Assert.That(Hex(inputs.Tail(11)), Is.EqualTo(Hex(frame)));
+        Assert.That(inputs.Tail(11), Is.Null, "repeated twice in one tick");
+        Assert.That(Hex(inputs.Tail(12)), Is.EqualTo(Hex(frame)));
+        Assert.That(inputs.Tail(13), Is.Null, "repeated a third time");
+
+        // tick 16 does not follow 13, so nothing is carried over
+        Assert.That(Hex(inputs.Frame(16, one, 14)), Is.EqualTo(Hex(SyncWorld.EncodeInput(16, new[] { one }))));
+        Assert.That(new InputFrames().Tail(5), Is.Null, "nothing sent yet");
+    }
+
+    [Test]
     public void LockstepTests()
     {
         var sent = new List<(Channel, byte[])>();

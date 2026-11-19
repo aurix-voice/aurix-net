@@ -91,7 +91,9 @@ Create with `mode: "sync"` and optional props:
 | `stale_after` | 30 | ticks after which an entity not sent to a client gets top priority regardless of distance (eventual consistency bound) |
 | `position` | `Transform.0` | `Component.field` holding the vec3 used for AOI |
 
-Clients send `Input` frames (last 3 ticks, redundant) on the unreliable channel; the server
+Clients send `Input` frames on the unreliable channel. A frame carries the inputs of the last 3
+ticks, so each input rides in three frames; when no input follows, the client sends the last frame
+again on each of the next two room ticks, the same three times as the inputs before it. The server
 runs the simulation, replicates per-client deltas (change masks per component, baselines per
 client, priority by change/distance/staleness) and keeps a hitbox history for lag
 compensation. Simulation events reach clients on the reliable channel. Every 5 s the frame is
@@ -133,11 +135,13 @@ sent" behaviour.
 Input frames are limited per client to tick rate + 10 % (burst of 8 frames); inputs more than
 64 ticks ahead of the room are dropped. A frame in which every input is for a tick the room has
 already simulated is late: the client is stamping its inputs too close to the room's tick for
-its latency. A late input still runs, on the room's current tick, when it is newer than every
-input the room has taken from that client, so an op in it (a spawn) is not lost; one late input
-runs per tick, and the repeats in the frames that follow bring the rest in order. The tick is
-what tells a new input from a repeat: a client must not send a different input under a tick it
-has already used. Counters: `net_sync_inputs_rate_limited_total`,
+its latency. A late input still runs when it is newer than every input the room has taken from
+that client, so an op in it (a spawn) is not lost. The room runs one input of a client per tick,
+in the order sent: the late inputs of a frame take the current tick and the ticks after it, and
+an input sent for a tick they hold runs after them. An input waits at most three ticks this
+way; one that would wait longer is left to the repeats in the frames that follow. The tick is
+what tells a new input from a repeat: a repeat of an input the room has taken does nothing, and
+a client must not send a different input under a tick it has already used. Counters: `net_sync_inputs_rate_limited_total`,
 `net_sync_invalid_inputs_total`, `net_sync_late_inputs_total`.
 
 The room tells each client how its inputs arrive, with the same frame as lockstep (`0x25`:
@@ -145,8 +149,9 @@ The room tells each client how its inputs arrive, with the same frame as lockste
 client that sent input since the last report gets one: `tick` is the room's tick, `min_margin`
 the least number of ticks by which the newest input of a frame was ahead of the room when it
 arrived (0 is just in time, negative is late, held to -127..127), `late` the frames that came
-late (at most 255). Frames dropped for rate or as invalid are not in it; a client that sends
-nothing gets nothing. A client stamps its inputs further ahead when the margin is negative and
+late (at most 255). Frames dropped for rate or as invalid are not in it, nor is a frame with no
+input newer than the room has taken from the client (a repeat); a client that sends nothing
+gets nothing. A client stamps its inputs further ahead when the margin is negative and
 may come closer when it stays high; one that ignores the frame works as before.
 
 ### Schema IDL

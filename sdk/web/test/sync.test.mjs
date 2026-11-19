@@ -107,7 +107,24 @@ test("an input is resent only under the tick it was stamped with", () => {
   delta(14);
   assert.equal(session.sendInput(new Uint8Array([2])), 16);
   // tick 13 follows 12, so the spawn rides along; tick 16 does not follow 13, so nothing is carried over
-  assert.deepEqual(frames, [{ first: 12, count: 1 }, { first: 12, count: 2 }, { first: 16, count: 1 }]);
+  assert.deepEqual(frames, [{ first: 12, count: 1 }, { first: 12, count: 2 }, { first: 12, count: 2 }, { first: 16, count: 1 }]);
+});
+
+test("the last frame is sent again on the next two ticks", () => {
+  const { session, frames, delta } = recordedSession();
+  delta(10);
+  session.sendInput(new Uint8Array([1]));
+  delta(10);
+  assert.equal(frames.length, 1, "repeated within the tick it was sent on");
+  delta(11);
+  delta(11);
+  delta(12);
+  delta(13);
+  assert.deepEqual(frames, [{ first: 12, count: 1 }, { first: 12, count: 1 }, { first: 12, count: 1 }]);
+  session.sendInput(new Uint8Array([2]));
+  session.sendInput(new Uint8Array([3]));
+  delta(14);
+  assert.deepEqual(frames.slice(3), [{ first: 15, count: 1 }, { first: 15, count: 2 }, { first: 15, count: 2 }]);
 });
 
 test("an op sent before the first delta waits for the room's tick", () => {
@@ -139,18 +156,21 @@ test("a spawn is tagged, answered once and sent again while the room is silent",
   data(spawnAnswer(0, 0, 9, 3));
   assert.deepEqual(answers[1], { tag: 0, status: "created", entity: 9, tick: 3 });
 
+  delta(11);
+  delta(12);
   // tag 6 went out for tick 13: the room is half a second past it at tick 44
   const sent = frames.length;
   delta(43);
   assert.equal(frames.length, sent);
   delta(44);
   assert.equal(frames.length, sent + 1);
-  delta(45);
-  assert.equal(frames.length, sent + 1);
   data(spawnAnswer(6, 1, 0, 46));
+  delta(45);
+  delta(46);
+  assert.equal(frames.length, sent + 3, "the repeated spawn is the last frame, so it goes out twice more");
   assert.deepEqual(answers[2], { tag: 6, status: "refused", entity: 0, tick: 46 });
   delta(120);
-  assert.equal(frames.length, sent + 1);
+  assert.equal(frames.length, sent + 3);
 });
 
 test("a late margin report from the room moves the next inputs further ahead", () => {

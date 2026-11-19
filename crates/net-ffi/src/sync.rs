@@ -75,6 +75,10 @@ struct State {
     /// Ticks the margin reports have added to the lead (negative: taken off it).
     lead_adjust: i32,
     recent: VecDeque<Vec<u8>>,
+    /// How many repeats the last frame is owed and the room tick it last went out on. Each input
+    /// rides in `INPUT_REDUNDANCY` frames; with no input after it, only repeats of its own frame
+    /// carry it.
+    tail: (usize, u32),
     /// Inputs waiting for a tick: (body, keep). Writes and raw inputs are replaced by newer ones.
     held: VecDeque<(Vec<u8>, bool)>,
     events: VecDeque<AurixNetSyncEvent>,
@@ -122,6 +126,17 @@ impl State {
                 (self.server_tick + lead).max(self.last_input_tick + self.held.len() as u32);
         }
     }
+
+    /// The last frame again, once a room tick, while it is owed a repeat.
+    fn tail_frame(&mut self) -> Option<Bytes> {
+        let (left, sent_at) = self.tail;
+        if left == 0 || sent_at == self.server_tick || self.recent.is_empty() {
+            return None;
+        }
+        self.tail = (left - 1, self.server_tick);
+        let first = self.last_input_tick - (self.recent.len() as u32 - 1);
+        Some(encode_input(first, &self.recent))
+    }
 }
 
 pub struct AurixNetSync {
@@ -158,6 +173,7 @@ pub unsafe extern "C" fn aurix_net_sync_new(schema: *const c_char) -> *mut Aurix
             margin: MarginControl::default(),
             lead_adjust: 0,
             recent: VecDeque::new(),
+            tail: (0, 0),
             held: VecDeque::new(),
             events: VecDeque::new(),
             current: None,
@@ -576,6 +592,7 @@ unsafe fn pump(st: &mut State, client: *mut AurixNetClient) -> i32 {
     st.lead_adjust = lead - estimate;
     let lead = lead as u32;
     st.repeat_unanswered(tick_hz / 2, lead);
+    let mut sent = false;
     while !st.held.is_empty() {
         let tick = (st.server_tick + lead).max(st.last_input_tick + 1);
         if tick > st.server_tick + lead + 1 {
@@ -602,12 +619,27 @@ unsafe fn pump(st: &mut State, client: *mut AurixNetClient) -> i32 {
             set_client_error(&error);
             return -1;
         }
+        st.tail = (INPUT_REDUNDANCY - 1, st.server_tick);
+        sent = true;
+    }
+    if sent {
+        return 0;
+    }
+    if let Some(frame) = st.tail_frame() {
+        let Some(channel) = Channel::from_u8(0) else {
+            return -1;
+        };
+        if let Err(error) = client.inner.lock().send_data(channel, frame) {
+            set_client_error(&error);
+            return -1;
+        }
     }
     0
 }
 
-/// Sends the inputs that were waiting for a tick. Call after every delta
-/// (`aurix_net_sync_receive` returned 1). 0 on success, -1 on error.
+/// Sends the inputs that were waiting for a tick and, with none left, the last frame again on the
+/// two ticks after it. Call after every delta (`aurix_net_sync_receive` returned 1). 0 on
+/// success, -1 on error.
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_sync_pump(
     sync: *const AurixNetSync,
@@ -1089,6 +1121,35 @@ mod tests {
                 aurix_net_sync_receive(sync, short.as_ptr(), short.len(), std::ptr::null_mut()),
                 0
             );
+            aurix_net_sync_destroy(sync);
+        }
+    }
+
+    #[test]
+    fn the_last_frame_is_sent_on_the_next_two_ticks() {
+        let cschema = CString::new(SCHEMA).unwrap();
+        unsafe {
+            let sync = aurix_net_sync_new(cschema.as_ptr());
+            let mut st = sync.as_ref().unwrap().inner.lock();
+            st.recent = VecDeque::from([vec![1u8], vec![2u8], vec![3u8]]);
+            st.last_input_tick = 105;
+            st.server_tick = 100;
+            st.tail = (INPUT_REDUNDANCY - 1, 100);
+            let frame = encode_input(103, &st.recent);
+
+            assert_eq!(
+                st.tail_frame(),
+                None,
+                "repeated within the tick it was sent on"
+            );
+            st.server_tick = 101;
+            assert_eq!(st.tail_frame(), Some(frame.clone()));
+            assert_eq!(st.tail_frame(), None, "repeated twice in one tick");
+            st.server_tick = 102;
+            assert_eq!(st.tail_frame(), Some(frame));
+            st.server_tick = 103;
+            assert_eq!(st.tail_frame(), None, "repeated a third time");
+            drop(st);
             aurix_net_sync_destroy(sync);
         }
     }

@@ -142,7 +142,7 @@ int32_t aurix_net_sync_write_vector(const AurixNetSync *sync, int32_t field, con
 int32_t aurix_net_sync_write_bytes(const AurixNetSync *sync, int32_t field, const uint8_t *data, size_t len);
 int32_t aurix_net_sync_write_end(const AurixNetSync *sync);
 int64_t aurix_net_sync_send_writes(const AurixNetSync *sync, AurixNetClient *client);           /* queued writes as this tick's input (owner-authoritative rooms); stamped tick or -1 */
-int32_t aurix_net_sync_pump(const AurixNetSync *sync, AurixNetClient *client);                  /* sends inputs that were waiting for a tick; call after every applied delta */
+int32_t aurix_net_sync_pump(const AurixNetSync *sync, AurixNetClient *client);                  /* sends inputs that were waiting for a tick and repeats the last frame on the next two; call after every applied delta */
 int64_t aurix_net_sync_send_op(const AurixNetSync *sync, AurixNetClient *client, int32_t op, uint64_t entity, int32_t to); /* 0 write entity (queued writes), 1 spawn (queued writes), 2 despawn, 3 transfer to actor `to`, 4 set ownership policy `to` (0 destroy_on_leave, 1 to_master, 2 orphan, 3 dynamic), 5 request ownership, 6 release; stamped tick or -1 */
 int64_t aurix_net_sync_spawn(const AurixNetSync *sync, AurixNetClient *client);                 /* spawn (queued writes) under a tag the room answers with the entity; repeated until answered; the tag or -1 (the room does not answer tagged spawns) */
 

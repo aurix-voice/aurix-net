@@ -553,7 +553,8 @@ pub struct SyncRoom {
     seed: u64,
     /// Newest input taken from each actor: (tick it was sent for, tick it runs on). An input for
     /// a tick already simulated runs on the current tick instead, so its ops are not lost: once,
-    /// in the order sent, one such input a tick; the repeats in later frames bring the rest.
+    /// in the order sent, one input a tick. The inputs after it wait for the next ticks, up to
+    /// `INPUT_REDUNDANCY` ticks; the repeats in later frames bring what did not fit.
     taken: HashMap<ActorId, (u32, u32)>,
     pub resyncs: u64,
     /// Watch-only actors: a view of the whole world, no avatar, inputs ignored.
@@ -798,6 +799,7 @@ impl SyncRoom {
                     return true;
                 }
                 let now = self.frame.tick.0;
+                let before = self.taken.get(&actor).map(|&(newest, _)| newest);
                 let mut read = 0;
                 for i in 0..count.min(INPUT_REDUNDANCY + 1) {
                     if payload.is_empty() {
@@ -812,10 +814,15 @@ impl SyncRoom {
                     let sent = first.wrapping_add(i as u32);
                     let last = self.taken.get(&actor).copied();
                     let newer = last.is_none_or(|(newest, _)| sent > newest);
-                    if sent < now && !(newer && last.is_none_or(|(_, runs)| runs < now)) {
+                    let due = sent.max(now);
+                    let runs = match last {
+                        Some((_, earlier)) if newer => due.max(earlier + 1),
+                        _ => due,
+                    };
+                    let free = newer || (sent >= now && !self.frame.has_input(actor, Tick(sent)));
+                    if !free || runs - due > INPUT_REDUNDANCY as u32 {
                         continue;
                     }
-                    let runs = sent.max(now);
                     let input = Input {
                         actor,
                         tick: Tick(runs),
@@ -827,12 +834,15 @@ impl SyncRoom {
                 }
                 if read > 0 {
                     let newest = first.wrapping_add(read - 1);
-                    let margin = (newest as i64 - now as i64).clamp(-127, 127) as i32;
-                    let slack = self.margins.entry(actor).or_insert((i32::MAX, 0));
-                    slack.0 = slack.0.min(margin);
-                    if margin < 0 {
-                        self.late_inputs += 1;
-                        slack.1 = slack.1.saturating_add(1);
+                    // A repeat of what the room has taken says nothing of the client's timing.
+                    if before.is_none_or(|taken| newest > taken) {
+                        let margin = (newest as i64 - now as i64).clamp(-127, 127) as i32;
+                        let slack = self.margins.entry(actor).or_insert((i32::MAX, 0));
+                        slack.0 = slack.0.min(margin);
+                        if margin < 0 {
+                            self.late_inputs += 1;
+                            slack.1 = slack.1.saturating_add(1);
+                        }
                     }
                 }
                 true
@@ -1503,13 +1513,36 @@ mod tests {
             let _ = room.tick();
         }
         let now = room.frame.tick.0;
+        let late = SyncRoom::encode_input(Tick(now - 3), &vec![vec![1, 0, 0]; 3]);
+        room.handle(alice, late);
+        assert_eq!(room.take_input_stats(), (0, 0, 1));
         // The newest input is still due: the older ones in the frame are the usual repeats.
         let due = SyncRoom::encode_input(Tick(now - 2), &vec![vec![1, 0, 0]; 3]);
         room.handle(alice, due);
         assert_eq!(room.take_input_stats(), (0, 0, 0));
-        let late = SyncRoom::encode_input(Tick(now - 3), &vec![vec![1, 0, 0]; 3]);
-        room.handle(alice, late);
+    }
+
+    #[test]
+    fn repeat_of_a_frame_is_not_counted_late() {
+        let mut room = SyncRoom::new(None, 30, 1).unwrap();
+        let alice = ActorId(1);
+        room.on_join(alice);
+        let ahead = room.frame.tick.0 + 2;
+        let tail = SyncRoom::encode_input(Tick(ahead - 2), &vec![vec![1, 0, 0]; 3]);
+        room.handle(alice, tail.clone());
+        for _ in 0..3 {
+            let _ = room.tick();
+            room.handle(alice, tail.clone());
+        }
+        assert_eq!(room.take_input_stats(), (0, 0, 0));
+        assert_eq!(room.margins[&alice], (2, 0));
+
+        // The input after it, behind the room as the repeats were, is.
+        let _ = room.tick();
+        let next = SyncRoom::encode_input(Tick(ahead - 2), &vec![vec![1, 0, 0]; 4]);
+        room.handle(alice, next);
         assert_eq!(room.take_input_stats(), (0, 0, 1));
+        assert_eq!(room.margins[&alice], (-1, 1));
     }
 
     #[test]
@@ -1533,7 +1566,12 @@ mod tests {
         }
         let _ = room.tick();
         assert_eq!(room.frame.entities().count(), 2);
-        // The repeats in the frames that follow bring the other two, and nothing twice.
+        // The client sends nothing more: the other two run on the next two ticks.
+        for _ in 0..2 {
+            let _ = room.tick();
+        }
+        assert_eq!(room.frame.entities().count(), 4);
+        // A repeat of what has run makes nothing twice.
         for _ in 0..4 {
             room.handle(
                 alice,
@@ -1542,6 +1580,44 @@ mod tests {
             let _ = room.tick();
         }
         assert_eq!(room.frame.entities().count(), 4);
+    }
+
+    #[test]
+    fn input_for_a_tick_that_late_inputs_hold_runs_after_them() {
+        let src = "component Pose {\n x: f32 @range(-100, 100, 0.1)\n}";
+        let mut room = SyncRoom::new(Some(src), 30, 1).unwrap();
+        let alice = ActorId(1);
+        room.on_join(alice);
+        for _ in 0..5 {
+            let _ = room.tick();
+        }
+        let avatar = room.avatars[&alice].unwrap();
+        let schema = room.frame.schema.component("Pose").unwrap().clone();
+        let bits = room.frame.schema.component_id_bits();
+        let pose = |x: f32| ComponentValue {
+            fields: vec![Value::F32(x)],
+        };
+        let write = |x: f32| {
+            let mut writer = net_wire::BitWriter::new();
+            writer.write_bits(1, 8);
+            writer.write_bits(schema.id as u64, bits);
+            pose(x).encode_full(&schema, &mut writer).unwrap();
+            writer.finish()
+        };
+        let now = room.frame.tick;
+        let late = SyncRoom::encode_input(Tick(now.0 - 4), &[write(1.0), write(2.0), write(3.0)]);
+        let due = SyncRoom::encode_input(now, &[write(4.0)]);
+        for _ in 0..2 {
+            room.handle(alice, late.clone());
+            room.handle(alice, due.clone());
+        }
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            let _ = room.tick();
+            seen.push(room.frame.get(avatar, "Pose").cloned());
+        }
+        let expected = [1.0, 2.0, 3.0, 4.0, 4.0].map(|x| Some(pose(x)));
+        assert_eq!(seen, expected);
     }
 
     /// (tag, status, entity, tick) of a `0x14` frame.
@@ -1712,15 +1788,15 @@ mod tests {
         let now = room.frame.tick.0;
         room.handle(
             alice,
-            SyncRoom::encode_input(Tick(now + 3), &[vec![1, 0, 0]]),
-        );
-        room.handle(
-            alice,
             SyncRoom::encode_input(Tick(now - 2), &[vec![1, 0, 0]]),
         );
         room.handle(
             alice,
             SyncRoom::encode_input(Tick(now - 1), &vec![vec![1, 0, 0]; 2]),
+        );
+        room.handle(
+            alice,
+            SyncRoom::encode_input(Tick(now + 3), &[vec![1, 0, 0]]),
         );
         let mut reports = Vec::new();
         while reports.is_empty() {
