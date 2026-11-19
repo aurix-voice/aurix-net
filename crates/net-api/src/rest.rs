@@ -1950,23 +1950,26 @@ async fn get_replay(
     ))
 }
 
-fn local_replay(st: &Shared, id: Uuid, query: &ReplayQuery) -> Option<Result<Value>> {
+async fn local_replay(st: &Shared, id: Uuid, query: &ReplayQuery) -> Option<Result<Value>> {
     let handle = st.host.get(RoomId::from_uuid(id))?;
-    let hosted = handle.lock();
-    if let Some(sy) = hosted.sync.as_ref() {
-        return Some(
-            serde_json::to_value(sy.replay_window(query.from.unwrap_or(0), query.to))
-                .map_err(|e| NetError::Internal(e.to_string())),
-        );
-    }
-    Some(match hosted.lockstep.as_ref() {
-        Some(lockstep) => {
-            serde_json::to_value(lockstep.replay_window(query.from.unwrap_or(0), query.to))
-                .map_err(|e| NetError::Internal(e.to_string()))
+    let from = query.from.unwrap_or(0);
+    let window = {
+        let hosted = handle.lock();
+        if let Some(sync) = hosted.sync.as_ref() {
+            return Some(Ok(sync.replay_window(from, query.to)));
         }
-        None => Err(NetError::Invalid(
-            "replays exist for lockstep and sync rooms only".into(),
-        )),
+        let Some(lockstep) = hosted.lockstep.as_ref() else {
+            return Some(Err(NetError::Invalid(
+                "replays exist for lockstep and sync rooms only".into(),
+            )));
+        };
+        lockstep.replay_window(from, query.to)
+    };
+    // Hours of ticks take long enough to unpack to hold up the timers of the rooms.
+    let replay = tokio::task::spawn_blocking(|| serde_json::to_value(window.into_replay())).await;
+    Some(match replay {
+        Ok(replay) => replay.map_err(|e| NetError::Internal(e.to_string())),
+        Err(e) => Err(NetError::Internal(e.to_string())),
     })
 }
 
@@ -1976,7 +1979,7 @@ async fn replay_anywhere(
     id: Uuid,
     query: &ReplayQuery,
 ) -> Result<Value> {
-    if let Some(replay) = local_replay(st, id, query) {
+    if let Some(replay) = local_replay(st, id, query).await {
         return replay;
     }
     let room = RoomId::from_uuid(id);
@@ -2013,6 +2016,7 @@ async fn internal_replay(
 ) -> ApiResult<Json<Value>> {
     operator(&st, &headers).await?;
     let replay = local_replay(&st, id, &q)
+        .await
         .ok_or_else(|| NetError::NotFound("room not hosted here".into()))??;
     Ok(Json(replay))
 }

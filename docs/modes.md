@@ -332,6 +332,11 @@ tick 0. The journal takes 72 bytes a tick for two players with 8-byte inputs and
 for eight with 16-byte inputs: 16 MB and 47 MB an hour, 62 MB and 187 MB at 4 hours. A game
 that sends checkpoints keeps the catch-up of a joiner to the last seconds instead.
 
+The replay stored when the room closes is at most 16 MiB of JSON (`MAX_REPLAY_BYTES`). A
+longer one loses its oldest ticks, as many as do not fit, and its `from_tick` says where it
+starts. Two players with 8-byte inputs take 47 bytes a tick there, which is 1 h 40 min at
+60 Hz.
+
 ## Spectators
 
 `join{name, spectator: true}` watches a room without taking a slot: spectators are not counted

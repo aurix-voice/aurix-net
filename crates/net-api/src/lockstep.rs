@@ -45,6 +45,30 @@ use net_wire::Schema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
+/// A window of a room's replay, copied out of the room.
+pub struct ReplayWindow {
+    ticks: Journal,
+    seed: u64,
+    schema_hash: String,
+    tick_hz: u16,
+    actors: Vec<ActorId>,
+    hashes: Vec<(u32, u64)>,
+}
+
+impl ReplayWindow {
+    pub fn into_replay(self) -> net_rollback::Replay {
+        let mut replay = self.ticks.into_replay(
+            self.seed,
+            self.schema_hash,
+            self.tick_hz,
+            self.actors,
+            SERVER_HASH_EVERY,
+        );
+        replay.hashes = self.hashes;
+        replay
+    }
+}
+
 /// Everything another node needs to continue this room: the newest master checkpoint and
 /// the journal from that tick on. Stored in Redis every few seconds (see `ws::run_lockstep`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1046,11 +1070,24 @@ impl LockstepRoom {
     }
 
     /// Instant replay: the confirmed inputs of a live room for ticks `from..to` (what the journal
-    /// still holds; `from_tick` in the result says where it really starts).
-    pub fn replay_window(&self, from: u32, to: Option<u32>) -> net_rollback::Replay {
-        let mut replay = self.replay();
-        window_replay(&mut replay, from, to);
-        replay
+    /// still holds; `from_tick` in the result says where it really starts). The copy made here
+    /// is the packed ticks; [`ReplayWindow::into_replay`] unpacks them without the room.
+    pub fn replay_window(&self, from: u32, to: Option<u32>) -> ReplayWindow {
+        let ticks = self.journal.window(from, to);
+        let start = from.max(ticks.base());
+        let hashes = self
+            .agreed
+            .range(start..to.map_or(u32::MAX, |to| to.max(start)))
+            .map(|(tick, hash)| (*tick, *hash))
+            .collect();
+        ReplayWindow {
+            ticks,
+            seed: self.seed,
+            schema_hash: self.schema_hash.clone(),
+            tick_hz: self.hz,
+            actors: self.journal.actors(),
+            hashes,
+        }
     }
 
     pub fn take_desyncs(&mut self) -> Vec<(u32, ActorId)> {
@@ -1421,6 +1458,43 @@ mod tests {
         let replay = broken.replay();
         assert_eq!((replay.from_tick, replay.inputs.len()), (150, 250));
         assert_eq!(replay.hashes, [(200, 9), (350, 9)]);
+    }
+
+    #[test]
+    fn window_of_a_live_room_is_the_one_cut_from_its_whole_replay() {
+        let mut room = LockstepRoom::new(60, 1);
+        let (alice, bob) = (ActorId(1), ActorId(2));
+        room.on_join(alice);
+        room.on_join(bob);
+        for t in 0..60u32 {
+            if t < 40 {
+                room.handle(alice, SyncRoom::encode_input(Tick(t), &[vec![t as u8]]));
+            }
+            let _ = room.tick();
+            if t.is_multiple_of(10) {
+                room.handle(alice, LockstepRoom::encode_hash(Tick(t), 7));
+                room.handle(bob, LockstepRoom::encode_hash(Tick(t), 7));
+            }
+        }
+        assert_eq!(room.replay().hashes.len(), 6);
+        let windows = [
+            (0, None),
+            (5, Some(25)),
+            (10, Some(10)),
+            (30, Some(20)),
+            (35, Some(900)),
+            (45, None),
+            (900, None),
+        ];
+        for (from, to) in windows {
+            let mut cut = room.replay();
+            window_replay(&mut cut, from, to);
+            assert_eq!(
+                room.replay_window(from, to).into_replay(),
+                cut,
+                "{from}..{to:?}"
+            );
+        }
     }
 
     #[test]

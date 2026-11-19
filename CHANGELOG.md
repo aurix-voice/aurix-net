@@ -258,6 +258,13 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   `Content-Type: application/json`, an unknown path, a method the path does not take and the
   per-address request limit. Each is now refused with `{"error", "message"}` like every other
   refusal; the status codes are the same.
+- Lockstep replay of a long match: a replay over the 16 MiB a stored replay may take lost
+  its older half, and again until it fit, so one that was 2 % over kept half of the match. It
+  loses as many of its oldest ticks as do not fit; the limit is in `docs/modes.md`. A replay
+  request to a live room copied the whole journal under the lock of the room, whatever window
+  it asked for, and built the answer on a thread that runs the rooms, which held their ticks
+  up: 40 requests for the whole of a 120 000-tick match set its room 489 ticks back. It
+  copies the window and builds the answer on a thread of its own.
 - Replay of a sync room: `from_tick` repeated the `from` of the request when the first frame
   returned was a later one. It is the tick of the first frame returned.
 - Replay of a relay room: the refusal said replays exist for lockstep rooms only. It names

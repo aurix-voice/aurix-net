@@ -2583,8 +2583,9 @@ pub async fn reconcile_rooms(st: &Shared) -> Result<(u64, usize)> {
 /// Upper bound for one stored replay; longer matches keep their most recent ticks.
 pub const MAX_REPLAY_BYTES: usize = 16 << 20;
 
-/// Serializes `replay`, dropping the oldest ticks (and their hashes) until it fits `max_bytes`;
-/// `from_tick` moves forward accordingly. None only if even an empty replay does not fit.
+/// Serializes `replay`, dropping as many of the oldest ticks (and their hashes) as do not fit
+/// `max_bytes`; `from_tick` moves forward accordingly. None only if even an empty replay does
+/// not fit.
 pub fn fit_replay(replay: &mut net_rollback::Replay, max_bytes: usize) -> Option<Vec<u8>> {
     loop {
         let body = serde_json::to_vec(replay).ok()?;
@@ -2594,7 +2595,22 @@ pub fn fit_replay(replay: &mut net_rollback::Replay, max_bytes: usize) -> Option
         if replay.inputs.is_empty() {
             return None;
         }
-        let drop = (replay.inputs.len() / 2).max(1);
+        let over = body.len() - max_bytes;
+        let size = |json: serde_json::Result<Vec<u8>>| json.map_or(1, |json| json.len() + 1);
+        let mut hashes = replay.hashes.iter().peekable();
+        let mut freed = 0;
+        let drop = (replay.from_tick..)
+            .zip(&replay.inputs)
+            .take_while(|(tick, inputs)| {
+                let needed = freed < over;
+                // A tick takes its JSON and a comma, and so does its hash.
+                freed += size(serde_json::to_vec(inputs));
+                while let Some(hash) = hashes.next_if(|(t, _)| t <= tick) {
+                    freed += size(serde_json::to_vec(hash));
+                }
+                needed
+            })
+            .count();
         replay.inputs.drain(..drop);
         replay.from_tick += drop as u32;
         let from = replay.from_tick;
@@ -2873,8 +2889,10 @@ mod replay_fit_tests {
         let full = serde_json::to_vec(&replay).unwrap().len();
         let body = fit_replay(&mut replay, full / 4).unwrap();
         assert!(body.len() <= full / 4);
-        assert!(replay.from_tick >= 750 && replay.inputs.len() + replay.from_tick as usize == 1000);
+        assert_eq!(replay.inputs.len() + replay.from_tick as usize, 1000);
         assert!(replay.hashes.iter().all(|(t, _)| *t >= replay.from_tick));
+        let tick = serde_json::to_vec(&replay.inputs[0]).unwrap().len() + 1;
+        assert!(body.len() + tick > full / 4, "a tick more would have fit");
         let mut tiny = replay.clone();
         assert!(fit_replay(&mut tiny, 10).is_none());
     }

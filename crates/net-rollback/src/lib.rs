@@ -428,6 +428,21 @@ impl Journal {
         ticks
     }
 
+    /// The ticks from `from` up to `to` that the journal holds, as a journal of their own.
+    pub fn window(&self, from: u32, to: Option<u32>) -> Self {
+        let end = self.base + self.ticks.len() as u32;
+        let first = from.clamp(self.base, end);
+        let last = to.map_or(end, |to| to.clamp(first, end));
+        Self {
+            base: first,
+            ticks: self
+                .ticks
+                .range((first - self.base) as usize..(last - self.base) as usize)
+                .cloned()
+                .collect(),
+        }
+    }
+
     /// Rebuilds a journal whose first `from` ticks are unknown and the rest is `tail`.
     pub fn from_parts(from: u32, tail: Vec<TickInputs>) -> Self {
         Self {

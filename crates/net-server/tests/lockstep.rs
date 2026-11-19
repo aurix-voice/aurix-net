@@ -533,6 +533,54 @@ async fn replay_holds_the_hashes_the_players_agreed_on() {
 }
 
 #[tokio::test]
+async fn window_of_a_live_replay_is_the_ticks_asked_for() {
+    let node = Node::start().await;
+    let project = node.project("replay-window").await;
+    let opts = Options {
+        tunnel: true,
+        ..Default::default()
+    };
+    let mut ann = Client::connect(&node.http, &project.grant("ann").await, opts)
+        .await
+        .expect("ann connects");
+    let create: ClientMsg = serde_json::from_value(
+        json!({"t": "create", "name": "arena", "mode": "lockstep", "props": {"tick_hz": 30}}),
+    )
+    .expect("client message");
+    let room = ann.join(create).await.expect("ann creates").room;
+    // A frame for a tick that has passed has its input confirmed in the tick it arrives in.
+    for round in 0..20 {
+        ann.send_data(Channel::UnreliableSequenced, input_frame(0, &[round]))
+            .expect("ann sends");
+        ann.flush();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let replay = format!("/v1/rooms/{room}/replay");
+    let (_, whole) = project.api.get(&replay).await;
+    let inputs = whole["inputs"].as_array().expect("inputs");
+    assert!(inputs.len() > 20, "{} ticks", inputs.len());
+    for (from, to) in [(0, 1), (5, 12), (12, 12), (12, 5)] {
+        let (_, window) = project
+            .api
+            .get(&format!("{replay}?from={from}&to={to}"))
+            .await;
+        assert_eq!(window["from_tick"], from, "{from}..{to}");
+        assert_eq!(
+            window["inputs"],
+            json!(inputs[from..to.max(from)]),
+            "{from}..{to}"
+        );
+    }
+    let (_, tail) = project.api.get(&format!("{replay}?from=10")).await;
+    assert_eq!(tail["inputs"], json!(inputs[10..]));
+    let (_, past) = project.api.get(&format!("{replay}?from=1000000")).await;
+    assert_eq!(past["from_tick"], inputs.len());
+    assert_eq!(past["inputs"], json!([]));
+}
+
+#[tokio::test]
 async fn replay_names_the_schema_of_a_room_with_a_referee() {
     let node = Node::start().await;
     let project = node.project("replay-schema").await;
