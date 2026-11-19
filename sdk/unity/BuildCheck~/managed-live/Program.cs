@@ -425,6 +425,15 @@ class P
         until = DateTime.UtcNow.AddMilliseconds(2000); while (read == null && DateTime.UtcNow < until) { ra.Poll(); rc.Poll(); await Task.Delay(5); }
         if (read != longest) throw new Exception("chat: the longest text came as " + (read?.Length.ToString() ?? "nothing"));
         ra.Dispose(); rb.Dispose(); rc.Dispose();
+        // a control message over what the node reads is refused and not sent: the client goes on
+        var overLimit = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-large"));
+        bool refusedLarge = false;
+        try { await overLimit.SendControlAsync("{\"t\":\"find_friends\",\"players\":[\"" + new string('x', ManagedClient.MaxControlMessage) + "\"]}"); }
+        catch (ArgumentOutOfRangeException) { refusedLarge = true; }
+        if (!refusedLarge || await overLimit.JoinOrCreateAsync(room + "-large", "relay", 4) < 0)
+            throw new Exception("a control message over the limit: refused " + refusedLarge);
+        overLimit.Dispose();
+
         // a chat channel is of the room: the same chat joins it again in the next one
         var ma = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-ma"));
         var mb = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-mb"));
@@ -555,14 +564,15 @@ class P
             listener.Dispose();
         }
         else fellBack = Skip("node without the unsequenced channel: skipped (NET_PLAIN_HTTP not set)");
-        // a control channel that closes on `auth` (NET_CUT_HTTP, see README): ConnectAsync fails as it closes, not at its timeout
+        // a control channel that closes on `auth` (NET_CUT_HTTP, see README): ConnectAsync fails as it closes, not at its timeout.
+        // The proxy closes without a code, which .NET reads as 1000.
         bool failedFast = true; var cut = Environment.GetEnvironmentVariable("NET_CUT_HTTP");
         if (cut != null)
         {
             var clock = System.Diagnostics.Stopwatch.StartNew(); string failure = "none";
             try { (await ManagedClient.ConnectAsync(cut, await Grant(h, key, "cs-cut"))).Dispose(); }
             catch (NetException error) { failure = error.Message; }
-            failedFast = failure == "control channel closed" && clock.ElapsedMilliseconds < 5000;
+            failedFast = failure == "control channel closed: 1000" && clock.ElapsedMilliseconds < 5000;
             Console.WriteLine($"closed control channel: connect failed after {clock.ElapsedMilliseconds} ms: {failure} -> {(failedFast ? "ok" : "FAIL")}");
         }
         else failedFast = Skip("closed control channel: skipped (NET_CUT_HTTP not set)");

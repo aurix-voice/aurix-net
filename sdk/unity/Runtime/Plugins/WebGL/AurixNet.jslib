@@ -29,7 +29,14 @@ function AurixNetOpen(urlPtr, onOpen, onMessage, onClose) {
     };
     socket.onclose = function (event) {
         delete AurixNet.sockets[id];
-        {{{ makeDynCall('vii', 'onClose') }}}(id, event.code);
+        const length = lengthBytesUTF8(event.reason);
+        const buffer = _malloc(length + 1) >>> 0;
+        stringToUTF8(event.reason, buffer, length + 1);
+        try {
+            {{{ makeDynCall('viiii', 'onClose') }}}(id, event.code, buffer, length);
+        } finally {
+            _free(buffer);
+        }
     };
     return id;
 }

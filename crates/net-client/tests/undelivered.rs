@@ -184,6 +184,7 @@ async fn told_after(end: Option<ServerMsg>, later: Later, leaves: bool) -> (Vec<
         tunnel: true,
         ..Options::default()
     };
+    let gone = matches!(later, Later::Gone);
     let (node, heard) = node(end, later).await;
     let mut client = Client::connect(&node, "grant", options).await.unwrap();
     let join = ClientMsg::Join {
@@ -233,7 +234,9 @@ async fn told_after(end: Option<ServerMsg>, later: Later, leaves: bool) -> (Vec<
     send(&client, Channel::ReliableUnordered, loose);
     client.flush();
     if leaves {
-        client.leave().await.unwrap();
+        // a leave is not sent on a control channel that closed under it
+        let left = client.leave().await;
+        assert_eq!(left.is_err(), gone, "{left:?}");
     } else {
         client.stats(1).await.unwrap();
     }

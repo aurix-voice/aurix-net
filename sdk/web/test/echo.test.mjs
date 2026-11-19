@@ -1,7 +1,7 @@
 // Two clients over the WS tunnel against a local node: NET_API_KEY=an_... node --test test/
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Channel, Client, Chat, LEAVE_WAIT, MAX_CHAT_TEXT, encodeEvent } from "../dist/index.js";
+import { Channel, Client, Chat, LEAVE_WAIT, MAX_CHAT_TEXT, MAX_CONTROL_MESSAGE, MAX_CONTROL_MESSAGE_BEFORE_AUTH, encodeEvent } from "../dist/index.js";
 import WebSocket, { WebSocketServer } from "ws";
 import { Link } from "../dist/link.js";
 import { slowLink } from "./slow-link.mjs";
@@ -384,15 +384,64 @@ test("a handler that leaves the room gets nothing more of it", { skip: !key }, a
   assert.deepEqual([before, after], [1, 0]);
 });
 
+// A link to the node that does `how` at the first message of the type, `stats` unless another is
+// named, in place of passing it on, and closes on the client as the node closes on it.
+function closingLink(how, type = "stats") {
+  const server = new WebSocketServer({ port: 0 });
+  server.on("connection", (near, request) => {
+    const far = new WebSocket(http.replace(/^http/, "ws") + request.url);
+    const opened = new Promise((resolve) => far.on("open", resolve));
+    near.on("message", async (data, binary) => {
+      await opened;
+      if (!binary && JSON.parse(data.toString()).t === type) how(near, far);
+      else if (far.readyState === 1) far.send(binary ? data : data.toString());
+    });
+    far.on("message", (data, binary) => { if (near.readyState === 1) near.send(binary ? data : data.toString()); });
+    // 1005 and 1006 stand for a close that named no code: they are not sent
+    far.on("close", (code, reason) => (code === 1005 || code === 1006 ? near.close() : near.close(code, reason.toString())));
+    near.on("close", () => far.close());
+  });
+  return { url: `http://127.0.0.1:${server.address().port}`, close: () => server.close() };
+}
+
 test("a call made after the control channel closed fails at once, not at its timeout", { skip: !key }, async (t) => {
-  const a = await Client.connect(http, await grant("web-ended-a"));
+  const link = closingLink((near) => near.terminate());
+  t.after(() => link.close());
+  const a = await Client.connect(link.url, await grant("web-ended-a"));
   t.after(() => a.close());
-  // the node closes the control channel on a message this large
-  await assert.rejects(a.joinOrCreate(`web-ended-${process.pid}`, "relay", 4, { blob: "x".repeat(100_000) }), /control channel closed/);
+  await assert.rejects(a.lobbyStats(), { message: "control channel closed" });
   const start = Date.now();
-  await assert.rejects(a.lobbyStats(), /control channel closed/);
-  await assert.rejects(a.joinOrCreate(`web-ended-2-${process.pid}`, "relay", 4), /control channel closed/);
+  await assert.rejects(a.lobbyStats(), { message: "control channel closed" });
+  await assert.rejects(a.joinOrCreate(`web-ended-2-${process.pid}`, "relay", 4), { message: "control channel closed" });
   assert.ok(Date.now() - start < 1000);
+});
+
+test("what the node closed the control channel with is told", { skip: !key }, async (t) => {
+  // the node gets a message over its limit, which a client does not send
+  const link = closingLink((_near, far) => far.send("x".repeat(MAX_CONTROL_MESSAGE + 1)));
+  t.after(() => link.close());
+  const a = await Client.connect(link.url, await grant("web-said-a"));
+  t.after(() => a.close());
+  const closed = [];
+  a.on("closed", (reason) => closed.push(reason));
+  await assert.rejects(a.lobbyStats(), { message: "control channel closed: 1009 message too large: at most 69632 bytes" });
+  assert.deepEqual(closed, ["control channel closed: 1009 message too large: at most 69632 bytes"]);
+  await assert.rejects(a.joinOrCreate(`web-said-${process.pid}`, "relay", 4), { message: "control channel closed: 1009 message too large: at most 69632 bytes" });
+});
+
+test("a control message over what the node reads is refused and not sent", { skip: !key }, async (t) => {
+  const a = await Client.connect(http, await grant("web-large-a"));
+  t.after(() => a.close());
+  const room = `web-large-${process.pid}`;
+  // {"t":"join_or_create",...} around a blob: over the limit by the rest of the message
+  await assert.rejects(a.joinOrCreate(room, "relay", 4, { blob: "x".repeat(MAX_CONTROL_MESSAGE) }), RangeError);
+  assert.throws(() => a.send({ t: "ping", pad: "x".repeat(MAX_CONTROL_MESSAGE - 20) }), RangeError);
+  // the node reads the largest one whole: it names the field it does not know, and goes on answering
+  const refused = new Promise((resolve) => a.on("control", (message) => { if (message.t === "error") resolve(message.message); }));
+  a.send({ t: "ping", pad: "x".repeat(MAX_CONTROL_MESSAGE - 21) });
+  assert.match(await refused, /unknown field `pad`/);
+  assert.equal(typeof (await a.lobbyStats()).rooms, "number");
+  assert.equal((await a.joinOrCreate(room, "relay", 4)).name, room);
 });
 
 test("the longest chat text reaches the room whole, a longer one is refused", { skip: !key }, async (t) => {
@@ -656,4 +705,12 @@ test("client: off takes a listener off, the last time it was put on", { skip: !k
     "first 2", "twice 2", "end 2",
     "end 3",
   ]);
+});
+
+test("a sign-in over what the node reads before it is refused, and its close is why a connect failed", { skip: !key }, async (t) => {
+  await assert.rejects(Client.connect(http, "g".repeat(MAX_CONTROL_MESSAGE_BEFORE_AUTH)), RangeError);
+  // the node gets a sign-in over its limit, which a client does not send
+  const link = closingLink((_near, far) => far.send("x".repeat(MAX_CONTROL_MESSAGE_BEFORE_AUTH + 1)), "auth");
+  t.after(() => link.close());
+  await assert.rejects(Client.connect(link.url, await grant("web-sign-a")), { message: "control channel closed: 1009 message too large: at most 8192 bytes" });
 });

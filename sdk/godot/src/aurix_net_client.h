@@ -21,6 +21,9 @@ protected:
 	static void _bind_methods();
 
 public:
+	/// The largest control message the node reads, in bytes of its JSON, and the largest sign-in.
+	enum { MAX_CONTROL_MESSAGE = AURIX_NET_MAX_CONTROL_MESSAGE,
+		MAX_CONTROL_MESSAGE_BEFORE_AUTH = AURIX_NET_MAX_CONTROL_MESSAGE_BEFORE_AUTH };
 	enum Mode { MODE_RELAY = 0,
 		MODE_SYNC = 1,
 		MODE_LOCKSTEP = 2 };

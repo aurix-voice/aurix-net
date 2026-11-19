@@ -96,6 +96,12 @@ namespace Aurix.Net
 
     public sealed class Client : IDisposable
     {
+        /// <summary>The largest control message the node reads, in bytes of its JSON.</summary>
+        public const int MaxControlMessage = 69632;
+
+        /// <summary>The same for the sign-in, the message with the grant.</summary>
+        public const int MaxControlMessageBeforeAuth = 8192;
+
         IntPtr _h;
         public bool IsConnected => _h != IntPtr.Zero;
         public int Actor { get; private set; } = -1;

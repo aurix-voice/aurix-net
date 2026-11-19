@@ -89,6 +89,11 @@ struct UndeliveredEvent {
 
 class Client {
 public:
+    /// The largest control message the node reads, in bytes of its JSON; a call that would send
+    /// a larger one throws an `Error` of `AURIX_NET_ERR_INVALID_ARGUMENT`.
+    static constexpr size_t maxControlMessage = AURIX_NET_MAX_CONTROL_MESSAGE;
+    /// The same for the sign-in, the message with the grant that `connect` sends.
+    static constexpr size_t maxControlMessageBeforeAuth = AURIX_NET_MAX_CONTROL_MESSAGE_BEFORE_AUTH;
     std::function<void(const std::string& json)> onControl;
     /// System notice from the operator or game backend: (text, level = "info" | "warn").
     std::function<void(const std::string& text, const std::string& level)> onNotice;

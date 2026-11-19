@@ -63,11 +63,14 @@ test("bytes go both ways as they are", async () => {
   driver.ccall("driver_close", null, ["number"], [socket]);
 });
 
-test("a socket the server closes is closed with its code", async () => {
+test("a socket the server closes is closed with its code and its reason", async () => {
   const socket = await open();
   peer.close(4001);
-  await said(`close ${socket} 4001`);
+  await said(`close ${socket} 4001 `);
   send(socket, Buffer.from("late"), true);
+  const told = await open();
+  peer.close(1009, "message too large: at most 69632 bytes, не больше");
+  await said(`close ${told} 1009 message too large: at most 69632 bytes, не больше`);
 });
 
 test("a socket the client closes says nothing more", async () => {

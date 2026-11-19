@@ -95,6 +95,12 @@ export interface ControlMessage {
   [field: string]: unknown;
 }
 
+/** The largest control message the node reads, in bytes of its JSON: a call that would send a
+ *  larger one sends nothing and throws a `RangeError`. */
+export const MAX_CONTROL_MESSAGE = 69632;
+/** The same for the sign-in, the message with the grant that `Client.connect` sends. */
+export const MAX_CONTROL_MESSAGE_BEFORE_AUTH = 8192;
+
 // What this client names in `auth`, so the node sends it nothing it does not know.
 const SUPPORTS = ["unsequenced"];
 
@@ -321,9 +327,9 @@ export class Client {
       };
     });
     client.ws.onmessage = (event) => client.onMessage(event.data);
-    client.ws.onclose = () => client.controlClosed();
-    client.send({ t: "auth", grant, supports: SUPPORTS });
+    client.ws.onclose = (event) => client.controlClosed(event);
     try {
+      client.send({ t: "auth", grant, supports: SUPPORTS });
       const authed = await client.waitFor<{ player_id: string; name: string }>(
         (message) => message.t === "authed",
         refuses,
@@ -451,7 +457,18 @@ export class Client {
 
   /** Any control message, e.g. {t:"set_room_props", props:{...}}. */
   send(msg: object) {
-    this.ws.send(JSON.stringify(msg));
+    const text = JSON.stringify(msg);
+    const bytes = new TextEncoder().encode(text).length;
+    const most =
+      "t" in msg && msg.t === "auth"
+        ? MAX_CONTROL_MESSAGE_BEFORE_AUTH
+        : MAX_CONTROL_MESSAGE;
+    if (bytes > most) {
+      throw new RangeError(
+        `control message of ${bytes} bytes: at most ${most}`,
+      );
+    }
+    this.ws.send(text);
   }
 
   /** Measures the control round trip into `rttMs`. The client does it every second by itself,
@@ -975,10 +992,15 @@ export class Client {
   }
   /** No answer can come any more: the calls waiting for one fail now, not at their timeout, and so
    *  does every call made later. */
-  private controlClosed() {
+  private controlClosed(event: CloseEvent) {
     clearInterval(this.keepalive);
-    this.lost("control channel closed");
-    this.ended = new Error("control channel closed");
+    // 1005 and 1006 are the socket's own: the node sent no close frame
+    const said =
+      event.code === 1005 || event.code === 1006
+        ? ""
+        : `: ${event.code} ${event.reason}`.trimEnd();
+    this.lost(`control channel closed${said}`);
+    this.ended = new Error(`control channel closed${said}`);
     for (const waiter of this.waiters.splice(0)) {
       waiter.fail(this.ended);
     }

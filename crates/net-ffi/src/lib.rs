@@ -147,7 +147,8 @@ impl From<&ClientError> for ErrorCode {
             ClientError::Http(_) => ErrorCode::Http,
             ClientError::Ws(_) => ErrorCode::Connection,
             ClientError::Data(_) => ErrorCode::DataPath,
-            ClientError::Disconnected => ErrorCode::Disconnected,
+            ClientError::Disconnected | ClientError::Closed(_) => ErrorCode::Disconnected,
+            ClientError::TooLarge(..) => ErrorCode::InvalidArgument,
             ClientError::Timeout => ErrorCode::Timeout,
             ClientError::Left(_) => ErrorCode::Left,
             ClientError::Server { code, .. } => match code.as_str() {

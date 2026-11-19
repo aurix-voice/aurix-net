@@ -263,10 +263,24 @@ public class WebTests
         using var client = Joined();
         string closed = null;
         client.OnClosed += reason => closed = reason;
-        _node.Hang();
+        // 1006 is what a browser gives a socket that ended with no close frame
+        _node.Hang(1006);
         Page.Run(() => client.Poll() < 0 || closed != null);
         Assert.That(closed, Is.EqualTo("control channel closed"));
         Assert.That(Page.LiveTimers, Is.EqualTo(1), "what is left is the timer of the node");
+    }
+
+    [Test]
+    public void WhatTheNodeClosedTheSocketWithIsTold()
+    {
+        using var client = Joined();
+        string closed = null;
+        client.OnClosed += reason => closed = reason;
+        _node.Hang(1009, "message too large: at most 69632 bytes");
+        Page.Run(() => client.Poll() < 0 || closed != null);
+        Assert.That(closed, Is.EqualTo("control channel closed: 1009 message too large: at most 69632 bytes"));
+        var after = Assert.ThrowsAsync<NetException>(() => client.StatsAsync());
+        Assert.That(after.Message, Is.EqualTo("control channel closed: 1009 message too large: at most 69632 bytes"));
     }
 
     [Test]

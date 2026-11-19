@@ -48,6 +48,8 @@ void AurixNetClient::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("undelivered", PropertyInfo(Variant::ARRAY, "events")));
 	ADD_SIGNAL(MethodInfo("notice", PropertyInfo(Variant::STRING, "text"), PropertyInfo(Variant::STRING, "level")));
 	ADD_SIGNAL(MethodInfo("rehost"));
+	BIND_CONSTANT(MAX_CONTROL_MESSAGE);
+	BIND_CONSTANT(MAX_CONTROL_MESSAGE_BEFORE_AUTH);
 	BIND_ENUM_CONSTANT(MODE_RELAY);
 	BIND_ENUM_CONSTANT(MODE_SYNC);
 	BIND_ENUM_CONSTANT(MODE_LOCKSTEP);

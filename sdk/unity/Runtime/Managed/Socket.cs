@@ -143,7 +143,19 @@ namespace Aurix.Net.Managed
                         .Message(msg, result.MessageType == WebSocketMessageType.Text)
                         .ConfigureAwait(false);
                 }
-                _owner.Closed("control channel closed");
+                // the node's close frame says why: a code, and often a reason
+                var code = _ws.CloseStatus;
+                _owner.Closed(
+                    code == null || code == WebSocketCloseStatus.Empty
+                        ? ManagedClient.ControlClosed
+                        : (
+                            ManagedClient.ControlClosed
+                            + ": "
+                            + (int)code
+                            + " "
+                            + _ws.CloseStatusDescription
+                        ).TrimEnd()
+                );
             }
             catch (Exception error)
             {

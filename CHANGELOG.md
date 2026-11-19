@@ -197,6 +197,20 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Every client: a control message larger than the node reads, 69 632 bytes of JSON (room
+  properties, a long list in a join, an `rpc` body), was sent, and the node closed the control
+  channel on it: the game lost its connection and was told `control channel closed` or
+  `disconnected`. The same for a sign-in over 8 192 bytes, a grant too long. The client now
+  refuses such a call before it sends anything and stays connected: `RangeError` in Web,
+  `ArgumentOutOfRangeException` in C# (`NetException` in the native Unity client),
+  `AURIX_NET_ERR_INVALID_ARGUMENT` in C, C++ and Godot, `ClientError::TooLarge` in Rust. The
+  limits are named in every client
+  ([sdk.md](docs/sdk.md)).
+- Every client: when the node closed the control channel, the game was not told why. `closed`
+  and the calls that fail on it now carry the code and the reason of the node's close:
+  `control channel closed: 1009 message too large: at most 69632 bytes`. The Rust client fails
+  such a call with the new `ClientError::Closed`, and a call made after the close fails at
+  once with it instead of being queued.
 - Chat kept over two rooms was silent in the second, in Web, C# and C++: it still counted the
   channels of the room the client had left as joined, so `join` in the next room did nothing.
   The chat now forgets its channels once the client is out of the room. In Web a second

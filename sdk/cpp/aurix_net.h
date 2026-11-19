@@ -78,6 +78,11 @@ char *aurix_net_json_string(const char *json, const char *key); /* a top-level s
 void aurix_net_string_free(char *string);
 
 AurixNetClient *aurix_net_connect(const char *http, const char *grant, int32_t tunnel);
+/* The largest control message the node reads, in bytes of its JSON. A call that would send a larger
+   one (properties, a join, an rpc body) sends nothing and fails with AURIX_NET_ERR_INVALID_ARGUMENT. */
+#define AURIX_NET_MAX_CONTROL_MESSAGE 69632
+/* The same for the sign-in, the message with the grant that aurix_net_connect sends. */
+#define AURIX_NET_MAX_CONTROL_MESSAGE_BEFORE_AUTH 8192
 int32_t aurix_net_send_control(AurixNetClient *client, const char *json);
 int32_t aurix_net_join(AurixNetClient *client, const char *json);          /* returns actor id or -1 */
 /* connect + join in one call; when the room lives on another node of the region the returned client is

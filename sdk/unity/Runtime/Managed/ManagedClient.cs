@@ -48,8 +48,19 @@ namespace Aurix.Net.Managed
 
         // One lost connection is reported once, whichever of the link and the control channel notices it first.
         bool _lost;
-        bool _controlClosed;
+
+        // Set once the control channel is closed: what the calls made after it fail with.
+        string _controlClosed;
         readonly ConcurrentQueue<object> _inbox = new ConcurrentQueue<object>();
+
+        /// <summary>The largest control message the node reads, in bytes of its JSON: a call that
+        /// would send a larger one sends nothing and throws.</summary>
+        public const int MaxControlMessage = 69632;
+
+        /// <summary>The same for the sign-in, the message with the grant.</summary>
+        public const int MaxControlMessageBeforeAuth = 8192;
+
+        internal const string ControlClosed = "control channel closed";
 
         /// <summary>How many events wait for the game's Poll before the client stops reading.</summary>
         public const int EventBacklog = 4096;
@@ -171,7 +182,8 @@ namespace Aurix.Net.Managed
                 await client.SendControlAsync(
                     "{\"t\":\"auth\",\"grant\":"
                         + Json.Str(grant)
-                        + ",\"supports\":[\"unsequenced\"]}"
+                        + ",\"supports\":[\"unsequenced\"]}",
+                    MaxControlMessageBeforeAuth
                 );
                 var authed = await client.WaitForAsync("authed", timeoutMs);
                 client.PlayerId = Json.Str(authed, "player_id");
@@ -429,8 +441,21 @@ namespace Aurix.Net.Managed
             }
         }
 
-        public Task SendControlAsync(string json) =>
-            _socket.SendAsync(Encoding.UTF8.GetBytes(json), true);
+        public Task SendControlAsync(string json) => SendControlAsync(json, MaxControlMessage);
+
+        Task SendControlAsync(string json, int most)
+        {
+            var bytes = Encoding.UTF8.GetBytes(json);
+            if (bytes.Length > most)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(json),
+                    "control message of " + bytes.Length + " bytes: at most " + most
+                );
+            }
+
+            return _socket.SendAsync(bytes, true);
+        }
 
         Task SendBinaryAsync(byte[] bytes) => _socket.SendAsync(bytes, false);
 
@@ -713,7 +738,14 @@ namespace Aurix.Net.Managed
                         _unfinished = null;
                         break;
                     case Closed closed:
-                        _controlClosed |= closed.Control;
+                        if (closed.Control && _controlClosed == null)
+                        {
+                            // a socket that failed says so in its own words; a close says the node's
+                            _controlClosed = closed.Reason.StartsWith(ControlClosed)
+                                ? closed.Reason
+                                : ControlClosed;
+                        }
+
                         Lose(closed.Reason);
                         break;
                 }
@@ -1014,9 +1046,9 @@ namespace Aurix.Net.Managed
         /// <summary>No answer can come any more: a call waiting for one fails now, not at its timeout.</summary>
         void ThrowIfControlClosed()
         {
-            if (_controlClosed)
+            if (_controlClosed != null)
             {
-                throw new NetException("control channel closed");
+                throw new NetException(_controlClosed);
             }
         }
 

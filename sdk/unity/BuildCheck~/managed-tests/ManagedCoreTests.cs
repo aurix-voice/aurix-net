@@ -798,6 +798,115 @@ public class ManagedCoreTests
         catch (WebSocketException) { }
     }
 
+    // signs a client in and tells the size of each `go` it reads; with `closes`, it closes on the first
+    // as a node does on a message over its limit
+    static async Task ReadControl(HttpListener listener, List<int> sizes, bool closes)
+    {
+        var socket = (await (await listener.GetContextAsync()).AcceptWebSocketAsync(null)).WebSocket;
+        var buffer = new byte[4096];
+        try
+        {
+            for (int size = 0; ;)
+            {
+                var read = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                if (read.MessageType == WebSocketMessageType.Close) return;
+                string start = size == 0 ? Encoding.UTF8.GetString(buffer, 0, read.Count) : null;
+                size += read.Count;
+                if (start != null && start.Contains("\"t\":\"auth\""))
+                    await socket.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes("{\"t\":\"authed\",\"player_id\":\"ann\",\"name\":\"Ann\"}")), WebSocketMessageType.Text, true, CancellationToken.None);
+                if (!read.EndOfMessage) continue;
+                if (size > 64) { lock (sizes) sizes.Add(size); }
+                if (size > 64 && closes) await socket.CloseAsync(WebSocketCloseStatus.MessageTooBig, "message too large: at most 69632 bytes", CancellationToken.None);
+                size = 0;
+            }
+        }
+        catch (WebSocketException) { }
+    }
+
+    static string Go(int bytes) => "{\"t\":\"go\",\"pad\":\"" + new string('a', bytes - 19) + "\"}";
+
+    [Test]
+    public async Task AControlMessageOverWhatTheNodeReadsIsRefusedAndNotSent()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+        using var listener = new HttpListener();
+        listener.Prefixes.Add("http://127.0.0.1:" + port + "/"); listener.Start();
+        var sizes = new List<int>();
+        _ = ReadControl(listener, sizes, false);
+        using var client = await ManagedClient.ConnectAsync("http://127.0.0.1:" + port, "grant");
+        Assert.That(Encoding.UTF8.GetByteCount(Go(ManagedClient.MaxControlMessage)), Is.EqualTo(ManagedClient.MaxControlMessage));
+        Assert.Throws<ArgumentOutOfRangeException>(() => client.SendControlAsync(Go(ManagedClient.MaxControlMessage + 1)));
+        await client.SendControlAsync(Go(ManagedClient.MaxControlMessage));
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (clock.ElapsedMilliseconds < 5000) { lock (sizes) { if (sizes.Count > 0) break; } await Task.Delay(10); }
+        Assert.That(sizes, Is.EqualTo(new[] { ManagedClient.MaxControlMessage }));
+    }
+
+    [Test]
+    public async Task WhatTheNodeClosedTheControlChannelWithIsTold()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+        using var listener = new HttpListener();
+        listener.Prefixes.Add("http://127.0.0.1:" + port + "/"); listener.Start();
+        _ = ReadControl(listener, new List<int>(), true);
+        using var client = await ManagedClient.ConnectAsync("http://127.0.0.1:" + port, "grant");
+        var closed = new List<string>();
+        client.OnClosed += closed.Add;
+        await client.SendControlAsync(Go(100));
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (closed.Count == 0 && clock.ElapsedMilliseconds < 5000) { client.Poll(); await Task.Delay(10); }
+        Assert.That(closed, Is.EqualTo(new[] { "control channel closed: 1009 message too large: at most 69632 bytes" }));
+        var after = Assert.ThrowsAsync<NetException>(() => client.JoinOrCreateAsync("room", "relay", 4));
+        Assert.That(after.Message, Is.EqualTo("control channel closed: 1009 message too large: at most 69632 bytes"));
+    }
+
+    // closes on the sign-in, as a node does on one over its limit, and tells that it read one
+    static async Task CloseTheSignIn(HttpListener listener, List<int> sizes)
+    {
+        var socket = (await (await listener.GetContextAsync()).AcceptWebSocketAsync(null)).WebSocket;
+        var buffer = new byte[16384];
+        try
+        {
+            while (true)
+            {
+                var read = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                if (read.MessageType == WebSocketMessageType.Close) return;
+                if (!Encoding.UTF8.GetString(buffer, 0, read.Count).Contains("\"t\":\"auth\"")) continue;
+                lock (sizes) sizes.Add(read.Count);
+                await socket.CloseAsync(WebSocketCloseStatus.MessageTooBig, "message too large: at most 8192 bytes", CancellationToken.None);
+            }
+        }
+        catch (WebSocketException) { }
+    }
+
+    [Test]
+    public async Task ASignInOverWhatTheNodeReadsBeforeItIsRefusedAndNotSent()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+        using var listener = new HttpListener();
+        listener.Prefixes.Add("http://127.0.0.1:" + port + "/"); listener.Start();
+        var sizes = new List<int>();
+        _ = CloseTheSignIn(listener, sizes);
+        Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => ManagedClient.ConnectAsync("http://127.0.0.1:" + port, new string('g', ManagedClient.MaxControlMessageBeforeAuth)));
+        await Task.Delay(200);
+        Assert.That(sizes, Is.Empty);
+    }
+
+    [Test]
+    public void WhatTheNodeClosedTheSignInWithIsWhyTheConnectFailed()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+        using var listener = new HttpListener();
+        listener.Prefixes.Add("http://127.0.0.1:" + port + "/"); listener.Start();
+        _ = CloseTheSignIn(listener, new List<int>());
+        var refused = Assert.ThrowsAsync<NetException>(() => ManagedClient.ConnectAsync("http://127.0.0.1:" + port, "grant"));
+        Assert.That(refused.Message, Is.EqualTo("control channel closed: 1009 message too large: at most 8192 bytes"));
+    }
+
     [Test]
     public async Task AHandlerThatThrowsOnTheErrorOfTheDataPathDoesNotHideItsLoss()
     {

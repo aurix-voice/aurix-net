@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading.Tasks;
 using AOT;
 
@@ -146,8 +147,8 @@ namespace Aurix.Net.Managed
             }
         }
 
-        [MonoPInvokeCallback(typeof(Action<int, int>))]
-        static void OnClose(int id, int code)
+        [MonoPInvokeCallback(typeof(Action<int, int, IntPtr, int>))]
+        static void OnClose(int id, int code, IntPtr reason, int length)
         {
             if (Sockets.TryGetValue(id, out var socket))
             {
@@ -155,7 +156,15 @@ namespace Aurix.Net.Managed
                 socket.Drop();
                 if (wasOpen)
                 {
-                    socket._owner.Closed("control channel closed");
+                    var said = new byte[length];
+                    Marshal.Copy(reason, said, 0, length);
+                    var told = (code + " " + Encoding.UTF8.GetString(said)).TrimEnd();
+                    // 1005 and 1006 are the browser's own: the node sent no close frame
+                    socket._owner.Closed(
+                        code == 1005 || code == 1006
+                            ? ManagedClient.ControlClosed
+                            : ManagedClient.ControlClosed + ": " + told
+                    );
                 }
                 else
                 {

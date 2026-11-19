@@ -13,7 +13,7 @@ namespace Aurix.Net.Managed
 {
     internal static class Browser
     {
-        public static int Open(string url, Action<int> onOpen, Action<int, IntPtr, int, int> onMessage, Action<int, int> onClose) =>
+        public static int Open(string url, Action<int> onOpen, Action<int, IntPtr, int, int> onMessage, Action<int, int, IntPtr, int> onClose) =>
             Page.Open(url, onOpen, onMessage, onClose);
 
         public static void Send(int socket, byte[] data, int length, int text) => Page.Send(socket, data, length, text != 0);
@@ -51,7 +51,7 @@ public abstract class Node
 
     public void Say(byte[] data) => Page.Deliver(Socket, data, false);
 
-    public void Hang(int code = 1000) => Page.Drop(Socket, code);
+    public void Hang(int code = 1000, string reason = "") => Page.Drop(Socket, code, reason);
 }
 
 public static class Page
@@ -68,7 +68,7 @@ public static class Page
         public Node Node;
         public bool Open;
         public Action<int, IntPtr, int, int> OnMessage;
-        public Action<int, int> OnClose;
+        public Action<int, int, IntPtr, int> OnClose;
     }
 
     static readonly Stopwatch Clock = Stopwatch.StartNew();
@@ -189,7 +189,7 @@ public static class Page
         Timers.Remove(timer);
     }
 
-    internal static int Open(string url, Action<int> onOpen, Action<int, IntPtr, int, int> onMessage, Action<int, int> onClose)
+    internal static int Open(string url, Action<int> onOpen, Action<int, IntPtr, int, int> onMessage, Action<int, int, IntPtr, int> onClose)
     {
         OnThread();
         int id = _next++;
@@ -197,7 +197,7 @@ public static class Page
         Sockets[id] = socket;
         if (!Nodes.TryGetValue(url, out var node))
         {
-            Tasks.Enqueue(() => Closed(id, 1006));
+            Tasks.Enqueue(() => Closed(id, 1006, ""));
         }
         else if (node != null)
         {
@@ -261,13 +261,24 @@ public static class Page
             }
         });
 
-    internal static void Drop(int id, int code) => Tasks.Enqueue(() => Closed(id, code));
+    internal static void Drop(int id, int code, string reason) =>
+        Tasks.Enqueue(() => Closed(id, code, reason));
 
-    static void Closed(int id, int code)
+    static void Closed(int id, int code, string reason)
     {
         if (Sockets.Remove(id, out var socket))
         {
-            socket.OnClose(id, code);
+            var said = Encoding.UTF8.GetBytes(reason);
+            var buffer = Marshal.AllocHGlobal(said.Length + 1);
+            Marshal.Copy(said, 0, buffer, said.Length);
+            try
+            {
+                socket.OnClose(id, code, buffer, said.Length);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
         }
     }
 }

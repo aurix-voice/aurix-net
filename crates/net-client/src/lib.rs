@@ -17,7 +17,7 @@ use rustls::pki_types::CertificateDer;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -40,6 +40,13 @@ pub enum ClientError {
     Data(String),
     #[error("disconnected")]
     Disconnected,
+    /// The node closed the control channel: the code and the reason of its close.
+    #[error("disconnected: {0}")]
+    Closed(String),
+    /// A control message of this many bytes, over the most the node reads:
+    /// [`MAX_CONTROL_MESSAGE`], or [`MAX_CONTROL_MESSAGE_BEFORE_AUTH`] for the sign-in.
+    #[error("control message of {0} bytes: at most {1}")]
+    TooLarge(usize, usize),
     #[error("timeout")]
     Timeout,
     /// The node took the client out of the room before the join had entered it: the reason of
@@ -160,6 +167,10 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 pub const LEAVE_WAIT: Duration = MAX_RTO.saturating_mul(2);
 /// The code the node closes a data connection with when it gave the link up.
 const LINK_DEAD_CLOSE: u32 = 4;
+/// The largest control message the node reads, in bytes of its JSON, and the largest it reads
+/// from a client that has not signed in, the `auth` with the grant: it closes the control
+/// channel on a larger one.
+pub use net_common::limits::{MAX_CONTROL_MESSAGE, MAX_CONTROL_MESSAGE_BEFORE_AUTH};
 const PING_EVERY: Duration = Duration::from_secs(1);
 const TICKET_RESEND: Duration = Duration::from_millis(100);
 /// The ids the client gives its own joins and leaves start here; the ids a game gives its
@@ -168,6 +179,9 @@ pub const OWN_IDS: u32 = 1 << 31;
 
 pub struct Client {
     ctl: mpsc::Sender<Message>,
+    /// Set once the control channel is closed: the code and the reason of the node's close, when
+    /// it gave them.
+    closed_with: Arc<OnceLock<Option<String>>>,
     events: mpsc::Receiver<Event>,
     events_tx: mpsc::Sender<Event>,
     /// Events handed out before anything newer: what the node said while a call waited for its
@@ -279,8 +293,11 @@ impl Client {
                 }
             }
         });
+        let closed_with = Arc::new(OnceLock::new());
+        let told = closed_with.clone();
         let mut client = Client {
             ctl,
+            closed_with,
             events,
             replay: VecDeque::new(),
             lost: false,
@@ -372,7 +389,17 @@ impl Client {
                             deliver(&dp, datagram, &events_tx).await;
                         }
                     }
-                    Ok(Message::Close(_)) | Err(_) => {
+                    Ok(Message::Close(Some(frame))) => {
+                        let said = format!("{} {}", u16::from(frame.code), frame.reason);
+                        let said = said.trim_end();
+                        let _ = told.set(Some(said.to_string()));
+                        let _ = events_tx
+                            .send(Event::Closed(format!("control channel closed: {said}")))
+                            .await;
+                        break;
+                    }
+                    Ok(Message::Close(None)) | Err(_) => {
+                        let _ = told.set(None);
                         let _ = events_tx
                             .send(Event::Closed("control channel closed".into()))
                             .await;
@@ -429,10 +456,28 @@ impl Client {
     pub async fn send(&self, msg: ClientMsg) -> Result<()> {
         let txt =
             serde_json::to_string(&msg).map_err(|error| ClientError::Ws(error.to_string()))?;
+        let most = match msg {
+            ClientMsg::Auth { .. } => MAX_CONTROL_MESSAGE_BEFORE_AUTH,
+            _ => MAX_CONTROL_MESSAGE,
+        };
+        if txt.len() > most {
+            return Err(ClientError::TooLarge(txt.len(), most));
+        }
+        if self.closed_with.get().is_some() {
+            return Err(self.gone());
+        }
         self.ctl
             .send(Message::Text(txt.into()))
             .await
-            .map_err(|_| ClientError::Disconnected)
+            .map_err(|_| self.gone())
+    }
+
+    /// Why a call cannot reach the node any more.
+    fn gone(&self) -> ClientError {
+        match self.closed_with.get() {
+            Some(Some(said)) => ClientError::Closed(said.clone()),
+            _ => ClientError::Disconnected,
+        }
     }
 
     /// `connect` + `join`, following one `room_elsewhere:<url>` redirect: rooms are pinned to
@@ -806,7 +851,7 @@ impl Client {
     /// connection and at `deadline`.
     async fn answer_by(&mut self, deadline: tokio::time::Instant) -> Result<Event> {
         match tokio::time::timeout_at(deadline, self.next_event()).await {
-            Ok(Some(Event::Closed(_))) | Ok(None) => Err(ClientError::Disconnected),
+            Ok(Some(Event::Closed(_))) | Ok(None) => Err(self.gone()),
             Ok(Some(event)) => Ok(event),
             Err(_) => Err(ClientError::Timeout),
         }

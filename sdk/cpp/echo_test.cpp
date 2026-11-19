@@ -175,6 +175,27 @@ int main() {
         std::printf("cpp join ended by a kick%s: code=%d (%s) after %ld ms, told of [%s] -> %s\n", tunnel ? ", tunnel" : "", code, why.c_str(), ms, lefts.c_str(), ok ? "ok" : "FAIL");
         turnedOut = turnedOut && ok;
     }
+    // a control message over what the node reads is refused and not sent: the client goes on
+    bool fits = false;
+    {
+        Client large;
+        large.connect(http, Client::issueGrant(http, key, "cpp-large", "Large"));
+        int refused = 0;
+        try {
+            large.sendControl("{\"t\":\"find_friends\",\"players\":[\"" + std::string(Client::maxControlMessage, 'x') + "\"]}");
+        } catch (const Error& error) {
+            refused = error.code;
+        }
+        int signIn = 0;
+        try {
+            Client().connect(http, std::string(Client::maxControlMessageBeforeAuth, 'g'));
+        } catch (const Error& error) {
+            signIn = error.code;
+        }
+        fits = refused == AURIX_NET_ERR_INVALID_ARGUMENT && signIn == AURIX_NET_ERR_INVALID_ARGUMENT &&
+               large.joinOrCreate(room + "-large", Mode::Relay, 4) >= 0;
+        std::printf("cpp control message over the limit: error code %d, sign-in %d, then joined: %d\n", refused, signIn, fits);
+    }
     // a chat channel is of the room: the same chat joins it again in the next one
     std::string matches;
     {
@@ -213,5 +234,5 @@ int main() {
         std::printf("cpp callback that leaves the room%s: events before the leave=%d/1, after it=%d/0\n", tunnel ? ", tunnel" : "", last, more);
         gone = gone && last == 1 && more == 0;
     }
-    a.leave(); return (rooms && gone && hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && threw && inRange && whole && refused && matched && shaped && rejoined && turnedOut && handedBack) ? 0 : 1;
+    a.leave(); return (fits && rooms && gone && hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && threw && inRange && whole && refused && matched && shaped && rejoined && turnedOut && handedBack) ? 0 : 1;
 }

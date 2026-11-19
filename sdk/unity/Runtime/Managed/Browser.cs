@@ -12,7 +12,7 @@ namespace Aurix.Net.Managed
             string url,
             Action<int> onOpen,
             Action<int, IntPtr, int, int> onMessage,
-            Action<int, int> onClose
+            Action<int, int, IntPtr, int> onClose
         );
 
         [DllImport("__Internal", EntryPoint = "AurixNetSend")]

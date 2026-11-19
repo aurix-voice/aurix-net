@@ -18,6 +18,27 @@ sync/lockstep frames), `closed`. Grants always come from the developer's backend
 Outside a room and after `closed` a send fails with `disconnected` and nothing is queued: an
 exception in Web, C# and C++, a non-zero result in C, `false` in Godot.
 
+A control message is at most 69 632 bytes of its JSON, and the sign-in, the `auth` with the
+grant, at most 8 192: the node closes the control channel on a larger one. The client refuses
+such a call and sends nothing, so the connection stays: `RangeError` in Web,
+`ArgumentOutOfRangeException` in C# (`NetException` in the native Unity client),
+`AURIX_NET_ERR_INVALID_ARGUMENT` in C and C++ (`ERROR_INVALID_ARGUMENT` in Godot),
+`ClientError::TooLarge` in Rust. The two limits are named:
+
+| SDK | Control message | Sign-in |
+|---|---|---|
+| Web | `MAX_CONTROL_MESSAGE` | `MAX_CONTROL_MESSAGE_BEFORE_AUTH` |
+| Unity | `MaxControlMessage` of `ManagedClient` and `Client` | `MaxControlMessageBeforeAuth` |
+| C++ | `Client::maxControlMessage` | `Client::maxControlMessageBeforeAuth` |
+| C | `AURIX_NET_MAX_CONTROL_MESSAGE` | `AURIX_NET_MAX_CONTROL_MESSAGE_BEFORE_AUTH` |
+| Godot | `AurixNetClient.MAX_CONTROL_MESSAGE` | `AurixNetClient.MAX_CONTROL_MESSAGE_BEFORE_AUTH` |
+| Rust | `net_client::MAX_CONTROL_MESSAGE` | `net_client::MAX_CONTROL_MESSAGE_BEFORE_AUTH` |
+
+When the node closes the control channel, the game is told the code and the reason of its close:
+`closed` comes with `control channel closed: 1009 message too large: at most 69632 bytes`, and
+the calls that waited for an answer or are made later fail with the same code and reason. A
+channel that ended without a close of the node is `control channel closed`, as before.
+
 The data path is lost (`closed` with `link dead`) when a reliable message has been resent and
 has gone 15 s without the node's acknowledgement, and when more than 1 MiB of them wait for the
 node: the send that meets the limit fails ([modes.md](modes.md)). A message whose 15 s ran out

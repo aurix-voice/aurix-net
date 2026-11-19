@@ -3,7 +3,7 @@
 #include <emscripten.h>
 #include <stdio.h>
 
-int AurixNetOpen(const char *url, void (*on_open)(int), void (*on_message)(int, const unsigned char *, int, int), void (*on_close)(int, int));
+int AurixNetOpen(const char *url, void (*on_open)(int), void (*on_message)(int, const unsigned char *, int, int), void (*on_close)(int, int, const char *, int));
 void AurixNetSend(int socket, const unsigned char *data, int length, int text);
 void AurixNetClose(int socket);
 int AurixNetEvery(int ms, void (*on_timer)(int));
@@ -19,7 +19,7 @@ static void on_message(int socket, const unsigned char *data, int length, int te
     printf("\n");
 }
 
-static void on_close(int socket, int code) { printf("close %d %d\n", socket, code); }
+static void on_close(int socket, int code, const char *reason, int length) { printf("close %d %d %.*s\n", socket, code, length, reason); }
 
 static void on_timer(int timer) { printf("timer %d\n", timer); }
 
