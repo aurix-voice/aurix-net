@@ -2,6 +2,7 @@
 // late-join catch-up (checkpoint + journal tail), hash reports, checkpoint uploads when the node asks
 // the master, adaptive input delay from the node's margin reports, and state dumps after a desync.
 // The game owns the deterministic simulation: step it in onTick, hash it, restore it in onRestore.
+import { MarginControl } from "./margin.js";
 import { Channel } from "./packet.js";
 import { SyncWorld } from "./sync.js";
 
@@ -40,10 +41,7 @@ export class LockstepClient {
   private anchored = false;
   private next = 0;
   private lastInput = 0;
-  private slackStreak = 0;
-  private spare = 0;
-  private reportTick = 0;
-  private settleTick = 0;
+  private readonly margin = new MarginControl();
   /** Next tick to be delivered to onTick. */
   get confirmedTick(): number {
     return this.next;
@@ -141,35 +139,16 @@ export class LockstepClient {
    *  three consecutive reports with more than two ticks to spare lower it by the excess. A late report
    *  that still covers inputs stamped before the last raise does not raise again. */
   onInputStats(tick: number, margin: number, late: number): void {
-    const windowStart = this.reportTick;
-    this.reportTick = tick;
     this.lastMargin = margin;
     this.lateInputs += late;
     if (!this.adaptiveDelay) {
       return;
     }
-    if (margin < 0) {
-      this.slackStreak = 0;
-      if (windowStart >= this.settleTick) {
-        this.inputDelay = Math.min(
-          this.inputDelayMax,
-          this.inputDelay - margin + 1,
-        );
-        this.settleTick = this.lastInput - margin;
-      }
-    } else if (margin > 2) {
-      this.spare =
-        this.slackStreak === 0 ? margin : Math.min(this.spare, margin);
-      if (++this.slackStreak >= 3) {
-        this.slackStreak = 0;
-        this.inputDelay = Math.max(
-          this.inputDelayMin,
-          this.inputDelay - (this.spare - 2),
-        );
-      }
-    } else {
-      this.slackStreak = 0;
-    }
+    const change = this.margin.adjust(tick, margin, this.lastInput);
+    this.inputDelay = Math.min(
+      this.inputDelayMax,
+      Math.max(this.inputDelayMin, this.inputDelay + change),
+    );
   }
 
   /** Tells the room which tick this client needs next: the room then sends every bundle from that

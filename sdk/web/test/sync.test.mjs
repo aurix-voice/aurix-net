@@ -102,3 +102,14 @@ test("an input is resent only under the tick it was stamped with", () => {
   // tick 13 follows 12, so the spawn rides along; tick 16 does not follow 13, so nothing is carried over
   assert.deepEqual(frames, [{ first: 12, count: 1 }, { first: 12, count: 2 }, { first: 16, count: 1 }]);
 });
+
+test("a late margin report from the room moves the next inputs further ahead", () => {
+  const handlers = {};
+  const client = { rttMs: 0, on(name, handler) { handlers[name] = handler; }, ping() {}, sendData() {} };
+  const session = new SyncSession(client, "component T {\n  x: f32\n}\n", 60, 2);
+  session.world.serverTick = 10;
+  assert.equal(session.sendInput(new Uint8Array([1])), 12);
+  handlers.data(0, 0, Uint8Array.of(0x25, 0, 0, 0, 30, 0xfb, 2)); // the worst input was 5 ticks late
+  session.world.serverTick = 20;
+  assert.equal(session.sendInput(new Uint8Array([2])), 28, "two ticks, plus the lateness, plus one");
+});

@@ -26,6 +26,7 @@ export const KIND_INPUT = 0x10;
 export const KIND_DELTA = 0x11;
 export const KIND_RESYNC = 0x12;
 export const KIND_ACK = 0x13;
+export const KIND_INPUT_STATS = 0x25;
 
 export class SyncError extends Error {}
 
@@ -869,6 +870,7 @@ export const distVec = (from: number[], to: number[]): number =>
   Math.hypot(...from.map((x, i) => x - to[i]));
 
 // ---------------- client glue ----------------
+import { MarginControl } from "./margin.js";
 import { Channel } from "./packet.js";
 import type { Client } from "./index.js";
 
@@ -885,6 +887,9 @@ export class SyncSession {
   private lastDeltaAt = 0;
   private held: { body: Uint8Array; keep: boolean }[] = [];
   private lastPingAt = 0;
+  private readonly margin = new MarginControl();
+  /** Ticks the room's margin reports have added to the input lead (negative: taken off it). */
+  private leadAdjust = 0;
   constructor(
     readonly client: Client,
     schema: Schema | string,
@@ -895,6 +900,15 @@ export class SyncSession {
       typeof schema === "string" ? Schema.parse(schema) : schema,
     );
     client.on("data", (_ch: Channel, _tick: number, payload: Uint8Array) => {
+      if (payload.length >= 7 && payload[0] === KIND_INPUT_STATS) {
+        const view = new DataView(payload.buffer, payload.byteOffset);
+        this.leadAdjust += this.margin.adjust(
+          view.getUint32(1),
+          view.getInt8(5),
+          this.lastInputTick,
+        );
+        return;
+      }
       const ack = this.world.receive(payload);
       if (ack) {
         client.sendData(Channel.Unreliable, ack);
@@ -949,12 +963,18 @@ export class SyncSession {
     return this.lastInputTick + this.held.length;
   }
   private pump(): void {
-    const lead =
+    // the round trip gives the first guess; the room's margin reports correct it
+    const estimate =
       2 +
       Math.min(
         MAX_LEAD_TICKS,
         Math.ceil((this.client.rttMs * this.tickHz) / 1000),
       );
+    const lead = Math.min(
+      MAX_LEAD_TICKS + 2,
+      Math.max(1, estimate + this.leadAdjust),
+    );
+    this.leadAdjust = lead - estimate;
     while (this.held.length) {
       const tick = Math.max(
         this.world.serverTick + lead,

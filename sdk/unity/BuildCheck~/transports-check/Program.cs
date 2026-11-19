@@ -31,7 +31,7 @@ sealed class PurrDriver : IDriver
     public Action<string> Log { get; set; }
     public PurrDriver(string room, Func<Task<string>> grant, string tag)
     {
-        t.roomName = room; t.GrantProvider = grant;
+        t.roomName = room; t.GrantProvider = grant; t.httpUrl = Program.Http;
         t.onConnected += (c, s) => Log?.Invoke(s ? $"H+{c.connectionId}" : $"{tag}+");
         t.onDisconnected += (c, r, s) => Log?.Invoke(s ? $"H-{c.connectionId}:{r}" : $"{tag}-:{r}");
         t.onDataReceived += (c, d, s) => Log?.Invoke((s ? $"Hrx{c.connectionId}:" : $"{tag}rx:") + Program.Show(d.data, d.offset, d.length));
@@ -55,7 +55,7 @@ sealed class MirrorDriver : IDriver
     public Action<string> Log { get; set; }
     public MirrorDriver(string room, Func<Task<string>> grant, string tag)
     {
-        t.roomName = room; t.GrantProvider = grant;
+        t.roomName = room; t.GrantProvider = grant; t.httpUrl = Program.Http;
         // Like the framework's NetworkServer: both connect callbacks lead to one handler, and an id that is
         // already connected (or 0, the local player) is kicked.
         Action<int> connected = c => { if (c == 0 || peers.Contains(c)) { Log?.Invoke($"DUP{c}"); t.ServerDisconnect(c); return; } peers.Add(c); Log?.Invoke($"H+{c}"); };
@@ -89,7 +89,7 @@ sealed class FishDriver : IDriver
     public Action<string> Log { get; set; }
     public FishDriver(string room, Func<Task<string>> grant, string tag)
     {
-        t.roomName = room; t.GrantProvider = grant; t.Initialize(null, 0);
+        t.roomName = room; t.GrantProvider = grant; t.httpUrl = Program.Http; t.Initialize(null, 0);
         t.OnRemoteConnectionState += a => { if (a.ConnectionState == FishNet.Transporting.RemoteConnectionState.Started) { peers.Add(a.ConnectionId); Log?.Invoke($"H+{a.ConnectionId}"); } else { peers.Remove(a.ConnectionId); Log?.Invoke($"H-{a.ConnectionId}:ServerRequest"); } };
         t.OnServerReceivedData += a => Log?.Invoke($"Hrx{a.ConnectionId}:" + Program.Show(a.Data.Array, a.Data.Offset, a.Data.Count) + Program.Ch(a.Channel == FishNet.Transporting.Channel.Reliable));
         t.OnClientConnectionState += a => { if (a.ConnectionState == FishNet.Transporting.LocalConnectionState.Started) Log?.Invoke($"{tag}+"); else if (a.ConnectionState == FishNet.Transporting.LocalConnectionState.Stopped) Log?.Invoke($"{tag}-:Stopped"); };
@@ -111,6 +111,8 @@ static class Program
     public static string Show(byte[] b, int o, int n) => n > 64 ? $"{n}B" : Encoding.UTF8.GetString(b, o, n);
     public static string Ch(bool reliable) => reliable ? "/r" : "/u";
 
+    // NET_SLOW_HTTP puts a delaying proxy between the transports and the node (see sdk/cpp/README.md)
+    public static readonly string Http = Environment.GetEnvironmentVariable("NET_SLOW_HTTP") ?? "http://127.0.0.1:8090";
     static async Task<string> Grant(HttpClient h, string key, string pid)
     {
         var req = new HttpRequestMessage(HttpMethod.Post, "http://127.0.0.1:8090/v1/grants");

@@ -58,8 +58,21 @@ namespace Aurix.Net.Unity
 
         // The room drops an input whose tick it has already simulated, and one more than 64 ticks ahead.
         // A frame carries inputs for consecutive ticks, so earlier ones are resent only without a gap.
-        uint InputLead =>
-            2 + Math.Min(60u, (uint)Math.Ceiling(Client.RttMs * Settings.TickHz / 1000f));
+        // The round trip gives the first guess; the room's margin reports (0x25) correct it.
+        uint InputLead
+        {
+            get
+            {
+                int estimate =
+                    2 + Math.Min(60, (int)Math.Ceiling(Client.RttMs * Settings.TickHz / 1000f));
+                int lead = Math.Min(62, Math.Max(1, estimate + _leadAdjust));
+                _leadAdjust = lead - estimate;
+                return (uint)lead;
+            }
+        }
+
+        readonly MarginControl _margin = new MarginControl();
+        int _leadAdjust;
         float _tickTimer;
         float _lastDeltaTime;
         byte[] _heldInput;
@@ -224,6 +237,17 @@ namespace Aurix.Net.Unity
             }
             if (World == null)
             {
+                return;
+            }
+
+            if (payload.Length >= 7 && payload[0] == 0x25)
+            {
+                uint reportTick =
+                    ((uint)payload[1] << 24)
+                    | ((uint)payload[2] << 16)
+                    | ((uint)payload[3] << 8)
+                    | payload[4];
+                _leadAdjust += _margin.Adjust(reportTick, (sbyte)payload[5], _lastInputTick);
                 return;
             }
 

@@ -63,6 +63,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   hash. A restore with an empty state (no checkpoint yet) was handed to the game as bytes to
   load; the runner now goes back to the state it started with. Checked in UE 5.8.2 against a
   Web SDK player, joining either way: 0 of 29 state comparisons matched before, 26 of 26 after.
+- Unity framework: with adaptive sync on, `NetworkTransform` on a receiver ran past the place
+  where the object stopped and stayed there (0.6 units ahead at 3 units/s with the default
+  level). The stop was sent as one sample, and the receiver kept extrapolating from the last
+  two. The controller now sends a second sample at rest.
 - Lockstep: the state a desynced client reloads from went out as `Catchup` (`0x24`), the frame
   of a late join, and a client that drops a `Catchup` behind its own ticks never recovered. It
   is now a frame of its own, `Restore` (`0x2A`), with the same layout. Clients have to handle
@@ -98,6 +102,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   0 of 8 each. `aurix_net_lockstep_receive`, `aurix::net::Lockstep::receive` and Godot's
   `AurixNetLockstep.receive` take the client the acknowledgement goes through, as the sync
   helpers do; `LockstepClient::ack_frame` builds it in Rust.
+- Unity framework, prediction: the owner of a `PredictedBehaviour` simulated a fixed
+  `inputLeadTicks` (3) ahead of the newest server tick, so with a round trip longer than three
+  ticks every input reached the server after its tick and was dropped: behind 100 ms each way
+  the server missed 87 inputs of 90 and the object never moved. The lead is now the measured
+  round trip (`statistics.ping`) plus `inputLeadTicks` of slack: 0 missed, server and owner agree.
 - Lockstep: when an input frame arrived late, the room put the oldest input it repeated into the
   next bundle instead of the newest, so the fresh input was lost and one the room had already
   confirmed could be confirmed again. With 50 ms of delay each way a client that sent 594 inputs
@@ -308,6 +317,14 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - Unreal plugin: `AurixSyncActorComponent` can bind the entity numbered 0. It used 0 for "no
   entity", but the cell numbers entities from 0, so the first entity of a room could not be bound
   or owned and its changes were applied to every unbound component.
+- SDKs, sync rooms: the input lead followed only the round trip measured once a second, so when
+  the latency rose it stayed short for many seconds and the room dropped every input as late:
+  after a step from 20 to 120 ms each way 462 of 736 input frames in the Web SDK and 438 of 720
+  in the C++ wrapper, nothing reached the other player. The SDKs now read the room's input margin
+  reports (`0x25`) and correct the lead by them: 70 and 40 frames, all right after the step. The
+  report is taken by the sync helpers (`SyncSession`, `aurix_net_sync_receive` returns 2,
+  `aurix::net::Sync::receive` returns true, `NetRunner`) and shares its controller with lockstep
+  (`MarginControl`).
 - Console: the quota form of a project and the matchmaking page showed nothing when the node
   refused the request. A quota out of range, which the node now answers with `invalid_request`,
   looked like a button that did nothing. Both show the node's message.

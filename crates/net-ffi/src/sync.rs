@@ -3,6 +3,7 @@
 //! the same shape as the Web `SyncWorld`/`SyncSession` and the Unity `SyncWorld`.
 use crate::{cstr, set_client_error, set_error, AurixNetClient, ErrorCode};
 use bytes::{BufMut, Bytes, BytesMut};
+use net_client::margin::MarginControl;
 use net_common::Channel;
 use net_replication::{AckTracker, Replicator};
 use net_sim::{EntityId, Frame, FrameConfig};
@@ -16,6 +17,7 @@ use std::ffi::c_char;
 pub const KIND_INPUT: u8 = 0x10;
 pub const KIND_DELTA: u8 = 0x11;
 pub const KIND_ACK: u8 = 0x13;
+pub const KIND_INPUT_STATS: u8 = 0x25;
 
 pub const AURIX_NET_SYNC_NONE: i32 = 0;
 pub const AURIX_NET_SYNC_SPAWN: i32 = 1;
@@ -38,6 +40,9 @@ struct State {
     acks: AckTracker,
     server_tick: u32,
     last_input_tick: u32,
+    margin: MarginControl,
+    /// Ticks the margin reports have added to the lead (negative: taken off it).
+    lead_adjust: i32,
     recent: VecDeque<Vec<u8>>,
     /// Inputs waiting for a tick: (body, keep). Writes and raw inputs are replaced by newer ones.
     held: VecDeque<(Vec<u8>, bool)>,
@@ -77,6 +82,8 @@ pub unsafe extern "C" fn aurix_net_sync_new(schema: *const c_char) -> *mut Aurix
             acks: AckTracker::default(),
             server_tick: 0,
             last_input_tick: 0,
+            margin: MarginControl::default(),
+            lead_adjust: 0,
             recent: VecDeque::new(),
             held: VecDeque::new(),
             events: VecDeque::new(),
@@ -94,7 +101,8 @@ pub unsafe extern "C" fn aurix_net_sync_destroy(s: *mut AurixNetSync) {
 }
 
 /// Feeds one data-path payload. 1 = delta applied and `ack` (9 bytes, may be NULL) filled, send it
-/// on the unreliable channel; 0 = not a delta; -1 = error (`aurix_net_last_error`).
+/// on the unreliable channel; 2 = input margin report taken, the lead of the next inputs follows
+/// it; 0 = not a sync frame; -1 = error (`aurix_net_last_error`).
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_sync_receive(
     s: *const AurixNetSync,
@@ -103,14 +111,20 @@ pub unsafe extern "C" fn aurix_net_sync_receive(
     ack: *mut u8,
 ) -> i32 {
     let Some(s) = s.as_ref() else { return -1 };
-    if data.is_null() || len < 9 {
+    if data.is_null() || len < 7 {
         return 0;
     }
     let p = std::slice::from_raw_parts(data, len);
-    if p[0] != KIND_DELTA {
+    let mut st = s.inner.lock();
+    if p[0] == KIND_INPUT_STATS {
+        let tick = u32::from_be_bytes([p[1], p[2], p[3], p[4]]);
+        let stamped = st.last_input_tick;
+        st.lead_adjust += st.margin.adjust(tick, p[5] as i8, stamped);
+        return 2;
+    }
+    if p[0] != KIND_DELTA || len < 9 {
         return 0;
     }
-    let mut st = s.inner.lock();
     let report = match Replicator::apply_report(&mut st.frame, &p[1..]) {
         Ok(r) => r,
         Err(e) => {
@@ -434,12 +448,16 @@ unsafe fn send_input_inner(
 
 unsafe fn pump(st: &mut State, h: *mut AurixNetClient) -> i32 {
     let Some(h) = h.as_ref() else { return -1 };
-    let lead = {
+    let estimate = {
         let client = h.inner.lock();
         let tick_hz = client.joined.as_ref().and_then(|joined| joined.tick_hz);
         let round_trip = client.rtt_ms() * u32::from(tick_hz.unwrap_or(DEFAULT_TICK_HZ));
-        2 + round_trip.div_ceil(1000).min(MAX_LEAD_TICKS)
+        2 + round_trip.div_ceil(1000).min(MAX_LEAD_TICKS) as i32
     };
+    // The round trip gives the first guess; the room's margin reports correct it.
+    let lead = (estimate + st.lead_adjust).clamp(1, MAX_LEAD_TICKS as i32 + 2);
+    st.lead_adjust = lead - estimate;
+    let lead = lead as u32;
     while !st.held.is_empty() {
         let tick = (st.server_tick + lead).max(st.last_input_tick + 1);
         if tick > st.server_tick + lead + 1 {

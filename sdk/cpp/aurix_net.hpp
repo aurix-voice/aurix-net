@@ -453,8 +453,8 @@ public:
     Sync(const Sync&) = delete;
     Sync& operator=(const Sync&) = delete;
 
-    /// True when the payload was a delta: it is applied, the ack goes out through `c`, events wait
-    /// in poll().
+    /// True when the payload was a sync frame. A delta is applied, its ack goes out through `c`
+    /// and events wait in poll(); an input margin report moves the lead of the next inputs.
     bool receive(Client& client, const uint8_t* data, size_t len) {
         uint8_t ack[9];
         int result = aurix_net_sync_receive(sync_, data, len, ack);
@@ -462,7 +462,7 @@ public:
             throw Error::last();
         }
         if (result != 1) {
-            return false;
+            return result == 2;
         }
         client.sendData(Channel::Unreliable, ack, sizeof ack);
         aurix_net_sync_pump(sync_, client.handle());

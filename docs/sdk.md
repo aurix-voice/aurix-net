@@ -97,6 +97,12 @@ already has your input (the room takes one per tick).
 
 ## Sync rooms from C++ and Godot
 
+Inputs are stamped ahead of the last delta by a lead: two ticks plus the measured round trip, then
+corrected by the room's input margin reports (`0x25`, every 30 ticks): a late report adds the
+lateness plus one tick, three reports with ticks to spare give the excess back. All SDKs do this
+inside their sync helper (`aurix_net_sync_receive` returns 2 for a report, `Sync::receive` returns
+true), so a game never sees the frame.
+
 `aurix_net_sync_*` (in `aurix_net.h`) is the client side of a sync room as pure logic: a replicated
 world (`net_sim::Frame` + the same delta decoder the node uses), acks, redundant input frames and
 owner-authoritative component writes. `aurix::net::Sync` wraps it:

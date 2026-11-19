@@ -498,6 +498,8 @@ static class Program
             int made = gl.nt.sync.sendsMade - made0, skipped = gl.nt.sync.sendsSkipped - skipped0;
             Check(skipped > made && made >= 3, $"adaptive sync skipped {skipped} sends, made {made} over 90 ticks of linear motion");
             Check(worst < 1.0f, $"receiver stays within 10 ticks of the controller while sends are skipped (worst {worst:0.00} units at 0.1/tick)");
+            for (int i = 0; i < 45; i++) { hostD.NetworkUpdate(1f / 30); cD.NetworkUpdate(1f / 30); glC.nt.RenderUpdate(1f / 30); await Task.Delay(33); }
+            Check(Math.Abs(glC.nt.transform.position.x - gl.nt.transform.position.x) < 0.01f, $"receiver comes to rest where the controller stopped (receiver x={glC.nt.transform.position.x:0.00}, controller x={gl.nt.transform.position.x:0.00})");
             gl.nt.transform.position = new Vector3(100, 5, 0);
             for (int i = 0; i < 40; i++) { hostD.NetworkUpdate(0.01f); cD.NetworkUpdate(0.01f); glC.nt.RenderUpdate(0.033f); await Task.Delay(10); }
             Check(Vector3.Distance(glC.nt.transform.position, new Vector3(100, 5, 0)) < 0.1f, "a jump breaks the skip streak and is sent");
@@ -593,6 +595,23 @@ static class Program
             Check(pawnH.pawn.impulsesApplied == 1 && pawnC.pawn.reconciliations > before && Math.Abs(pawnC.pawn.state.x - pawnH.pawn.state.x) < 0.05f, $"server impulse → owner reconciles to x={pawnC.pawn.state.x:0.##} (server {pawnH.pawn.state.x:0.##}, reconciliations {pawnC.pawn.reconciliations})");
             hostP.Stop(); cP.Stop(); oP.Stop(); await Pump(300, hostP, cP, oP);
         }
+
+        // Prediction over a slow link (NET_SLOW_HTTP, see sdk/cpp/README.md): the owner's inputs still reach the server in time
+        if (Environment.GetEnvironmentVariable("NET_SLOW_HTTP") is string slow)
+        {
+            var hostW = Make("hostW"); var cW = Make("cW"); hostW.roomName = cW.roomName = room + "-slow"; cW.httpUrl = slow;
+            hostW.StartHost(); await Until(() => hostW.isServer, 8000, hostW);
+            cW.StartClient(); await Until(() => cW.players.Count == 2, 8000, hostW, cW);
+            var pawnH = (PawnIdentity)hostW.Spawn(2, cW.localPlayer);
+            await Until(() => cW.TryGetIdentity(pawnH.objectId, out _), 5000, hostW, cW);
+            var pawnC = (PawnIdentity)(cW.TryGetIdentity(pawnH.objectId, out var found) ? found : null);
+            await Pump(1500, hostW, cW);
+            int missed = pawnH.pawn.missedInputs; pawnC.pawn.dx = 1f; await Pump(1500, hostW, cW); pawnC.pawn.dx = 0f; await Pump(1500, hostW, cW);
+            float sx = pawnH.pawn.state.x, cx = pawnC.pawn.state.x; missed = pawnH.pawn.missedInputs - missed;
+            Check(sx > 5f && Math.Abs(sx - cx) < 0.05f && missed < 10, $"slow link (ping {cW.statistics.ping} ms): the server applies the owner's inputs (server x={sx:0.##}, owner x={cx:0.##}, missed inputs={missed})");
+            hostW.Stop(); cW.Stop(); await Pump(300, hostW, cW);
+        }
+        else Console.WriteLine("  skip slow link (NET_SLOW_HTTP not set)");
 
         // PlayerSpawner: one Mover per player (host included), owned by that player, gone when they leave
         {

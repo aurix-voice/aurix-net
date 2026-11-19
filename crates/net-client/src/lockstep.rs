@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 
 use bytes::{BufMut, Bytes, BytesMut};
 
+use crate::margin::MarginControl;
+
 pub const LS_INPUT: u8 = 0x10;
 pub const LS_BUNDLE: u8 = 0x20;
 pub const LS_HASH: u8 = 0x21;
@@ -65,13 +67,7 @@ pub struct LockstepClient {
     anchored: bool,
     next: u32,
     last_input: u32,
-    slack_streak: u8,
-    /// Smallest margin of the current streak of slack reports.
-    spare: i8,
-    /// Tick of the last margin report.
-    report_tick: u32,
-    /// Server tick by which every input stamped before the last raise has arrived.
-    settle_tick: u32,
+    margin: MarginControl,
     /// Newest tick the node has bundled (+1).
     pub server_tick: u32,
     /// Ticks ahead of the server clock inputs are stamped; tuned between min/max from margin
@@ -104,10 +100,7 @@ impl LockstepClient {
             anchored: false,
             next: 0,
             last_input: 0,
-            slack_streak: 0,
-            spare: i8::MAX,
-            report_tick: 0,
-            settle_tick: 0,
+            margin: MarginControl::default(),
             server_tick: 0,
             input_delay: 2,
             input_delay_min: 1,
@@ -199,37 +192,16 @@ impl LockstepClient {
     /// tick; three consecutive reports with more than two ticks to spare lower it by the excess.
     /// A late report that still covers inputs stamped before the last raise does not raise again.
     pub fn on_input_stats(&mut self, tick: u32, margin: i8, late: u8) {
-        let window_start = std::mem::replace(&mut self.report_tick, tick);
         self.last_margin = margin;
         self.late_inputs += late as u64;
         if !self.adaptive_delay {
             return;
         }
-        if margin < 0 {
-            self.slack_streak = 0;
-            if window_start >= self.settle_tick {
-                let lateness = margin.unsigned_abs() as u32;
-                self.input_delay = (self.input_delay + lateness + 1).min(self.input_delay_max);
-                self.settle_tick = self.last_input + lateness;
-            }
-        } else if margin > 2 {
-            self.spare = if self.slack_streak == 0 {
-                margin
-            } else {
-                self.spare.min(margin)
-            };
-            self.slack_streak += 1;
-            if self.slack_streak >= 3 {
-                self.slack_streak = 0;
-                let excess = self.spare as u32 - 2;
-                self.input_delay = self
-                    .input_delay
-                    .saturating_sub(excess)
-                    .max(self.input_delay_min);
-            }
-        } else {
-            self.slack_streak = 0;
-        }
+        let change = self.margin.adjust(tick, margin, self.last_input);
+        self.input_delay = self
+            .input_delay
+            .saturating_add_signed(change)
+            .clamp(self.input_delay_min, self.input_delay_max);
     }
 
     fn decode_bundle(&mut self, b: &[u8]) {

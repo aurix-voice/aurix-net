@@ -179,20 +179,31 @@ namespace Aurix.Net.Unity.Framework
                 || (syncRotation && Quaternion.Angle(rot, _lastSent.rot) > 0.01f)
                 || (syncScale && scale != _lastSent.scale)
                 || (syncParent && parent != _lastSent.parent);
-            if (!changed)
-            {
-                return;
-            }
-
-            if (
+            Sample predicted = default;
+            bool reconstructs =
                 strategy != null
                 && _sentCount >= 2
                 && parent == _lastSent.parent
                 && current.tick > _lastSent.tick
+                && strategy.TryReconstruct(_prevSent, _lastSent, current.tick, out predicted);
+            bool within =
+                reconstructs
+                && strategy.Within(predicted, current, syncPosition, syncRotation, syncScale);
+            if (!changed)
+            {
+                // the receiver extrapolates from the last two samples: after a stop it needs a second one at rest
+                if (reconstructs && !within)
+                {
+                    isDirty = true;
+                }
+
+                return;
+            }
+
+            if (
+                within
                 && (current.tick - _lastSent.tick) / Math.Max(1f, tickRate)
                     < strategy.maxSendInterval
-                && strategy.TryReconstruct(_prevSent, _lastSent, current.tick, out var predicted)
-                && strategy.Within(predicted, current, syncPosition, syncRotation, syncScale)
             )
             {
                 sendsSkipped++;

@@ -115,7 +115,7 @@ enum { AURIX_NET_SYNC_NONE = 0, AURIX_NET_SYNC_SPAWN = 1, AURIX_NET_SYNC_CHANGE 
 typedef struct AurixNetSyncEvent { int32_t kind; uint64_t entity; int32_t owner; /* -1 = server-owned */ } AurixNetSyncEvent;
 AurixNetSync *aurix_net_sync_new(const char *schema);                                   /* NULL + last_error on a bad schema */
 void aurix_net_sync_destroy(AurixNetSync *sync);
-int32_t aurix_net_sync_receive(const AurixNetSync *sync, const uint8_t *data, size_t len, uint8_t *ack9); /* 1 = delta applied, ack9 filled (send it unreliable); 0 = not a delta; -1 = error */
+int32_t aurix_net_sync_receive(const AurixNetSync *sync, const uint8_t *data, size_t len, uint8_t *ack9); /* 1 = delta applied, ack9 filled (send it unreliable); 2 = input margin report taken; 0 = not a sync frame; -1 = error */
 int32_t aurix_net_sync_poll(const AurixNetSync *sync, AurixNetSyncEvent *out);           /* 1 = spawn/change/despawn filled */
 uint32_t aurix_net_sync_server_tick(const AurixNetSync *sync);
 uint64_t aurix_net_sync_gaps(const AurixNetSync *sync);

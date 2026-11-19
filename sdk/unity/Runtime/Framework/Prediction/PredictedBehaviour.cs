@@ -113,7 +113,7 @@ namespace Aurix.Net.Unity.Framework
         where STATE : struct
     {
         [Tooltip(
-            "How many ticks ahead of the newest server tick the owner simulates (covers the round trip)."
+            "Ticks of slack the owner keeps on top of the measured round trip when it simulates ahead of the newest server tick."
         )]
         public int inputLeadTicks = 3;
 
@@ -278,7 +278,13 @@ namespace Aurix.Net.Unity.Framework
 
         void OwnerTick(float dt)
         {
-            uint target = networkManager.serverTick + (uint)Math.Max(0, inputLeadTicks);
+            // an input has to reach the server before the server simulates its tick
+            var statistics = networkManager.statistics;
+            int roundTrip = statistics.hasPingEstimate
+                ? (int)Math.Ceiling(statistics.ping * networkManager.tickRate / 1000f)
+                : 0;
+            uint target =
+                networkManager.serverTick + (uint)(Math.Max(0, inputLeadTicks) + roundTrip);
             if (currentTick == 0 || target < currentTick)
             {
                 currentTick = target == 0 ? 1 : target;

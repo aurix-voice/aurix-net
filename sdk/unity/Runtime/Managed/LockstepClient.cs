@@ -67,10 +67,7 @@ namespace Aurix.Net.Managed
         /// <summary>Last reported margin (ticks of slack; negative = inputs arrived late) and late inputs so far.</summary>
         public sbyte LastMargin;
         public long LateInputs;
-        int _slackStreak;
-        int _spare;
-        uint _reportTick;
-        uint _settleTick;
+        readonly MarginControl _margin = new MarginControl();
         public long Delivered,
             Catchups,
             Dropped;
@@ -177,8 +174,6 @@ namespace Aurix.Net.Managed
         /// that still covers inputs stamped before the last raise does not raise again.</summary>
         internal void OnInputStats(uint tick, sbyte margin, byte late)
         {
-            uint windowStart = _reportTick;
-            _reportTick = tick;
             LastMargin = margin;
             LateInputs += late;
             if (!AdaptiveDelay)
@@ -186,29 +181,8 @@ namespace Aurix.Net.Managed
                 return;
             }
 
-            if (margin < 0)
-            {
-                _slackStreak = 0;
-                if (windowStart >= _settleTick)
-                {
-                    InputDelay = Math.Min(InputDelayMax, InputDelay + (uint)(1 - margin));
-                    _settleTick = _lastInput + (uint)(-margin);
-                }
-            }
-            else if (margin > 2)
-            {
-                _spare = _slackStreak == 0 ? margin : Math.Min(_spare, margin);
-                if (++_slackStreak >= 3)
-                {
-                    _slackStreak = 0;
-                    uint excess = (uint)(_spare - 2);
-                    InputDelay = Math.Max(InputDelayMin, InputDelay - Math.Min(InputDelay, excess));
-                }
-            }
-            else
-            {
-                _slackStreak = 0;
-            }
+            long delay = InputDelay + _margin.Adjust(tick, margin, _lastInput);
+            InputDelay = (uint)Math.Min(InputDelayMax, Math.Max(InputDelayMin, delay));
         }
 
         /// <summary>Tells the room which tick this client needs next: the room then sends every bundle from that

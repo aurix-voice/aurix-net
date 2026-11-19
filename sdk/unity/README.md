@@ -126,7 +126,8 @@ compilation by the weaver in `Editor/CodeGen` (an `ILPostProcessor`): calling
 `CmdHit(10)` sends the RPC and the body runs where it should; without the weaver (or from code you do
 not own) use `Rpc(nameof(CmdHit), 10)` / `RpcTo(player, …)`. Interest management: add `INetworkVisibilityRule`s to `NetworkManager.visibilityRules` (e.g. `new DistanceRule(manager, 50f)`) or set `NetworkIdentity.visibilityRule`; clients only hold objects they can see. Client-side prediction: derive from `PredictedBehaviour<INPUT, STATE>`, implement `GetInput`, a deterministic `Simulate(input, ref state, dt)` and `SetUnityState`; the owner predicts and reconciles, the server verifies, observers interpolate. Static RPCs work too: put `[ServerRpc]`/`[ObserversRpc]`/`[TargetRpc]` on a static method of any class (no NetworkIdentity needed); they route through `NetworkManager.main`. Lag compensation: add `ColliderRollback` to hittable objects and wrap server-side hit checks in `networkManager.Rollback(info.sender, () => Physics.Raycast(...))`. `StartAuto()` is quick match: join a random open room (`matchFilterJson`, `matchExpr`) or host a new one with `roomPropsJson`. Host migration is on by default: if the host leaves, the new room master becomes the server with the world it can see and the others re-attach.
 
-Check without Unity: `cd BuildCheck~/framework-check && NET_API_KEY=an_… dotnet run -c Release`.
+Check without Unity: `cd BuildCheck~/framework-check && NET_API_KEY=an_… dotnet run -c Release`;
+with `NET_SLOW_HTTP` (a delaying proxy, see `sdk/cpp/README.md`) it also runs prediction over the slow link.
 
 More of the framework, all covered by `BuildCheck~/framework-check` against a live node: generic RPCs (`Show<T>(T v)`),
 static RPCs on any class, `compression:`/`deltaPack:` RPC options, `StateMachine`/`StateNode<T>`, `NetworkLOD`
@@ -177,7 +178,8 @@ the framework's side), lobby/matchmaking from inside the framework (use the Auri
 
 Check without Unity: `cd BuildCheck~/transports-check && NET_API_KEY=an_… dotnet run -c Release`
 runs host + two clients through each adapter against a local node, plus host mode for the two
-adapters that have it (compile-only without the key).
+adapters that have it (compile-only without the key). `NET_SLOW_HTTP` puts the delaying proxy
+between the adapters and the node.
 
 ## Checks
 
