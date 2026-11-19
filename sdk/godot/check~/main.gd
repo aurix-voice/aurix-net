@@ -3,6 +3,8 @@ extends Node
 var got := false
 var unsequenced := false
 var t0 := 0
+# NET_LIVE_REQUIRED: a part that cannot run fails the check instead of being skipped
+var required := OS.get_environment("NET_LIVE_REQUIRED") != ""
 const SCHEMA := "component Transform {\n  pos: vec3 @range(-4096, 4096, 0.01)\n  rot: quat\n}\n"
 var grant_c := ""; var grant_d := ""; var net_http := ""; var ls_room := ""
 var c: AurixNetClient; var d: AurixNetClient
@@ -28,11 +30,12 @@ func _ready() -> void:
 	if not sync.setup("component Transform {\n pos: vec3 @range(-4096, 4096, 0.01)\n}", 20, 2):
 		fail("sync setup: " + sync.get_last_error()); return
 	if ga == "" or gb == "":
+		if required: fail("NET_LIVE_REQUIRED is set and GRANT_A, GRANT_B are not"); return
 		print("GODOT OK (classes load, sync schema parsed; no grants -> no live check)"); get_tree().quit(0); return
 	var a := AurixNetClient.new(); var b := AurixNetClient.new(); add_child(a); add_child(b)
 	if not a.connect_to(http, ga, true): fail("a connect: " + a.get_last_error()); return
 	if not b.connect_to(http, gb, true): fail("b connect: " + b.get_last_error()); return
-	var room := "godot-%d" % (Time.get_ticks_msec() % 100000)
+	var room := "godot-%d" % OS.get_process_id()
 	if a.join_or_create(room, AurixNetClient.MODE_RELAY, 8) < 0: fail("a join: " + a.get_last_error()); return
 	if b.join_or_create(room, AurixNetClient.MODE_RELAY, 8) < 0: fail("b join: " + b.get_last_error()); return
 	b.event.connect(func(code, from, payload): 
@@ -57,12 +60,13 @@ func _process(dt: float) -> void:
 
 func _start_sync() -> void:
 	if grant_c == "" or grant_d == "":
+		if required: fail("NET_LIVE_REQUIRED is set and GRANT_C, GRANT_D are not"); return
 		print("GODOT OK (relay only; set GRANT_C/GRANT_D for the sync check)"); get_tree().quit(0); return
 	c = AurixNetClient.new(); d = AurixNetClient.new(); add_child(c); add_child(d)
 	if not c.connect_to(net_http, grant_c, true): fail("c connect: " + c.get_last_error()); return
 	if not d.connect_to(net_http, grant_d, true): fail("d connect: " + d.get_last_error()); return
 	var props := JSON.stringify({"schema": SCHEMA})
-	var room := "godot-sync-%d" % (Time.get_ticks_msec() % 100000)
+	var room := "godot-sync-%d" % OS.get_process_id()
 	if c.join_or_create(room, AurixNetClient.MODE_SYNC, 4, props) < 0: fail("c join: " + c.get_last_error()); return
 	if d.join_or_create(room, AurixNetClient.MODE_SYNC, 4, props) < 0: fail("d join: " + d.get_last_error()); return
 	wc = AurixNetSync.new(); wd = AurixNetSync.new()
@@ -111,7 +115,7 @@ func _sync_step(dt: float) -> void:
 func _start_lockstep() -> void:
 	c.leave(); d.leave()
 	if c.get_actor() != -1 or c.get_joined_json() != "": fail("leave: the client still describes the room it left"); return
-	ls_room = "godot-ls-%d" % (Time.get_ticks_msec() % 100000)
+	ls_room = "godot-ls-%d" % OS.get_process_id()
 	var room := ls_room
 	var props := JSON.stringify({"tick_hz": 30})
 	if c.join_or_create(room, AurixNetClient.MODE_LOCKSTEP, 4, props) < 0: fail("c lockstep join: " + c.get_last_error()); return
@@ -155,13 +159,13 @@ func _replaced() -> bool:
 func _slow_link() -> bool:
 	var slow := OS.get_environment("NET_SLOW_HTTP")
 	if slow == "":
-		print("godot slow link: skipped (NET_SLOW_HTTP not set)"); return true
+		print("godot slow link: skipped (NET_SLOW_HTTP not set)"); return not required
 	var e := AurixNetClient.new(); var f := AurixNetClient.new(); add_child(e); add_child(f)
 	if not e.connect_to(slow, OS.get_environment("GRANT_E"), true) or not f.connect_to(slow, OS.get_environment("GRANT_F"), true): return false
 	var errors := [0]; var next := [0]
 	e.control.connect(func(json): if json.contains('"t":"error"'): errors[0] += 1)
 	f.event.connect(func(code, _from, _payload): if code == 5: next[0] += 1)
-	var room := "godot-slow-%d" % (Time.get_ticks_msec() % 100000)
+	var room := "godot-slow-%d" % OS.get_process_id()
 	if e.join_or_create(room, AurixNetClient.MODE_RELAY, 4) < 0 or f.join_or_create(room, AurixNetClient.MODE_RELAY, 4) < 0: return false
 	# events on their way to `e` when it leaves must not make it answer the room it has left
 	for i in 60:
@@ -183,7 +187,7 @@ func _slow_link() -> bool:
 func _rehost() -> bool:
 	var other := OS.get_environment("NET_REHOST_HTTP")
 	if other == "":
-		print("godot rehost: skipped (NET_REHOST_HTTP not set)"); return true
+		print("godot rehost: skipped (NET_REHOST_HTTP not set)"); return not required
 	var grant := OS.get_environment("GRANT_G")
 	var g := AurixNetClient.new(); add_child(g)
 	if not g.connect_to(OS.get_environment("NET_HTTP"), grant): return false

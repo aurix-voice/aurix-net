@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { api, cleanupProjects, closeSecret, confirm, peerNodeUrl, pinEnglish, uniq } from "./env";
+import { api, cleanupProjects, closeSecret, confirm, liveRequired, peerNodeUrl, pinEnglish, uniq } from "./env";
 
 test.beforeEach(async ({ page }) => pinEnglish(page));
 test.afterEach(async ({ page }) => cleanupProjects(page));
@@ -105,6 +105,7 @@ test("operator can drain another node from the console and put it back", async (
   const { nodes } = await api<{ nodes: { id: string; version: string; http_url: string; public_host: string; quic_port: number; draining: boolean }[] }>(page, "GET", "/v1/operator/nodes");
   const self = nodes.find((n) => n.id === me.node_id);
   const other = nodes.find((n) => n.id !== me.node_id && n.http_url === peerNodeUrl() && n.version === self?.version && !n.draining);
+  if (liveRequired) expect(other, "AURIX_NET_E2E_PEER names no live node of this fleet").toBeDefined();
   test.skip(!other, "needs the second node of the stand, named in AURIX_NET_E2E_PEER");
   const row = page.getByRole("row", { name: new RegExp(`${other!.public_host}:${other!.quic_port}`) });
   await page.goto("/nodes");

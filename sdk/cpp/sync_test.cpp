@@ -74,6 +74,7 @@ int main() {
         ok = ok && arrived == rounds; c.leave();
     } else {
         std::printf("cpp sync, lossy link: skipped (NET_LOSSY_HTTP not set)\n");
+        ok = ok && !std::getenv("NET_LIVE_REQUIRED");
     }
     a.leave(); b.leave(); return ok ? 0 : 1;
 }

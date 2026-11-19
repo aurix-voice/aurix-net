@@ -13,13 +13,15 @@ g++ -std=c++17 sdk/cpp/rehost_test.cpp -Isdk/cpp -Ltarget/release -laurix_net -W
 gcc -std=c11 -Wall -Wextra -Werror crates/net-ffi/ctest/rehost.c -Ltarget/release -laurix_net -Wl,-rpath,"$PWD/target/release" -o /tmp/c-rehost || exit 1
 scripts/two-nodes.sh stop >/dev/null 2>&1; scripts/two-nodes.sh start
 ROOM="sdk-rehost-$(date +%s)"
-(cd sdk/web && node test/rehost.mjs "$ROOM" > /tmp/web-rehost.log 2>&1; echo "web exit $?" >> /tmp/web-rehost.log) &
-(/tmp/cpp-rehost "$ROOM-cpp" > /tmp/cpp-rehost.log 2>&1; echo "cpp exit $?" >> /tmp/cpp-rehost.log) &
-(/tmp/c-rehost "$ROOM-c" > /tmp/c-rehost.log 2>&1; echo "c exit $?" >> /tmp/c-rehost.log) &
-(cd "sdk/unity/BuildCheck~/managed-rehost" && "$DOTNET" run --no-build -c Release -- "$ROOM" > /tmp/cs-rehost.log 2>&1; echo "cs exit $?" >> /tmp/cs-rehost.log) &
+(cd sdk/web && node test/rehost.mjs "$ROOM" > /tmp/web-rehost.log 2>&1; rc=$?; echo "web exit $rc" >> /tmp/web-rehost.log; exit $rc) & clients=($!)
+(/tmp/cpp-rehost "$ROOM-cpp" > /tmp/cpp-rehost.log 2>&1; rc=$?; echo "cpp exit $rc" >> /tmp/cpp-rehost.log; exit $rc) & clients+=($!)
+(/tmp/c-rehost "$ROOM-c" > /tmp/c-rehost.log 2>&1; rc=$?; echo "c exit $rc" >> /tmp/c-rehost.log; exit $rc) & clients+=($!)
+(cd "sdk/unity/BuildCheck~/managed-rehost" && "$DOTNET" run --no-build -c Release -- "$ROOM" > /tmp/cs-rehost.log 2>&1; rc=$?; echo "cs exit $rc" >> /tmp/cs-rehost.log; exit $rc) & clients+=($!)
 sleep 8
 kill -TERM "$(pgrep -f '^/tmp/aurix-net-A')"; echo "A: SIGTERM sent"
-wait
+failed=0
+for pid in "${clients[@]}"; do wait "$pid" || failed=1; done
 echo "=== web"; cat /tmp/web-rehost.log; echo "=== cs"; cat /tmp/cs-rehost.log; echo "=== cpp"; cat /tmp/cpp-rehost.log; echo "=== c"; cat /tmp/c-rehost.log
-echo "=== 'adopted orphaned room' on B:"; grep -c "adopted orphaned room" /tmp/aurix-net-B.log
+echo "=== 'adopted orphaned room' on B:"; grep -c "adopted orphaned room" /tmp/aurix-net-B.log || failed=1
 echo "PASS criteria: WEB_REHOST_OK, CS_REHOST_OK, CPP_REHOST_OK, C_REHOST_OK, same actor: true, adopted >= 1"
+exit $failed

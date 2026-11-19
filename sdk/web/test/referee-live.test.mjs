@@ -5,10 +5,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Client, LockstepClient } from "../dist/index.js";
 import WebSocket from "ws";
+import { key, required } from "./live.mjs";
 if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
 
 const http = process.env.NET_HTTP ?? "http://127.0.0.1:8090";
-const key = process.env.NET_API_KEY;
 const hdr = { authorization: `Bearer ${key}`, "content-type": "application/json" };
 async function grant(player) {
   const r = await fetch(`${http}/v1/grants`, { method: "POST", headers: hdr, body: JSON.stringify({ player_id: player, name: player, scopes: ["join", "create"] }) });
@@ -18,10 +18,11 @@ async function grant(player) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const logic = process.env.NET_LOGIC ?? "arena";
-// The module has to be uploaded to the key's project first (`PUT /v1/modules/:name`, docs/modes.md); skip, don't fail, otherwise.
+// The module has to be uploaded to the key's project first (`PUT /v1/modules/:name`, docs/modes.md); skip otherwise.
 const hasModule = key
   ? await fetch(`${http}/v1/modules`, { headers: hdr }).then((r) => (r.ok ? r.json() : { modules: [] })).then((j) => (j.modules ?? []).some((m) => m.name === logic))
   : false;
+if (required && !hasModule) throw new Error(`NET_LIVE_REQUIRED is set and game module '${logic}' is not uploaded to this project`);
 
 test("lockstep referee: the node's own state is the reference dump (actor 0)", { skip: !key ? true : !hasModule ? `game module '${logic}' not uploaded to this project` : false }, async (t) => {
   const room = `web-ref-${process.pid}`;

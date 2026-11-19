@@ -194,7 +194,7 @@ static class Program
     {
         Console.WriteLine("TRANSPORT ADAPTERS COMPILE OK: " + typeof(Aurix.Net.PurrNet.AurixNetTransport).Name + ", " + typeof(Aurix.Net.MirrorTransport.AurixNetMirrorTransport).Name + ", " + typeof(Aurix.Net.FishNetTransport.AurixNetFishNetTransport).Name);
         var key = Environment.GetEnvironmentVariable("NET_API_KEY");
-        if (string.IsNullOrEmpty(key)) { Console.WriteLine("NET_API_KEY unset: live test skipped"); return 0; }
+        if (string.IsNullOrEmpty(key)) { Console.WriteLine("NET_API_KEY unset: live test skipped"); return Environment.GetEnvironmentVariable("NET_LIVE_REQUIRED") == null ? 0 : 1; }
         var h = new HttpClient();
         bool all = true;
         foreach (var kind in new[] { "purr", "mirror", "fish" })

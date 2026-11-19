@@ -10,7 +10,11 @@ export const operatorToken = (): string => required("AURIX_NET_E2E_TOKEN");
 
 /** `http_url` of the second node of the stand under test, for specs that act on another node.
  * The node list also holds whatever else shares the stand's database for a moment. */
-export const peerNodeUrl = (): string | undefined => process.env.AURIX_NET_E2E_PEER;
+export function peerNodeUrl(): string | undefined {
+  const url = process.env.AURIX_NET_E2E_PEER;
+  if (!url && liveRequired) throw new Error("NET_LIVE_REQUIRED is set and AURIX_NET_E2E_PEER is not");
+  return url;
+}
 
 /** With NET_LIVE_REQUIRED set, a spec the stand cannot run fails instead of being skipped. */
 export const liveRequired = !!process.env.NET_LIVE_REQUIRED;

@@ -5,10 +5,10 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { Client } from "../dist/index.js";
 import WebSocket from "ws";
+import { key, required } from "./live.mjs";
 if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
 
 const base = process.env.NET_HTTP ?? "http://127.0.0.1:8090";
-const key = process.env.NET_API_KEY;
 const auth = { authorization: `Bearer ${key}`, "content-type": "application/json" };
 async function grant(player) {
   const r = await fetch(`${base}/v1/grants`, { method: "POST", headers: auth, body: JSON.stringify({ player_id: player, name: player, scopes: ["join", "create"] }) });
@@ -29,7 +29,7 @@ test("rpc: a client call reaches the project's rpc webhook signed and its JSON a
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${srv.address().port}/rpc`;
   const created = await fetch(`${base}/v1/webhooks`, { method: "POST", headers: auth, body: JSON.stringify({ url, events: ["rpc"] }) });
-  if (created.status === 400) { srv.close(); test.skip?.("node refuses loopback webhooks (not a development node)"); return; }
+  if (created.status === 400 && !required) { srv.close(); test.skip?.("node refuses loopback webhooks (not a development node)"); return; }
   assert.ok(created.ok, `webhook create ${created.status} ${await created.clone().text()}`);
   const hook = await created.json();
   try {

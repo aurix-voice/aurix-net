@@ -4,10 +4,10 @@ import assert from "node:assert/strict";
 import { Client, SyncSession, ComponentValue } from "../dist/index.js";
 import WebSocket from "ws";
 import { slowLink } from "./slow-link.mjs";
+import { key } from "./live.mjs";
 if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
 
 const http = process.env.NET_HTTP ?? "http://127.0.0.1:8090";
-const key = process.env.NET_API_KEY;
 const SCHEMA = "component Transform {\n  pos: vec3 @range(-4096, 4096, 0.01)\n  rot: quat\n}\n";
 async function grant(player) {
   const r = await fetch(`${http}/v1/grants`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ player_id: player, name: player, scopes: ["join", "create"] }) });

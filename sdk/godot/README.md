@@ -16,6 +16,8 @@ two nodes (`scripts/two-nodes.sh`), `NET_REHOST_HTTP` for the second one, `GRANT
 `NET_REHOST_ROOM` it asks the second node for a room on the first, then waits for the first node to
 stop and joins the room again through the second). Godot discovers `.gdextension` files when the
 project is opened in the editor; headless, `check~/.godot/extension_list.cfg` lists it by hand.
+`scripts/godot-live-test.sh` does all of it against two nodes, and CI runs it in the `sdk-live` job;
+with `NET_LIVE_REQUIRED` set a part that cannot run fails the check.
 
 ```gdscript
 var net := AurixNetClient.new(); add_child(net)   # polls in _process

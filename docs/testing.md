@@ -26,6 +26,11 @@ Redis). Build once: `cargo build --release`. Create a project and key with the o
 | C / C++ ABI | `crates/net-ffi/ctest/echo.c`, `sdk/cpp/echo_test.cpp` against a live node | `hello=1 ticks=10/10`, `unsequenced channel: events=10/10` |
 | C ABI, aurix-sim | `crates/net-ffi/ctest/sim.c` against `libaurix_net.so` (offline) | six golden hashes equal to Rust/wasm32, 2D/3D rest + sphere cast |
 
+The SDK checks skip their live part without `NET_API_KEY`, and the parts that go through a proxy
+(`NET_SLOW_HTTP`, `NET_LOSSY_HTTP`, `NET_PLAIN_HTTP`, `NET_CUT_HTTP`, see `sdk/cpp/README.md`)
+without its variable. With `NET_LIVE_REQUIRED` set a part that cannot run fails the check
+instead; CI sets it.
+
 Known limits of the local setup: bots and server share CPU, so the 2000 events/s/room figure
 needs bots on a second machine; the dev certificate changes on every node start (browser pins
 the fingerprint from `joined.data`, nothing to install).
@@ -61,7 +66,9 @@ client (`sdk/cpp/rehost_test.cpp`) does the same in a room of its own by connect
 again (`CPP_REHOST_OK`); a C one (`crates/net-ffi/ctest/rehost.c`) stops at the same actor id after
 joining again (`C_REHOST_OK`). The Rust client has the same check as
 `cargo run -p net-client --example rehost`, the Godot one is part of `sdk/godot/check~` (see
-`sdk/godot/README.md`).
+`sdk/godot/README.md`). The script exits non-zero when a client fails or B adopted no room; CI runs
+it with `BIN=target/debug/aurix-net-server`, the node `scripts/two-nodes.sh` starts instead of the
+release build.
 
 ## Redis outage (chaos)
 
@@ -366,5 +373,5 @@ lockstep bots, RSS/overrun verdict, CSV attached). First run on a GitHub-hosted 
 | `supply-chain` | `cargo audit`, `cargo deny check` |
 | `sdk-web` | `tsc` build + node tests of the Web SDK (sim tests load the wasm artifact; live tests skip without `NET_API_KEY`) |
 | `sdk-csharp` | dotnet builds of the live/rehost checks and `dotnet test` of the managed core (NUnit, P/Invokes the native artifact) |
-| `console` | dashboard `check`/`lint`/`test`/`build`, then the live Playwright suite against a node started from the artifact with Postgres/Redis services (`AURIX_NET_E2E_TOKEN` = that node's `auth.admin_token`). The node reaches Redis through a Toxiproxy service (`AURIX_NET_E2E_TOXIPROXY`), which one spec switches off to see what the console shows without Redis |
+| `console` | dashboard `check`/`lint`/`test`/`build`, then the live Playwright suite against two nodes started from the artifact (`scripts/two-nodes.sh`) with Postgres/Redis services (`AURIX_NET_E2E_TOKEN` = their `auth.admin_token`, `AURIX_NET_E2E_PEER` = the second node). The nodes reach Redis through a Toxiproxy service (`AURIX_NET_E2E_TOXIPROXY`), which one spec switches off to see what the console shows without Redis. `NET_LIVE_REQUIRED` is set: a spec that cannot run fails |
 | `docker` | buildx of the node image (`Dockerfile`) and the console image (`dashboard/Dockerfile`), no push |

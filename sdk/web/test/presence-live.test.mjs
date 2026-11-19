@@ -2,13 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Client } from "../dist/index.js";
 import WebSocket from "ws";
+import { key } from "./live.mjs";
 if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
 
 // Two nodes of one fleet: a friend in a room on B, a friend only connected on B, a stranger nowhere;
 // the asking client sits on A. NET_HTTP_B defaults to NET_HTTP (single node still passes).
 const httpA = process.env.NET_HTTP ?? "http://127.0.0.1:8090";
 const httpB = process.env.NET_HTTP_B ?? httpA;
-const key = process.env.NET_API_KEY;
 const hdr = { authorization: `Bearer ${key}`, "content-type": "application/json" };
 async function grant(http, player) {
   const r = await fetch(`${http}/v1/grants`, { method: "POST", headers: hdr, body: JSON.stringify({ player_id: player, name: player, scopes: ["join", "create"] }) });

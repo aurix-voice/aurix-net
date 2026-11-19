@@ -582,10 +582,23 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   repeat the request, until one succeeds.
 
 ### CI
+- `ci.yml`: a new job, `sdk-live`, runs the live checks of the Web, C#, C++ and C SDKs against the
+  node the `rust` job built and through the four proxies of `sdk/cpp/README.md`. Until now CI
+  built these checks and skipped their live part. With `NET_LIVE_REQUIRED` set, as in this job, a check
+  fails where it would skip (no key, no proxy, no game module, no `libaurix_net`).
+- `ci.yml`: `sdk-live` also hands a room from one node to another under the Web, C#, C++ and C
+  clients (`scripts/sdk-rehost-test.sh`). The script now exits non-zero when a client fails or the
+  second node adopted no room, and `scripts/two-nodes.sh` starts the node `BIN` names.
+- `ci.yml`: `sdk-live` runs the Godot check project in Godot 4.2.2 against two nodes
+  (`scripts/godot-live-test.sh`): relay, sync and lockstep rooms, the slow link and a room handed
+  to the second node. Until now CI built the extension and never loaded it.
 - `ci.yml`: the node of the `console` job reaches Redis through a Toxiproxy service, and a browser
   spec switches it off to check what the overview, the rooms page and a project page show without
   Redis. The spec is skipped on a stand without `AURIX_NET_E2E_TOXIPROXY`; with `NET_LIVE_REQUIRED`
   set, as in this job, it fails there.
+- `ci.yml`: the `console` job starts two nodes (`scripts/two-nodes.sh`), so the spec that drains
+  another node runs in CI; it was skipped there. It too fails under `NET_LIVE_REQUIRED` on a stand
+  without `AURIX_NET_E2E_PEER`.
 - `release.yml`: the Web npm tarball is packed to the workspace root, so it sits beside the other
   SDK files in the `sdk` artifact, and the image job no longer uploads Docker build records. The
   0.1.0 run stopped at the checksum step on the `sdk/` folder; its GitHub Release was created by

@@ -13,6 +13,11 @@ using UnityEngine;
 
 class P
 {
+    // NET_LIVE_REQUIRED: a part that cannot run fails the check instead of being skipped
+    static readonly bool Required = Environment.GetEnvironmentVariable("NET_LIVE_REQUIRED") != null;
+
+    static bool Skip(string what) { Console.WriteLine(what); return !Required; }
+
     static async Task<string> Grant(HttpClient h, string key, string pid)
     {
         var req = new HttpRequestMessage(HttpMethod.Post, "http://127.0.0.1:8090/v1/grants");
@@ -122,7 +127,7 @@ class P
             Console.WriteLine($"lossy link: {arrived} of {rounds} single writes arrived -> {(tailOk ? "ok" : "FAIL")}");
             await oc.LeaveAsync(); oc.Dispose();
         }
-        else Console.WriteLine("lossy link: skipped (NET_LOSSY_HTTP not set)");
+        else tailOk = Skip("lossy link: skipped (NET_LOSSY_HTTP not set)");
         await oa.LeaveAsync(); await ob.LeaveAsync(); oa.Dispose(); ob.Dispose();
         // lockstep: A (master) and B confirm identical input streams, C joins late and catches up contiguously
         var lsRoom = "cs-ls-" + room; var clients = new List<ManagedClient>(); var ls = new List<LockstepClient>(); var journals = new List<List<string>>(); var seenTicks = new List<HashSet<uint>>();
@@ -232,7 +237,7 @@ class P
             Console.WriteLine($"slow link, two lookups in flight: first={(ManagedClientTestHooks.Str(list, "t") ?? list)}, second={refusal ?? "answered"} -> {(toldApart ? "ok" : "FAIL")}");
             sf.Dispose(); sg.Dispose();
         }
-        else Console.WriteLine("slow link: skipped (NET_SLOW_HTTP not set)");
+        else rejoined = Skip("slow link: skipped (NET_SLOW_HTTP not set)");
         // a node whose hello does not list the unsequenced channel (NET_PLAIN_HTTP, see README): events for
         // that channel go on the sequenced one, from the managed client and from the one over the native core
         bool fellBack = true; var plain = Environment.GetEnvironmentVariable("NET_PLAIN_HTTP");
@@ -269,10 +274,10 @@ class P
             }
             catch (DllNotFoundException) { viaCore = viaCoreDirect = "skipped (libaurix_net is not on the library path)"; }
             Console.WriteLine($"node without the unsequenced channel: managed={viaManaged}, native core={viaCore}; native core, node with it={viaCoreDirect}");
-            fellBack = viaManaged == "10/10 on channel 0" && (viaCore.StartsWith("skipped") || (viaCore == "10/10 on channel 0" && viaCoreDirect == "10/10 on channel 4"));
+            fellBack = viaManaged == "10/10 on channel 0" && ((viaCore.StartsWith("skipped") && !Required) || (viaCore == "10/10 on channel 0" && viaCoreDirect == "10/10 on channel 4"));
             listener.Dispose();
         }
-        else Console.WriteLine("node without the unsequenced channel: skipped (NET_PLAIN_HTTP not set)");
+        else fellBack = Skip("node without the unsequenced channel: skipped (NET_PLAIN_HTTP not set)");
         // a control channel that closes on `auth` (NET_CUT_HTTP, see README): ConnectAsync fails as it closes, not at its timeout
         bool failedFast = true; var cut = Environment.GetEnvironmentVariable("NET_CUT_HTTP");
         if (cut != null)
@@ -283,8 +288,9 @@ class P
             failedFast = failure == "control channel closed" && clock.ElapsedMilliseconds < 5000;
             Console.WriteLine($"closed control channel: connect failed after {clock.ElapsedMilliseconds} ms: {failure} -> {(failedFast ? "ok" : "FAIL")}");
         }
-        else Console.WriteLine("closed control channel: skipped (NET_CUT_HTTP not set)");
-        // NetRunner over the slow link: what the owner writes every tick reaches the room in time
+        else failedFast = Skip("closed control channel: skipped (NET_CUT_HTTP not set)");
+        // NetRunner over the slow link: every frame the owner sends reaches the room, the last move among them,
+        // and it sends one a tick: the moves are a step of the stub's clock apart, so `moves * step * TickHz` of them
         bool runnerOk = true;
         if (slow != null)
         {
@@ -307,15 +313,19 @@ class P
             };
             var update = typeof(NetRunner).GetMethod("Update", BindingFlags.Instance | BindingFlags.NonPublic);
             var lateUpdate = typeof(NetRunner).GetMethod("LateUpdate", BindingFlags.Instance | BindingFlags.NonPublic);
-            int moves = 0;
+            int moves = 0; var written = new HashSet<int>(); uint last = runner.LastInputTick;
             for (int step = 0; step < 420; step++)
             {
                 if (step >= 120 && step < 360 && mine != null) mine.Position = new Vector3(++moves, 1, -2);
                 update.Invoke(runner, null); lateUpdate.Invoke(runner, null);
+                if (runner.LastInputTick != last) { last = runner.LastInputTick; if (moves > 0) written.Add(moves); }
                 watcher.Flush(); watcher.Poll(); await Task.Delay(16);
             }
-            Console.WriteLine($"slow link, NetRunner: owner moves that reached the room={reached.Count}/{moves}");
-            runnerOk = moves > 0 && reached.Count >= moves * 3 / 4; runner.Client.Dispose(); watcher.Dispose();
+            reached.Remove(0);
+            double ticks = Math.Min(moves, moves * Time.unscaledDeltaTime * runner.Settings.TickHz);
+            Console.WriteLine($"slow link, NetRunner: owner moves={moves}, sent={written.Count} (ticks in that time={ticks:F1}), reached the room={reached.Count}");
+            runnerOk = moves > 0 && Math.Abs(written.Count - ticks) <= 1 && reached.Contains(moves) && reached.SetEquals(written);
+            runner.Client.Dispose(); watcher.Dispose();
         }
         bool ok = lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && failedFast && runnerOk;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");

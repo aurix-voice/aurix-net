@@ -59,6 +59,7 @@ int main() {
         rejoined = errors == 0 && second == 5;
     } else {
         std::printf("cpp slow link: skipped (NET_SLOW_HTTP not set)\n");
+        rejoined = !std::getenv("NET_LIVE_REQUIRED");
     }
     a.leave(); return (hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && refused && rejoined) ? 0 : 1;
 }

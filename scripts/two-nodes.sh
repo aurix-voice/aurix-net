@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Two local nodes sharing the dev Postgres/Redis (deploy/docker-compose.dev.yml):
 #   A: http 8090, quic 7000, webtransport 7443     B: http 8091, quic 7001, webtransport 7444
-# Usage: scripts/two-nodes.sh start|stop   (binaries from `cargo build --release`)
+# Usage: scripts/two-nodes.sh start|stop   (binary from `cargo build --release`, or the one BIN names)
 set -euo pipefail
-BIN="$(dirname "$0")/../target/release/aurix-net-server"
+BIN="${BIN:-$(dirname "$0")/../target/release/aurix-net-server}"
 export NET__AUTH__ADMIN_TOKEN="${NET__AUTH__ADMIN_TOKEN:-dev-admin}" NET__SERVER__HEARTBEAT_SECS="${HEARTBEAT:-3}" RUST_LOG="${RUST_LOG:-info}"
 case "${1:-start}" in
   start)

@@ -73,6 +73,11 @@ jobs:
             target/wasm32-unknown-unknown/release/net_sim_wasm.wasm
             target/release/libnet_sim_wasm.so
             target/debug/aurix-net-server
+            target/release/libaurix_net.so
+            target/wasm32-unknown-unknown/release/net_sim_guest.wasm
+      - name: Godot extension for the sdk-live job
+        uses: actions/upload-artifact@v7
+        with: { name: godot-extension, path: sdk/godot/bin, retention-days: 1, if-no-files-found: error }
 
   supply-chain:
     runs-on: ubuntu-24.04
@@ -122,6 +127,101 @@ jobs:
       - run: dotnet run -c Release --project "sdk/unity/BuildCheck~/transports-check/transports-check.csproj"   # PurrNet/Mirror/FishNet transports against interface stubs; live part skips without NET_API_KEY
       - run: dotnet run -c Release --project "sdk/unity/BuildCheck~/framework-check/framework-check.csproj"   # gameplay framework (NetworkManager/SyncVar/RPC); live part skips without NET_API_KEY
 
+  sdk-live:
+    runs-on: ubuntu-24.04
+    needs: rust
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: aurix, POSTGRES_PASSWORD: aurix, POSTGRES_DB: aurix_net }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U aurix" --health-interval 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+    env:
+      NET__DATABASE__URL: postgres://aurix:aurix@127.0.0.1:5432/aurix_net
+      NET__REDIS__URL: redis://127.0.0.1:6379/
+      NET__AUTH__ADMIN_TOKEN: ci-operator-token
+      NET__AUTH__GRANT_SECRET: ci-grant-secret-ci-grant-secret-ci-grant
+      NET_HTTP: http://127.0.0.1:8090
+      NET_SLOW_HTTP: http://127.0.0.1:8197
+      NET_LOSSY_HTTP: http://127.0.0.1:8198
+      NET_PLAIN_HTTP: http://127.0.0.1:8199
+      NET_CUT_HTTP: http://127.0.0.1:8202
+      NET_LIVE_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with: { name: sim-and-server, path: target }
+      - uses: actions/setup-node@v7
+        with: { node-version: 22 }
+      - uses: actions/setup-dotnet@v6
+        with: { dotnet-version: 8.0.x }
+      - name: start a node
+        run: |
+          chmod +x target/debug/aurix-net-server
+          target/debug/aurix-net-server --migrate-only
+          nohup target/debug/aurix-net-server > /tmp/node.log 2>&1 &
+          echo $! > /tmp/node.pid
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8090/healthz && break; sleep 1; done
+          curl -fs http://127.0.0.1:8090/healthz
+      - name: project key and game module
+        run: |
+          key=$(curl -fs -X POST -H "Authorization: Bearer $NET__AUTH__ADMIN_TOKEN" -H 'content-type: application/json' \
+            -d '{"name":"sdk-live"}' http://127.0.0.1:8090/v1/operator/projects | jq -r .key.key)
+          echo "::add-mask::$key"
+          echo "NET_API_KEY=$key" >> "$GITHUB_ENV"
+          curl -fs -X PUT -H "Authorization: Bearer $key" -H 'content-type: application/wasm' \
+            --data-binary @target/wasm32-unknown-unknown/release/net_sim_guest.wasm http://127.0.0.1:8090/v1/modules/physics-arena
+      - name: proxies in front of the node (sdk/cpp/README.md)
+        working-directory: sdk/web
+        run: |
+          npm ci
+          npm run build
+          nohup node test/slow-link.mjs 100 8197 > /tmp/slow-link.log 2>&1 &
+          nohup node test/slow-link.mjs 0 8198 10 70 > /tmp/lossy-link.log 2>&1 &
+          nohup node test/slow-link.mjs 0 8199 plain > /tmp/plain-link.log 2>&1 &
+          nohup node test/slow-link.mjs 0 8202 cut auth > /tmp/cut-link.log 2>&1 &
+      - name: Web SDK
+        working-directory: sdk/web
+        run: npm test
+        env:
+          NET_LOGIC: physics-arena
+          NET_LOGIC_PROPS: '{"schema":"component Transform {\n pos: vec3 @range(-4096, 4096, 0.01)\n speed: f32\n}","position":"Transform.0"}'
+      - name: C# SDK
+        run: |
+          export LD_LIBRARY_PATH=$PWD/target/release
+          dotnet run -c Release --project "sdk/unity/BuildCheck~/managed-live/managed-live.csproj"
+          dotnet run -c Release --project "sdk/unity/BuildCheck~/framework-check/framework-check.csproj"
+          dotnet run -c Release --project "sdk/unity/BuildCheck~/transports-check/transports-check.csproj"
+      - name: C++ and C SDK
+        run: |
+          for t in echo_test sync_test lockstep_test; do
+            g++ -std=c++17 sdk/cpp/$t.cpp -Isdk/cpp -Ltarget/release -laurix_net -Wl,-rpath,$PWD/target/release -o /tmp/$t
+            /tmp/$t
+          done
+          gcc -std=c11 -Wall -Wextra -Werror crates/net-ffi/ctest/echo.c -Ltarget/release -laurix_net -Wl,-rpath,$PWD/target/release -o /tmp/c-echo
+          /tmp/c-echo
+      - name: room handed from one node to another (scripts/sdk-rehost-test.sh)
+        run: |
+          kill "$(cat /tmp/node.pid)"
+          tail --pid="$(cat /tmp/node.pid)" -f /dev/null
+          dotnet build -c Release "sdk/unity/BuildCheck~/managed-rehost/managed-rehost.csproj"
+          BIN=target/debug/aurix-net-server scripts/sdk-rehost-test.sh
+      - uses: actions/download-artifact@v8
+        with: { name: godot-extension, path: sdk/godot/bin }
+      # the engine the way godot-cpp's own CI gets it: the release archive, run headless
+      - name: Godot SDK (scripts/godot-live-test.sh)
+        env: { GODOT_VERSION: 4.2.2-stable }
+        run: |
+          wget -q "https://github.com/godotengine/godot-builds/releases/download/$GODOT_VERSION/Godot_v${GODOT_VERSION}_linux.x86_64.zip" -O /tmp/godot.zip
+          unzip -q /tmp/godot.zip -d /tmp
+          GODOT="/tmp/Godot_v${GODOT_VERSION}_linux.x86_64" BIN=target/debug/aurix-net-server scripts/godot-live-test.sh
+      - name: node logs
+        if: failure()
+        run: tail -n 200 /tmp/node.log /tmp/aurix-net-A.log /tmp/aurix-net-B.log
+
   console:
     runs-on: ubuntu-24.04
     needs: rust
@@ -154,25 +254,26 @@ jobs:
       - run: npm run build
       - uses: actions/download-artifact@v8
         with: { name: sim-and-server, path: target }  # relative to the workspace, not to working-directory
-      - name: start a node for the live e2e suite
+      - name: start two nodes for the live e2e suite
         run: |
           curl -fs -d '{"name":"redis","listen":"0.0.0.0:26379","upstream":"redis:6379"}' http://127.0.0.1:8474/proxies
           chmod +x ../target/debug/aurix-net-server
           ../target/debug/aurix-net-server --migrate-only
-          nohup ../target/debug/aurix-net-server > /tmp/node.log 2>&1 &
-          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8090/healthz && break; sleep 1; done
+          BIN=../target/debug/aurix-net-server ../scripts/two-nodes.sh start
           curl -fs http://127.0.0.1:8090/healthz
+          curl -fs http://127.0.0.1:8091/healthz
       - run: for i in 1 2 3 4 5; do npx playwright install --with-deps chromium && break; sleep 20; done
       - run: npm run e2e
         env:
           CI: "1"
           NET_API_URL: http://127.0.0.1:8090
           AURIX_NET_E2E_TOKEN: ci-operator-token
+          AURIX_NET_E2E_PEER: http://127.0.0.1:8091
           AURIX_NET_E2E_TOXIPROXY: http://127.0.0.1:8474
           NET_LIVE_REQUIRED: "1"
-      - name: node log
+      - name: node logs
         if: failure()
-        run: tail -n 200 /tmp/node.log
+        run: tail -n 200 /tmp/aurix-net-A.log /tmp/aurix-net-B.log
       - uses: actions/upload-artifact@v7
         if: failure()
         with: { name: playwright-report, path: dashboard/playwright-report, retention-days: 7 }

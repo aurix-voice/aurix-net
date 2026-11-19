@@ -4,10 +4,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Client, LockstepClient, Channel } from "../dist/index.js";
 import WebSocket from "ws";
+import { key } from "./live.mjs";
 if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
 
 const http = process.env.NET_HTTP ?? "http://127.0.0.1:8090";
-const key = process.env.NET_API_KEY;
 const hdr = { authorization: `Bearer ${key}`, "content-type": "application/json" };
 async function grant(player) {
   const r = await fetch(`${http}/v1/grants`, { method: "POST", headers: hdr, body: JSON.stringify({ player_id: player, name: player, scopes: ["join", "create"] }) });

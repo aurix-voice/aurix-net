@@ -159,7 +159,7 @@ static class Program
         Console.WriteLine("RPC methods woven: " + Player.Woven);
         Console.WriteLine("FRAMEWORK COMPILE OK: " + string.Join(", ", new[] { typeof(NetworkManager), typeof(NetworkIdentity), typeof(NetworkBehaviour), typeof(SyncVar<>), typeof(SyncList<>), typeof(SyncDictionary<,>) }.Select(t => t.Name)));
         var key = Environment.GetEnvironmentVariable("NET_API_KEY");
-        if (string.IsNullOrEmpty(key)) { Console.WriteLine("NET_API_KEY unset: live test skipped"); return 0; }
+        if (string.IsNullOrEmpty(key)) { Console.WriteLine("NET_API_KEY unset: live test skipped"); return Environment.GetEnvironmentVariable("NET_LIVE_REQUIRED") == null ? 0 : 1; }
         var h = new HttpClient(); var room = "fw-" + DateTime.UtcNow.Ticks;
         NetworkManager Make(string pid) { var m = new NetworkManager { roomName = room, GrantProvider = () => Grant(h, key, "fw-" + pid), factory = new TestFactory(), tickRate = 30 }; return m; }
         var host = Make("host"); var c1 = Make("c1"); var c2 = Make("c2");
@@ -619,7 +619,7 @@ static class Program
             Check(sx > 5f && Math.Abs(sx - cx) < 0.05f && missed < 10, $"slow link (ping {cW.statistics.ping} ms): the server applies the owner's inputs (server x={sx:0.##}, owner x={cx:0.##}, missed inputs={missed})");
             hostW.Stop(); cW.Stop(); await Pump(300, hostW, cW);
         }
-        else Console.WriteLine("  skip slow link (NET_SLOW_HTTP not set)");
+        else Check(Environment.GetEnvironmentVariable("NET_LIVE_REQUIRED") == null, "slow link skipped (NET_SLOW_HTTP not set)");
 
         // PlayerSpawner: one Mover per player (host included), owned by that player, gone when they leave
         {

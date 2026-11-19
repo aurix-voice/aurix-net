@@ -7,7 +7,8 @@ import { defineConfig, devices } from "@playwright/test";
 //   NET_API_URL                  node the dev server proxies to (default http://127.0.0.1:8090)
 //   AURIX_NET_E2E_TOKEN          operator token of that node (`auth.admin_token`)
 //   AURIX_NET_E2E_PEER           `http_url` of a second node of the same fleet; the spec that
-//                                drains another node is skipped without it
+//                                drains another node is skipped without it, and fails without
+//                                it when NET_LIVE_REQUIRED is set
 //   AURIX_NET_E2E_TOXIPROXY      API address of a Toxiproxy whose proxy `redis` is the node's way
 //                                to Redis; the spec that takes Redis away is skipped without it,
 //                                and fails without it when NET_LIVE_REQUIRED is set
