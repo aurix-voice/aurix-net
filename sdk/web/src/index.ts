@@ -164,6 +164,7 @@ export class Client {
   private onReady?: () => void;
   private failReady?: (error: Error) => void;
   private isLost = false;
+  private ended?: Error;
   /** The leave that waits for the node's acknowledgements, and what tells it of a change. */
   private leaving?: Promise<void>;
   private acknowledged?: (late?: boolean) => void;
@@ -405,6 +406,9 @@ export class Client {
     fail?: (message: ControlMessage) => boolean,
     timeoutMs = 10000,
   ): Promise<T> {
+    if (this.ended) {
+      return Promise.reject(this.ended);
+    }
     return new Promise((res, rej) => {
       const timer = setTimeout(() => rej(new Error("timeout")), timeoutMs);
       this.waiters.push({
@@ -949,13 +953,14 @@ export class Client {
       this.emit("undelivered", events);
     }
   }
-  /** No answer can come any more: the calls waiting for one fail now, not at their timeout. */
+  /** No answer can come any more: the calls waiting for one fail now, not at their timeout, and so
+   *  does every call made later. */
   private controlClosed() {
     clearInterval(this.keepalive);
     this.lost("control channel closed");
-    const error = new Error("control channel closed");
+    this.ended = new Error("control channel closed");
     for (const waiter of this.waiters.splice(0)) {
-      waiter.fail(error);
+      waiter.fail(this.ended);
     }
   }
   private stop() {

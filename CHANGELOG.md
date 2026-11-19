@@ -194,6 +194,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Web: a call made after the control channel closed waited its whole timeout, 10 s, and failed
+  with `timeout`. It now fails at once with `control channel closed`, as the calls that were
+  waiting when the channel closed already did.
 - Chat: a text over the limit was cut without a word, and not the same way: Web and C# kept
   2000 UTF-16 units and could leave half an emoji at the end, C++ kept 2000 bytes, 1000
   Cyrillic letters, and could leave half a letter. The limit is now 2000 Unicode characters in

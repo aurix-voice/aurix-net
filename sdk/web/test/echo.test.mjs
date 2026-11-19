@@ -363,6 +363,17 @@ test("a late joiner gets the cached events and the chat history", { skip: !key }
   }
 });
 
+test("a call made after the control channel closed fails at once, not at its timeout", { skip: !key }, async (t) => {
+  const a = await Client.connect(http, await grant("web-ended-a"));
+  t.after(() => a.close());
+  // the node closes the control channel on a message this large
+  await assert.rejects(a.joinOrCreate(`web-ended-${process.pid}`, "relay", 4, { blob: "x".repeat(100_000) }), /control channel closed/);
+  const start = Date.now();
+  await assert.rejects(a.lobbyStats(), /control channel closed/);
+  await assert.rejects(a.joinOrCreate(`web-ended-2-${process.pid}`, "relay", 4), /control channel closed/);
+  assert.ok(Date.now() - start < 1000);
+});
+
 test("the longest chat text reaches the room whole, a longer one is refused", { skip: !key }, async (t) => {
   const a = await Client.connect(http, await grant("web-text-a"));
   const b = await Client.connect(http, await grant("web-text-b"));
