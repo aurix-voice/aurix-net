@@ -90,26 +90,40 @@ test("owner ops encode as the node parses them (0xFF marker, u48 entity, u16 act
   assert.equal(hex(w.encodeOps([{ op: "write", entity: 2, writes }])), "ff0100000000000002" + hex(w.encodeWrites(writes)));
 });
 
-test("an input is resent only under the tick it was stamped with", () => {
-  const frames = [];
-  const client = { rttMs: 0, on() {}, ping() {}, sendData(channel, payload) { frames.push({ first: new DataView(payload.buffer, payload.byteOffset).getUint32(1), count: payload[5] }); } };
+const emptyDelta = (tick) => Uint8Array.of(0x11, 0, 0, tick >>> 8, tick & 255, 0, 0, 0, 0, 0, 0, 0, 0);
+// a session over a client that records the input frames sent through it
+function recordedSession() {
+  const frames = []; const handlers = {};
+  const client = { rttMs: 0, on(name, handler) { handlers[name] = handler; }, ping() {}, sendData(channel, payload) { if (payload[0] === 0x10) frames.push({ first: new DataView(payload.buffer, payload.byteOffset).getUint32(1), count: payload[5] }); } };
   const session = new SyncSession(client, "component T {\n  x: f32\n}\n", 60, 2);
-  session.world.serverTick = 10;
+  return { session, frames, delta: (tick) => handlers.data(0, 0, emptyDelta(tick)), data: (payload) => handlers.data(0, 0, payload) };
+}
+
+test("an input is resent only under the tick it was stamped with", () => {
+  const { session, frames, delta } = recordedSession();
+  delta(10);
   assert.equal(session.spawn(), 12);
   assert.equal(session.sendInput(new Uint8Array([1])), 13);
-  session.world.serverTick = 14;
+  delta(14);
   assert.equal(session.sendInput(new Uint8Array([2])), 16);
   // tick 13 follows 12, so the spawn rides along; tick 16 does not follow 13, so nothing is carried over
   assert.deepEqual(frames, [{ first: 12, count: 1 }, { first: 12, count: 2 }, { first: 16, count: 1 }]);
 });
 
+test("an op sent before the first delta waits for the room's tick", () => {
+  const { session, frames, delta } = recordedSession();
+  session.spawn();
+  session.sendInput(new Uint8Array([1]));
+  assert.deepEqual(frames, []);
+  delta(10);
+  assert.deepEqual(frames, [{ first: 12, count: 1 }, { first: 12, count: 2 }]);
+});
+
 test("a late margin report from the room moves the next inputs further ahead", () => {
-  const handlers = {};
-  const client = { rttMs: 0, on(name, handler) { handlers[name] = handler; }, ping() {}, sendData() {} };
-  const session = new SyncSession(client, "component T {\n  x: f32\n}\n", 60, 2);
-  session.world.serverTick = 10;
+  const { session, delta, data } = recordedSession();
+  delta(10);
   assert.equal(session.sendInput(new Uint8Array([1])), 12);
-  handlers.data(0, 0, Uint8Array.of(0x25, 0, 0, 0, 30, 0xfb, 2)); // the worst input was 5 ticks late
-  session.world.serverTick = 20;
+  data(Uint8Array.of(0x25, 0, 0, 0, 30, 0xfb, 2)); // the worst input was 5 ticks late
+  delta(20);
   assert.equal(session.sendInput(new Uint8Array([2])), 28, "two ticks, plus the lateness, plus one");
 });

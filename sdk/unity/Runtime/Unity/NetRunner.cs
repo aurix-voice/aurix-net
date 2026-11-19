@@ -75,6 +75,7 @@ namespace Aurix.Net.Unity
         int _leadAdjust;
         float _tickTimer;
         float _lastDeltaTime;
+        bool _synced;
         byte[] _heldInput;
 
         void Awake()
@@ -204,6 +205,7 @@ namespace Aurix.Net.Unity
         void AfterJoin()
         {
             _lastInputTick = 0;
+            _synced = false;
             _recentInputs.Clear();
             _heldInput = null; // input ticks belong to the room just left
             if (Mode == RoomMode.Sync)
@@ -257,6 +259,7 @@ namespace Aurix.Net.Unity
                 Client.SendData(Channel.Unreliable, ack);
                 RenderTick = Mathf.Max(RenderTick, World.ServerTick - Settings.InterpolationTicks);
                 _lastDeltaTime = Time.unscaledTime;
+                _synced = true;
             }
         }
 
@@ -453,10 +456,11 @@ namespace Aurix.Net.Unity
             return SendHeldInput() ? _lastInputTick : _lastInputTick + 1;
         }
 
-        // An input stamped far ahead of the room is applied that much later, so it waits for the room instead.
+        // An input stamped far ahead of the room is applied that much later, so it waits for the room instead,
+        // and for the first delta, which tells the room's tick.
         bool SendHeldInput()
         {
-            if (_heldInput == null)
+            if (_heldInput == null || !_synced)
             {
                 return false;
             }

@@ -11,6 +11,7 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - Sync: the room reports to each client how early or late its inputs arrive, with the frame
   lockstep rooms already send (`0x25`: tick, least margin in ticks, late frames; every 30 ticks
   to a client that sent input). A client had only its ping to guess the lead from and was told
+  nothing when its inputs came late. Clients that ignore the frame work as before.
 - C ABI: `aurix_net_last_error_code()` says why the last failed call failed as one of the
   `AURIX_NET_ERR_*` constants of `aurix_net.h` (bad argument, HTTP, connection, data path,
   disconnected, timeout, protocol, and the node's refusals: unauthorized, not found, room full,
@@ -18,6 +19,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   room from a missing one was to search the error text. The C++ wrapper carries the value in
   `aurix::net::Error::code`, the Godot nodes return it from `get_last_error_code()`
   (`AurixNetClient.ERROR_*`).
+- Metrics: `net_sync_late_inputs_total` counts the input frames that reach a `sync` room with
+  every input in them for a tick it has already simulated. They left no trace.
 - Rust client: `Joined` has the lockstep room's `seed`. The node sent it in `joined`, the client
   dropped it, so a game on the Rust client could not start from the state the node starts from.
 
@@ -49,6 +52,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Sync: an input that reached the room after its tick was simulated was dropped, and its ops
+  with it: a spawn sent right after a short stall of the client never happened. Such an input
+  runs on the room's current tick now, once and in the order sent.
 - Console: a chart covering one to two days labelled its time axis with the time alone, so the
   same hour appeared twice with no date; the labels carry the date now (`Nov 17, 04:00 PM`).
 - Limits: a refused value did not say which limit it belonged to (``invalid value: integer
@@ -136,6 +142,13 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   restored and the room saw a desync at every hash, 30 in 12 s; now it is restored at the
   first one. A late joiner whose `Catchup` comes 400 ms after its first bundles still gets
   every tick once, 3 runs of 3.
+- SDKs, sync: an input sent before the client's first delta was stamped from tick 0, so a room
+  that was already running refused it as late and a spawn, despawn or hand-off in it was lost
+  for good. The Rust, Web and Unity `NetRunner` clients now hold their inputs until the first
+  delta. Web under CPU load, a spawn as the client's first input: lost in 4 runs of 40, now 0
+  of 40; C++: 4 of 30, now 0 of 20. The refused input also raised the input lead to its limit:
+  a Web client that wrote from the moment it joined a room 3 s old had its inputs applied a
+  second late for 2.5 s; now they stay 3 to 5 ticks ahead.
 - Unity `LockstepDuel` sample: the state hash went out under the number of the next tick, not
   of the tick it was computed after, which is the rule `docs/sdk.md` gives and the other
   clients follow, so the sample and a client of another SDK reported one state under two

@@ -39,6 +39,8 @@ struct State {
     frame: Frame,
     acks: AckTracker,
     server_tick: u32,
+    /// A delta has arrived, so `server_tick` is the room's.
+    synced: bool,
     last_input_tick: u32,
     margin: MarginControl,
     /// Ticks the margin reports have added to the lead (negative: taken off it).
@@ -81,6 +83,7 @@ pub unsafe extern "C" fn aurix_net_sync_new(schema: *const c_char) -> *mut Aurix
             frame: Frame::new(schema, FrameConfig::default(), 1),
             acks: AckTracker::default(),
             server_tick: 0,
+            synced: false,
             last_input_tick: 0,
             margin: MarginControl::default(),
             lead_adjust: 0,
@@ -133,6 +136,7 @@ pub unsafe extern "C" fn aurix_net_sync_receive(
         }
     };
     st.server_tick = report.tick.0;
+    st.synced = true;
     st.acks.on_delta(report.tick.0, report.baseline);
     for id in &report.despawned {
         st.events.push_back(AurixNetSyncEvent {
@@ -434,7 +438,8 @@ const MAX_LEAD_TICKS: u32 = 60;
 
 /// The room takes one input per tick, drops an input whose tick it has already simulated and
 /// applies one stamped far ahead that much later. So an input is stamped ahead of the last delta
-/// by the round trip plus two ticks, and no further; the rest waits in `held` for the next delta.
+/// by the round trip plus two ticks, and no further; the rest waits in `held` for the next delta,
+/// and everything waits for the first one, which tells the room's tick.
 unsafe fn send_input_inner(
     st: &mut State,
     client: *mut AurixNetClient,
@@ -455,6 +460,9 @@ unsafe fn pump(st: &mut State, client: *mut AurixNetClient) -> i32 {
     let Some(client) = client.as_ref() else {
         return -1;
     };
+    if !st.synced {
+        return 0;
+    }
     let estimate = {
         let inner = client.inner.lock();
         let tick_hz = inner.joined.as_ref().and_then(|joined| joined.tick_hz);

@@ -885,6 +885,7 @@ export class SyncSession {
   private lastInputTick = 0;
   private recent: Uint8Array[] = [];
   private lastDeltaAt = 0;
+  private synced = false;
   private held: { body: Uint8Array; keep: boolean }[] = [];
   private lastPingAt = 0;
   private readonly margin = new MarginControl();
@@ -917,6 +918,7 @@ export class SyncSession {
           this.world.serverTick - this.interpolationTicks,
         );
         this.lastDeltaAt = performance.now();
+        this.synced = true;
         if (this.lastDeltaAt - this.lastPingAt >= 1000) {
           this.ping();
         }
@@ -951,7 +953,8 @@ export class SyncSession {
   }
   // The room drops an input whose tick it has already simulated and applies one stamped far ahead that much
   // later. So an input is stamped ahead of the last delta by the round trip plus two ticks, and no further:
-  // the rest waits for the next delta. Waiting writes and raw inputs are replaced by newer ones, ops are kept.
+  // the rest waits for the next delta, and everything waits for the first one, which tells the room's tick.
+  // Waiting writes and raw inputs are replaced by newer ones, ops are kept.
   private queue(body: Uint8Array, keep: boolean): number {
     const tail = this.held[this.held.length - 1];
     if (tail && !tail.keep && !keep) {
@@ -963,6 +966,9 @@ export class SyncSession {
     return this.lastInputTick + this.held.length;
   }
   private pump(): void {
+    if (!this.synced) {
+      return;
+    }
     // the round trip gives the first guess; the room's margin reports correct it
     const estimate =
       2 +

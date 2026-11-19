@@ -22,6 +22,8 @@ int main() {
     int tr = sa.component("Transform"), pos = sa.field(tr, "pos"), rot = sa.field(tr, "rot");
     a.onData = [&](Channel, uint16_t, const uint8_t* d, size_t n) { sa.receive(a, d, n); };
     b.onData = [&](Channel, uint16_t, const uint8_t* d, size_t n) { sb.receive(b, d, n); };
+    // sent before the first delta: it has to wait for the room's tick
+    sa.spawn(a);
     float x = 0; int updates = 0; float last[4] = {0, 0, 0, 0};
     for (int i = 0; i < 90; i++) {
         x += 0.5f; float p[3] = {x, 1, -2}, q[4] = {0, 0, 0, 1};
@@ -40,7 +42,7 @@ int main() {
     }
     int own = 0; uint64_t id; int owner;
     for (int i = 0; sa.entityAt(i, id, owner); i++) if (owner == actorA) own++;
-    bool ok = sb.serverTick() > 30 && sb.gaps() == 0 && updates >= 20 && std::fabs(last[0] - x) < 3 && std::fabs(last[1] - 1) < 0.02 && std::fabs(last[2] + 2) < 0.02 && own == 1
+    bool ok = sb.serverTick() > 30 && sb.gaps() == 0 && updates >= 20 && std::fabs(last[0] - x) < 3 && std::fabs(last[1] - 1) < 0.02 && std::fabs(last[2] + 2) < 0.02 && own == 2
               && sb.renderTick() > 0 && sb.renderTick() <= sb.serverTick();
     std::printf("cpp sync: serverTick=%u gaps=%llu updates=%d last=(%.2f %.2f %.2f) x=%.1f own=%d renderTick=%.1f -> %s\n", sb.serverTick(), (unsigned long long)sb.gaps(), updates, last[0], last[1], last[2], x, own, sb.renderTick(), ok ? "ok" : "FAIL");
     a.leave(); b.leave(); return ok ? 0 : 1;

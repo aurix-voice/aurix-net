@@ -1,5 +1,5 @@
-//! Inputs a `sync` room drops for arriving behind its tick show up in the node's metrics and in
-//! the report the room sends their sender.
+//! Inputs that reach a `sync` room behind its tick show up in the node's metrics and in the
+//! report the room sends their sender, and still run.
 
 mod common;
 
@@ -7,7 +7,10 @@ use bytes::{BufMut, Bytes, BytesMut};
 use common::Node;
 use net_client::{Client, Event, Options};
 use net_common::Channel;
+use net_replication::Replicator;
 use net_rooms::protocol::ClientMsg;
+use net_sim::{Frame, FrameConfig};
+use net_wire::Schema;
 use serde_json::json;
 use std::time::{Duration, Instant};
 
@@ -121,4 +124,66 @@ async fn sender_of_late_inputs_is_told_how_late_they_are() {
         assert!(margin < 0 && late > 0, "margin {margin}, late {late}");
     }
     assert_eq!(input_reports(bob), [], "bob sent no input");
+}
+
+const POSE_SCHEMA: &str = "component Pose {\n    pos: vec3 @range(-512, 512, 0.01)\n}\n";
+
+/// One input frame (`0x10`) for `tick` whose input is a single spawn op.
+fn spawn_frame(tick: u32) -> Bytes {
+    let mut frame = BytesMut::new();
+    frame.put_u8(0x10);
+    frame.put_u32(tick);
+    frame.put_u8(1);
+    frame.put_u8(4);
+    frame.put_slice(&[0xFF, 1, 1, 0]);
+    frame.freeze()
+}
+
+/// Applies the deltas `client` has received to `world` and returns how many entities it holds.
+fn entities(client: &mut Client, world: &mut Frame) -> usize {
+    while let Some(event) = client.try_next_event() {
+        if let Event::Data { payload, .. } = event {
+            if payload.first() == Some(&0x11) {
+                Replicator::apply(world, &payload[1..]).expect("delta");
+            }
+        }
+    }
+    world.entities().count()
+}
+
+#[tokio::test]
+async fn spawn_sent_for_a_tick_already_simulated_happens_once() {
+    let node = Node::start().await;
+    let project = node.project("late-spawn").await;
+    let opts = Options {
+        tunnel: true,
+        ..Default::default()
+    };
+    let mut ann = Client::connect(&node.http, &project.grant("ann").await, opts)
+        .await
+        .expect("ann connects");
+    let props = json!({"tick_hz": 30, "schema": POSE_SCHEMA});
+    let create = json!({"t": "create", "name": "arena", "mode": "sync", "props": props});
+    ann.join(serde_json::from_value(create).expect("client message"))
+        .await
+        .expect("ann creates");
+    let config = FrameConfig {
+        tick_hz: 30,
+        ..Default::default()
+    };
+    let mut world = Frame::new(Schema::parse(POSE_SCHEMA).expect("schema"), config, 0);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(entities(&mut ann, &mut world), 1, "the avatar");
+
+    // Five ticks behind the room, as after a stall of the client; sent twice, as a client
+    // repeats its last inputs.
+    let behind = world.tick.0 - 5;
+    for _ in 0..2 {
+        ann.send_data(Channel::UnreliableSequenced, spawn_frame(behind))
+            .expect("ann sends");
+        ann.flush();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(entities(&mut ann, &mut world), 2);
 }

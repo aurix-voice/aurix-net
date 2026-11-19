@@ -409,6 +409,10 @@ pub struct SyncRoom {
     pub late_inputs: u64,
     /// Per actor since the last report: (min input margin in ticks, late input frames).
     margins: HashMap<ActorId, (i32, u16)>,
+    /// Newest input taken from each actor: (tick it was sent for, tick it runs on). An input for
+    /// a tick already simulated runs on the current tick instead, so its ops are not lost: once,
+    /// in the order sent, one such input a tick; the repeats in later frames bring the rest.
+    taken: HashMap<ActorId, (u32, u32)>,
     pub resyncs: u64,
     /// Watch-only actors: a view of the whole world, no avatar, inputs ignored.
     spectators: HashSet<ActorId>,
@@ -510,6 +514,7 @@ impl SyncRoom {
             invalid_inputs: 0,
             late_inputs: 0,
             margins: HashMap::new(),
+            taken: HashMap::new(),
             resyncs: 0,
             spectators: HashSet::new(),
             replay: VecDeque::new(),
@@ -590,6 +595,7 @@ impl SyncRoom {
     pub fn on_leave(&mut self, actor: ActorId) {
         self.input_tokens.remove(&actor);
         self.margins.remove(&actor);
+        self.taken.remove(&actor);
         self.spectators.remove(&actor);
         if let Some(avatar) = self.avatars.remove(&actor) {
             self.logic.on_leave(&mut self.frame, actor, avatar);
@@ -627,7 +633,8 @@ impl SyncRoom {
                     self.invalid_inputs += 1;
                     return true;
                 }
-                let (mut read, mut taken) = (0, 0);
+                let now = self.frame.tick.0;
+                let mut read = 0;
                 for i in 0..count.min(INPUT_REDUNDANCY + 1) {
                     if payload.is_empty() {
                         break;
@@ -638,19 +645,28 @@ impl SyncRoom {
                     }
                     let data = payload.split_to(len).to_vec();
                     read += 1;
-                    taken += u32::from(self.frame.push_input(Input {
+                    let sent = first.wrapping_add(i as u32);
+                    let last = self.taken.get(&actor).copied();
+                    let newer = last.is_none_or(|(newest, _)| sent > newest);
+                    if sent < now && !(newer && last.is_none_or(|(_, runs)| runs < now)) {
+                        continue;
+                    }
+                    let runs = sent.max(now);
+                    let input = Input {
                         actor,
-                        tick: Tick(first.wrapping_add(i as u32)),
+                        tick: Tick(runs),
                         data,
-                    }));
+                    };
+                    if self.frame.push_input(input) && newer {
+                        self.taken.insert(actor, (sent, runs));
+                    }
                 }
                 if read > 0 {
                     let newest = first.wrapping_add(read - 1);
-                    let margin = (newest as i64 - self.frame.tick.0 as i64).clamp(-127, 127) as i32;
+                    let margin = (newest as i64 - now as i64).clamp(-127, 127) as i32;
                     let slack = self.margins.entry(actor).or_insert((i32::MAX, 0));
                     slack.0 = slack.0.min(margin);
-                    // A frame repeats the last few inputs, so the older ones are late by design.
-                    if taken == 0 {
+                    if margin < 0 {
                         self.late_inputs += 1;
                         slack.1 = slack.1.saturating_add(1);
                     }
@@ -1239,6 +1255,38 @@ mod tests {
         let late = SyncRoom::encode_input(Tick(now - 3), &vec![vec![1, 0, 0]; 3]);
         room.handle(alice, late);
         assert_eq!(room.take_input_stats(), (0, 0, 1));
+    }
+
+    #[test]
+    fn ops_sent_for_past_ticks_run_once_each_on_the_ticks_that_follow() {
+        let src = "component Pose {\n x: f32 @range(-100, 100, 0.1)\n}";
+        let mut room = SyncRoom::new(Some(src), 30, 1).unwrap();
+        let alice = ActorId(1);
+        room.on_join(alice);
+        for _ in 0..5 {
+            let _ = room.tick();
+        }
+        assert_eq!(room.frame.entities().count(), 1);
+        let spawn = vec![OPS_MARKER, 1, OP_SPAWN, 0];
+        // What a client sends at once after a stall: three frames, each with one more input.
+        let behind = Tick(room.frame.tick.0 - 4);
+        for inputs in 1..=3 {
+            room.handle(
+                alice,
+                SyncRoom::encode_input(behind, &vec![spawn.clone(); inputs]),
+            );
+        }
+        let _ = room.tick();
+        assert_eq!(room.frame.entities().count(), 2);
+        // The repeats in the frames that follow bring the other two, and nothing twice.
+        for _ in 0..4 {
+            room.handle(
+                alice,
+                SyncRoom::encode_input(behind, &vec![spawn.clone(); 3]),
+            );
+            let _ = room.tick();
+        }
+        assert_eq!(room.frame.entities().count(), 4);
     }
 
     #[test]

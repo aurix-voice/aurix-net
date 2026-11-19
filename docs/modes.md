@@ -114,16 +114,20 @@ does not have; lost despawns are repeated. Clients that never ack get the plain 
 sent" behaviour.
 
 Input frames are limited per client to tick rate + 10 % (burst of 8 frames); inputs more than
-64 ticks ahead of the room are dropped, and so is a frame in which every input is for a tick the
-room has already simulated: the client is stamping its inputs too close to the room's tick for
-its latency. Counters: `net_sync_inputs_rate_limited_total`, `net_sync_invalid_inputs_total`,
-`net_sync_late_inputs_total`.
+64 ticks ahead of the room are dropped. A frame in which every input is for a tick the room has
+already simulated is late: the client is stamping its inputs too close to the room's tick for
+its latency. A late input still runs, on the room's current tick, when it is newer than every
+input the room has taken from that client, so an op in it (a spawn) is not lost; one late input
+runs per tick, and the repeats in the frames that follow bring the rest in order. The tick is
+what tells a new input from a repeat: a client must not send a different input under a tick it
+has already used. Counters: `net_sync_inputs_rate_limited_total`,
+`net_sync_invalid_inputs_total`, `net_sync_late_inputs_total`.
 
 The room tells each client how its inputs arrive, with the same frame as lockstep (`0x25`:
 `u32 tick, i8 min_margin, u8 late`, big-endian, over `UnreliableSequenced`). Every 30 ticks a
 client that sent input since the last report gets one: `tick` is the room's tick, `min_margin`
 the least number of ticks by which the newest input of a frame was ahead of the room when it
-arrived (0 is just in time, negative is late, held to -127..127), `late` the frames dropped as
+arrived (0 is just in time, negative is late, held to -127..127), `late` the frames that came
 late (at most 255). Frames dropped for rate or as invalid are not in it; a client that sends
 nothing gets nothing. A client stamps its inputs further ahead when the margin is negative and
 may come closer when it stays high; one that ignores the frame works as before.

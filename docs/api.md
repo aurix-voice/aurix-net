@@ -154,7 +154,7 @@ regenerated on every start. The WebSocket tunnel remains the fallback. Manual br
 | `net_sync_lost_deltas_total` | deltas clients lost (re-sent in full) |
 | `net_sync_resyncs_total` | full-snapshot requests |
 | `net_sync_aoi_starved_total` | client-ticks where the byte budget deferred entities |
-| `net_sync_inputs_rate_limited_total`, `net_sync_invalid_inputs_total`, `net_sync_late_inputs_total` | dropped input frames: over the rate, malformed or too far ahead, behind the room tick |
+| `net_sync_inputs_rate_limited_total`, `net_sync_invalid_inputs_total`, `net_sync_late_inputs_total` | input frames over the rate (dropped), malformed or too far ahead (dropped), behind the room tick (late) |
 | `net_lockstep_desyncs_total` | hash reports disagreeing with the majority |
 | `net_rooms_adopted_total` | rooms taken over from a dead node |
 

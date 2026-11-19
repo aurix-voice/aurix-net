@@ -2270,6 +2270,7 @@ dependencies = [
  "net-control",
  "net-db",
  "net-game",
+ "net-replication",
  "net-rooms",
  "net-sim",
  "net-transport",
