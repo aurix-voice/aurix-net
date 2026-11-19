@@ -251,7 +251,6 @@ namespace Aurix.Net.Managed
             return JoinRawAsync(sb.Append('}').ToString());
         }
 
-        /// <summary>Any join-like control message; opens the data path (ticket first) and waits for the server's ack.</summary>
         /// <summary>After a rehost: a fresh client in the same room with the same grant (entry URL, then fallbacks).</summary>
         public async Task<ManagedClient> RejoinAsync(params string[] fallbackUrls)
         {
@@ -277,6 +276,7 @@ namespace Aurix.Net.Managed
             throw last;
         }
 
+        /// <summary>Any join-like control message; opens the data path (ticket first) and waits for the server's ack.</summary>
         public async Task<int> JoinRawAsync(string json, int timeoutMs = 10000)
         {
             LastJoinJson = json;
@@ -489,7 +489,6 @@ namespace Aurix.Net.Managed
             return SendControlAsync("{\"t\":\"leave\"}");
         }
 
-        /// <summary>Sync rooms: steer area-of-interest: extra viewpoints (camera, scope target) and entities forced into view (team mates, objectives). Entity ids as in deltas.</summary>
         /// <summary>Project-wide live rooms/players grouped by the room prop "lobby" (JSON: {rooms, players, lobbies:[{lobby, rooms, players}]}); one per second.</summary>
         public async Task<string> StatsAsync(int timeoutMs = 10000)
         {
@@ -563,6 +562,7 @@ namespace Aurix.Net.Managed
                     + "]}"
             );
 
+        /// <summary>Sync rooms: steer area-of-interest: extra viewpoints (camera, scope target) and entities forced into view (team mates, objectives). Entity ids as in deltas.</summary>
         public Task SetViewAsync(ulong[] viewpoints = null, ulong[] interest = null) =>
             SendControlAsync(
                 "{\"t\":\"set_view\",\"viewpoints\":["

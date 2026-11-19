@@ -6,8 +6,8 @@ use net_rooms::protocol::ClientMsg;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let a: Vec<String> = std::env::args().collect();
-    let (http, key, room) = (&a[1], &a[2], &a[3]);
+    let args: Vec<String> = std::env::args().collect();
+    let (http, key, room) = (&args[1], &args[2], &args[3]);
     let grant: serde_json::Value = reqwest::Client::new()
         .post(format!("{http}/v1/grants"))
         .bearer_auth(key)
@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let msg: ClientMsg = serde_json::from_value(serde_json::json!({
         "t": "join_or_create", "name": room, "mode": "relay", "max_players": 8, "props": {}
     }))?;
-    let (c, j) = Client::connect_and_join(
+    let (client, joined) = Client::connect_and_join(
         http,
         grant["grant"].as_str().unwrap(),
         Options::default(),
@@ -29,8 +29,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
     println!(
         "joined room={} actor={:?} via data host={}:{}",
-        j.name, j.actor, j.data.host, j.data.port
+        joined.name, joined.actor, joined.data.host, joined.data.port
     );
-    drop(c);
+    drop(client);
     Ok(())
 }

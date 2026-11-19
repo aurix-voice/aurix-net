@@ -6,8 +6,8 @@ use net_rooms::protocol::{ClientMsg, ServerMsg};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let a: Vec<String> = std::env::args().collect();
-    let (url, grant, room, fallback) = (&a[1], &a[2], &a[3], &a[4]);
+    let args: Vec<String> = std::env::args().collect();
+    let (url, grant, room, fallback) = (&args[1], &args[2], &args[3], &args[4]);
     let join = ClientMsg::JoinOrCreate {
         name: room.clone(),
         mode: net_common::types::RoomMode::Lockstep,
@@ -18,37 +18,43 @@ async fn main() -> anyhow::Result<()> {
         player_props: Default::default(),
         reserved: Vec::new(),
     };
-    let (mut c, j) = Client::connect_and_join(url, grant, Options::default(), join).await?;
-    println!("joined room={} actor={} on {url}", j.name, j.actor.0);
+    let (mut client, joined) =
+        Client::connect_and_join(url, grant, Options::default(), join).await?;
+    println!(
+        "joined room={} actor={} on {url}",
+        joined.name, joined.actor.0
+    );
     let mut bundles = 0u32;
     loop {
-        match c.next_event().await {
+        match client.next_event().await {
             Some(Event::Control(ServerMsg::Left { reason })) => {
                 println!("left: {reason} after {bundles} bundles");
                 if reason != "rehost" {
                     anyhow::bail!("unexpected leave");
                 }
-                let (mut c2, j2) = c.rejoin(&[fallback.as_str()]).await?;
+                let (mut rejoined_client, rejoined) = client.rejoin(&[fallback.as_str()]).await?;
                 println!(
                     "rejoined room={} actor={} (same actor: {})",
-                    j2.name,
-                    j2.actor.0,
-                    j2.actor == j.actor
+                    rejoined.name,
+                    rejoined.actor.0,
+                    rejoined.actor == joined.actor
                 );
-                let mut n = 0;
-                while n < 60 {
-                    match c2.next_event().await {
-                        Some(Event::Data { .. }) => n += 1,
-                        Some(Event::Closed(r)) => anyhow::bail!("closed after rejoin: {r}"),
+                let mut frames = 0;
+                while frames < 60 {
+                    match rejoined_client.next_event().await {
+                        Some(Event::Data { .. }) => frames += 1,
+                        Some(Event::Closed(reason)) => {
+                            anyhow::bail!("closed after rejoin: {reason}")
+                        }
                         None => anyhow::bail!("stream ended after rejoin"),
                         _ => {}
                     }
                 }
-                println!("REHOST_OK: {n} data frames after rejoin");
+                println!("REHOST_OK: {frames} data frames after rejoin");
                 return Ok(());
             }
             Some(Event::Data { .. }) => bundles += 1,
-            Some(Event::Closed(r)) => anyhow::bail!("closed: {r}"),
+            Some(Event::Closed(reason)) => anyhow::bail!("closed: {reason}"),
             None => anyhow::bail!("stream ended"),
             _ => {}
         }

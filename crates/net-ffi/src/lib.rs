@@ -87,9 +87,9 @@ impl From<&ClientError> for ErrorCode {
     }
 }
 
-pub(crate) fn set_error(code: ErrorCode, e: impl std::fmt::Display) {
-    let s = CString::new(e.to_string().replace('\0', " ")).unwrap_or_default();
-    LAST_ERROR.with(|l| *l.borrow_mut() = s);
+pub(crate) fn set_error(code: ErrorCode, error: impl std::fmt::Display) {
+    let text = CString::new(error.to_string().replace('\0', " ")).unwrap_or_default();
+    LAST_ERROR.with(|last| *last.borrow_mut() = text);
     LAST_CODE.with(|last| last.set(code));
 }
 
@@ -97,11 +97,11 @@ pub(crate) fn set_client_error(error: &ClientError) {
     set_error(error.into(), error);
 }
 
-unsafe fn cstr<'a>(p: *const c_char) -> Option<&'a str> {
-    if p.is_null() {
+unsafe fn cstr<'a>(pointer: *const c_char) -> Option<&'a str> {
+    if pointer.is_null() {
         return None;
     }
-    CStr::from_ptr(p).to_str().ok()
+    CStr::from_ptr(pointer).to_str().ok()
 }
 
 pub struct AurixNetClient {
@@ -143,14 +143,14 @@ impl AurixNetEvent {
 
 #[no_mangle]
 pub extern "C" fn aurix_net_version() -> *const c_char {
-    static V: &[u8] = b"0.1.0\0";
-    V.as_ptr() as *const c_char
+    static VERSION: &[u8] = b"0.1.0\0";
+    VERSION.as_ptr() as *const c_char
 }
 
 /// Last error message for the calling thread (valid until the next failing call).
 #[no_mangle]
 pub extern "C" fn aurix_net_last_error() -> *const c_char {
-    LAST_ERROR.with(|l| l.borrow().as_ptr())
+    LAST_ERROR.with(|last| last.borrow().as_ptr())
 }
 
 /// Why the last failed call on this thread failed: one of the `AURIX_NET_ERR_*` constants.
@@ -177,11 +177,11 @@ pub unsafe extern "C" fn aurix_net_issue_grant(
         return std::ptr::null_mut();
     };
     match rt().block_on(net_client::issue_grant(http, key, pid, name)) {
-        Ok(g) => CString::new(g)
+        Ok(grant) => CString::new(grant)
             .map(CString::into_raw)
             .unwrap_or(std::ptr::null_mut()),
-        Err(e) => {
-            set_client_error(&e);
+        Err(error) => {
+            set_client_error(&error);
             std::ptr::null_mut()
         }
     }
@@ -202,8 +202,8 @@ pub unsafe extern "C" fn aurix_net_best_region(
         Ok(pick) => CString::new(serde_json::to_string(&pick).unwrap_or_default())
             .map(CString::into_raw)
             .unwrap_or(std::ptr::null_mut()),
-        Err(e) => {
-            set_client_error(&e);
+        Err(error) => {
+            set_client_error(&error);
             std::ptr::null_mut()
         }
     }
@@ -220,14 +220,19 @@ pub unsafe extern "C" fn aurix_net_json_string(
     };
     serde_json::from_str::<serde_json::Value>(json)
         .ok()
-        .and_then(|v| v.get(key)?.as_str().and_then(|s| CString::new(s).ok()))
+        .and_then(|value| {
+            value
+                .get(key)?
+                .as_str()
+                .and_then(|text| CString::new(text).ok())
+        })
         .map(CString::into_raw)
         .unwrap_or(std::ptr::null_mut())
 }
 #[no_mangle]
-pub unsafe extern "C" fn aurix_net_string_free(s: *mut c_char) {
-    if !s.is_null() {
-        drop(CString::from_raw(s));
+pub unsafe extern "C" fn aurix_net_string_free(string: *mut c_char) {
+    if !string.is_null() {
+        drop(CString::from_raw(string));
     }
 }
 
@@ -247,11 +252,11 @@ pub unsafe extern "C" fn aurix_net_connect(
         ..Default::default()
     };
     match rt().block_on(Client::connect(http, grant, opts)) {
-        Ok(c) => Box::into_raw(Box::new(AurixNetClient {
-            inner: Mutex::new(c),
+        Ok(inner) => Box::into_raw(Box::new(AurixNetClient {
+            inner: Mutex::new(inner),
         })),
-        Err(e) => {
-            set_client_error(&e);
+        Err(error) => {
+            set_client_error(&error);
             std::ptr::null_mut()
         }
     }
@@ -260,23 +265,23 @@ pub unsafe extern "C" fn aurix_net_connect(
 /// Sends a control message given as protocol JSON (`{"t":"set_room_props",...}`). 0 on success.
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_send_control(
-    h: *mut AurixNetClient,
+    client: *mut AurixNetClient,
     json: *const c_char,
 ) -> i32 {
-    let (Some(h), Some(json)) = (h.as_ref(), cstr(json)) else {
+    let (Some(client), Some(json)) = (client.as_ref(), cstr(json)) else {
         return -1;
     };
     let msg: ClientMsg = match serde_json::from_str(json) {
-        Ok(m) => m,
-        Err(e) => {
-            set_error(ErrorCode::InvalidArgument, e);
+        Ok(msg) => msg,
+        Err(error) => {
+            set_error(ErrorCode::InvalidArgument, error);
             return -1;
         }
     };
-    match rt().block_on(h.inner.lock().send(msg)) {
+    match rt().block_on(client.inner.lock().send(msg)) {
         Ok(()) => 0,
-        Err(e) => {
-            set_client_error(&e);
+        Err(error) => {
+            set_client_error(&error);
             -1
         }
     }
@@ -285,22 +290,22 @@ pub unsafe extern "C" fn aurix_net_send_control(
 /// Joins/creates a room with a protocol JSON message (`{"t":"join_or_create","name":...}`),
 /// opens the data path and blocks until it is ready. Returns the actor id, or -1.
 #[no_mangle]
-pub unsafe extern "C" fn aurix_net_join(h: *mut AurixNetClient, json: *const c_char) -> i32 {
-    let (Some(h), Some(json)) = (h.as_ref(), cstr(json)) else {
+pub unsafe extern "C" fn aurix_net_join(client: *mut AurixNetClient, json: *const c_char) -> i32 {
+    let (Some(client), Some(json)) = (client.as_ref(), cstr(json)) else {
         return -1;
     };
     let msg: ClientMsg = match serde_json::from_str(json) {
-        Ok(m) => m,
-        Err(e) => {
-            set_error(ErrorCode::InvalidArgument, e);
+        Ok(msg) => msg,
+        Err(error) => {
+            set_error(ErrorCode::InvalidArgument, error);
             return -1;
         }
     };
-    let mut c = h.inner.lock();
-    match rt().block_on(c.join(msg)) {
-        Ok(j) => j.actor.0 as i32,
-        Err(e) => {
-            set_client_error(&e);
+    let mut inner = client.inner.lock();
+    match rt().block_on(inner.join(msg)) {
+        Ok(joined) => joined.actor.0 as i32,
+        Err(error) => {
+            set_client_error(&error);
             -1
         }
     }
@@ -309,19 +314,19 @@ pub unsafe extern "C" fn aurix_net_join(h: *mut AurixNetClient, json: *const c_c
 /// Room facts after a successful join as JSON (`{"room","name","mode","actor","master","tick_hz","schema_hash"}`),
 /// malloc'd; NULL when not in a room.
 #[no_mangle]
-pub unsafe extern "C" fn aurix_net_joined_json(h: *mut AurixNetClient) -> *mut c_char {
-    let Some(h) = h.as_ref() else {
+pub unsafe extern "C" fn aurix_net_joined_json(client: *mut AurixNetClient) -> *mut c_char {
+    let Some(client) = client.as_ref() else {
         return std::ptr::null_mut();
     };
-    let c = h.inner.lock();
-    let Some(j) = &c.joined else {
+    let inner = client.inner.lock();
+    let Some(joined) = &inner.joined else {
         return std::ptr::null_mut();
     };
-    let v = serde_json::json!({
-        "room": j.room, "name": j.name, "mode": j.mode, "actor": j.actor.0, "master": j.master.0,
-        "tick_hz": j.tick_hz, "schema_hash": j.schema_hash,
+    let facts = serde_json::json!({
+        "room": joined.room, "name": joined.name, "mode": joined.mode, "actor": joined.actor.0,
+        "master": joined.master.0, "tick_hz": joined.tick_hz, "schema_hash": joined.schema_hash,
     });
-    CString::new(v.to_string())
+    CString::new(facts.to_string())
         .map(CString::into_raw)
         .unwrap_or(std::ptr::null_mut())
 }
@@ -329,12 +334,14 @@ pub unsafe extern "C" fn aurix_net_joined_json(h: *mut AurixNetClient) -> *mut c
 /// Raw data-path message. channel: 0 unreliable-sequenced, 1 reliable-ordered, 2 reliable-unordered.
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_send_data(
-    h: *mut AurixNetClient,
+    client: *mut AurixNetClient,
     channel: u8,
     data: *const u8,
     len: usize,
 ) -> i32 {
-    let Some(h) = h.as_ref() else { return -1 };
+    let Some(client) = client.as_ref() else {
+        return -1;
+    };
     let Some(ch) = Channel::from_u8(channel) else {
         set_error(ErrorCode::InvalidArgument, "bad channel");
         return -1;
@@ -344,10 +351,10 @@ pub unsafe extern "C" fn aurix_net_send_data(
     } else {
         Bytes::copy_from_slice(std::slice::from_raw_parts(data, len))
     };
-    match h.inner.lock().send_data(ch, payload) {
+    match client.inner.lock().send_data(ch, payload) {
         Ok(()) => 0,
-        Err(e) => {
-            set_client_error(&e);
+        Err(error) => {
+            set_client_error(&error);
             -1
         }
     }
@@ -356,7 +363,7 @@ pub unsafe extern "C" fn aurix_net_send_data(
 /// Relay event. target: 0 all, 1 others, 2 master, 3 explicit `actors[n]`.
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_send_event(
-    h: *mut AurixNetClient,
+    client: *mut AurixNetClient,
     code: u8,
     target: i32,
     actors: *const u16,
@@ -365,7 +372,9 @@ pub unsafe extern "C" fn aurix_net_send_event(
     len: usize,
     reliable: i32,
 ) -> i32 {
-    let Some(h) = h.as_ref() else { return -1 };
+    let Some(client) = client.as_ref() else {
+        return -1;
+    };
     let target = match target {
         0 => EventTarget::All,
         1 => EventTarget::Others,
@@ -373,7 +382,7 @@ pub unsafe extern "C" fn aurix_net_send_event(
         3 if !actors.is_null() => EventTarget::Actors(
             std::slice::from_raw_parts(actors, n_actors)
                 .iter()
-                .map(|a| ActorId(*a))
+                .map(|actor| ActorId(*actor))
                 .collect(),
         ),
         _ => {
@@ -386,14 +395,14 @@ pub unsafe extern "C" fn aurix_net_send_event(
     } else {
         Bytes::copy_from_slice(std::slice::from_raw_parts(data, len))
     };
-    match h
+    match client
         .inner
         .lock()
         .send_event(code, target, payload, reliable != 0)
     {
         Ok(()) => 0,
-        Err(e) => {
-            set_client_error(&e);
+        Err(error) => {
+            set_client_error(&error);
             -1
         }
     }
@@ -402,7 +411,7 @@ pub unsafe extern "C" fn aurix_net_send_event(
 /// cache for late joiners, 2 remove).
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_send_event_ex(
-    h: *mut AurixNetClient,
+    client: *mut AurixNetClient,
     code: u8,
     target: i32,
     actors: *const u16,
@@ -413,7 +422,9 @@ pub unsafe extern "C" fn aurix_net_send_event_ex(
     group: i32,
     cache: i32,
 ) -> i32 {
-    let Some(h) = h.as_ref() else { return -1 };
+    let Some(client) = client.as_ref() else {
+        return -1;
+    };
     let target = match target {
         0 => EventTarget::All,
         1 => EventTarget::Others,
@@ -421,7 +432,7 @@ pub unsafe extern "C" fn aurix_net_send_event_ex(
         3 if !actors.is_null() => EventTarget::Actors(
             std::slice::from_raw_parts(actors, n_actors)
                 .iter()
-                .map(|a| ActorId(*a))
+                .map(|actor| ActorId(*actor))
                 .collect(),
         ),
         _ => {
@@ -434,7 +445,7 @@ pub unsafe extern "C" fn aurix_net_send_event_ex(
     } else {
         Bytes::copy_from_slice(std::slice::from_raw_parts(data, len))
     };
-    match h.inner.lock().send_event_ex(
+    match client.inner.lock().send_event_ex(
         code,
         target,
         payload,
@@ -447,8 +458,8 @@ pub unsafe extern "C" fn aurix_net_send_event_ex(
         },
     ) {
         Ok(()) => 0,
-        Err(e) => {
-            set_client_error(&e);
+        Err(error) => {
+            set_client_error(&error);
             -1
         }
     }
@@ -456,21 +467,24 @@ pub unsafe extern "C" fn aurix_net_send_event_ex(
 
 /// Pushes queued unreliable messages onto the wire; call once per frame after sending.
 #[no_mangle]
-pub unsafe extern "C" fn aurix_net_flush(h: *mut AurixNetClient) {
-    if let Some(h) = h.as_ref() {
-        h.inner.lock().flush();
+pub unsafe extern "C" fn aurix_net_flush(client: *mut AurixNetClient) {
+    if let Some(client) = client.as_ref() {
+        client.inner.lock().flush();
     }
 }
 
 /// Non-blocking: fills `out` and returns 1 when an event was available, 0 otherwise.
 /// Free the event with `aurix_net_event_free`.
 #[no_mangle]
-pub unsafe extern "C" fn aurix_net_poll(h: *mut AurixNetClient, out: *mut AurixNetEvent) -> i32 {
-    let (Some(h), Some(out)) = (h.as_ref(), out.as_mut()) else {
+pub unsafe extern "C" fn aurix_net_poll(
+    client: *mut AurixNetClient,
+    out: *mut AurixNetEvent,
+) -> i32 {
+    let (Some(client), Some(out)) = (client.as_ref(), out.as_mut()) else {
         return 0;
     };
     *out = AurixNetEvent::empty();
-    let ev = h.inner.lock().try_next_event();
+    let ev = client.inner.lock().try_next_event();
     let Some(ev) = ev else { return 0 };
     match ev {
         Event::Control(msg) => {
@@ -485,15 +499,15 @@ pub unsafe extern "C" fn aurix_net_poll(h: *mut AurixNetClient, out: *mut AurixN
             out.kind = AURIX_NET_EVENT_DATA;
             out.channel = channel as u8;
             out.tick = tick;
-            let mut b = payload.to_vec().into_boxed_slice();
-            out.data_len = b.len();
-            out.data = b.as_mut_ptr();
-            std::mem::forget(b);
+            let mut bytes = payload.to_vec().into_boxed_slice();
+            out.data_len = bytes.len();
+            out.data = bytes.as_mut_ptr();
+            std::mem::forget(bytes);
         }
         Event::DataReady => out.kind = AURIX_NET_EVENT_DATA_READY,
-        Event::Closed(r) => {
+        Event::Closed(reason) => {
             out.kind = AURIX_NET_EVENT_CLOSED;
-            out.json = CString::new(r)
+            out.json = CString::new(reason)
                 .map(CString::into_raw)
                 .unwrap_or(std::ptr::null_mut());
         }
@@ -504,7 +518,7 @@ pub unsafe extern "C" fn aurix_net_poll(h: *mut AurixNetClient, out: *mut AurixN
 fn json_c(msg: &ServerMsg) -> *mut c_char {
     serde_json::to_string(msg)
         .ok()
-        .and_then(|s| CString::new(s).ok())
+        .and_then(|text| CString::new(text).ok())
         .map(CString::into_raw)
         .unwrap_or(std::ptr::null_mut())
 }
@@ -525,22 +539,24 @@ pub unsafe extern "C" fn aurix_net_event_free(ev: *mut AurixNetEvent) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn aurix_net_leave(h: *mut AurixNetClient) -> i32 {
-    let Some(h) = h.as_ref() else { return -1 };
-    let mut c = h.inner.lock();
-    match rt().block_on(c.leave()) {
+pub unsafe extern "C" fn aurix_net_leave(client: *mut AurixNetClient) -> i32 {
+    let Some(client) = client.as_ref() else {
+        return -1;
+    };
+    let mut inner = client.inner.lock();
+    match rt().block_on(inner.leave()) {
         Ok(()) => 0,
-        Err(e) => {
-            set_client_error(&e);
+        Err(error) => {
+            set_client_error(&error);
             -1
         }
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn aurix_net_destroy(h: *mut AurixNetClient) {
-    if !h.is_null() {
-        drop(Box::from_raw(h));
+pub unsafe extern "C" fn aurix_net_destroy(client: *mut AurixNetClient) {
+    if !client.is_null() {
+        drop(Box::from_raw(client));
     }
 }
 
@@ -591,12 +607,12 @@ pub unsafe extern "C" fn aurix_net_lockstep_destroy(ls: *mut AurixNetLockstep) {
 }
 
 /// Feeds one data-path payload. 1 = lockstep frame (events may be queued), 0 = not a lockstep frame.
-/// A frame of bundles is acknowledged through `h`, so the room resends the ones that were lost;
-/// with a null `h` (a replay) nothing is sent.
+/// A frame of bundles is acknowledged through `client`, so the room resends the ones that were lost;
+/// with a null `client` (a replay) nothing is sent.
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_lockstep_receive(
     ls: *mut AurixNetLockstep,
-    h: *mut AurixNetClient,
+    client: *mut AurixNetClient,
     data: *const u8,
     len: usize,
 ) -> i32 {
@@ -604,20 +620,20 @@ pub unsafe extern "C" fn aurix_net_lockstep_receive(
     if data.is_null() || len == 0 {
         return 0;
     }
-    let p = std::slice::from_raw_parts(data, len);
+    let frame = std::slice::from_raw_parts(data, len);
     let ack = {
         let mut lockstep = ls.inner.lock();
-        match lockstep.receive(p) {
-            Some(evs) => {
-                ls.queue.lock().extend(evs);
-                (p[0] == LS_BUNDLE).then(|| lockstep.ack_frame())
+        match lockstep.receive(frame) {
+            Some(events) => {
+                ls.queue.lock().extend(events);
+                (frame[0] == LS_BUNDLE).then(|| lockstep.ack_frame())
             }
             None => return 0,
         }
     };
     if let Some(ack) = ack {
-        if !h.is_null() {
-            send_frame(h, ack);
+        if !client.is_null() {
+            send_frame(client, ack);
         }
     }
     1
@@ -653,17 +669,17 @@ pub unsafe extern "C" fn aurix_net_lockstep_poll(
             state: state.as_ptr(),
             state_len: state.len(),
         },
-        LsEvent::CheckpointRequested(t) => AurixNetLsEvent {
+        LsEvent::CheckpointRequested(tick) => AurixNetLsEvent {
             kind: AURIX_NET_LS_CHECKPOINT_REQ,
-            tick: *t,
+            tick: *tick,
             hash: 0,
             inputs: 0,
             state: std::ptr::null(),
             state_len: 0,
         },
-        LsEvent::DumpRequested(t) => AurixNetLsEvent {
+        LsEvent::DumpRequested(tick) => AurixNetLsEvent {
             kind: AURIX_NET_LS_DUMP_REQ,
-            tick: *t,
+            tick: *tick,
             hash: 0,
             inputs: 0,
             state: std::ptr::null(),
@@ -688,41 +704,43 @@ pub unsafe extern "C" fn aurix_net_lockstep_input(
     let Some(LsEvent::Tick { inputs, .. }) = cur.as_ref() else {
         return 0;
     };
-    let Some((a, d)) = inputs.iter().nth(index as usize) else {
+    let Some((input_actor, input)) = inputs.iter().nth(index as usize) else {
         return 0;
     };
     if let Some(actor) = actor.as_mut() {
-        *actor = *a;
+        *actor = *input_actor;
     }
     if let Some(data) = data.as_mut() {
-        *data = d.as_ptr();
+        *data = input.as_ptr();
     }
     if let Some(len) = len.as_mut() {
-        *len = d.len();
+        *len = input.len();
     }
     1
 }
 
-unsafe fn send_frame(h: *mut AurixNetClient, f: Outgoing) -> i32 {
-    let Some(h) = h.as_ref() else { return -1 };
-    let Some(ch) = Channel::from_u8(if f.reliable { 1 } else { 0 }) else {
+unsafe fn send_frame(client: *mut AurixNetClient, frame: Outgoing) -> i32 {
+    let Some(client) = client.as_ref() else {
         return -1;
     };
-    match h.inner.lock().send_data(ch, f.payload) {
+    let Some(channel) = Channel::from_u8(if frame.reliable { 1 } else { 0 }) else {
+        return -1;
+    };
+    match client.inner.lock().send_data(channel, frame.payload) {
         Ok(()) => 0,
-        Err(e) => {
-            set_client_error(&e);
+        Err(error) => {
+            set_client_error(&error);
             -1
         }
     }
 }
 
 /// Queues this tick's local input and sends it (with the previous ones for redundancy) through
-/// `h`. Returns the tick it was stamped with, or -1.
+/// `client`. Returns the tick it was stamped with, or -1.
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_lockstep_send_input(
     ls: *mut AurixNetLockstep,
-    h: *mut AurixNetClient,
+    client: *mut AurixNetClient,
     data: *const u8,
     len: usize,
 ) -> i64 {
@@ -732,10 +750,10 @@ pub unsafe extern "C" fn aurix_net_lockstep_send_input(
     } else {
         Bytes::copy_from_slice(std::slice::from_raw_parts(data, len))
     };
-    let Some((tick, f)) = ls.inner.lock().send_input(input) else {
+    let Some((tick, frame)) = ls.inner.lock().send_input(input) else {
         return -1;
     };
-    if send_frame(h, f) != 0 {
+    if send_frame(client, frame) != 0 {
         return -1;
     }
     tick as i64
@@ -745,7 +763,7 @@ pub unsafe extern "C" fn aurix_net_lockstep_send_input(
 /// next tick's inputs under actor 65535 as `[u16 actor, u16 len, bytes]*`, journaled and replayed.
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_lockstep_send_command(
-    h: *mut AurixNetClient,
+    client: *mut AurixNetClient,
     data: *const u8,
     len: usize,
 ) -> i32 {
@@ -753,21 +771,21 @@ pub unsafe extern "C" fn aurix_net_lockstep_send_command(
         set_error(ErrorCode::InvalidArgument, "send_command: 1..=1024 bytes");
         return -1;
     }
-    let d = std::slice::from_raw_parts(data, len);
-    send_frame(h, LockstepClient::command_frame(d))
+    let command = std::slice::from_raw_parts(data, len);
+    send_frame(client, LockstepClient::command_frame(command))
 }
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_lockstep_report_hash(
-    h: *mut AurixNetClient,
+    client: *mut AurixNetClient,
     tick: u32,
     hash: u64,
 ) -> i32 {
-    send_frame(h, LockstepClient::hash_frame(tick, hash))
+    send_frame(client, LockstepClient::hash_frame(tick, hash))
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_lockstep_send_checkpoint(
-    h: *mut AurixNetClient,
+    client: *mut AurixNetClient,
     tick: u32,
     hash: u64,
     state: *const u8,
@@ -778,12 +796,12 @@ pub unsafe extern "C" fn aurix_net_lockstep_send_checkpoint(
     } else {
         std::slice::from_raw_parts(state, len)
     };
-    send_frame(h, LockstepClient::checkpoint_frame(tick, hash, st))
+    send_frame(client, LockstepClient::checkpoint_frame(tick, hash, st))
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_lockstep_send_dump(
-    h: *mut AurixNetClient,
+    client: *mut AurixNetClient,
     tick: u32,
     hash: u64,
     state: *const u8,
@@ -794,7 +812,7 @@ pub unsafe extern "C" fn aurix_net_lockstep_send_dump(
     } else {
         std::slice::from_raw_parts(state, len)
     };
-    send_frame(h, LockstepClient::dump_frame(tick, hash, st))
+    send_frame(client, LockstepClient::dump_frame(tick, hash, st))
 }
 
 pub const AURIX_NET_LS_INPUT_DELAY: i32 = 0;
@@ -816,20 +834,20 @@ pub unsafe extern "C" fn aurix_net_lockstep_get(ls: *mut AurixNetLockstep, key: 
     let Some(ls) = ls.as_ref() else {
         return i64::MIN;
     };
-    let c = ls.inner.lock();
+    let lockstep = ls.inner.lock();
     match key {
-        AURIX_NET_LS_INPUT_DELAY => c.input_delay as i64,
-        AURIX_NET_LS_INPUT_DELAY_MIN => c.input_delay_min as i64,
-        AURIX_NET_LS_INPUT_DELAY_MAX => c.input_delay_max as i64,
-        AURIX_NET_LS_ADAPTIVE_DELAY => c.adaptive_delay as i64,
-        AURIX_NET_LS_INPUT_REDUNDANCY => c.input_redundancy as i64,
-        AURIX_NET_LS_LAST_MARGIN => c.last_margin as i64,
-        AURIX_NET_LS_LATE_INPUTS => c.late_inputs as i64,
-        AURIX_NET_LS_CONFIRMED_TICK => c.confirmed_tick() as i64,
-        AURIX_NET_LS_SERVER_TICK => c.server_tick as i64,
-        AURIX_NET_LS_DELIVERED => c.delivered as i64,
-        AURIX_NET_LS_CATCHUPS => c.catchups as i64,
-        AURIX_NET_LS_DROPPED => c.dropped as i64,
+        AURIX_NET_LS_INPUT_DELAY => lockstep.input_delay as i64,
+        AURIX_NET_LS_INPUT_DELAY_MIN => lockstep.input_delay_min as i64,
+        AURIX_NET_LS_INPUT_DELAY_MAX => lockstep.input_delay_max as i64,
+        AURIX_NET_LS_ADAPTIVE_DELAY => lockstep.adaptive_delay as i64,
+        AURIX_NET_LS_INPUT_REDUNDANCY => lockstep.input_redundancy as i64,
+        AURIX_NET_LS_LAST_MARGIN => lockstep.last_margin as i64,
+        AURIX_NET_LS_LATE_INPUTS => lockstep.late_inputs as i64,
+        AURIX_NET_LS_CONFIRMED_TICK => lockstep.confirmed_tick() as i64,
+        AURIX_NET_LS_SERVER_TICK => lockstep.server_tick as i64,
+        AURIX_NET_LS_DELIVERED => lockstep.delivered as i64,
+        AURIX_NET_LS_CATCHUPS => lockstep.catchups as i64,
+        AURIX_NET_LS_DROPPED => lockstep.dropped as i64,
         _ => i64::MIN,
     }
 }
@@ -842,14 +860,14 @@ pub unsafe extern "C" fn aurix_net_lockstep_set(
     value: i64,
 ) -> i32 {
     let Some(ls) = ls.as_ref() else { return -1 };
-    let mut c = ls.inner.lock();
-    let v = value.clamp(0, u32::MAX as i64) as u32;
+    let mut lockstep = ls.inner.lock();
+    let clamped = value.clamp(0, u32::MAX as i64) as u32;
     match key {
-        AURIX_NET_LS_INPUT_DELAY => c.input_delay = v,
-        AURIX_NET_LS_INPUT_DELAY_MIN => c.input_delay_min = v,
-        AURIX_NET_LS_INPUT_DELAY_MAX => c.input_delay_max = v,
-        AURIX_NET_LS_ADAPTIVE_DELAY => c.adaptive_delay = value != 0,
-        AURIX_NET_LS_INPUT_REDUNDANCY => c.input_redundancy = v.clamp(1, 8) as usize,
+        AURIX_NET_LS_INPUT_DELAY => lockstep.input_delay = clamped,
+        AURIX_NET_LS_INPUT_DELAY_MIN => lockstep.input_delay_min = clamped,
+        AURIX_NET_LS_INPUT_DELAY_MAX => lockstep.input_delay_max = clamped,
+        AURIX_NET_LS_ADAPTIVE_DELAY => lockstep.adaptive_delay = value != 0,
+        AURIX_NET_LS_INPUT_REDUNDANCY => lockstep.input_redundancy = clamped.clamp(1, 8) as usize,
         _ => return -1,
     }
     0

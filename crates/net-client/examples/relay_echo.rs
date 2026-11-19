@@ -22,42 +22,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         reserved: Vec::new(),
     };
 
-    let ga = issue_grant(&http, &key, "alice", "Alice").await?;
-    let gb = issue_grant(&http, &key, "bob", "Bob").await?;
-    let mut a = Client::connect(&http, &ga, Options::default()).await?;
-    let mut b = Client::connect(
+    let alice_grant = issue_grant(&http, &key, "alice", "Alice").await?;
+    let bob_grant = issue_grant(&http, &key, "bob", "Bob").await?;
+    let mut alice = Client::connect(&http, &alice_grant, Options::default()).await?;
+    let mut bob = Client::connect(
         &http,
-        &gb,
+        &bob_grant,
         Options {
             tunnel: true,
             ..Default::default()
         },
     )
     .await?;
-    let ja = a.join(join(&room)).await?;
-    let jb = b.join(join(&room)).await?;
+    let alice_joined = alice.join(join(&room)).await?;
+    let bob_joined = bob.join(join(&room)).await?;
     println!(
         "alice actor={} (quic), bob actor={} (ws tunnel), room={}",
-        ja.actor.0, jb.actor.0, ja.name
+        alice_joined.actor.0, bob_joined.actor.0, alice_joined.name
     );
 
     // A: reliable hello, then 10 unreliable ticks
-    a.send_event(1, EventTarget::Others, Bytes::from_static(b"hello"), true)?;
+    alice.send_event(1, EventTarget::Others, Bytes::from_static(b"hello"), true)?;
     for i in 0..10u8 {
-        a.send_event(2, EventTarget::Others, Bytes::from(vec![i]), false)?;
-        a.flush();
+        alice.send_event(2, EventTarget::Others, Bytes::from(vec![i]), false)?;
+        alice.flush();
         tokio::time::sleep(std::time::Duration::from_millis(16)).await;
     }
 
     let mut got_hello = false;
     let mut ticks = 0;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
-    while let Ok(Some(ev)) = tokio::time::timeout_at(deadline, b.next_event()).await {
+    while let Ok(Some(ev)) = tokio::time::timeout_at(deadline, bob.next_event()).await {
         match ev {
             Event::Data { payload, .. } => {
-                let f = EventFrame::decode(payload)?;
-                match f.code {
-                    1 => got_hello = f.payload.as_ref() == b"hello" && f.from == ja.actor,
+                let frame = EventFrame::decode(payload)?;
+                match frame.code {
+                    1 => {
+                        got_hello =
+                            frame.payload.as_ref() == b"hello" && frame.from == alice_joined.actor
+                    }
                     2 => ticks += 1,
                     _ => {}
                 }
@@ -68,15 +71,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Event::Control(ServerMsg::PlayerJoined { player }) => {
                 println!("bob sees joined: {}", player.name)
             }
-            Event::Closed(r) => return Err(format!("closed: {r}").into()),
+            Event::Closed(reason) => return Err(format!("closed: {reason}").into()),
             _ => {}
         }
     }
     println!(
         "bob got hello={got_hello} ticks={ticks}/10 stats={:?}",
-        b.link_stats()
+        bob.link_stats()
     );
-    a.leave().await?;
+    alice.leave().await?;
     assert!(got_hello && ticks == 10, "echo failed");
     Ok(())
 }

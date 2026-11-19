@@ -132,7 +132,6 @@ public:
     AurixNetClient* handle() const { return handle_; }
     int actor() const { return actor_; }
 
-    /// Protocol JSON, e.g. {"t":"set_room_props","props":{...}}.
     /// Region list and best-region ping: JSON {region, endpoint, rtt_ms, candidates} from the
     /// catalog or any node.
     static std::string bestRegionJson(const std::string& catalogHttp, int probes = 3) {
@@ -148,6 +147,7 @@ public:
     static std::string bestRegionEndpoint(const std::string& catalogHttp, int probes = 3) {
         return jsonStr(bestRegionJson(catalogHttp, probes), "endpoint");
     }
+    /// Protocol JSON, e.g. {"t":"set_room_props","props":{...}}.
     void sendControl(const std::string& json) {
         if (aurix_net_send_control(handle_, json.c_str()) != 0) {
             throw Error::last();

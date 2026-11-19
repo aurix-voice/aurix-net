@@ -114,14 +114,14 @@ impl Api {
         path: &str,
         body: Option<Value>,
     ) -> anyhow::Result<Value> {
-        let mut r = self.http.request(method, format!("{}{}", self.base, path));
-        if let Some(b) = &self.bearer {
-            r = r.bearer_auth(b);
+        let mut request = self.http.request(method, format!("{}{}", self.base, path));
+        if let Some(bearer) = &self.bearer {
+            request = request.bearer_auth(bearer);
         }
-        if let Some(b) = body {
-            r = r.json(&b);
+        if let Some(body) = body {
+            request = request.json(&body);
         }
-        let resp = r.send().await?;
+        let resp = request.send().await?;
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {
@@ -139,15 +139,15 @@ impl Api {
         path: &str,
         body: Vec<u8>,
     ) -> anyhow::Result<Value> {
-        let mut r = self
+        let mut request = self
             .http
             .request(method, format!("{}{}", self.base, path))
             .header("content-type", "application/octet-stream")
             .body(body);
-        if let Some(b) = &self.bearer {
-            r = r.bearer_auth(b);
+        if let Some(bearer) = &self.bearer {
+            request = request.bearer_auth(bearer);
         }
-        let resp = r.send().await?;
+        let resp = request.send().await?;
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {
@@ -234,14 +234,14 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Replay { id, out } => {
             need(&cli.api_key, "--api-key")?;
-            let v = dev
+            let replay = dev
                 .call(GET, &format!("/v1/rooms/{id}/replay"), None)
                 .await?;
             if let Some(path) = out {
-                std::fs::write(&path, serde_json::to_vec(&v)?)?;
-                json!({"written": path, "ticks": v["inputs"].as_array().map(|a| a.len()).unwrap_or(0)})
+                std::fs::write(&path, serde_json::to_vec(&replay)?)?;
+                json!({"written": path, "ticks": replay["inputs"].as_array().map(|a| a.len()).unwrap_or(0)})
             } else {
-                v
+                replay
             }
         }
         Cmd::Match {
@@ -255,21 +255,23 @@ async fn main() -> anyhow::Result<()> {
         } => {
             need(&cli.api_key, "--api-key")?;
             let attrs: serde_json::Value = match attrs {
-                Some(a) => serde_json::from_str(&a).map_err(|e| anyhow::anyhow!("--attrs: {e}"))?,
+                Some(raw) => {
+                    serde_json::from_str(&raw).map_err(|e| anyhow::anyhow!("--attrs: {e}"))?
+                }
                 None => json!({}),
             };
-            let t = dev
+            let ticket = dev
                 .call(POST, "/v1/matchmaking/tickets", Some(json!({"player_id": player_id, "mode": mode, "max_players": max_players, "min_players": min_players, "max_wait_secs": max_wait_secs, "attrs": attrs, "filter": filter})))
                 .await?;
-            let id = t["ticket"].as_str().unwrap_or_default().to_string();
+            let id = ticket["ticket"].as_str().unwrap_or_default().to_string();
             loop {
-                let s = dev
+                let status = dev
                     .call(GET, &format!("/v1/matchmaking/tickets/{id}"), None)
                     .await?;
-                if s["state"]["state"] != "searching" {
-                    break s;
+                if status["state"]["state"] != "searching" {
+                    break status;
                 }
-                eprintln!("searching... waiting={}", s["state"]["waiting"]);
+                eprintln!("searching... waiting={}", status["state"]["waiting"]);
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
@@ -314,6 +316,6 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn player_id_name(p: &str) -> String {
-    p.chars().take(32).collect()
+fn player_id_name(player_id: &str) -> String {
+    player_id.chars().take(32).collect()
 }

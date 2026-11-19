@@ -323,7 +323,6 @@ namespace Aurix.Net.Managed
         }
 
         /// <summary>Reliable command outside the input stream (buy, surrender, pause): the server stamps it onto the next tick and every client and the referee get it via OnCommand, journaled and replayed. 1..1024 bytes.</summary>
-
         public void SendCommand(byte[] data)
         {
             if (data == null || data.Length == 0 || data.Length > 1024)

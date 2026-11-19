@@ -16,7 +16,7 @@ pub trait Simulation {
     type Snapshot;
     fn step(&mut self, tick: u32, inputs: &TickInputs);
     fn snapshot(&self) -> Self::Snapshot;
-    fn restore(&mut self, s: &Self::Snapshot);
+    fn restore(&mut self, snapshot: &Self::Snapshot);
 }
 
 pub struct Rollback<S: Simulation> {
@@ -95,11 +95,11 @@ impl<S: Simulation> Rollback<S> {
     pub fn predict(&mut self, sim: &mut S, target: u32) {
         let target = target.min(self.confirmed + self.max_prediction);
         while self.head < target {
-            let t = self.head;
-            let inputs = self.guess(t);
-            sim.step(t, &inputs);
-            self.predicted.insert(t, inputs);
-            self.head = t + 1;
+            let tick = self.head;
+            let inputs = self.guess(tick);
+            sim.step(tick, &inputs);
+            self.predicted.insert(tick, inputs);
+            self.head = tick + 1;
             self.history.insert(self.head, sim.snapshot());
             self.predicted_ticks += 1;
         }
@@ -110,8 +110,8 @@ impl<S: Simulation> Rollback<S> {
         if tick != self.confirmed {
             return false;
         }
-        for (a, i) in inputs {
-            self.last_known.insert(*a, i.clone());
+        for (actor, input) in inputs {
+            self.last_known.insert(*actor, input.clone());
         }
         self.local_inputs.remove(&tick);
         let mut rolled = false;
@@ -142,16 +142,16 @@ impl<S: Simulation> Rollback<S> {
     }
 
     fn guess(&self, tick: u32) -> TickInputs {
-        let mut g = self.last_known.clone();
+        let mut inputs = self.last_known.clone();
         match self.local_inputs.get(&tick).or(self.last_local.as_ref()) {
-            Some(i) => {
-                g.insert(self.local_actor, i.clone());
+            Some(input) => {
+                inputs.insert(self.local_actor, input.clone());
             }
             None => {
-                g.remove(&self.local_actor);
+                inputs.remove(&self.local_actor);
             }
         }
-        g
+        inputs
     }
 }
 
@@ -204,7 +204,7 @@ impl<S> ReplayRing<S> {
         }
         // keep the newest snapshot at or before `first`, drop older ones
         if let Some((&anchor, _)) = self.snaps.range(..=self.first).next_back() {
-            self.snaps.retain(|k, _| *k >= anchor);
+            self.snaps.retain(|tick, _| *tick >= anchor);
         }
     }
 
@@ -240,15 +240,18 @@ mod tests {
     #[test]
     fn replay_ring_rewinds_from_the_nearest_snapshot() {
         let mut ring: ReplayRing<u32> = ReplayRing::new(50, 10);
-        for t in 0..100u32 {
-            ring.record(t, inputs(&[(1, t as u8)]), || t * 100);
+        for tick in 0..100u32 {
+            ring.record(tick, inputs(&[(1, tick as u8)]), || tick * 100);
         }
-        let w = ring.window(73).unwrap();
-        assert_eq!((w.start, *w.snapshot, w.inputs.len()), (70, 7000, 30));
-        assert_eq!(w.inputs[0][&1].as_ref(), &[70]);
+        let window = ring.window(73).unwrap();
+        assert_eq!(
+            (window.start, *window.snapshot, window.inputs.len()),
+            (70, 7000, 30)
+        );
+        assert_eq!(window.inputs[0][&1].as_ref(), &[70]);
         // older than what is kept: clamps to the oldest snapshot that still has all its inputs
-        let w = ring.window(5).unwrap();
-        assert_eq!((w.start, w.inputs.len()), (50, 50));
+        let window = ring.window(5).unwrap();
+        assert_eq!((window.start, window.inputs.len()), (50, 50));
         assert_eq!(ring.oldest(), Some(50));
         // a gap resets
         ring.record(200, inputs(&[]), || 1);
@@ -269,12 +272,12 @@ mod tests {
     impl Simulation for Toy {
         type Snapshot = Toy;
         fn step(&mut self, tick: u32, inputs: &TickInputs) {
-            for (a, i) in inputs {
-                let b = i.first().copied().unwrap_or(0) as u64;
+            for (actor, input) in inputs {
+                let byte = input.first().copied().unwrap_or(0) as u64;
                 self.state = self
                     .state
                     .wrapping_mul(31)
-                    .wrapping_add(tick as u64 * 1000 + *a as u64 * 10 + b);
+                    .wrapping_add(tick as u64 * 1000 + *actor as u64 * 10 + byte);
             }
             self.state = self.state.wrapping_mul(7).wrapping_add(tick as u64);
             self.steps += 1;
@@ -282,21 +285,24 @@ mod tests {
         fn snapshot(&self) -> Toy {
             self.clone()
         }
-        fn restore(&mut self, s: &Toy) {
-            *self = s.clone();
+        fn restore(&mut self, snapshot: &Toy) {
+            *self = snapshot.clone();
         }
     }
 
-    fn inputs(v: &[(u16, u8)]) -> TickInputs {
-        v.iter().map(|(a, b)| (*a, Bytes::from(vec![*b]))).collect()
+    fn inputs(pairs: &[(u16, u8)]) -> TickInputs {
+        pairs
+            .iter()
+            .map(|(actor, byte)| (*actor, Bytes::from(vec![*byte])))
+            .collect()
     }
 
     fn reference(script: &[TickInputs]) -> u64 {
-        let mut s = Toy::default();
-        for (t, i) in script.iter().enumerate() {
-            s.step(t as u32, i);
+        let mut sim = Toy::default();
+        for (tick, inputs) in script.iter().enumerate() {
+            sim.step(tick as u32, inputs);
         }
-        s.state
+        sim.state
     }
 
     #[test]
@@ -305,10 +311,10 @@ mod tests {
         let mut rb = Rollback::new(&sim, 1, 0, 8);
         let script: Vec<TickInputs> = (0..10).map(|_| inputs(&[(1, 5), (2, 9)])).collect();
         rb.confirm(&mut sim, 0, &script[0]);
-        for t in 1..10u32 {
-            rb.local_input(t, Bytes::from(vec![5]));
-            rb.predict(&mut sim, t + 3);
-            assert!(!rb.confirm(&mut sim, t, &script[t as usize]));
+        for tick in 1..10u32 {
+            rb.local_input(tick, Bytes::from(vec![5]));
+            rb.predict(&mut sim, tick + 3);
+            assert!(!rb.confirm(&mut sim, tick, &script[tick as usize]));
         }
         assert_eq!(rb.rollbacks, 0);
         assert_eq!(rb.confirmed_tick(), 10);
@@ -324,10 +330,10 @@ mod tests {
         let mut script: Vec<TickInputs> = (0..8).map(|_| inputs(&[(1, 1), (2, 2)])).collect();
         script[4] = inputs(&[(1, 1), (2, 7)]); // remote actor changes input at tick 4
         script[5] = inputs(&[(2, 7)]); // and our own input arrives late (dropped from tick 5)
-        for t in 0..8u32 {
-            rb.local_input(t, Bytes::from(vec![1]));
-            rb.predict(&mut sim, t + 4);
-            rb.confirm(&mut sim, t, &script[t as usize]);
+        for tick in 0..8u32 {
+            rb.local_input(tick, Bytes::from(vec![1]));
+            rb.predict(&mut sim, tick + 4);
+            rb.confirm(&mut sim, tick, &script[tick as usize]);
         }
         // ticks 0 (actor 2 unknown yet), 4, 5 and 6: identical across the Rust/Web/C# cores
         assert_eq!(rb.rollbacks, 4);

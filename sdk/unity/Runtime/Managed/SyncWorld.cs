@@ -17,7 +17,6 @@ namespace Aurix.Net.Managed
             component != null && Components.TryGetValue(component.Id, out var value) ? value : null;
     }
 
-    /// <summary>One owner-authoritative op for <see cref="SyncWorld.EncodeOps"/>.</summary>
     /// <summary>Per-entity ownership policy: what the cell does when the owner leaves and who may take the entity.</summary>
     public enum OwnerPolicy : byte
     {
@@ -27,6 +26,7 @@ namespace Aurix.Net.Managed
         Dynamic = 3,
     }
 
+    /// <summary>One owner-authoritative op for <see cref="SyncWorld.EncodeOps"/>.</summary>
     public struct SyncOp
     {
         public const byte Write = 0,

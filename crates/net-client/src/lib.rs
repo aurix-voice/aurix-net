@@ -50,19 +50,19 @@ pub async fn issue_grant(
     player_id: &str,
     name: &str,
 ) -> Result<String> {
-    let v: serde_json::Value = reqwest::Client::new()
+    let response: serde_json::Value = reqwest::Client::new()
         .post(format!("{http_url}/v1/grants"))
         .bearer_auth(api_key)
         .json(&serde_json::json!({ "player_id": player_id, "name": name }))
         .send()
         .await
-        .map_err(|e| ClientError::Http(e.to_string()))?
+        .map_err(|error| ClientError::Http(error.to_string()))?
         .error_for_status()
-        .map_err(|e| ClientError::Http(e.to_string()))?
+        .map_err(|error| ClientError::Http(error.to_string()))?
         .json()
         .await
-        .map_err(|e| ClientError::Http(e.to_string()))?;
-    v["grant"]
+        .map_err(|error| ClientError::Http(error.to_string()))?;
+    response["grant"]
         .as_str()
         .map(str::to_string)
         .ok_or_else(|| ClientError::Http("no grant in response".into()))
@@ -117,16 +117,16 @@ struct DataPath {
 impl DataPath {
     fn flush(&self) {
         let out: Vec<Bytes> = {
-            let mut l = self.link.lock();
-            std::iter::from_fn(|| l.next_outgoing()).collect()
+            let mut link = self.link.lock();
+            std::iter::from_fn(|| link.next_outgoing()).collect()
         };
-        for d in out {
+        for datagram in out {
             match &self.sink {
-                Sink::Quic(c) => {
-                    let _ = c.send_datagram(d);
+                Sink::Quic(conn) => {
+                    let _ = conn.send_datagram(datagram);
                 }
                 Sink::Ws(tx) => {
-                    let _ = tx.try_send(Message::Binary(d));
+                    let _ = tx.try_send(Message::Binary(datagram));
                 }
             }
         }
@@ -182,18 +182,18 @@ impl Client {
         )
         .await
         .map_err(|_| ClientError::Timeout)?
-        .map_err(|e| ClientError::Ws(e.to_string()))?;
+        .map_err(|error| ClientError::Ws(error.to_string()))?;
         let (mut tx, mut rx) = ws.split();
         let (ctl, mut ctl_rx) = mpsc::channel::<Message>(256);
         let (events_tx, events) = mpsc::channel::<Event>(4096);
         let writer = tokio::spawn(async move {
-            while let Some(m) = ctl_rx.recv().await {
-                if tx.send(m).await.is_err() {
+            while let Some(message) = ctl_rx.recv().await {
+                if tx.send(message).await.is_err() {
                     break;
                 }
             }
         });
-        let mut c = Client {
+        let mut client = Client {
             ctl,
             events,
             replay: VecDeque::new(),
@@ -214,7 +214,7 @@ impl Client {
         let started = Instant::now();
         let probe = Arc::new(AtomicU64::new(u64::MAX));
         let pinger = {
-            let (ctl, probe) = (c.ctl.clone(), probe.clone());
+            let (ctl, probe) = (client.ctl.clone(), probe.clone());
             tokio::spawn(async move {
                 let mut every = tokio::time::interval(PING_EVERY);
                 loop {
@@ -231,15 +231,15 @@ impl Client {
                 }
             })
         };
-        c.tasks.push(pinger);
-        let rtt_ms = c.rtt_ms.clone();
+        client.tasks.push(pinger);
+        let rtt_ms = client.rtt_ms.clone();
         // Reader: text -> Control events, binary -> tunnel datagrams (routed via data path if any).
         let tunnel_in: Arc<Mutex<Option<Arc<DataPath>>>> = Arc::new(Mutex::new(None));
         let tunnel_slot = tunnel_in.clone();
         let reader = tokio::spawn(async move {
-            while let Some(m) = rx.next().await {
-                match m {
-                    Ok(Message::Text(t)) => match serde_json::from_str::<ServerMsg>(&t) {
+            while let Some(message) = rx.next().await {
+                match message {
+                    Ok(Message::Text(text)) => match serde_json::from_str::<ServerMsg>(&text) {
                         Ok(msg) => {
                             // The answer to the client's own probe is not the game's business.
                             let sent = probe.load(Ordering::Relaxed);
@@ -259,12 +259,12 @@ impl Client {
                                 break;
                             }
                         }
-                        Err(e) => tracing::warn!(error = %e, "bad control message"),
+                        Err(error) => tracing::warn!(%error, "bad control message"),
                     },
-                    Ok(Message::Binary(b)) => {
+                    Ok(Message::Binary(datagram)) => {
                         let dp = tunnel_slot.lock().clone();
                         if let Some(dp) = dp {
-                            deliver(&dp, b, &events_tx).await;
+                            deliver(&dp, datagram, &events_tx).await;
                         }
                     }
                     Ok(Message::Close(_)) | Err(_) => {
@@ -277,15 +277,16 @@ impl Client {
                 }
             }
         });
-        c.tasks.push(reader);
-        c.tunnel_slot = Some(tunnel_in);
-        c.send(ClientMsg::Auth {
-            grant: grant.to_string(),
-        })
-        .await?;
+        client.tasks.push(reader);
+        client.tunnel_slot = Some(tunnel_in);
+        client
+            .send(ClientMsg::Auth {
+                grant: grant.to_string(),
+            })
+            .await?;
         // wait for Authed (or Error)
         loop {
-            match c.next_event().await {
+            match client.next_event().await {
                 Some(Event::Control(ServerMsg::Authed { .. })) => break,
                 Some(Event::Control(ServerMsg::Hello { .. })) => continue,
                 Some(Event::Control(ServerMsg::Error { code, message })) => {
@@ -295,12 +296,13 @@ impl Client {
                 _ => continue,
             }
         }
-        Ok(c)
+        Ok(client)
     }
 
     /// Sends a control message.
     pub async fn send(&self, msg: ClientMsg) -> Result<()> {
-        let txt = serde_json::to_string(&msg).map_err(|e| ClientError::Ws(e.to_string()))?;
+        let txt =
+            serde_json::to_string(&msg).map_err(|error| ClientError::Ws(error.to_string()))?;
         self.ctl
             .send(Message::Text(txt.into()))
             .await
@@ -316,9 +318,9 @@ impl Client {
         opts: Options,
         msg: ClientMsg,
     ) -> Result<(Client, Joined)> {
-        let mut c = Client::connect(http_url, grant, opts.clone()).await?;
-        match c.join(msg.clone()).await {
-            Ok(j) => Ok((c, j)),
+        let mut client = Client::connect(http_url, grant, opts.clone()).await?;
+        match client.join(msg.clone()).await {
+            Ok(joined) => Ok((client, joined)),
             Err(ClientError::Server { code, message })
                 if code == "conflict" && message.contains("room_elsewhere:") =>
             {
@@ -328,12 +330,12 @@ impl Client {
                     .unwrap_or_default()
                     .trim()
                     .to_string();
-                drop(c);
-                let mut c = Client::connect(&url, grant, opts).await?;
-                let j = c.join(msg).await?;
-                Ok((c, j))
+                drop(client);
+                let mut client = Client::connect(&url, grant, opts).await?;
+                let joined = client.join(msg).await?;
+                Ok((client, joined))
             }
-            Err(e) => Err(e),
+            Err(error) => Err(error),
         }
     }
 
@@ -352,7 +354,7 @@ impl Client {
                 schema_hash: None,
                 spectator: false,
             },
-            Some(m) => m,
+            Some(msg) => msg,
             None => return Err(ClientError::Disconnected),
         };
         let (entry, grant, opts) = (
@@ -364,8 +366,8 @@ impl Client {
         let mut last = ClientError::Disconnected;
         for url in std::iter::once(entry.as_str()).chain(fallback_urls.iter().copied()) {
             match Client::connect_and_join(url, &grant, opts.clone(), msg.clone()).await {
-                Ok(r) => return Ok(r),
-                Err(e) => last = e,
+                Ok(rejoined) => return Ok(rejoined),
+                Err(error) => last = error,
             }
         }
         Err(last)
@@ -455,14 +457,14 @@ impl Client {
         self.close_data();
         let ticket = base64::engine::general_purpose::STANDARD
             .decode(&ep.ticket)
-            .map_err(|e| ClientError::Data(e.to_string()))?;
+            .map_err(|error| ClientError::Data(error.to_string()))?;
         let link = Mutex::new(Link::new(Instant::now()));
         let dp: Arc<DataPath> = if self.opts.tunnel {
             let (ws_tx, mut ws_rx) = mpsc::channel::<Message>(1024);
             let ctl = self.ctl.clone();
             self.data_tasks.push(tokio::spawn(async move {
-                while let Some(m) = ws_rx.recv().await {
-                    if ctl.send(m).await.is_err() {
+                while let Some(message) = ws_rx.recv().await {
+                    if ctl.send(message).await.is_err() {
                         break;
                     }
                 }
@@ -484,24 +486,24 @@ impl Client {
             let transport = quic::transport_config(Duration::from_secs(15), Duration::from_secs(5));
             let endpoint =
                 quic::client_endpoint("0.0.0.0:0".parse().unwrap(), &ep.cert_sha256, transport)
-                    .map_err(|e| ClientError::Data(e.to_string()))?;
+                    .map_err(|error| ClientError::Data(error.to_string()))?;
             let addr = tokio::net::lookup_host((ep.host.as_str(), ep.port))
                 .await
-                .map_err(|e| ClientError::Data(e.to_string()))?
-                .find(|a| a.is_ipv4())
+                .map_err(|error| ClientError::Data(error.to_string()))?
+                .find(|address| address.is_ipv4())
                 .ok_or_else(|| ClientError::Data("no address".into()))?;
             let conn = tokio::time::timeout(self.opts.connect_timeout, async {
                 endpoint
                     .connect(addr, "aurix-net")
-                    .map_err(|e| ClientError::Data(e.to_string()))?
+                    .map_err(|error| ClientError::Data(error.to_string()))?
                     .await
-                    .map_err(|e| ClientError::Data(e.to_string()))
+                    .map_err(|error| ClientError::Data(error.to_string()))
             })
             .await
             .map_err(|_| ClientError::Timeout)??;
             let ticket = Bytes::from(ticket);
             conn.send_datagram(ticket.clone())
-                .map_err(|e| ClientError::Data(e.to_string()))?;
+                .map_err(|error| ClientError::Data(error.to_string()))?;
             let dp = Arc::new(DataPath {
                 link,
                 sink: Sink::Quic(conn.clone()),
@@ -561,7 +563,7 @@ impl Client {
         dp.link
             .lock()
             .send(channel, payload, Instant::now())
-            .map_err(|e| ClientError::Data(format!("{e:?}")))?;
+            .map_err(|error| ClientError::Data(format!("{error:?}")))?;
         Ok(())
     }
 
@@ -647,7 +649,7 @@ impl Client {
     }
 
     pub fn link_stats(&self) -> Option<net_transport::LinkStats> {
-        self.data.as_ref().map(|d| d.link.lock().stats())
+        self.data.as_ref().map(|path| path.link.lock().stats())
     }
 
     pub async fn leave(&mut self) -> Result<()> {
@@ -696,25 +698,25 @@ impl Client {
 impl Drop for Client {
     fn drop(&mut self) {
         self.close_data();
-        for t in &self.tasks {
-            t.abort();
+        for task in &self.tasks {
+            task.abort();
         }
     }
 }
 
-async fn deliver(dp: &Arc<DataPath>, d: Bytes, ev: &mpsc::Sender<Event>) {
-    let recv = dp.link.lock().receive(d, Instant::now());
+async fn deliver(dp: &Arc<DataPath>, datagram: Bytes, ev: &mpsc::Sender<Event>) {
+    let recv = dp.link.lock().receive(datagram, Instant::now());
     dp.flush();
-    for m in recv {
-        if m.payload.is_empty() {
+    for message in recv {
+        if message.payload.is_empty() {
             let _ = ev.send(Event::DataReady).await;
             continue;
         }
         if ev
             .send(Event::Data {
-                channel: m.channel,
-                tick: m.tick,
-                payload: m.payload,
+                channel: message.channel,
+                tick: message.tick,
+                payload: message.payload,
             })
             .await
             .is_err()
@@ -751,26 +753,29 @@ pub async fn best_region(catalog_http: &str, probes: u8) -> Result<RegionPick> {
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()
-        .map_err(|e| ClientError::Http(e.to_string()))?;
+        .map_err(|error| ClientError::Http(error.to_string()))?;
     let base = catalog_http.trim_end_matches('/');
     let regions: Vec<serde_json::Value> = http
         .get(format!("{base}/v1/regions"))
         .send()
         .await
-        .map_err(|e| ClientError::Http(e.to_string()))?
+        .map_err(|error| ClientError::Http(error.to_string()))?
         .json()
         .await
-        .map_err(|e| ClientError::Http(e.to_string()))?;
+        .map_err(|error| ClientError::Http(error.to_string()))?;
     let probes = probes.clamp(1, 10);
     let mut tasks = Vec::new();
-    for r in &regions {
-        let region = r["id"].as_str().unwrap_or_default().to_string();
-        let display_name = r["display_name"].as_str().unwrap_or_default().to_string();
-        for ep in r["endpoints"]
+    for entry in &regions {
+        let region = entry["id"].as_str().unwrap_or_default().to_string();
+        let display_name = entry["display_name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        for ep in entry["endpoints"]
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|e| e.as_str())
+            .filter_map(|endpoint| endpoint.as_str())
         {
             let (http, region, display_name, ep) = (
                 http.clone(),
@@ -781,9 +786,9 @@ pub async fn best_region(catalog_http: &str, probes: u8) -> Result<RegionPick> {
             tasks.push(async move {
                 let mut best: i32 = -1;
                 for _ in 0..probes {
-                    let t = std::time::Instant::now();
+                    let started = std::time::Instant::now();
                     if http.get(format!("{ep}/healthz")).send().await.is_ok() {
-                        let ms = t.elapsed().as_millis() as i32;
+                        let ms = started.elapsed().as_millis() as i32;
                         best = if best < 0 { ms } else { best.min(ms) };
                     }
                 }
@@ -799,8 +804,8 @@ pub async fn best_region(catalog_http: &str, probes: u8) -> Result<RegionPick> {
     let candidates: Vec<RegionCandidate> = futures::future::join_all(tasks).await;
     let Some(win) = candidates
         .iter()
-        .filter(|c| c.rtt_ms >= 0)
-        .min_by_key(|c| c.rtt_ms)
+        .filter(|candidate| candidate.rtt_ms >= 0)
+        .min_by_key(|candidate| candidate.rtt_ms)
     else {
         return Err(ClientError::Http("no reachable region".into()));
     };

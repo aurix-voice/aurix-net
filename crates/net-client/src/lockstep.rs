@@ -122,14 +122,14 @@ impl LockstepClient {
 
     /// Feeds one data-path payload. `None` when it was not a lockstep frame. After a bundle
     /// frame (`LS_BUNDLE`) send [`Self::ack_frame`], so the room resends what was lost.
-    pub fn receive(&mut self, p: &[u8]) -> Option<Vec<LsEvent>> {
+    pub fn receive(&mut self, payload: &[u8]) -> Option<Vec<LsEvent>> {
         let mut out = Vec::new();
-        match *p.first()? {
+        match *payload.first()? {
             kind @ (LS_CATCHUP | LS_RESTORE) => {
-                if p.len() >= 17 {
-                    let tick = u32_at(p, 1);
-                    let hash = u64_at(p, 5);
-                    let len = (u32_at(p, 13) as usize).min(p.len() - 17);
+                if payload.len() >= 17 {
+                    let tick = u32_at(payload, 1);
+                    let hash = u64_at(payload, 5);
+                    let len = (u32_at(payload, 13) as usize).min(payload.len() - 17);
                     // the catch-up of a join is reliable and can come after bundles that
                     // already took the client past it; a restore always rewinds
                     if kind == LS_CATCHUP && self.anchored && tick < self.next {
@@ -143,43 +143,44 @@ impl LockstepClient {
                     out.push(LsEvent::Restore {
                         tick,
                         hash,
-                        state: Bytes::copy_from_slice(&p[17..17 + len]),
+                        state: Bytes::copy_from_slice(&payload[17..17 + len]),
                     });
                 }
             }
             LS_BUNDLE => {
-                if p.len() >= 2 {
-                    let n = p[1] as usize;
-                    let mut o = 2;
-                    for _ in 0..n {
-                        if o + 2 > p.len() {
+                if payload.len() >= 2 {
+                    let count = payload[1] as usize;
+                    let mut offset = 2;
+                    for _ in 0..count {
+                        if offset + 2 > payload.len() {
                             break;
                         }
-                        let len = u16::from_be_bytes([p[o], p[o + 1]]) as usize;
-                        o += 2;
-                        if o + len > p.len() {
+                        let len =
+                            u16::from_be_bytes([payload[offset], payload[offset + 1]]) as usize;
+                        offset += 2;
+                        if offset + len > payload.len() {
                             break;
                         }
-                        self.decode_bundle(&p[o..o + len]);
-                        o += len;
+                        self.decode_bundle(&payload[offset..offset + len]);
+                        offset += len;
                     }
                     self.drain(&mut out);
                 }
             }
             LS_CHECKPOINT_REQ => {
-                if p.len() >= 5 {
-                    out.push(LsEvent::CheckpointRequested(u32_at(p, 1)));
+                if payload.len() >= 5 {
+                    out.push(LsEvent::CheckpointRequested(u32_at(payload, 1)));
                 }
             }
             LS_DUMP_REQ => {
-                if p.len() >= 5 {
-                    out.push(LsEvent::DumpRequested(u32_at(p, 1)));
+                if payload.len() >= 5 {
+                    out.push(LsEvent::DumpRequested(u32_at(payload, 1)));
                 }
             }
             LS_INPUT_STATS => {
-                if p.len() >= 7 {
-                    let tick = u32::from_be_bytes([p[1], p[2], p[3], p[4]]);
-                    self.on_input_stats(tick, p[5] as i8, p[6]);
+                if payload.len() >= 7 {
+                    let tick = u32::from_be_bytes([payload[1], payload[2], payload[3], payload[4]]);
+                    self.on_input_stats(tick, payload[5] as i8, payload[6]);
                 }
             }
             LS_CHECKPOINT | LS_HASH | LS_INPUT => {}
@@ -204,40 +205,40 @@ impl LockstepClient {
             .clamp(self.input_delay_min, self.input_delay_max);
     }
 
-    fn decode_bundle(&mut self, b: &[u8]) {
-        if b.len() < 6 || b[0] != LS_BUNDLE {
+    fn decode_bundle(&mut self, bundle: &[u8]) {
+        if bundle.len() < 6 || bundle[0] != LS_BUNDLE {
             return;
         }
-        let t = u32_at(b, 1);
-        let k = b[5] as usize;
-        let mut o = 6;
-        self.server_tick = self.server_tick.max(t + 1);
+        let tick = u32_at(bundle, 1);
+        let count = bundle[5] as usize;
+        let mut offset = 6;
+        self.server_tick = self.server_tick.max(tick + 1);
         self.started = true;
         // ticks are delivered from tick 0 or from a catch-up, never from the middle
         if !self.anchored {
-            if t != 0 {
+            if tick != 0 {
                 return;
             }
             self.anchored = true;
         }
-        if t < self.next || self.pending.contains_key(&t) {
+        if tick < self.next || self.pending.contains_key(&tick) {
             return;
         }
         let mut inputs = TickInputs::new();
-        for _ in 0..k {
-            if o + 3 > b.len() {
+        for _ in 0..count {
+            if offset + 3 > bundle.len() {
                 break;
             }
-            let a = u16::from_be_bytes([b[o], b[o + 1]]);
-            let l = b[o + 2] as usize;
-            o += 3;
-            if o + l > b.len() {
+            let actor = u16::from_be_bytes([bundle[offset], bundle[offset + 1]]);
+            let len = bundle[offset + 2] as usize;
+            offset += 3;
+            if offset + len > bundle.len() {
                 break;
             }
-            inputs.insert(a, Bytes::copy_from_slice(&b[o..o + l]));
-            o += l;
+            inputs.insert(actor, Bytes::copy_from_slice(&bundle[offset..offset + len]));
+            offset += len;
         }
-        self.pending.insert(t, inputs);
+        self.pending.insert(tick, inputs);
     }
 
     fn drain(&mut self, out: &mut Vec<LsEvent>) {
@@ -248,10 +249,14 @@ impl LockstepClient {
             out.push(LsEvent::Tick { tick, inputs });
         }
         let limit = self.next + MAX_PENDING_AHEAD;
-        let far: Vec<u32> = self.pending.range(limit + 1..).map(|(t, _)| *t).collect();
+        let far: Vec<u32> = self
+            .pending
+            .range(limit + 1..)
+            .map(|(tick, _)| *tick)
+            .collect();
         self.dropped += far.len() as u64;
-        for t in far {
-            self.pending.remove(&t);
+        for tick in far {
+            self.pending.remove(&tick);
         }
     }
 
@@ -278,25 +283,25 @@ impl LockstepClient {
             self.recent_inputs.remove(0);
         }
         let first = tick - (self.recent_inputs.len() as u32 - 1);
-        let mut b = BytesMut::with_capacity(
+        let mut frame = BytesMut::with_capacity(
             6 + self
                 .recent_inputs
                 .iter()
-                .map(|i| i.len() + 1)
+                .map(|queued| queued.len() + 1)
                 .sum::<usize>(),
         );
-        b.put_u8(LS_INPUT);
-        b.put_u32(first);
-        b.put_u8(self.recent_inputs.len() as u8);
-        for i in &self.recent_inputs {
-            b.put_u8(i.len().min(255) as u8);
-            b.extend_from_slice(&i[..i.len().min(255)]);
+        frame.put_u8(LS_INPUT);
+        frame.put_u32(first);
+        frame.put_u8(self.recent_inputs.len() as u8);
+        for queued in &self.recent_inputs {
+            frame.put_u8(queued.len().min(255) as u8);
+            frame.extend_from_slice(&queued[..queued.len().min(255)]);
         }
         Some((
             tick,
             Outgoing {
                 reliable: false,
-                payload: b.freeze(),
+                payload: frame.freeze(),
             },
         ))
     }
@@ -305,37 +310,37 @@ impl LockstepClient {
     /// that tick on instead of the last three, so a run of lost packets leaves no gap. Sent
     /// after every bundle frame, also while a gap is open; a lost ack is not repeated.
     pub fn ack_frame(&self) -> Outgoing {
-        let mut b = BytesMut::with_capacity(5);
-        b.put_u8(LS_ACK);
-        b.put_u32(if self.anchored { self.next } else { 0 });
+        let mut frame = BytesMut::with_capacity(5);
+        frame.put_u8(LS_ACK);
+        frame.put_u32(if self.anchored { self.next } else { 0 });
         Outgoing {
             reliable: false,
-            payload: b.freeze(),
+            payload: frame.freeze(),
         }
     }
 
     /// Hash of the confirmed state after `tick`; the node compares it across players (and the
     /// server simulation when there is one).
     pub fn hash_frame(tick: u32, hash: u64) -> Outgoing {
-        let mut b = BytesMut::with_capacity(13);
-        b.put_u8(LS_HASH);
-        b.put_u32(tick);
-        b.put_u64(hash);
+        let mut frame = BytesMut::with_capacity(13);
+        frame.put_u8(LS_HASH);
+        frame.put_u32(tick);
+        frame.put_u64(hash);
         Outgoing {
             reliable: false,
-            payload: b.freeze(),
+            payload: frame.freeze(),
         }
     }
     /// Reliable out-of-input-stream command; the server stamps it onto the next tick and every
     /// client (and the referee) receives it in that tick's inputs under `COMMAND_ACTOR` (65535)
     /// as `[u16 actor, u16 len, bytes]*`.
     pub fn command_frame(data: &[u8]) -> Outgoing {
-        let mut b = BytesMut::with_capacity(1 + data.len());
-        b.put_u8(LS_COMMAND);
-        b.extend_from_slice(data);
+        let mut frame = BytesMut::with_capacity(1 + data.len());
+        frame.put_u8(LS_COMMAND);
+        frame.extend_from_slice(data);
         Outgoing {
             reliable: true,
-            payload: b.freeze(),
+            payload: frame.freeze(),
         }
     }
 
@@ -352,30 +357,35 @@ impl LockstepClient {
 
     /// FNV-1a 64 over bytes: the portable state hash the other SDKs use.
     pub fn fnv1a(data: &[u8]) -> u64 {
-        data.iter().fold(0xcbf29ce484222325u64, |h, &x| {
-            (h ^ x as u64).wrapping_mul(0x100000001b3)
+        data.iter().fold(0xcbf29ce484222325u64, |hash, &byte| {
+            (hash ^ byte as u64).wrapping_mul(0x100000001b3)
         })
     }
 }
 
 fn frame(kind: u8, tick: u32, hash: u64, state: &[u8]) -> Outgoing {
-    let mut b = BytesMut::with_capacity(13 + state.len());
-    b.put_u8(kind);
-    b.put_u32(tick);
-    b.put_u64(hash);
-    b.extend_from_slice(state);
+    let mut bytes = BytesMut::with_capacity(13 + state.len());
+    bytes.put_u8(kind);
+    bytes.put_u32(tick);
+    bytes.put_u64(hash);
+    bytes.extend_from_slice(state);
     Outgoing {
         reliable: true,
-        payload: b.freeze(),
+        payload: bytes.freeze(),
     }
 }
 
-fn u32_at(b: &[u8], o: usize) -> u32 {
-    u32::from_be_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+fn u32_at(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_be_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
 }
 
-fn u64_at(b: &[u8], o: usize) -> u64 {
-    ((u32_at(b, o) as u64) << 32) | u32_at(b, o + 4) as u64
+fn u64_at(bytes: &[u8], offset: usize) -> u64 {
+    ((u32_at(bytes, offset) as u64) << 32) | u32_at(bytes, offset + 4) as u64
 }
 
 #[cfg(test)]
@@ -385,121 +395,135 @@ mod tests {
     type TickSpec<'a> = (u32, &'a [(u16, &'a [u8])]);
 
     fn bundle(ticks: &[TickSpec<'_>]) -> Vec<u8> {
-        let mut p = vec![LS_BUNDLE, ticks.len() as u8];
-        for (t, inputs) in ticks {
-            let mut b = vec![LS_BUNDLE];
-            b.extend_from_slice(&t.to_be_bytes());
-            b.push(inputs.len() as u8);
-            for (a, d) in *inputs {
-                b.extend_from_slice(&a.to_be_bytes());
-                b.push(d.len() as u8);
-                b.extend_from_slice(d);
+        let mut frame = vec![LS_BUNDLE, ticks.len() as u8];
+        for (tick, inputs) in ticks {
+            let mut body = vec![LS_BUNDLE];
+            body.extend_from_slice(&tick.to_be_bytes());
+            body.push(inputs.len() as u8);
+            for (actor, input) in *inputs {
+                body.extend_from_slice(&actor.to_be_bytes());
+                body.push(input.len() as u8);
+                body.extend_from_slice(input);
             }
-            p.extend_from_slice(&(b.len() as u16).to_be_bytes());
-            p.extend_from_slice(&b);
+            frame.extend_from_slice(&(body.len() as u16).to_be_bytes());
+            frame.extend_from_slice(&body);
         }
-        p
+        frame
     }
 
     #[test]
     fn bundles_are_delivered_in_tick_order_and_once() {
-        let mut c = LockstepClient::new();
-        let ev = c.receive(&bundle(&[(0, &[(1, b"a")])])).unwrap();
+        let mut client = LockstepClient::new();
+        let ev = client.receive(&bundle(&[(0, &[(1, b"a")])])).unwrap();
         assert_eq!(ev.len(), 1);
         assert!(matches!(&ev[0], LsEvent::Tick { tick: 0, inputs } if inputs[&1].as_ref() == b"a"));
         // tick 2 before tick 1: held back, then both delivered in order
-        assert!(c.receive(&bundle(&[(2, &[])])).unwrap().is_empty());
-        let ev = c.receive(&bundle(&[(1, &[(2, b"xy")]), (0, &[])])).unwrap();
+        assert!(client.receive(&bundle(&[(2, &[])])).unwrap().is_empty());
+        let ev = client
+            .receive(&bundle(&[(1, &[(2, b"xy")]), (0, &[])]))
+            .unwrap();
         let ticks: Vec<u32> = ev
             .iter()
-            .map(|e| match e {
+            .map(|event| match event {
                 LsEvent::Tick { tick, .. } => *tick,
                 _ => unreachable!(),
             })
             .collect();
         assert_eq!(ticks, vec![1, 2]);
-        assert_eq!(c.confirmed_tick(), 3);
-        assert_eq!(c.server_tick, 3);
-        assert_eq!(c.delivered, 3);
+        assert_eq!(client.confirmed_tick(), 3);
+        assert_eq!(client.server_tick, 3);
+        assert_eq!(client.delivered, 3);
     }
 
     #[test]
     fn the_ack_names_the_tick_needed_next() {
-        let mut c = LockstepClient::new();
-        assert_eq!(c.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 0]);
-        c.receive(&bundle(&[(0, &[]), (1, &[])])).unwrap();
-        assert_eq!(c.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 2]);
+        let mut client = LockstepClient::new();
+        assert_eq!(client.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 0]);
+        client.receive(&bundle(&[(0, &[]), (1, &[])])).unwrap();
+        assert_eq!(client.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 2]);
         // ticks 2 to 4 were lost: the ack stays on 2 while later bundles wait
-        c.receive(&bundle(&[(5, &[]), (6, &[])])).unwrap();
-        assert_eq!(c.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 2]);
+        client.receive(&bundle(&[(5, &[]), (6, &[])])).unwrap();
+        assert_eq!(client.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 2]);
         // the room answers with everything from 2 on, more than three bundles in one frame
         let resent: Vec<TickSpec<'_>> = (2..=7).map(|tick| (tick, &[][..])).collect();
-        let ev = c.receive(&bundle(&resent)).unwrap();
+        let ev = client.receive(&bundle(&resent)).unwrap();
         assert_eq!(ev.len(), 6);
-        assert_eq!(c.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 8]);
-        assert!(!c.ack_frame().reliable);
+        assert_eq!(client.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 8]);
+        assert!(!client.ack_frame().reliable);
     }
 
     fn catchup(tick: u32) -> Vec<u8> {
-        let mut p = vec![LS_CATCHUP];
-        p.extend_from_slice(&tick.to_be_bytes());
-        p.extend_from_slice(&[0; 12]);
-        p
+        let mut frame = vec![LS_CATCHUP];
+        frame.extend_from_slice(&tick.to_be_bytes());
+        frame.extend_from_slice(&[0; 12]);
+        frame
     }
 
     #[test]
     fn ticks_start_at_tick_zero_or_at_a_catchup() {
-        let mut c = LockstepClient::new();
+        let mut client = LockstepClient::new();
         // a room past tick 0: its bundles come before the reliable catch-up
-        assert!(c
+        assert!(client
             .receive(&bundle(&[(5, &[]), (6, &[])]))
             .unwrap()
             .is_empty());
-        assert_eq!(c.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 0]);
+        assert_eq!(client.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 0]);
         assert!(matches!(
-            c.receive(&catchup(6)).unwrap()[..],
+            client.receive(&catchup(6)).unwrap()[..],
             [LsEvent::Restore { tick: 6, .. }]
         ));
-        assert_eq!(c.receive(&bundle(&[(6, &[]), (7, &[])])).unwrap().len(), 2);
-        assert_eq!(c.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 8]);
+        assert_eq!(
+            client
+                .receive(&bundle(&[(6, &[]), (7, &[])]))
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(client.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 8]);
     }
 
     #[test]
     fn a_catchup_behind_the_delivered_ticks_is_ignored() {
-        let mut c = LockstepClient::new();
+        let mut client = LockstepClient::new();
         let first: Vec<TickSpec<'_>> = (0..=3).map(|tick| (tick, &[][..])).collect();
-        assert_eq!(c.receive(&bundle(&first)).unwrap().len(), 4);
-        assert!(c.receive(&catchup(1)).unwrap().is_empty());
-        assert_eq!(c.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 4]);
-        assert_eq!(c.receive(&bundle(&[(4, &[])])).unwrap().len(), 1);
-        assert_eq!(c.catchups, 0);
+        assert_eq!(client.receive(&bundle(&first)).unwrap().len(), 4);
+        assert!(client.receive(&catchup(1)).unwrap().is_empty());
+        assert_eq!(client.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 4]);
+        assert_eq!(client.receive(&bundle(&[(4, &[])])).unwrap().len(), 1);
+        assert_eq!(client.catchups, 0);
     }
 
     #[test]
     fn a_restore_behind_the_delivered_ticks_rewinds() {
-        let mut c = LockstepClient::new();
+        let mut client = LockstepClient::new();
         let first: Vec<TickSpec<'_>> = (0..=3).map(|tick| (tick, &[][..])).collect();
-        assert_eq!(c.receive(&bundle(&first)).unwrap().len(), 4);
+        assert_eq!(client.receive(&bundle(&first)).unwrap().len(), 4);
         let mut restore = catchup(1);
         restore[0] = LS_RESTORE;
         assert!(matches!(
-            c.receive(&restore).unwrap()[..],
+            client.receive(&restore).unwrap()[..],
             [LsEvent::Restore { tick: 1, .. }]
         ));
-        assert_eq!(c.receive(&bundle(&[(1, &[]), (2, &[])])).unwrap().len(), 2);
-        assert_eq!(c.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 3]);
+        assert_eq!(
+            client
+                .receive(&bundle(&[(1, &[]), (2, &[])]))
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(client.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 3]);
     }
 
     #[test]
     fn catchup_restores_and_resets_the_cursor() {
-        let mut c = LockstepClient::new();
-        c.receive(&bundle(&[(0, &[])])).unwrap();
-        let mut p = vec![LS_CATCHUP];
-        p.extend_from_slice(&40u32.to_be_bytes());
-        p.extend_from_slice(&7u64.to_be_bytes());
-        p.extend_from_slice(&3u32.to_be_bytes());
-        p.extend_from_slice(b"abc");
-        let ev = c.receive(&p).unwrap();
+        let mut client = LockstepClient::new();
+        client.receive(&bundle(&[(0, &[])])).unwrap();
+        let mut frame = vec![LS_CATCHUP];
+        frame.extend_from_slice(&40u32.to_be_bytes());
+        frame.extend_from_slice(&7u64.to_be_bytes());
+        frame.extend_from_slice(&3u32.to_be_bytes());
+        frame.extend_from_slice(b"abc");
+        let ev = client.receive(&frame).unwrap();
         assert_eq!(
             ev,
             vec![LsEvent::Restore {
@@ -508,82 +532,89 @@ mod tests {
                 state: Bytes::from_static(b"abc")
             }]
         );
-        assert_eq!(c.confirmed_tick(), 40);
-        assert!(c.receive(&bundle(&[(39, &[])])).unwrap().is_empty());
-        assert_eq!(c.receive(&bundle(&[(40, &[])])).unwrap().len(), 1);
+        assert_eq!(client.confirmed_tick(), 40);
+        assert!(client.receive(&bundle(&[(39, &[])])).unwrap().is_empty());
+        assert_eq!(client.receive(&bundle(&[(40, &[])])).unwrap().len(), 1);
     }
 
     #[test]
     fn an_input_is_resent_only_under_its_own_tick() {
-        let mut c = LockstepClient::new();
-        c.receive(&bundle(&[(9, &[])])).unwrap();
-        c.send_input(Bytes::from_static(b"A")).unwrap();
-        c.receive(&bundle(&[(19, &[])])).unwrap();
-        let (tick, frame) = c.send_input(Bytes::from_static(b"B")).unwrap();
+        let mut client = LockstepClient::new();
+        client.receive(&bundle(&[(9, &[])])).unwrap();
+        client.send_input(Bytes::from_static(b"A")).unwrap();
+        client.receive(&bundle(&[(19, &[])])).unwrap();
+        let (tick, frame) = client.send_input(Bytes::from_static(b"B")).unwrap();
         assert_eq!(tick, 22);
         assert_eq!(frame.payload.as_ref(), &[LS_INPUT, 0, 0, 0, 22, 1, 1, b'B']);
     }
 
     #[test]
     fn input_frames_carry_redundant_inputs_and_adaptive_delay() {
-        let mut c = LockstepClient::new();
-        c.input_redundancy = 2;
-        c.receive(&bundle(&[(9, &[])])).unwrap();
-        let (t1, _) = c.send_input(Bytes::from_static(b"A")).unwrap();
+        let mut client = LockstepClient::new();
+        client.input_redundancy = 2;
+        client.receive(&bundle(&[(9, &[])])).unwrap();
+        let (t1, _) = client.send_input(Bytes::from_static(b"A")).unwrap();
         assert_eq!(t1, 12);
-        let (t2, f) = c.send_input(Bytes::from_static(b"BB")).unwrap();
+        let (t2, frame) = client.send_input(Bytes::from_static(b"BB")).unwrap();
         // a third input before the room moves on would be stamped too far ahead
-        assert!(c.send_input(Bytes::from_static(b"C")).is_none());
+        assert!(client.send_input(Bytes::from_static(b"C")).is_none());
         assert_eq!(t2, 13);
-        assert!(!f.reliable);
+        assert!(!frame.reliable);
         assert_eq!(
-            f.payload.as_ref(),
+            frame.payload.as_ref(),
             &[LS_INPUT, 0, 0, 0, 12, 2, 1, b'A', 2, b'B', b'B']
         );
         // late report: delay covers the lateness plus one; three slack reports: the excess goes
-        c.receive(&[LS_INPUT_STATS, 0, 0, 0, 30, 0xFE, 1]).unwrap();
-        assert_eq!((c.input_delay, c.last_margin, c.late_inputs), (5, -2, 1));
+        client
+            .receive(&[LS_INPUT_STATS, 0, 0, 0, 30, 0xFE, 1])
+            .unwrap();
+        assert_eq!(
+            (client.input_delay, client.last_margin, client.late_inputs),
+            (5, -2, 1)
+        );
         for _ in 0..3 {
-            c.receive(&[LS_INPUT_STATS, 0, 0, 0, 60, 3, 0]).unwrap();
+            client
+                .receive(&[LS_INPUT_STATS, 0, 0, 0, 60, 3, 0])
+                .unwrap();
         }
-        assert_eq!(c.input_delay, 4);
+        assert_eq!(client.input_delay, 4);
         // a round trip of 12 ticks is covered by one report and given back by three
-        c.receive(&bundle(&[(159, &[])])).unwrap();
-        c.send_input(Bytes::from_static(b"C")).unwrap();
-        c.on_input_stats(170, -12, 30);
-        assert_eq!(c.input_delay, 17);
+        client.receive(&bundle(&[(159, &[])])).unwrap();
+        client.send_input(Bytes::from_static(b"C")).unwrap();
+        client.on_input_stats(170, -12, 30);
+        assert_eq!(client.input_delay, 17);
         // the next report still covers inputs stamped before the raise
-        c.on_input_stats(200, -12, 30);
-        assert_eq!((c.input_delay, c.late_inputs), (17, 61));
+        client.on_input_stats(200, -12, 30);
+        assert_eq!((client.input_delay, client.late_inputs), (17, 61));
         for (tick, margin) in [(230, 9), (260, 6), (290, 7)] {
-            c.on_input_stats(tick, margin, 0);
+            client.on_input_stats(tick, margin, 0);
         }
-        assert_eq!(c.input_delay, 13);
-        c.input_delay = 4;
-        c.input_delay_max = 4;
-        c.on_input_stats(330, -100, 0);
-        assert_eq!(c.input_delay, 4);
-        c.adaptive_delay = false;
-        c.on_input_stats(360, -5, 2);
-        assert_eq!((c.input_delay, c.late_inputs), (4, 63));
+        assert_eq!(client.input_delay, 13);
+        client.input_delay = 4;
+        client.input_delay_max = 4;
+        client.on_input_stats(330, -100, 0);
+        assert_eq!(client.input_delay, 4);
+        client.adaptive_delay = false;
+        client.on_input_stats(360, -5, 2);
+        assert_eq!((client.input_delay, client.late_inputs), (4, 63));
     }
 
     #[test]
     fn requests_and_answer_frames() {
-        let mut c = LockstepClient::new();
+        let mut client = LockstepClient::new();
         assert_eq!(
-            c.receive(&[LS_CHECKPOINT_REQ, 0, 0, 1, 0]).unwrap(),
+            client.receive(&[LS_CHECKPOINT_REQ, 0, 0, 1, 0]).unwrap(),
             vec![LsEvent::CheckpointRequested(256)]
         );
         assert_eq!(
-            c.receive(&[LS_DUMP_REQ, 0, 0, 0, 9]).unwrap(),
+            client.receive(&[LS_DUMP_REQ, 0, 0, 0, 9]).unwrap(),
             vec![LsEvent::DumpRequested(9)]
         );
-        assert_eq!(c.receive(&[0x11, 1, 2]), None);
-        let d = LockstepClient::dump_frame(9, 0x0102030405060708, b"st");
-        assert!(d.reliable);
+        assert_eq!(client.receive(&[0x11, 1, 2]), None);
+        let dump = LockstepClient::dump_frame(9, 0x0102030405060708, b"st");
+        assert!(dump.reliable);
         assert_eq!(
-            d.payload.as_ref(),
+            dump.payload.as_ref(),
             &[LS_DUMP, 0, 0, 0, 9, 1, 2, 3, 4, 5, 6, 7, 8, b's', b't']
         );
         assert_eq!(LockstepClient::hash_frame(1, 2).payload.len(), 13);

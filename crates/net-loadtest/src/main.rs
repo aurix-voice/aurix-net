@@ -112,10 +112,13 @@ impl Stats {
 }
 
 /// Entity records in a delta payload (after the kind byte): the count follows the despawn list.
-fn delta_entities(d: &[u8]) -> u64 {
-    let Some(n) = d.get(8..10) else { return 0 };
-    let at = 10 + 6 * u16::from_be_bytes([n[0], n[1]]) as usize;
-    d.get(at..at + 2)
+fn delta_entities(payload: &[u8]) -> u64 {
+    let Some(count) = payload.get(8..10) else {
+        return 0;
+    };
+    let at = 10 + 6 * u16::from_be_bytes([count[0], count[1]]) as usize;
+    payload
+        .get(at..at + 2)
         .map_or(0, |n| u16::from_be_bytes([n[0], n[1]]) as u64)
 }
 
@@ -133,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
     let api_key = match (&cli.api_key, &cli.operator_token) {
         (Some(k), _) => k.clone(),
         (None, Some(t)) => {
-            let v: serde_json::Value = http
+            let created: serde_json::Value = http
                 .post(format!("{}/v1/operator/projects", cli.http))
                 .bearer_auth(t)
                 .json(&serde_json::json!({"name": "loadtest"}))
@@ -142,7 +145,7 @@ async fn main() -> anyhow::Result<()> {
                 .error_for_status()?
                 .json()
                 .await?;
-            v["key"]["key"].as_str().unwrap().to_string()
+            created["key"]["key"].as_str().unwrap().to_string()
         }
         _ => anyhow::bail!("need --api-key or --operator-token"),
     };
@@ -153,8 +156,8 @@ async fn main() -> anyhow::Result<()> {
     let deadline = start + Duration::from_secs(cli.duration_secs) + Duration::from_secs(5);
     let sem = Arc::new(tokio::sync::Semaphore::new(cli.join_concurrency));
     let mut tasks = Vec::new();
-    for r in 0..cli.rooms {
-        for p in 0..cli.players {
+    for room_index in 0..cli.rooms {
+        for player_index in 0..cli.players {
             let cli = cli.clone();
             let http = http.clone();
             let api_key = api_key.clone();
@@ -168,8 +171,8 @@ async fn main() -> anyhow::Result<()> {
                     &http,
                     &api_key,
                     &ws_url,
-                    r,
-                    p,
+                    room_index,
+                    player_index,
                     stats.clone(),
                     deadline,
                     permit,
@@ -177,7 +180,7 @@ async fn main() -> anyhow::Result<()> {
                 .await;
                 if let Err(e) = run {
                     stats.failed.fetch_add(1, Ordering::Relaxed);
-                    tracing::warn!(room = r, player = p, error = %e, "player failed");
+                    tracing::warn!(room = room_index, player = player_index, error = %e, "player failed");
                 }
             }));
             tokio::time::sleep(Duration::from_millis(2)).await;
@@ -192,14 +195,14 @@ async fn main() -> anyhow::Result<()> {
             tasks.push(tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(cli.late_join_secs)).await;
                 let permit = sem.acquire().await.unwrap();
-                let p = cli.players;
+                let players = cli.players;
                 let run = player(
                     &cli,
                     &http,
                     &api_key,
                     &ws_url,
-                    r,
-                    p,
+                    room_index,
+                    players,
                     stats.clone(),
                     deadline,
                     permit,
@@ -207,7 +210,7 @@ async fn main() -> anyhow::Result<()> {
                 .await;
                 if let Err(e) = run {
                     stats.failed.fetch_add(1, Ordering::Relaxed);
-                    tracing::warn!(room = r, player = p, error = %e, "late player failed");
+                    tracing::warn!(room = room_index, player = players, error = %e, "late player failed");
                 }
             }));
         }
@@ -235,17 +238,22 @@ async fn main() -> anyhow::Result<()> {
         let secs = cli.duration_secs - warmup;
         tokio::spawn(async move {
             tokio::time::sleep_until((start + Duration::from_secs(warmup)).into()).await;
-            let a = stats.traffic();
+            let before = stats.traffic();
             tokio::time::sleep(Duration::from_secs(secs)).await;
-            let b = stats.traffic();
+            let after = stats.traffic();
             (
                 secs as f64,
-                [b[0] - a[0], b[1] - a[1], b[2] - a[2], b[3] - a[3]],
+                [
+                    after[0] - before[0],
+                    after[1] - before[1],
+                    after[2] - before[2],
+                    after[3] - before[3],
+                ],
             )
         })
     };
-    for t in tasks {
-        let _ = t.await;
+    for task in tasks {
+        let _ = task.await;
     }
     reporter.abort();
 
@@ -389,12 +397,12 @@ async fn player(
         mode: cli.mode.parse().unwrap_or_default(),
         max_players: Some(cli.players as u16 + u16::from(cli.late_join_secs > 0)),
         props: {
-            let mut m: serde_json::Map<String, serde_json::Value> =
+            let mut props: serde_json::Map<String, serde_json::Value> =
                 serde_json::from_str(&cli.props_json).unwrap_or_default();
             if cli.mode == "sync" || cli.mode == "lockstep" {
-                m.insert("tick_hz".into(), serde_json::json!(cli.tick_hz));
+                props.insert("tick_hz".into(), serde_json::json!(cli.tick_hz));
             }
-            m
+            props
         },
         lobby_props: vec![],
         region: None,
@@ -404,11 +412,11 @@ async fn player(
     .await?;
 
     let (data, tick_hz) = loop {
-        let Some(m) = rx.next().await else {
+        let Some(message) = rx.next().await else {
             anyhow::bail!("ws closed before join")
         };
-        if let Message::Text(t) = m? {
-            match serde_json::from_str::<ServerMsg>(&t)? {
+        if let Message::Text(text) = message? {
+            match serde_json::from_str::<ServerMsg>(&text)? {
                 ServerMsg::Joined { data, tick_hz, .. } => break (data, tick_hz),
                 ServerMsg::Error { code, message } => anyhow::bail!("{code}: {message}"),
                 _ => {}
@@ -457,20 +465,22 @@ async fn player(
         let stats = stats.clone();
         move || {
             let out: Vec<Bytes> = {
-                let mut l = link.lock();
-                std::iter::from_fn(|| l.next_outgoing()).collect()
+                let mut link = link.lock();
+                std::iter::from_fn(|| link.next_outgoing()).collect()
             };
-            for d in out {
-                stats.bytes_out.fetch_add(d.len() as u64, Ordering::Relaxed);
+            for datagram in out {
+                stats
+                    .bytes_out
+                    .fetch_add(datagram.len() as u64, Ordering::Relaxed);
                 match &*sink {
-                    Sink::Quic(c) => {
-                        let _ = c.send_datagram(d);
+                    Sink::Quic(conn) => {
+                        let _ = conn.send_datagram(datagram);
                     }
-                    Sink::Wt(c) => {
-                        let _ = c.send_datagram(d);
+                    Sink::Wt(conn) => {
+                        let _ = conn.send_datagram(datagram);
                     }
-                    Sink::Ws(t) => {
-                        let _ = t.try_send(Message::Binary(d.to_vec().into()));
+                    Sink::Ws(sender) => {
+                        let _ = sender.try_send(Message::Binary(datagram.to_vec().into()));
                     }
                 }
             }
@@ -479,8 +489,8 @@ async fn player(
 
     // WS writer (tunnel frames + nothing else after join).
     let writer = tokio::spawn(async move {
-        while let Some(m) = ws_rx.recv().await {
-            if tx.send(m).await.is_err() {
+        while let Some(message) = ws_rx.recv().await {
+            if tx.send(message).await.is_err() {
                 break;
             }
         }
@@ -521,59 +531,65 @@ async fn player(
         move |d: Bytes| {
             stats.bytes_in.fetch_add(d.len() as u64, Ordering::Relaxed);
             if drop_in > 0.0 {
-                let mut r = rng.load(Ordering::Relaxed);
-                r ^= r << 13;
-                r ^= r >> 7;
-                r ^= r << 17;
-                rng.store(r, Ordering::Relaxed);
-                if ((r >> 11) as f64) / ((1u64 << 53) as f64) < drop_in {
+                let mut state = rng.load(Ordering::Relaxed);
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                rng.store(state, Ordering::Relaxed);
+                if ((state >> 11) as f64) / ((1u64 << 53) as f64) < drop_in {
                     stats.dropped.fetch_add(1, Ordering::Relaxed);
                     return;
                 }
             }
             let recv = link.lock().receive(d, Instant::now());
             flush();
-            for m in recv {
-                if m.payload.is_empty() {
+            for message in recv {
+                if message.payload.is_empty() {
                     continue;
                 }
                 if sync {
-                    if m.payload[0] == net_api::sync::KIND_DELTA && m.payload.len() >= 9 {
+                    if message.payload[0] == net_api::sync::KIND_DELTA && message.payload.len() >= 9
+                    {
                         stats.received.fetch_add(1, Ordering::Relaxed);
                         stats
                             .entities
-                            .fetch_add(delta_entities(&m.payload[1..]), Ordering::Relaxed);
-                        if let Some(f) = &probe {
-                            let mut f = f.lock();
-                            if net_replication::Replicator::apply(&mut f, &m.payload[1..]).is_ok() {
+                            .fetch_add(delta_entities(&message.payload[1..]), Ordering::Relaxed);
+                        if let Some(probe) = &probe {
+                            let mut probe = probe.lock();
+                            if net_replication::Replicator::apply(&mut probe, &message.payload[1..])
+                                .is_ok()
+                            {
                                 stats
                                     .probe_entities
-                                    .store(f.entities().count() as u64, Ordering::Relaxed);
+                                    .store(probe.entities().count() as u64, Ordering::Relaxed);
                             }
                         }
-                        let (t, base) = net_replication::delta_header(&m.payload[1..]).unwrap();
-                        server_tick.store(t, Ordering::Relaxed);
-                        let mut a = acks.lock();
-                        if a.on_delta(t, base) {
+                        let (tick, base) =
+                            net_replication::delta_header(&message.payload[1..]).unwrap();
+                        server_tick.store(tick, Ordering::Relaxed);
+                        let mut acks = acks.lock();
+                        if acks.on_delta(tick, base) {
                             stats.gaps.fetch_add(1, Ordering::Relaxed);
                         }
-                        if let Some((last, bits)) = a.ack() {
-                            drop(a);
+                        if let Some((last, bits)) = acks.ack() {
+                            drop(acks);
                             let frame = net_api::sync::SyncRoom::encode_ack(last, bits);
-                            let mut l = link.lock();
-                            if l.send(Channel::UnreliableSequenced, frame, Instant::now())
+                            let mut link = link.lock();
+                            if link
+                                .send(Channel::UnreliableSequenced, frame, Instant::now())
                                 .is_ok()
                             {
                                 stats.acks.fetch_add(1, Ordering::Relaxed);
                             }
-                            l.flush_batch();
-                            drop(l);
+                            link.flush_batch();
+                            drop(link);
                             flush();
                         }
                         continue;
                     }
-                    if m.payload[0] == net_api::lockstep::KIND_CATCHUP {
-                        if let Some(ck) = net_api::lockstep::LockstepRoom::decode_catchup(m.payload)
+                    if message.payload[0] == net_api::lockstep::KIND_CATCHUP {
+                        if let Some(ck) =
+                            net_api::lockstep::LockstepRoom::decode_catchup(message.payload)
                         {
                             stats.catchups.fetch_add(1, Ordering::Relaxed);
                             stats
@@ -583,16 +599,22 @@ async fn player(
                         }
                         continue;
                     }
-                    if m.payload[0] == net_api::lockstep::KIND_CHECKPOINT_REQ {
+                    if message.payload[0] == net_api::lockstep::KIND_CHECKPOINT_REQ {
                         // We are the master: upload a (fake, fixed-size) confirmed state.
-                        if let Some(t) =
-                            net_api::lockstep::LockstepRoom::decode_checkpoint_request(m.payload)
+                        if let Some(requested) =
+                            net_api::lockstep::LockstepRoom::decode_checkpoint_request(
+                                message.payload,
+                            )
                         {
                             let st = server_tick.load(Ordering::Relaxed);
-                            let t = if st == u32::MAX { t } else { st.min(t) };
+                            let tick = if st == u32::MAX {
+                                requested
+                            } else {
+                                st.min(requested)
+                            };
                             let frame = net_api::lockstep::LockstepRoom::encode_checkpoint(
-                                net_common::types::Tick(t),
-                                0xA0_u64 | t as u64,
+                                net_common::types::Tick(tick),
+                                0xA0_u64 | tick as u64,
                                 &[7u8; 256],
                             );
                             let _ =
@@ -603,28 +625,31 @@ async fn player(
                         }
                         continue;
                     }
-                    if m.payload[0] == net_api::lockstep::KIND_BUNDLE
-                        && m.channel == Channel::ReliableOrdered
+                    if message.payload[0] == net_api::lockstep::KIND_BUNDLE
+                        && message.channel == Channel::ReliableOrdered
                     {
                         // Journal tail: must be contiguous from the checkpoint tick.
                         let mut cu = catchup.lock();
-                        for (t, _) in net_api::lockstep::LockstepRoom::decode_bundles(m.payload) {
-                            if cu.next == Some(t.0) {
-                                cu.next = Some(t.0 + 1);
+                        for (tick, _) in
+                            net_api::lockstep::LockstepRoom::decode_bundles(message.payload)
+                        {
+                            if cu.next == Some(tick.0) {
+                                cu.next = Some(tick.0 + 1);
                                 stats.catchup_bundles.fetch_add(1, Ordering::Relaxed);
                             }
                         }
                         cu.check(&stats);
                         continue;
                     }
-                    if m.payload[0] == net_api::lockstep::KIND_BUNDLE {
+                    if message.payload[0] == net_api::lockstep::KIND_BUNDLE {
                         let mut cu = catchup.lock();
                         if cu.next.is_some() {
                             // Live bundles may overtake the reliable tail: remember the oldest
                             // tick the live stream has covered so far.
-                            if let Some((t, _)) =
-                                net_api::lockstep::LockstepRoom::decode_bundles(m.payload.clone())
-                                    .first()
+                            if let Some((t, _)) = net_api::lockstep::LockstepRoom::decode_bundles(
+                                message.payload.clone(),
+                            )
+                            .first()
                             {
                                 cu.live_oldest = Some(cu.live_oldest.map_or(t.0, |o| o.min(t.0)));
                             }
@@ -633,7 +658,7 @@ async fn player(
                         drop(cu);
                         // newest bundle = server clock; count bundles (not redundant copies)
                         if let Some((t, _)) =
-                            net_api::lockstep::LockstepRoom::decode_bundles(m.payload).last()
+                            net_api::lockstep::LockstepRoom::decode_bundles(message.payload).last()
                         {
                             stats.received.fetch_add(1, Ordering::Relaxed);
                             server_tick.store(t.0 + 1, Ordering::Relaxed);
@@ -641,9 +666,9 @@ async fn player(
                     }
                     continue;
                 }
-                if let Ok(f) = EventFrame::decode(m.payload) {
-                    if f.payload.len() >= 8 {
-                        let ts = u64::from_le_bytes(f.payload[..8].try_into().unwrap());
+                if let Ok(event) = EventFrame::decode(message.payload) {
+                    if event.payload.len() >= 8 {
+                        let ts = u64::from_le_bytes(event.payload[..8].try_into().unwrap());
                         let now = epoch_us();
                         if now >= ts {
                             stats
@@ -662,8 +687,8 @@ async fn player(
             let conn = conn.clone();
             let on = on_datagram.clone();
             Some(tokio::spawn(async move {
-                while let Ok(d) = conn.read_datagram().await {
-                    on(d);
+                while let Ok(datagram) = conn.read_datagram().await {
+                    on(datagram);
                 }
             }))
         }
@@ -671,8 +696,8 @@ async fn player(
             let conn = conn.clone();
             let on = on_datagram.clone();
             Some(tokio::spawn(async move {
-                while let Ok(d) = conn.receive_datagram().await {
-                    on(d.payload());
+                while let Ok(datagram) = conn.receive_datagram().await {
+                    on(datagram.payload());
                 }
             }))
         }
@@ -685,9 +710,10 @@ async fn player(
         tokio::spawn(async move {
             while let Some(Ok(m)) = rx.next().await {
                 match m {
-                    Message::Binary(b) => on(b),
-                    Message::Text(t) => {
-                        if let Ok(ServerMsg::Pong { ts, .. }) = serde_json::from_str(t.as_str()) {
+                    Message::Binary(bytes) => on(bytes),
+                    Message::Text(text) => {
+                        if let Ok(ServerMsg::Pong { ts, .. }) = serde_json::from_str(text.as_str())
+                        {
                             let now = started.elapsed().as_millis() as u64;
                             round_trip_ms.store(now.saturating_sub(ts), Ordering::Relaxed);
                         }
@@ -760,13 +786,14 @@ async fn player(
             let frame =
                 net_api::sync::SyncRoom::encode_input(net_common::types::Tick(first), &inputs);
             {
-                let mut l = link.lock();
-                if l.send(Channel::UnreliableSequenced, frame, Instant::now())
+                let mut link = link.lock();
+                if link
+                    .send(Channel::UnreliableSequenced, frame, Instant::now())
                     .is_ok()
                 {
                     stats.sent.fetch_add(1, Ordering::Relaxed);
                 }
-                l.flush_batch();
+                link.flush_batch();
             }
             flush();
             tick += 1;
@@ -782,13 +809,14 @@ async fn player(
             payload: Bytes::from(payload.clone()),
         };
         {
-            let mut l = link.lock();
-            if l.send(Channel::UnreliableSequenced, frame.encode(), Instant::now())
+            let mut link = link.lock();
+            if link
+                .send(Channel::UnreliableSequenced, frame.encode(), Instant::now())
                 .is_ok()
             {
                 stats.sent.fetch_add(1, Ordering::Relaxed);
             }
-            l.flush_batch();
+            link.flush_batch();
         }
         flush();
     }
@@ -808,8 +836,8 @@ async fn player(
     let _ = ws_tx.send(Message::Close(None)).await;
     writer.abort();
     match &*sink {
-        Sink::Quic(c) => c.close(0u32.into(), b"done"),
-        Sink::Wt(c) => c.close(0u32.into(), b"done"),
+        Sink::Quic(conn) => conn.close(0u32.into(), b"done"),
+        Sink::Wt(conn) => conn.close(0u32.into(), b"done"),
         Sink::Ws(_) => {}
     }
     Ok(())
@@ -855,17 +883,17 @@ fn summarize_hist(body: &str, name: &str) -> String {
                     buckets.push((le, n));
                 }
             }
-        } else if let Some(n) = line.strip_prefix(&format!("{name}_count ")) {
-            count = n.trim().parse().unwrap_or(0);
-        } else if let Some(n) = line.strip_prefix(&format!("{name}_sum ")) {
-            sum = n.trim().parse().unwrap_or(0.0);
+        } else if let Some(rest) = line.strip_prefix(&format!("{name}_count ")) {
+            count = rest.trim().parse().unwrap_or(0);
+        } else if let Some(rest) = line.strip_prefix(&format!("{name}_sum ")) {
+            sum = rest.trim().parse().unwrap_or(0.0);
         }
     }
     if count == 0 {
         return format!("{name}: no samples");
     }
     buckets.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-    let q = |p: f64| {
+    let quantile = |p: f64| {
         let target = (count as f64 * p).ceil() as u64;
         buckets
             .iter()
@@ -876,16 +904,16 @@ fn summarize_hist(body: &str, name: &str) -> String {
     format!(
         "server tick: n={count} mean={:.2}ms p50{} p99{}",
         sum / count as f64 * 1000.0,
-        q(0.5),
-        q(0.99)
+        quantile(0.5),
+        quantile(0.99)
     )
 }
 
 fn summarize_counter(body: &str, name: &str) -> String {
-    let v = body
+    let value = body
         .lines()
         .find(|l| l.starts_with(name))
         .and_then(|l| l.split_whitespace().nth(1))
         .unwrap_or("?");
-    format!("server {name}={v}")
+    format!("server {name}={value}")
 }
