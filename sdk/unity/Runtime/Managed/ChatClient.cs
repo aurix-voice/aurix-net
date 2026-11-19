@@ -11,6 +11,9 @@ namespace Aurix.Net
         public ushort From;
         public ushort? Channel;
         public string Text;
+
+        /// <summary>History the room kept for late joiners, not a message sent just now.</summary>
+        public bool Cached;
     }
 
     /// <summary>Chat on top of a relay room, no extra service: channels are interest groups (Join = subscribe),
@@ -43,10 +46,30 @@ namespace Aurix.Net
 
         ushort Group(ushort channel) => (ushort)(_groupBase + channel);
 
-        public Task JoinAsync(ushort channel) =>
-            _joined.Add(channel)
-                ? _client.SetGroupsAsync(new[] { Group(channel) }, null)
-                : Task.CompletedTask;
+        public Task JoinAsync(ushort channel)
+        {
+            if (!_joined.Add(channel))
+            {
+                return Task.CompletedTask;
+            }
+
+            foreach (var frame in _client.Cached)
+            {
+                var payload = frame.Payload;
+                if (
+                    frame.Code == _code
+                    && payload.Count >= 3
+                    && payload.Array[payload.Offset] == 0
+                    && (
+                        (payload.Array[payload.Offset + 1] << 8) | payload.Array[payload.Offset + 2]
+                    ) == channel
+                )
+                {
+                    HandleEvent(frame);
+                }
+            }
+            return _client.SetGroupsAsync(new[] { Group(channel) }, null);
+        }
 
         public Task LeaveAsync(ushort channel) =>
             _joined.Remove(channel)
@@ -110,6 +133,7 @@ namespace Aurix.Net
                     From = frame.From,
                     Channel = kind == 1 ? (ushort?)null : channel,
                     Text = text,
+                    Cached = frame.Cached,
                 }
             );
         }

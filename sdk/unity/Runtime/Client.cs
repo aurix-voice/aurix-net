@@ -45,6 +45,9 @@ namespace Aurix.Net
         /// <summary>Set by the managed client: the frame arrived on a reliable channel.</summary>
         public bool Reliable;
 
+        /// <summary>Set by the managed client: the room kept this event for late joiners and replayed it after the join.</summary>
+        public bool Cached;
+
         /// <summary>Wire: u8 code, u8 flags, u16 from (BE), [u16 group if flags&0x10], [u16 n + n*u16 if target==3], payload.</summary>
         public static bool TryDecode(byte[] buf, out EventFrame frame)
         {

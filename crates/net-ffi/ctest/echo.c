@@ -16,6 +16,13 @@ int main(void) {
     AurixNetClient *b = aurix_net_connect(http, gb, 1);
     if (!a || !b) { fprintf(stderr, "connect: %s\n", aurix_net_last_error()); return 1; }
     char join[256];
+    /* a refused join says why in aurix_net_last_error_code() */
+    snprintf(join, sizeof join, "{\"t\":\"join\",\"name\":\"c-missing-%d\"}", (int)getpid());
+    if (aurix_net_join(a, join) >= 0 || aurix_net_last_error_code() != AURIX_NET_ERR_NOT_FOUND) { fprintf(stderr, "missing room: code %d (%s)\n", (int)aurix_net_last_error_code(), aurix_net_last_error()); return 1; }
+    snprintf(join, sizeof join, "{\"t\":\"join_or_create\",\"name\":\"c-one-%d\",\"max_players\":1}", (int)getpid());
+    if (aurix_net_join(a, join) < 0) { fprintf(stderr, "join: %s\n", aurix_net_last_error()); return 1; }
+    if (aurix_net_join(b, join) >= 0 || aurix_net_last_error_code() != AURIX_NET_ERR_ROOM_FULL) { fprintf(stderr, "full room: code %d (%s)\n", (int)aurix_net_last_error_code(), aurix_net_last_error()); return 1; }
+    aurix_net_leave(a);
     snprintf(join, sizeof join, "{\"t\":\"join_or_create\",\"name\":\"c-echo-%d\",\"max_players\":4}", (int)getpid());
     int aa = aurix_net_join(a, join), ab = aurix_net_join(b, join);
     if (aa < 0 || ab < 0) { fprintf(stderr, "join: %s\n", aurix_net_last_error()); return 1; }

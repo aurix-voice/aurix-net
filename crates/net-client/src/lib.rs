@@ -12,6 +12,7 @@ use net_common::{Channel, RoomMode};
 use net_rooms::protocol::{ClientMsg, DataEndpoint, ServerMsg};
 use net_transport::{quic, Link};
 use parking_lot::Mutex;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -137,6 +138,11 @@ pub struct Client {
     ctl: mpsc::Sender<Message>,
     events: mpsc::Receiver<Event>,
     events_tx: mpsc::Sender<Event>,
+    /// Events the room kept for late joiners, handed out before anything from the data path.
+    replay: VecDeque<Event>,
+    /// One lost connection is reported once, whichever of the link, the data path and the
+    /// control channel notices it first.
+    lost: bool,
     data: Option<Arc<DataPath>>,
     opts: Options,
     pub joined: Option<Joined>,
@@ -186,6 +192,8 @@ impl Client {
         let mut c = Client {
             ctl,
             events,
+            replay: VecDeque::new(),
+            lost: false,
             events_tx: events_tx.clone(),
             data: None,
             opts,
@@ -356,8 +364,10 @@ impl Client {
 
     pub async fn join(&mut self, msg: ClientMsg) -> Result<Joined> {
         self.last_join = Some(msg.clone());
+        self.replay.clear();
+        self.lost = false;
         self.send(msg).await?;
-        let joined = loop {
+        let (joined, cached) = loop {
             match self.next_event().await {
                 Some(Event::Control(ServerMsg::Joined {
                     room,
@@ -368,9 +378,10 @@ impl Client {
                     data,
                     tick_hz,
                     schema_hash,
+                    cached,
                     ..
                 })) => {
-                    break Joined {
+                    let joined = Joined {
                         room,
                         name,
                         mode,
@@ -380,6 +391,7 @@ impl Client {
                         schema_hash,
                         data,
                     };
+                    break (joined, cached);
                 }
                 Some(Event::Control(ServerMsg::Error { code, message })) => {
                     return Err(ClientError::Server { code, message })
@@ -389,6 +401,27 @@ impl Client {
             }
         };
         self.open_data(&joined.data).await?;
+        self.replay = cached
+            .into_iter()
+            .filter_map(|(code, from, data)| {
+                let payload = base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .ok()?;
+                let frame = EventFrame {
+                    code,
+                    target: EventTarget::Others,
+                    cache: CacheOp::Add,
+                    group: None,
+                    from,
+                    payload: payload.into(),
+                };
+                Some(Event::Data {
+                    channel: Channel::ReliableOrdered,
+                    tick: 0,
+                    payload: frame.encode(),
+                })
+            })
+            .collect();
         self.joined = Some(joined.clone());
         Ok(joined)
     }
@@ -456,12 +489,13 @@ impl Client {
             dp
         };
         // link timer
-        let (dp2, tick) = (dp.clone(), self.opts.tick);
+        let (dp2, tick, ev) = (dp.clone(), self.opts.tick, self.events_tx.clone());
         self.tasks.push(tokio::spawn(async move {
             let mut iv = tokio::time::interval(tick);
             loop {
                 iv.tick().await;
                 if dp2.link.lock().poll(Instant::now()).is_err() {
+                    let _ = ev.send(Event::Closed("link dead".into())).await;
                     break;
                 }
                 dp2.flush();
@@ -539,12 +573,32 @@ impl Client {
     }
 
     pub async fn next_event(&mut self) -> Option<Event> {
-        self.events.recv().await
+        loop {
+            let event = match self.replay.pop_front() {
+                Some(event) => event,
+                None => self.events.recv().await?,
+            };
+            if self.reports(&event) {
+                return Some(event);
+            }
+        }
     }
 
     /// Non-blocking poll for engines with their own loop.
     pub fn try_next_event(&mut self) -> Option<Event> {
-        self.events.try_recv().ok()
+        loop {
+            let event = self
+                .replay
+                .pop_front()
+                .or_else(|| self.events.try_recv().ok())?;
+            if self.reports(&event) {
+                return Some(event);
+            }
+        }
+    }
+
+    fn reports(&mut self, event: &Event) -> bool {
+        !matches!(event, Event::Closed(_)) || !std::mem::replace(&mut self.lost, true)
     }
 
     /// Smoothed round trip of the control channel in milliseconds; 0 until the first sample.

@@ -127,3 +127,16 @@ test("a late joiner gets the cached events and the chat history", { skip: !key }
     a.close(); b.close();
   }
 });
+
+test("rooms(expr) finds a room by the lobby props joinOrCreate published", { skip: !key }, async () => {
+  const a = await Client.connect(http, await grant("web-lobby-a"));
+  const b = await Client.connect(http, await grant("web-lobby-b"));
+  try {
+    const room = `web-lobby-${process.pid}`;
+    await a.joinOrCreate(room, "relay", 4, { map: "dust", secret: 1 }, [], ["map"]);
+    const found = (await b.rooms("map = 'dust'")).find((entry) => entry.name === room);
+    assert.deepEqual(found?.props, { map: "dust" });
+  } finally {
+    a.close(); b.close();
+  }
+});

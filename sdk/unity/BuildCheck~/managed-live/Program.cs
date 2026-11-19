@@ -121,8 +121,17 @@ class P
         for (int i = 0; i < 5; i++) ra.SendEvent(2, new byte[] { (byte)i }, Target.Others, reliable: true);
         until = DateTime.UtcNow.AddSeconds(3); while (DateTime.UtcNow < until && again < 5) { ra.Poll(); rb.Poll(); await Task.Delay(5); }
         Console.WriteLine($"second room on the same client: reliable={again}/5");
-        ra.Dispose(); rb.Dispose();
-        bool ok = lsOk && schemaOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5;
+        // a late joiner gets the cached events, and the chat history once it joins the channel
+        var chatA = new ChatClient(ra); await chatA.JoinAsync(1);
+        ra.SendEvent(3, new byte[] { 7 }, Target.Others, reliable: true, cache: CacheOp.Add); chatA.Send(1, "hello");
+        until = DateTime.UtcNow.AddMilliseconds(300); while (DateTime.UtcNow < until) { ra.Poll(); await Task.Delay(5); }
+        var rc = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-rc"));
+        int cached = 0, history = 0; rc.OnEvent += f => { if (f.Code == 3 && f.Cached) cached++; };
+        var chatC = new ChatClient(rc); chatC.OnMessage += m => { if (m.Text == "hello" && m.Cached) history++; };
+        await rc.JoinAsync(room + "-second"); await chatC.JoinAsync(1);
+        Console.WriteLine($"late joiner: cached events={cached}/1 chat history={history}/1");
+        ra.Dispose(); rb.Dispose(); rc.Dispose();
+        bool ok = lsOk && schemaOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");
         return ok ? 0 : 1;
     }

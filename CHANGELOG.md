@@ -11,6 +11,13 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - Sync: the room reports to each client how early or late its inputs arrive, with the frame
   lockstep rooms already send (`0x25`: tick, least margin in ticks, late frames; every 30 ticks
   to a client that sent input). A client had only its ping to guess the lead from and was told
+- C ABI: `aurix_net_last_error_code()` says why the last failed call failed as one of the
+  `AURIX_NET_ERR_*` constants of `aurix_net.h` (bad argument, HTTP, connection, data path,
+  disconnected, timeout, protocol, and the node's refusals: unauthorized, not found, room full,
+  room closed, schema mismatch, rate limited and the rest). Until now the only way to tell a full
+  room from a missing one was to search the error text. The C++ wrapper carries the value in
+  `aurix::net::Error::code`, the Godot nodes return it from `get_last_error_code()`
+  (`AurixNetClient.ERROR_*`).
 
 ### Changed
 - Dates: the node reads and writes dates as strict RFC 3339 through the `time` crate; its own
@@ -65,9 +72,23 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   left, so a session shorter than a minute counted no `bytes_in` or `bytes_out` at all and every
   longer one lost its tail, in `/v1/usage`, the billing report and the monthly byte cap alike.
   The node now adds it when the data session closes.
+- SDKs: a room made with `joinOrCreate` could not be found by the `expr` filter of `rooms` and
+  `joinRandom`, and its props were missing from room listings: no SDK could name the props a room
+  publishes. `joinOrCreate` takes them as `lobbyProps` in Web, C# and C++ and as `lobby_props` in
+  Godot.
+- C, C++ and Godot SDKs: when the reliable link died while the control channel stayed up, the game
+  was never told: no `closed` event came and reliable sends kept returning success (20 seconds
+  and 200 sends in the check). The Rust client now reports `link dead`, and reports one lost
+  connection once, as the Web and C# clients do.
+- Unity, Godot and C++ SDKs: a late joiner got neither the cached relay events nor the chat
+  history, as in the Web SDK below. The Rust client hands the cached events out as data events
+  right after the join, so C, C++ and Godot receive them like any relay event; the managed C#
+  client raises them through `OnEvent` (`EventFrame.Cached`, `ManagedClient.Cached`). `Chat` in
+  C++ and `ChatClient` in C# deliver the history of a channel when it is joined.
 - Web SDK: a late joiner got neither the cached relay events nor the chat history. The node sends
   them in `joined.cached`, and the client dropped that field. They are now emitted as `event` after
   the join (`cached: true`, also kept in `Client.cached`), and `Chat.join` delivers the history of
+  the channel.
 - Web and Unity SDKs: one lost connection was reported more than once. The Web client fired
   `closed` up to three times (the link, the WebTransport session, then the control channel), so a
   handler that rejoins opened three connections for one player; the managed C# client raised

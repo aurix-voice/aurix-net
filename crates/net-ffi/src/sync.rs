@@ -1,7 +1,7 @@
 //! C ABI for sync rooms: a client-side replicated world (`net_sim::Frame` + the delta decoder the
 //! node itself uses), acks, redundant input frames and owner-authoritative component writes:
 //! the same shape as the Web `SyncWorld`/`SyncSession` and the Unity `SyncWorld`.
-use crate::{cstr, set_error, AurixNetClient};
+use crate::{cstr, set_client_error, set_error, AurixNetClient, ErrorCode};
 use bytes::{BufMut, Bytes, BytesMut};
 use net_common::Channel;
 use net_replication::{AckTracker, Replicator};
@@ -61,13 +61,13 @@ fn owner_of(frame: &Frame, id: EntityId) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_sync_new(schema: *const c_char) -> *mut AurixNetSync {
     let Some(text) = cstr(schema) else {
-        set_error("schema: null or non-utf8");
+        set_error(ErrorCode::InvalidArgument, "schema: null or non-utf8");
         return std::ptr::null_mut();
     };
     let schema = match Schema::parse(text) {
         Ok(s) => s,
         Err(e) => {
-            set_error(format!("schema: {e}"));
+            set_error(ErrorCode::InvalidArgument, format!("schema: {e}"));
             return std::ptr::null_mut();
         }
     };
@@ -114,7 +114,7 @@ pub unsafe extern "C" fn aurix_net_sync_receive(
     let report = match Replicator::apply_report(&mut st.frame, &p[1..]) {
         Ok(r) => r,
         Err(e) => {
-            set_error(format!("delta: {e}"));
+            set_error(ErrorCode::Protocol, format!("delta: {e}"));
             return -1;
         }
     };
@@ -463,7 +463,7 @@ unsafe fn pump(st: &mut State, h: *mut AurixNetClient) -> i32 {
             return -1;
         };
         if let Err(e) = h.inner.lock().send_data(ch, frame) {
-            set_error(e);
+            set_client_error(&e);
             return -1;
         }
     }
@@ -509,7 +509,7 @@ pub unsafe extern "C" fn aurix_net_sync_write_begin(s: *const AurixNetSync, comp
         .ok()
         .and_then(|id| st.frame.schema.by_id(id))
     else {
-        set_error("write_begin: unknown component");
+        set_error(ErrorCode::InvalidArgument, "write_begin: unknown component");
         return -1;
     };
     let v = ComponentValue::zero(c);
@@ -519,7 +519,7 @@ pub unsafe extern "C" fn aurix_net_sync_write_begin(s: *const AurixNetSync, comp
 
 fn with_field(st: &mut State, field: i32, f: impl FnOnce(&FieldType) -> Option<Value>) -> i32 {
     let Some((cid, cur)) = st.current.as_mut() else {
-        set_error("write: call write_begin first");
+        set_error(ErrorCode::InvalidArgument, "write: call write_begin first");
         return -1;
     };
     let Some(ty) = st
@@ -529,7 +529,7 @@ fn with_field(st: &mut State, field: i32, f: impl FnOnce(&FieldType) -> Option<V
         .and_then(|c| c.fields.get(usize::try_from(field).ok()?))
         .map(|fd| fd.ty.clone())
     else {
-        set_error("write: unknown field");
+        set_error(ErrorCode::InvalidArgument, "write: unknown field");
         return -1;
     };
     match f(&ty) {
@@ -538,7 +538,10 @@ fn with_field(st: &mut State, field: i32, f: impl FnOnce(&FieldType) -> Option<V
             0
         }
         None => {
-            set_error("write: value does not fit the field type");
+            set_error(
+                ErrorCode::InvalidArgument,
+                "write: value does not fit the field type",
+            );
             -1
         }
     }
@@ -571,7 +574,10 @@ pub unsafe extern "C" fn aurix_net_sync_write_vector(
 ) -> i32 {
     let Some(s) = s.as_ref() else { return -1 };
     if v.is_null() || !(1..=4).contains(&n) {
-        set_error("write_vector: bad pointer or count");
+        set_error(
+            ErrorCode::InvalidArgument,
+            "write_vector: bad pointer or count",
+        );
         return -1;
     }
     let a = std::slice::from_raw_parts(v, n as usize);
@@ -628,7 +634,7 @@ pub unsafe extern "C" fn aurix_net_sync_write_end(s: *const AurixNetSync) -> i32
             0
         }
         None => {
-            set_error("write_end: nothing begun");
+            set_error(ErrorCode::InvalidArgument, "write_end: nothing begun");
             -1
         }
     }
@@ -645,7 +651,7 @@ fn encode_queued_writes(st: &mut State, w: &mut BitWriter) -> i32 {
         };
         w.write_bits(u64::from(*cid), cid_bits);
         if let Err(e) = v.encode_full(c, w) {
-            set_error(format!("writes: {e}"));
+            set_error(ErrorCode::InvalidArgument, format!("writes: {e}"));
             return -1;
         }
     }
@@ -683,7 +689,7 @@ pub unsafe extern "C" fn aurix_net_sync_send_op(
 ) -> i64 {
     let Some(s) = s.as_ref() else { return -1 };
     if !(0..=6).contains(&op) {
-        set_error("send_op: op must be 0..=6");
+        set_error(ErrorCode::InvalidArgument, "send_op: op must be 0..=6");
         return -1;
     }
     let mut st = s.inner.lock();

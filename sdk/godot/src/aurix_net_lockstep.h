@@ -19,6 +19,7 @@ class AurixNetLockstep : public RefCounted {
 	GDCLASS(AurixNetLockstep, RefCounted)
 	std::unique_ptr<aurix::net::Lockstep> ls_;
 	String last_error_;
+	int last_error_code_ = AURIX_NET_OK;
 
 protected:
 	static void _bind_methods();
@@ -58,6 +59,7 @@ public:
 	int get_last_margin() const { return ls_ ? ls_->lastMargin() : 0; }
 	int64_t get_late_inputs() const { return ls_ ? ls_->lateInputs() : 0; }
 	String get_last_error() const { return last_error_; }
+	int get_last_error_code() const { return last_error_code_; }
 };
 
 } // namespace godot

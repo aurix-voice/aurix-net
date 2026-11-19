@@ -15,14 +15,18 @@ enum class Channel : uint8_t { Unreliable = 0, Reliable = 1, ReliableUnordered =
 enum class Target : int32_t { All = 0, Others = 1, Master = 2, Actors = 3 };
 enum class Mode { Relay, Sync, Lockstep };
 
-struct Error : std::runtime_error {
-    using std::runtime_error::runtime_error;
-};
-
 inline std::string lastError() {
     const char* error = aurix_net_last_error();
     return error ? error : "unknown error";
 }
+
+struct Error : std::runtime_error {
+    /// One of AURIX_NET_ERR_*: why the call failed, without reading the text.
+    int code;
+    Error(const std::string& message, int code) : std::runtime_error(message), code(code) {}
+    /// The failure the C interface reported last on this thread.
+    static Error last() { return Error(lastError(), aurix_net_last_error_code()); }
+};
 
 // Relay event frame: u8 code, u8 flags, u16 from (BE), [u16 group], [u16 n, n*u16], payload.
 struct EventFrame {
@@ -110,7 +114,7 @@ public:
         char* grant =
             aurix_net_issue_grant(http.c_str(), apiKey.c_str(), player.c_str(), name.c_str());
         if (!grant) {
-            throw Error(lastError());
+            throw Error::last();
         }
         std::string result(grant);
         aurix_net_string_free(grant);
@@ -121,7 +125,7 @@ public:
         destroy();
         handle_ = aurix_net_connect(http.c_str(), grant.c_str(), tunnel ? 1 : 0);
         if (!handle_) {
-            throw Error(lastError());
+            throw Error::last();
         }
     }
     bool connected() const { return handle_ != nullptr; }
@@ -134,8 +138,7 @@ public:
     static std::string bestRegionJson(const std::string& catalogHttp, int probes = 3) {
         char* json = aurix_net_best_region(catalogHttp.c_str(), probes);
         if (!json) {
-            const char* error = aurix_net_last_error();
-            throw Error(error ? error : "best_region failed");
+            throw Error::last();
         }
         std::string out(json);
         aurix_net_string_free(json);
@@ -147,7 +150,7 @@ public:
     }
     void sendControl(const std::string& json) {
         if (aurix_net_send_control(handle_, json.c_str()) != 0) {
-            throw Error(lastError());
+            throw Error::last();
         }
     }
     /// Sync rooms: which entities define this player's viewpoints (AOI centres, at most 4) and
@@ -179,12 +182,21 @@ private:
     }
 
 public:
+    /// `lobbyProps` names the room props that room listings show and `expr` filters match.
     int joinOrCreate(const std::string& name, Mode mode = Mode::Relay, int maxPlayers = 8,
-                     const std::string& propsJson = "") {
+                     const std::string& propsJson = "",
+                     const std::vector<std::string>& lobbyProps = {}) {
         std::string message = "{\"t\":\"join_or_create\",\"name\":" + quote(name) + ",\"mode\":\"" +
                               modeName(mode) + "\",\"max_players\":" + std::to_string(maxPlayers);
         if (!propsJson.empty()) {
             message += ",\"props\":" + propsJson;
+        }
+        if (!lobbyProps.empty()) {
+            message += ",\"lobby_props\":[";
+            for (size_t k = 0; k < lobbyProps.size(); ++k) {
+                message += (k ? "," : "") + quote(lobbyProps[k]);
+            }
+            message += "]";
         }
         return joinJson(message + "}");
     }
@@ -198,7 +210,7 @@ public:
     int joinJson(const std::string& json) {
         int actor = aurix_net_join(handle_, json.c_str());
         if (actor < 0) {
-            throw Error(lastError());
+            throw Error::last();
         }
         actor_ = actor;
         return actor;
@@ -218,7 +230,7 @@ public:
         if (aurix_net_send_event(handle_, code, int32_t(target),
                                  actors.empty() ? nullptr : actors.data(), actors.size(), data, len,
                                  reliable ? 1 : 0) != 0) {
-            throw Error(lastError());
+            throw Error::last();
         }
     }
     /// sendEvent plus interest group (-1 = none) and cache (0 none, 1 add for late joiners, 2
@@ -228,12 +240,12 @@ public:
         if (aurix_net_send_event_ex(handle_, code, (int32_t)target,
                                     actors.empty() ? nullptr : actors.data(), actors.size(), data,
                                     len, reliable ? 1 : 0, group, cache) != 0) {
-            throw Error(lastError());
+            throw Error::last();
         }
     }
     void sendData(Channel ch, const uint8_t* data, size_t len) {
         if (aurix_net_send_data(handle_, uint8_t(ch), data, len) != 0) {
-            throw Error(lastError());
+            throw Error::last();
         }
     }
     /// Push queued unreliable messages; call once per frame.
@@ -380,8 +392,7 @@ public:
     /// AURIX_NET_COMMAND_ACTOR.
     void sendCommand(Client& client, const std::vector<uint8_t>& data) {
         if (aurix_net_lockstep_send_command(client.handle(), data.data(), data.size()) != 0) {
-            const char* error = aurix_net_last_error();
-            throw Error(error ? error : "send_command failed");
+            throw Error::last();
         }
     }
     static void reportHash(Client& client, uint32_t tick, uint64_t hash) {
@@ -434,7 +445,7 @@ public:
     explicit Sync(const std::string& schema, int tickHz = 60, int interpolationTicks = 2)
         : sync_(aurix_net_sync_new(schema.c_str())), tickHz_(tickHz), interp_(interpolationTicks) {
         if (!sync_) {
-            throw Error(lastError());
+            throw Error::last();
         }
     }
     ~Sync() { aurix_net_sync_destroy(sync_); }
@@ -447,7 +458,7 @@ public:
         uint8_t ack[9];
         int result = aurix_net_sync_receive(sync_, data, len, ack);
         if (result < 0) {
-            throw Error(lastError());
+            throw Error::last();
         }
         if (result != 1) {
             return false;
@@ -580,7 +591,7 @@ public:
 private:
     static void check(int result) {
         if (result != 0) {
-            throw Error(lastError());
+            throw Error::last();
         }
     }
     AurixNetSync* sync_;
@@ -592,8 +603,9 @@ private:
 
 /// Chat on top of a relay room: channels are interest groups (join = subscribe, groups at groupBase
 /// + channel), messages are reliable cached events to the group (late joiners get the history the
-/// room still holds), whispers are events to one actor. Feed every received event frame to
-/// `onEventFrame` (from your onData handler) and read messages from `onMessage`.
+/// room still holds once they join the channel), whispers are events to one actor. Feed every
+/// received event frame to `onEventFrame` (from your onData handler) and read messages from
+/// `onMessage`.
 class Chat {
 public:
     struct Message {
@@ -609,6 +621,15 @@ public:
     void join(uint16_t channel) {
         if (joined_.insert(channel).second) {
             client_.setGroups({(uint16_t)(base_ + channel)});
+            std::vector<Message> held;
+            held.swap(held_);
+            for (auto& message : held) {
+                if (message.channel != channel) {
+                    held_.push_back(std::move(message));
+                } else if (onMessage) {
+                    onMessage(message);
+                }
+            }
         }
     }
     void leave(uint16_t channel) {
@@ -637,6 +658,8 @@ public:
         message.channel = (uint16_t)((frame.payload[1] << 8) | frame.payload[2]);
         message.text.assign((const char*)frame.payload + 3, frame.len - 3);
         if (!message.whisper && !joined_.count(message.channel)) {
+            // Only the history replayed at the room join arrives for a channel not joined yet.
+            held_.push_back(std::move(message));
             return true;
         }
         if (onMessage) {
@@ -661,5 +684,6 @@ private:
     uint16_t base_;
     bool history_;
     std::set<uint16_t> joined_;
+    std::vector<Message> held_;
 };
 }  // namespace aurix::net

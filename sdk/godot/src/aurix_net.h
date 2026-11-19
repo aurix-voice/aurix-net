@@ -29,8 +29,34 @@ typedef struct AurixNetEvent {
     char *json;
 } AurixNetEvent;
 
+/* Why the last failed call on this thread failed. aurix_net_last_error() has the text. Both are set by a call that
+ * reports failure (NULL, -1); a call that succeeds leaves them as they were. */
+enum {
+  AURIX_NET_OK = 0,
+  AURIX_NET_ERR_INVALID_ARGUMENT = 1, /* NULL, non-UTF-8 or out-of-range argument, or a call out of order */
+  AURIX_NET_ERR_HTTP = 2,             /* an HTTP request to the node failed */
+  AURIX_NET_ERR_CONNECTION = 3,       /* the control connection could not be opened, or broke */
+  AURIX_NET_ERR_DATA_PATH = 4,        /* the data path could not be opened */
+  AURIX_NET_ERR_DISCONNECTED = 5,     /* the connection is gone, or the client is not in a room */
+  AURIX_NET_ERR_TIMEOUT = 6,
+  AURIX_NET_ERR_PROTOCOL = 7,         /* a frame from the node could not be decoded */
+  /* the node refused the request */
+  AURIX_NET_ERR_UNAUTHORIZED = 100,
+  AURIX_NET_ERR_FORBIDDEN = 101,
+  AURIX_NET_ERR_NOT_FOUND = 102,      /* join: no such room */
+  AURIX_NET_ERR_CONFLICT = 103,
+  AURIX_NET_ERR_INVALID_REQUEST = 104,
+  AURIX_NET_ERR_ROOM_FULL = 105,
+  AURIX_NET_ERR_ROOM_CLOSED = 106,
+  AURIX_NET_ERR_SCHEMA_MISMATCH = 107,
+  AURIX_NET_ERR_QUOTA_EXCEEDED = 108,
+  AURIX_NET_ERR_RATE_LIMITED = 109,
+  AURIX_NET_ERR_SERVER = 199          /* any other failure on the node */
+};
+
 const char *aurix_net_version(void);
 const char *aurix_net_last_error(void);
+int32_t aurix_net_last_error_code(void);
 
 /* backend/tooling only */
 char *aurix_net_issue_grant(const char *http, const char *api_key, const char *player_id, const char *name);

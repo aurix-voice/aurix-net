@@ -321,13 +321,15 @@ export class Client {
     }
   }
   /** `reserved`: player ids whose seats are held for 60 s when this call creates the room (a party
-   *  arriving together: pass the `players` list from a matchmaking ticket). */
+   *  arriving together: pass the `players` list from a matchmaking ticket). `lobbyProps`: names of
+   *  the room props that room listings show and `expr` filters match. */
   async joinOrCreate(
     name: string,
     mode: RoomMode = "relay",
     maxPlayers = 8,
     props: Record<string, unknown> = {},
     reserved: string[] = [],
+    lobbyProps: string[] = [],
   ): Promise<Joined> {
     return this.join({
       t: "join_or_create",
@@ -336,6 +338,7 @@ export class Client {
       max_players: maxPlayers,
       props,
       reserved,
+      lobby_props: lobbyProps,
     });
   }
   /** Joins a random open room: `filter` must equal room props exactly, `expr` is a SQL-like condition

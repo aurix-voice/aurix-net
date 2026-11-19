@@ -13,10 +13,10 @@ pub mod sync;
 
 use bytes::Bytes;
 use net_client::protocol::{ClientMsg, ServerMsg};
-use net_client::{CacheOp, Client, Event, EventTarget, Options};
+use net_client::{CacheOp, Client, ClientError, Event, EventTarget, Options};
 use net_common::{ActorId, Channel};
 use parking_lot::Mutex;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, CStr, CString};
 use std::sync::OnceLock;
 
@@ -34,11 +34,67 @@ fn rt() -> &'static tokio::runtime::Runtime {
 
 thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
+    static LAST_CODE: Cell<ErrorCode> = const { Cell::new(ErrorCode::Ok) };
 }
 
-fn set_error(e: impl std::fmt::Display) {
+/// Why a call failed: the `AURIX_NET_ERR_*` constants of `aurix_net.h`.
+#[derive(Clone, Copy)]
+#[repr(i32)]
+pub(crate) enum ErrorCode {
+    Ok = 0,
+    InvalidArgument = 1,
+    Http = 2,
+    Connection = 3,
+    DataPath = 4,
+    Disconnected = 5,
+    Timeout = 6,
+    Protocol = 7,
+    Unauthorized = 100,
+    Forbidden = 101,
+    NotFound = 102,
+    Conflict = 103,
+    InvalidRequest = 104,
+    RoomFull = 105,
+    RoomClosed = 106,
+    SchemaMismatch = 107,
+    QuotaExceeded = 108,
+    RateLimited = 109,
+    Server = 199,
+}
+
+impl From<&ClientError> for ErrorCode {
+    fn from(error: &ClientError) -> Self {
+        match error {
+            ClientError::Http(_) => ErrorCode::Http,
+            ClientError::Ws(_) => ErrorCode::Connection,
+            ClientError::Data(_) => ErrorCode::DataPath,
+            ClientError::Disconnected => ErrorCode::Disconnected,
+            ClientError::Timeout => ErrorCode::Timeout,
+            ClientError::Server { code, .. } => match code.as_str() {
+                "unauthorized" => ErrorCode::Unauthorized,
+                "forbidden" => ErrorCode::Forbidden,
+                "not_found" => ErrorCode::NotFound,
+                "conflict" => ErrorCode::Conflict,
+                "invalid_request" => ErrorCode::InvalidRequest,
+                "room_full" => ErrorCode::RoomFull,
+                "room_closed" => ErrorCode::RoomClosed,
+                "schema_mismatch" => ErrorCode::SchemaMismatch,
+                "quota_exceeded" => ErrorCode::QuotaExceeded,
+                "rate_limited" => ErrorCode::RateLimited,
+                _ => ErrorCode::Server,
+            },
+        }
+    }
+}
+
+pub(crate) fn set_error(code: ErrorCode, e: impl std::fmt::Display) {
     let s = CString::new(e.to_string().replace('\0', " ")).unwrap_or_default();
     LAST_ERROR.with(|l| *l.borrow_mut() = s);
+    LAST_CODE.with(|last| last.set(code));
+}
+
+pub(crate) fn set_client_error(error: &ClientError) {
+    set_error(error.into(), error);
 }
 
 unsafe fn cstr<'a>(p: *const c_char) -> Option<&'a str> {
@@ -97,6 +153,14 @@ pub extern "C" fn aurix_net_last_error() -> *const c_char {
     LAST_ERROR.with(|l| l.borrow().as_ptr())
 }
 
+/// Why the last failed call on this thread failed: one of the `AURIX_NET_ERR_*` constants.
+/// Set together with `aurix_net_last_error` by a call that reports failure; a call that
+/// succeeds leaves both as they were.
+#[no_mangle]
+pub extern "C" fn aurix_net_last_error_code() -> i32 {
+    LAST_CODE.with(|last| last.get()) as i32
+}
+
 /// Backend/tooling helper: issues a grant with an API key. Returns a malloc'd string to free
 /// with `aurix_net_string_free`, or NULL. Never call this from a shipped game client.
 #[no_mangle]
@@ -109,7 +173,7 @@ pub unsafe extern "C" fn aurix_net_issue_grant(
     let (Some(http), Some(key), Some(pid), Some(name)) =
         (cstr(http), cstr(api_key), cstr(player_id), cstr(name))
     else {
-        set_error("null or non-utf8 argument");
+        set_error(ErrorCode::InvalidArgument, "null or non-utf8 argument");
         return std::ptr::null_mut();
     };
     match rt().block_on(net_client::issue_grant(http, key, pid, name)) {
@@ -117,7 +181,7 @@ pub unsafe extern "C" fn aurix_net_issue_grant(
             .map(CString::into_raw)
             .unwrap_or(std::ptr::null_mut()),
         Err(e) => {
-            set_error(e);
+            set_client_error(&e);
             std::ptr::null_mut()
         }
     }
@@ -131,7 +195,7 @@ pub unsafe extern "C" fn aurix_net_best_region(
     probes: i32,
 ) -> *mut c_char {
     let Ok(url) = std::ffi::CStr::from_ptr(catalog_http).to_str() else {
-        set_error("best_region: bad url");
+        set_error(ErrorCode::InvalidArgument, "best_region: bad url");
         return std::ptr::null_mut();
     };
     match rt().block_on(net_client::best_region(url, probes.clamp(1, 10) as u8)) {
@@ -139,7 +203,7 @@ pub unsafe extern "C" fn aurix_net_best_region(
             .map(CString::into_raw)
             .unwrap_or(std::ptr::null_mut()),
         Err(e) => {
-            set_error(e);
+            set_client_error(&e);
             std::ptr::null_mut()
         }
     }
@@ -175,7 +239,7 @@ pub unsafe extern "C" fn aurix_net_connect(
     tunnel: i32,
 ) -> *mut AurixNetClient {
     let (Some(http), Some(grant)) = (cstr(http), cstr(grant)) else {
-        set_error("null or non-utf8 argument");
+        set_error(ErrorCode::InvalidArgument, "null or non-utf8 argument");
         return std::ptr::null_mut();
     };
     let opts = Options {
@@ -187,7 +251,7 @@ pub unsafe extern "C" fn aurix_net_connect(
             inner: Mutex::new(c),
         })),
         Err(e) => {
-            set_error(e);
+            set_client_error(&e);
             std::ptr::null_mut()
         }
     }
@@ -205,14 +269,14 @@ pub unsafe extern "C" fn aurix_net_send_control(
     let msg: ClientMsg = match serde_json::from_str(json) {
         Ok(m) => m,
         Err(e) => {
-            set_error(e);
+            set_error(ErrorCode::InvalidArgument, e);
             return -1;
         }
     };
     match rt().block_on(h.inner.lock().send(msg)) {
         Ok(()) => 0,
         Err(e) => {
-            set_error(e);
+            set_client_error(&e);
             -1
         }
     }
@@ -228,7 +292,7 @@ pub unsafe extern "C" fn aurix_net_join(h: *mut AurixNetClient, json: *const c_c
     let msg: ClientMsg = match serde_json::from_str(json) {
         Ok(m) => m,
         Err(e) => {
-            set_error(e);
+            set_error(ErrorCode::InvalidArgument, e);
             return -1;
         }
     };
@@ -236,7 +300,7 @@ pub unsafe extern "C" fn aurix_net_join(h: *mut AurixNetClient, json: *const c_c
     match rt().block_on(c.join(msg)) {
         Ok(j) => j.actor.0 as i32,
         Err(e) => {
-            set_error(e);
+            set_client_error(&e);
             -1
         }
     }
@@ -272,7 +336,7 @@ pub unsafe extern "C" fn aurix_net_send_data(
 ) -> i32 {
     let Some(h) = h.as_ref() else { return -1 };
     let Some(ch) = Channel::from_u8(channel) else {
-        set_error("bad channel");
+        set_error(ErrorCode::InvalidArgument, "bad channel");
         return -1;
     };
     let payload = if data.is_null() || len == 0 {
@@ -283,7 +347,7 @@ pub unsafe extern "C" fn aurix_net_send_data(
     match h.inner.lock().send_data(ch, payload) {
         Ok(()) => 0,
         Err(e) => {
-            set_error(e);
+            set_client_error(&e);
             -1
         }
     }
@@ -313,7 +377,7 @@ pub unsafe extern "C" fn aurix_net_send_event(
                 .collect(),
         ),
         _ => {
-            set_error("bad target");
+            set_error(ErrorCode::InvalidArgument, "bad target");
             return -1;
         }
     };
@@ -329,7 +393,7 @@ pub unsafe extern "C" fn aurix_net_send_event(
     {
         Ok(()) => 0,
         Err(e) => {
-            set_error(e);
+            set_client_error(&e);
             -1
         }
     }
@@ -361,7 +425,7 @@ pub unsafe extern "C" fn aurix_net_send_event_ex(
                 .collect(),
         ),
         _ => {
-            set_error("bad target");
+            set_error(ErrorCode::InvalidArgument, "bad target");
             return -1;
         }
     };
@@ -384,7 +448,7 @@ pub unsafe extern "C" fn aurix_net_send_event_ex(
     ) {
         Ok(()) => 0,
         Err(e) => {
-            set_error(e);
+            set_client_error(&e);
             -1
         }
     }
@@ -467,7 +531,7 @@ pub unsafe extern "C" fn aurix_net_leave(h: *mut AurixNetClient) -> i32 {
     match rt().block_on(c.leave()) {
         Ok(()) => 0,
         Err(e) => {
-            set_error(e);
+            set_client_error(&e);
             -1
         }
     }
@@ -635,7 +699,7 @@ unsafe fn send_frame(h: *mut AurixNetClient, f: Outgoing) -> i32 {
     match h.inner.lock().send_data(ch, f.payload) {
         Ok(()) => 0,
         Err(e) => {
-            set_error(e);
+            set_client_error(&e);
             -1
         }
     }
@@ -674,7 +738,7 @@ pub unsafe extern "C" fn aurix_net_lockstep_send_command(
     len: usize,
 ) -> i32 {
     if data.is_null() || len == 0 || len > 1024 {
-        set_error("send_command: 1..=1024 bytes");
+        set_error(ErrorCode::InvalidArgument, "send_command: 1..=1024 bytes");
         return -1;
     }
     let d = std::slice::from_raw_parts(data, len);

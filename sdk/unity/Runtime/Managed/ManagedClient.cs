@@ -50,6 +50,9 @@ namespace Aurix.Net.Managed
         public string JoinedJson { get; private set; }
         public string RoomMode { get; private set; }
 
+        /// <summary>Events the room kept for late joiners, as received by the last join; also raised through OnEvent.</summary>
+        public IReadOnlyList<EventFrame> Cached { get; private set; } = Array.Empty<EventFrame>();
+
         /// <summary>Raw control message (JSON text).</summary>
         public event Action<string> OnControl;
 
@@ -162,7 +165,8 @@ namespace Aurix.Net.Managed
             string mode = "relay",
             int maxPlayers = 8,
             string propsJson = null,
-            string[] reserved = null
+            string[] reserved = null,
+            string[] lobbyProps = null
         )
         {
             var sb = new StringBuilder("{\"t\":\"join_or_create\",\"name\":")
@@ -189,6 +193,13 @@ namespace Aurix.Net.Managed
                     sb.Append(Json.Str(reserved[i]));
                 }
                 sb.Append(']');
+            }
+
+            if (lobbyProps != null && lobbyProps.Length > 0)
+            {
+                sb.Append(",\"lobby_props\":[")
+                    .Append(string.Join(",", lobbyProps.Select(Json.Str)))
+                    .Append(']');
             }
             return JoinRawAsync(sb.Append('}').ToString());
         }
@@ -271,6 +282,7 @@ namespace Aurix.Net.Managed
             JoinedJson = joined;
             Actor = (int)Json.Num(joined, "actor");
             RoomMode = Json.Str(joined, "mode");
+            Cached = Json.CachedEvents(joined);
             // Every join gets its own data path, and the node starts a fresh link on it.
             _link = new Link();
             _lost = false;
@@ -423,6 +435,10 @@ namespace Aurix.Net.Managed
                                 {
                                     _dataReady = true;
                                     OnDataReady?.Invoke();
+                                    foreach (var frame in Cached)
+                                    {
+                                        OnEvent?.Invoke(frame);
+                                    }
                                 }
                                 continue;
                             }
@@ -736,6 +752,25 @@ namespace Aurix.Net.Managed
             Field(json, key) is JValue { Type: JTokenType.Boolean } value
                 ? (bool)value
                 : (bool?)null;
+
+        /// <summary>The `cached` field of a `joined` message: [code, from, base64 payload] per event.</summary>
+        public static EventFrame[] CachedEvents(string joined) =>
+            Field(joined, "cached") is JArray events
+                ? events
+                    .OfType<JArray>()
+                    .Where(entry => entry.Count == 3)
+                    .Select(entry => new EventFrame
+                    {
+                        Code = (byte)entry[0],
+                        From = (ushort)entry[1],
+                        Payload = new ArraySegment<byte>(
+                            Convert.FromBase64String((string)entry[2])
+                        ),
+                        Reliable = true,
+                        Cached = true,
+                    })
+                    .ToArray()
+                : Array.Empty<EventFrame>();
 
         /// <summary>The object value for `key`, as JSON text.</summary>
         public static string Obj(string json, string key) =>

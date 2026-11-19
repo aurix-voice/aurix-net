@@ -17,7 +17,7 @@ static PackedByteArray to_pba(const uint8_t *data, size_t len) {
 
 void AurixNetClient::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("connect_to", "http_url", "grant", "force_tunnel"), &AurixNetClient::connect_to, DEFVAL(false));
-	ClassDB::bind_method(D_METHOD("join_or_create", "room", "mode", "max_players", "props_json"), &AurixNetClient::join_or_create, DEFVAL(MODE_RELAY), DEFVAL(8), DEFVAL(""));
+	ClassDB::bind_method(D_METHOD("join_or_create", "room", "mode", "max_players", "props_json", "lobby_props"), &AurixNetClient::join_or_create, DEFVAL(MODE_RELAY), DEFVAL(8), DEFVAL(""), DEFVAL(PackedStringArray()));
 	ClassDB::bind_method(D_METHOD("join", "room", "schema_hash"), &AurixNetClient::join, DEFVAL(""));
 	ClassDB::bind_method(D_METHOD("send_control", "json"), &AurixNetClient::send_control);
 	ClassDB::bind_static_method("AurixNetClient", D_METHOD("best_region", "catalog_http", "probes"), &AurixNetClient::best_region, DEFVAL(3));
@@ -33,6 +33,7 @@ void AurixNetClient::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_connected_to"), &AurixNetClient::is_connected_to);
 	ClassDB::bind_method(D_METHOD("get_joined_json"), &AurixNetClient::get_joined_json);
 	ClassDB::bind_method(D_METHOD("get_last_error"), &AurixNetClient::get_last_error);
+	ClassDB::bind_method(D_METHOD("get_last_error_code"), &AurixNetClient::get_last_error_code);
 	ADD_SIGNAL(MethodInfo("control", PropertyInfo(Variant::STRING, "json")));
 	ADD_SIGNAL(MethodInfo("event", PropertyInfo(Variant::INT, "code"), PropertyInfo(Variant::INT, "from_actor"), PropertyInfo(Variant::PACKED_BYTE_ARRAY, "payload")));
 	ADD_SIGNAL(MethodInfo("data", PropertyInfo(Variant::INT, "channel"), PropertyInfo(Variant::INT, "tick"), PropertyInfo(Variant::PACKED_BYTE_ARRAY, "payload")));
@@ -45,6 +46,25 @@ void AurixNetClient::_bind_methods() {
 	BIND_ENUM_CONSTANT(TARGET_ALL);
 	BIND_ENUM_CONSTANT(TARGET_OTHERS);
 	BIND_ENUM_CONSTANT(TARGET_MASTER);
+	BIND_ENUM_CONSTANT(ERROR_NONE);
+	BIND_ENUM_CONSTANT(ERROR_INVALID_ARGUMENT);
+	BIND_ENUM_CONSTANT(ERROR_HTTP);
+	BIND_ENUM_CONSTANT(ERROR_CONNECTION);
+	BIND_ENUM_CONSTANT(ERROR_DATA_PATH);
+	BIND_ENUM_CONSTANT(ERROR_DISCONNECTED);
+	BIND_ENUM_CONSTANT(ERROR_TIMEOUT);
+	BIND_ENUM_CONSTANT(ERROR_PROTOCOL);
+	BIND_ENUM_CONSTANT(ERROR_UNAUTHORIZED);
+	BIND_ENUM_CONSTANT(ERROR_FORBIDDEN);
+	BIND_ENUM_CONSTANT(ERROR_NOT_FOUND);
+	BIND_ENUM_CONSTANT(ERROR_CONFLICT);
+	BIND_ENUM_CONSTANT(ERROR_INVALID_REQUEST);
+	BIND_ENUM_CONSTANT(ERROR_ROOM_FULL);
+	BIND_ENUM_CONSTANT(ERROR_ROOM_CLOSED);
+	BIND_ENUM_CONSTANT(ERROR_SCHEMA_MISMATCH);
+	BIND_ENUM_CONSTANT(ERROR_QUOTA_EXCEEDED);
+	BIND_ENUM_CONSTANT(ERROR_RATE_LIMITED);
+	BIND_ENUM_CONSTANT(ERROR_SERVER);
 }
 
 void AurixNetClient::hook() {
@@ -66,12 +86,13 @@ void AurixNetClient::hook() {
 	};
 }
 
-#define AURIX_TRY(expr, fail)               \
-	try {                                   \
-		expr;                               \
-	} catch (const std::exception &error) { \
-		last_error_ = error.what();         \
-		return fail;                        \
+#define AURIX_TRY(expr, fail)                  \
+	try {                                      \
+		expr;                                  \
+	} catch (const aurix::net::Error &error) { \
+		last_error_ = error.what();            \
+		last_error_code_ = error.code;         \
+		return fail;                           \
 	}
 
 bool AurixNetClient::connect_to(const String &http_url, const String &grant, bool force_tunnel) {
@@ -81,8 +102,12 @@ void AurixNetClient::note_mode() {
 	const std::string mode = aurix::net::Client::jsonStr(client_.joinedJson(), "mode");
 	relay_ = mode != "sync" && mode != "lockstep";
 }
-int AurixNetClient::join_or_create(const String &room, int mode, int max_players, const String &props_json) {
-	AURIX_TRY(const int actor = client_.joinOrCreate(to_std(room), (aurix::net::Mode)mode, max_players, to_std(props_json)); note_mode(); return actor, -1);
+int AurixNetClient::join_or_create(const String &room, int mode, int max_players, const String &props_json, const PackedStringArray &lobby_props) {
+	std::vector<std::string> lobbyProps;
+	for (int k = 0; k < lobby_props.size(); ++k) {
+		lobbyProps.push_back(to_std(lobby_props[k]));
+	}
+	AURIX_TRY(const int actor = client_.joinOrCreate(to_std(room), (aurix::net::Mode)mode, max_players, to_std(props_json), lobbyProps); note_mode(); return actor, -1);
 }
 int AurixNetClient::join(const String &room, const String &schema_hash) {
 	AURIX_TRY(const int actor = client_.join(to_std(room), to_std(schema_hash)); note_mode(); return actor, -1);

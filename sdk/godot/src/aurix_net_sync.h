@@ -16,6 +16,7 @@ class AurixNetSync : public RefCounted {
 	GDCLASS(AurixNetSync, RefCounted)
 	std::unique_ptr<aurix::net::Sync> sync_;
 	String last_error_;
+	int last_error_code_ = AURIX_NET_OK;
 	int current_ = -1;
 
 protected:
@@ -45,6 +46,7 @@ public:
 	int request_ownership(AurixNetClient *client, int64_t entity);
 	int release_entity(AurixNetClient *client, int64_t entity);
 	String get_last_error() const { return last_error_; }
+	int get_last_error_code() const { return last_error_code_; }
 };
 
 } // namespace godot

@@ -21,6 +21,9 @@ net.join_or_create("lobby-1", AurixNetClient.MODE_RELAY, 8)
 net.send_event(1, "hi".to_utf8_buffer()); net.flush()
 ```
 
+A call that fails returns `false` or `-1`; `get_last_error()` has the text and `get_last_error_code()`
+the reason as one of `AurixNetClient.ERROR_*` (`ERROR_NOT_FOUND`, `ERROR_ROOM_FULL`, ...).
+
 ## Signals added for operator messages
 
 - `notice(text: String, level: String)`: system message pushed by the operator console or the game backend (`level` is `info` or `warn`). Show it in the HUD; it is not a chat message.

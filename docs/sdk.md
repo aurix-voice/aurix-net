@@ -15,6 +15,17 @@ All SDKs share one shape: `connect(http, grant)` → `joinOrCreate/join` → per
 `sendEvent/sendData`, `flush()`; events `control` (JSON), `event` (relay frame), `data` (raw
 sync/lockstep frames), `closed`. Grants always come from the developer's backend.
 
+A relay event sent with `cache: add` stays in the room for late joiners. They receive it as an
+ordinary `event` right after the join, before anything sent later (Web and the managed C# client
+mark it `cached`).
+
+In the C ABI a call that fails (`NULL`, `-1`) leaves the reason in two places for the calling
+thread: `aurix_net_last_error()` has the text and `aurix_net_last_error_code()` one of the
+`AURIX_NET_ERR_*` constants of `aurix_net.h`, so a refused join is told apart without reading the
+text (`AURIX_NET_ERR_NOT_FOUND`, `AURIX_NET_ERR_ROOM_FULL`, `AURIX_NET_ERR_ROOM_CLOSED`, ...). The
+C++ wrapper throws `aurix::net::Error` with the same value in `code`; the Godot nodes return it
+from `get_last_error_code()` (`AurixNetClient.ERROR_*`).
+
 ## Rehost
 
 When a node shuts down (deploy) it hands its rooms to another node and sends `left{reason:"rehost"}`. Clients rejoin the same room with the same grant: Rust `client.rejoin(&[fallback_urls])`, Web `client.rejoin(fallbackUrls)` (or listen to the `rehost` event), C# `ManagedClient.RejoinAsync(fallbacks)`; Unity `NetRunner` does it automatically (`FallbackUrls`). C++ and Godot have no `rejoin` call: connect again with the same grant and join the same room. Actor ids are preserved by player id.
@@ -37,6 +48,10 @@ session, both fan out across the fleet):
 
 A room's lobby is its room prop `lobby` (always visible in listings); rooms without one form the default
 lobby `""`. See docs/modes.md.
+
+Other room props stay private unless the room publishes them: `joinOrCreate` takes the names as
+`lobbyProps` (Web, C#, C++; `lobby_props` in Godot). Room listings show only those props, and the
+`expr` filters of `rooms` and `joinRandom` match only those.
 
 ## Lockstep rooms from Rust, C++ and Godot
 
@@ -281,8 +296,8 @@ back too, so a region picker UI is one call.
 
 No separate chat service: `Chat` (Web), `ChatClient` (Unity) and `aurix::net::Chat` (C++) run on a relay room.
 Channels are interest groups (`join` = subscribe, chat groups live at `groupBase + channel`, default 60000), messages
-are reliable events to the group with `cache: add` so late joiners receive the history the room still holds (the
-room's cache limits and `cleanup_cache_on_leave` apply), whispers are events to one actor and are never cached.
+are reliable events to the group with `cache: add` so late joiners receive the history the room still holds when
+they join the channel (the room's cache limits and `cleanup_cache_on_leave` apply), whispers are events to one actor and are never cached.
 Payload: `u8 kind (0 channel, 1 whisper), u16 channel, UTF-8 text` on a reserved event code (default 240). Chat
 stays inside the room, so moderation (kick, bans), rate limits and GDPR export/erase cover it for free.
 

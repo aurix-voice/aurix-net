@@ -31,17 +31,19 @@ void AurixNetSync::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("request_ownership", "client", "entity"), &AurixNetSync::request_ownership);
 	ClassDB::bind_method(D_METHOD("release_entity", "client", "entity"), &AurixNetSync::release_entity);
 	ClassDB::bind_method(D_METHOD("get_last_error"), &AurixNetSync::get_last_error);
+	ClassDB::bind_method(D_METHOD("get_last_error_code"), &AurixNetSync::get_last_error_code);
 	ADD_SIGNAL(MethodInfo("spawn", PropertyInfo(Variant::INT, "entity"), PropertyInfo(Variant::INT, "owner")));
 	ADD_SIGNAL(MethodInfo("change", PropertyInfo(Variant::INT, "entity"), PropertyInfo(Variant::INT, "owner")));
 	ADD_SIGNAL(MethodInfo("despawn", PropertyInfo(Variant::INT, "entity")));
 }
 
-#define AURIX_TRY(fail, ...)                \
-	try {                                   \
-		__VA_ARGS__;                        \
-	} catch (const std::exception &error) { \
-		last_error_ = error.what();         \
-		return fail;                        \
+#define AURIX_TRY(fail, ...)                   \
+	try {                                      \
+		__VA_ARGS__;                           \
+	} catch (const aurix::net::Error &error) { \
+		last_error_ = error.what();            \
+		last_error_code_ = error.code;         \
+		return fail;                           \
 	}
 
 bool AurixNetSync::setup(const String &schema, int tick_hz, int interpolation_ticks) {

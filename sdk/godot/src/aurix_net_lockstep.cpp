@@ -22,6 +22,7 @@ void AurixNetLockstep::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_last_margin"), &AurixNetLockstep::get_last_margin);
 	ClassDB::bind_method(D_METHOD("get_late_inputs"), &AurixNetLockstep::get_late_inputs);
 	ClassDB::bind_method(D_METHOD("get_last_error"), &AurixNetLockstep::get_last_error);
+	ClassDB::bind_method(D_METHOD("get_last_error_code"), &AurixNetLockstep::get_last_error_code);
 	ADD_SIGNAL(MethodInfo("tick", PropertyInfo(Variant::INT, "tick"), PropertyInfo(Variant::ARRAY, "inputs")));
 	ADD_SIGNAL(MethodInfo("command", PropertyInfo(Variant::INT, "tick"), PropertyInfo(Variant::INT, "actor"), PropertyInfo(Variant::PACKED_BYTE_ARRAY, "data")));
 	ADD_SIGNAL(MethodInfo("restore", PropertyInfo(Variant::INT, "tick"), PropertyInfo(Variant::INT, "hash"), PropertyInfo(Variant::PACKED_BYTE_ARRAY, "state")));
@@ -87,12 +88,13 @@ bool AurixNetLockstep::receive(const PackedByteArray &payload) {
 	return true;
 }
 
-#define AURIX_TRY(fail, ...)                \
-	try {                                   \
-		__VA_ARGS__;                        \
-	} catch (const std::exception &error) { \
-		last_error_ = error.what();         \
-		return fail;                        \
+#define AURIX_TRY(fail, ...)                   \
+	try {                                      \
+		__VA_ARGS__;                           \
+	} catch (const aurix::net::Error &error) { \
+		last_error_ = error.what();            \
+		last_error_code_ = error.code;         \
+		return fail;                           \
 	}
 
 int64_t AurixNetLockstep::send_input(AurixNetClient *client, const PackedByteArray &data) {
