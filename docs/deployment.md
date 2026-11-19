@@ -20,7 +20,9 @@ Step-by-step order for go-live and every release: [release-checklist.md](release
 
 `server.heartbeat_secs` (default 30) is stored with the node's row; peers declare a node dead after it
 misses three of *its own* heartbeats, so nodes with different intervals can share a fleet (a 2 s dev node
-next to a 30 s one). Unknown `NET__<SECTION>__…` variables are reported with a startup warning.
+next to a 30 s one). With every heartbeat a node also renews its rooms in the room list (`lobby_rooms`,
+`GET /v1/rooms`); the rooms of a node that stopped doing so leave the list after four heartbeats.
+Unknown `NET__<SECTION>__…` variables are reported with a startup warning.
 
 `server.public_host` is also what the other nodes use to reach this one for operator calls
 (`GET /v1/operator/nodes/:id/stats`, drains): it must resolve and route *inside* the cluster, not only from

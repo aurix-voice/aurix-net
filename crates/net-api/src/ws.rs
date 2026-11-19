@@ -824,14 +824,7 @@ impl Session {
     }
 
     async fn lobby_rooms(&self, project: ProjectId) -> Vec<RoomSummary> {
-        match self.st.redis.list_rooms(project).await {
-            Ok(live) => live
-                .into_iter()
-                .filter(|r| r.visible && r.open && r.players < r.max_players)
-                .map(live_to_summary)
-                .collect(),
-            Err(_) => self.st.host.listed(project),
-        }
+        lobby_rooms(&self.st, project).await
     }
 
     async fn find_room(&self, project: ProjectId, name: &str) -> Result<Arc<Mutex<HostedRoom>>> {
@@ -2042,6 +2035,65 @@ pub async fn flusher(st: Shared) {
     }
 }
 
+async fn lobby_rooms(st: &Shared, project: ProjectId) -> Vec<RoomSummary> {
+    match st.redis.list_rooms(project).await {
+        Ok(live) => live
+            .into_iter()
+            .filter(|r| r.visible && r.open && r.players < r.max_players)
+            .map(live_to_summary)
+            .collect(),
+        Err(_) => st.host.listed(project),
+    }
+}
+
+/// Brings Redis and the lobby subscribers of this node up to date after a break: Redis took
+/// no writes while it was away and does not repeat what it published meanwhile.
+pub async fn resync_lobby(st: &Shared) {
+    for (project, room) in st.host.take_unlisted() {
+        if st.redis.remove_room(project, room).await.is_err() {
+            st.host.unlisted(project, room);
+        }
+    }
+    for handle in st.host.all() {
+        publish_room(st, &handle).await;
+    }
+    for project in st.host.lobby_projects() {
+        let rooms = lobby_rooms(st, project).await;
+        st.host
+            .notify_lobby(project, ServerMsg::LobbyRooms { rooms });
+    }
+}
+
+/// Runs with every heartbeat. A room's record in Redis is written when the room changes and
+/// expires on its own, so the rooms of a dead node leave the lists; a room that only sits
+/// there has its record renewed here, and written again if it has expired.
+pub async fn renew_rooms(st: &Shared) {
+    let rooms: Vec<(ProjectId, RoomId)> = st
+        .host
+        .all()
+        .iter()
+        .map(|handle| {
+            let hosted = handle.lock();
+            (hosted.project, hosted.room.id())
+        })
+        .collect();
+    let renewed = match st.redis.touch_rooms(&rooms).await {
+        Ok(renewed) => renewed,
+        Err(e) => {
+            tracing::warn!(error = %e, "redis touch_rooms failed");
+            return;
+        }
+    };
+    for ((_, room), renewed) in rooms.into_iter().zip(renewed) {
+        if renewed {
+            continue;
+        }
+        if let Some(handle) = st.host.get(room) {
+            publish_room(st, &handle).await;
+        }
+    }
+}
+
 pub async fn publish_room(st: &Shared, handle: &Arc<Mutex<HostedRoom>>) {
     let (project, live) = {
         let hosted = handle.lock();
@@ -2353,6 +2405,7 @@ pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {
     }
     if let Err(e) = st.redis.remove_room(project, id).await {
         tracing::warn!(error = %e, room = %id, "close_room redis");
+        st.host.unlisted(project, id);
         st.host.notify_lobby(
             project,
             ServerMsg::LobbyUpdate {

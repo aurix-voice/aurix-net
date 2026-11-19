@@ -172,6 +172,8 @@ pub struct RoomHost {
     lobby: DashMap<ProjectId, Vec<mpsc::Sender<ServerMsg>>>,
     /// Authenticated control sessions per (project, player): presence for `find_friends`.
     presence: DashMap<(ProjectId, String), u32>,
+    /// Rooms closed here that Redis still lists: it could not be reached to take them out.
+    unlisted: Mutex<Vec<(ProjectId, RoomId)>>,
     unmetered: Unmetered,
 }
 
@@ -376,6 +378,24 @@ impl RoomHost {
         if let Some(mut watchers) = self.lobby.get_mut(&project) {
             watchers.retain(|t| !t.same_channel(tx));
         }
+    }
+
+    /// A room closed here that is still in the Redis list.
+    pub fn unlisted(&self, project: ProjectId, room: RoomId) {
+        self.unlisted.lock().push((project, room));
+    }
+
+    pub fn take_unlisted(&self) -> Vec<(ProjectId, RoomId)> {
+        std::mem::take(&mut self.unlisted.lock())
+    }
+
+    /// The projects whose lobby somebody on this node is subscribed to.
+    pub fn lobby_projects(&self) -> Vec<ProjectId> {
+        self.lobby
+            .iter()
+            .filter(|watchers| !watchers.is_empty())
+            .map(|watchers| *watchers.key())
+            .collect()
     }
 
     pub fn notify_lobby(&self, project: ProjectId, msg: ServerMsg) {

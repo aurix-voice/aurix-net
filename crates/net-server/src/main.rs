@@ -89,7 +89,9 @@ async fn main() -> anyhow::Result<()> {
         info!("migrations applied");
         return Ok(());
     }
-    let redis = RedisStore::connect(&cfg.redis.url, &cfg.redis.ca_cert).await?;
+    // The node renews its rooms' records with every heartbeat; one outlives the node by four.
+    let room_ttl_secs = 4 * cfg.server.heartbeat_secs.max(1);
+    let redis = RedisStore::connect(&cfg.redis.url, &cfg.redis.ca_cert, room_ttl_secs).await?;
 
     let node_id = cfg
         .server
@@ -359,6 +361,7 @@ async fn wait_for_signal() {
 }
 
 async fn heartbeat(st: &Arc<AppState>, http_url: &str, draining: bool) -> anyhow::Result<()> {
+    net_api::ws::renew_rooms(st).await;
     let rooms = st.host.len() as i32;
     let players = st.host.players() as i32;
     let cap = st.cfg.limits.max_rooms_per_node.max(1) as f32;
@@ -404,6 +407,7 @@ async fn fleet_listen_once(st: &Arc<AppState>, redis: &RedisConfig) -> anyhow::R
     let mut ps = client.get_async_pubsub().await?;
     ps.psubscribe("net:p:*:lobby").await?;
     ps.psubscribe("net:p:*:webhooks").await?;
+    net_api::ws::resync_lobby(st).await;
     let mut stream = ps.on_message();
     while let Some(msg) = stream.next().await {
         let Some((project, topic)) = msg
@@ -462,5 +466,5 @@ async fn fleet_listen_once(st: &Arc<AppState>, redis: &RedisConfig) -> anyhow::R
             );
         }
     }
-    Ok(())
+    anyhow::bail!("the connection closed")
 }

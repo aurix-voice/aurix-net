@@ -22,9 +22,9 @@ pub struct LiveRoom {
 #[derive(Clone)]
 pub struct RedisStore {
     conn: ConnectionManager,
+    /// How long a room's live record stays without its node renewing it.
+    room_ttl_secs: u64,
 }
-
-const ROOM_TTL_SECS: i64 = 120;
 
 /// Redis client for `url`; `ca_cert` (PEM path) pins a private CA for `rediss://` servers.
 pub fn redis_client(url: &str, ca_cert: &str) -> Result<redis::Client> {
@@ -55,7 +55,7 @@ pub fn redact_url(url: &str) -> String {
 }
 
 impl RedisStore {
-    pub async fn connect(url: &str, ca_cert: &str) -> Result<Self> {
+    pub async fn connect(url: &str, ca_cert: &str, room_ttl_secs: u64) -> Result<Self> {
         let client = redis_client(url, ca_cert)?;
         // ConnectionManager retries forever; probe once so a bad URL, password or TLS
         // certificate fails the startup fast with the real error instead of hanging.
@@ -91,7 +91,10 @@ impl RedisStore {
         let conn = ConnectionManager::new_with_config(client, cfg)
             .await
             .map_err(|e| NetError::Redis(e.to_string()))?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            room_ttl_secs,
+        })
     }
 
     fn room_key(project: ProjectId, room: RoomId) -> String {
@@ -118,7 +121,7 @@ impl RedisStore {
         Ok(())
     }
 
-    /// Writes/refreshes a room's live record (call on every change and every 30 s).
+    /// Writes a room's live record and tells the lobby subscribers (call on every change).
     pub async fn put_room(&self, project: ProjectId, room: &LiveRoom) -> Result<()> {
         let mut conn = self.conn.clone();
         let body = serde_json::to_string(room).map_err(|e| NetError::Internal(e.to_string()))?;
@@ -126,7 +129,7 @@ impl RedisStore {
             .set_ex(
                 Self::room_key(project, room.room),
                 &body,
-                ROOM_TTL_SECS as u64,
+                self.room_ttl_secs,
             )
             .sadd(Self::index_key(project), room.room.to_string())
             .publish(Self::lobby_channel(project), &body)
@@ -134,6 +137,21 @@ impl RedisStore {
             .await
             .map_err(|e| NetError::Redis(e.to_string()))?;
         Ok(())
+    }
+
+    /// Renews the live records of rooms that did not change. False for a record that is gone.
+    pub async fn touch_rooms(&self, rooms: &[(ProjectId, RoomId)]) -> Result<Vec<bool>> {
+        if rooms.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut conn = self.conn.clone();
+        let mut pipe = redis::pipe();
+        for (project, room) in rooms {
+            pipe.expire(Self::room_key(*project, *room), self.room_ttl_secs as i64);
+        }
+        pipe.query_async(&mut conn)
+            .await
+            .map_err(|e| NetError::Redis(e.to_string()))
     }
 
     fn checkpoint_key(project: ProjectId, room: RoomId) -> String {

@@ -92,8 +92,18 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Lobby: a room in which nobody joined, left or changed anything for two minutes dropped out
+  of the room list (`lobby_rooms`, `get_rooms`, `GET /v1/rooms`) until its next change, with its
+  players still in it. A node now renews its rooms in the list with every heartbeat.
 - Unreal SDK: `SendEventEx` sent an event for `EAurixNetChannel::ReliableUnordered` on the
   reliable ordered channel. It goes on the channel it is given.
+- Lobby: a node that lost its Redis connection heard no room changes for about 2 s, and a room
+  closed in that time stayed in the lists of its lobby subscribers until they subscribed again.
+  When the node is listening again it sends them `lobby_rooms`, the whole list, once more.
+- Lobby: a room closed while its node could not reach Redis stayed in the room list
+  (`lobby_rooms`, `GET /v1/rooms`) for up to 2 minutes after Redis was back, and a room created
+  in that time was missing from the list until its next change. The node takes the first out
+  and writes the second as soon as it is listening again.
 - Node: a WebSocket handshake cut off before the node answered kept its place in the count of
   connections from that address (`limits.max_sessions_per_ip`) until the node restarted. Enough
   of them, and nobody behind that address could connect: `429 too many connections`. The place

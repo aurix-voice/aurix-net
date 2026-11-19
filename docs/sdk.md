@@ -66,6 +66,14 @@ session, both fan out across the fleet):
   call gets its own answer, and the node's refusal of one (`lookup_rate`, `rpc_rate`) fails that call
   only.
 
+- A live room list: send the control message `lobby{subscribe: true}` (Web `client.send(...)`, Unity
+  `SendControlAsync` / `SendControl`, C++ `sendControl`, Godot `send_control`) and read the answers
+  as control messages (`control` in Web and Godot, `OnControl`, `onControl`). `lobby_rooms{rooms}`
+  is the whole list and replaces the one the game holds: it comes once on subscribing and again,
+  unasked, whenever the node has reason to send the list anew. `lobby_update{room, removed}` then
+  adds, changes or removes one room. The SDKs keep no list of their own. In Unreal
+  `SubscribeLobby` does this, `OnRoomsListed` gets each whole list and `OnLobbyUpdate` each change.
+
 A room's lobby is its room prop `lobby` (always visible in listings); rooms without one form the default
 lobby `""`. See docs/modes.md.
 

@@ -109,3 +109,17 @@ async fn the_rust_client_sends_a_lookup_under_the_id_it_is_given() {
     }
     assert_eq!((answered, refused), (Some(7), Some(8)));
 }
+
+#[tokio::test]
+async fn room_nobody_touches_stays_in_the_list() {
+    // One-second heartbeats: a room's record lives four seconds unless its node renews it.
+    let node = Node::start_with(&[("NET__SERVER__HEARTBEAT_SECS", "1")]).await;
+    let project = node.project("lobby-idle").await;
+    let mut ann = project.player("ann").await;
+    joined(&ann.call(json!({"t": "create", "name": "arena"})).await);
+    tokio::time::sleep(Duration::from_secs(6)).await;
+
+    let (status, list) = project.api.get("/v1/rooms").await;
+    assert_eq!(status, 200, "{list}");
+    assert_eq!(list["rooms"][0]["name"], "arena", "{list}");
+}
