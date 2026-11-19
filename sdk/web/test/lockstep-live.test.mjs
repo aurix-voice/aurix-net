@@ -26,7 +26,7 @@ test("lockstep: confirmed ticks flow, margin reports arrive, a liar's desync yie
     const joined = await c.joinOrCreate(room, "lockstep", 4, { tick_hz: 30 });
     const ls = new LockstepClient((ch, p) => c.sendData(ch, p));
     const p = { name, c, joined, ls, ticks: 0, stats: 0, dumpsAsked: [], liar: name === "ls-c" };
-    const orig = ls.onInputStats.bind(ls); ls.onInputStats = (m, l) => { p.stats++; orig(m, l); };
+    const orig = ls.onInputStats.bind(ls); ls.onInputStats = (...report) => { p.stats++; orig(...report); };
     ls.onTick = (t) => { p.ticks++; if (t % 10 === 0) ls.reportHash(t, p.liar && t > 60 ? 0xbadn : LockstepClient.fnv1a(tickBytes(t))); };
     ls.onDumpRequested = (t) => { p.dumpsAsked.push(t); ls.sendDump(t, LockstepClient.fnv1a(tickBytes(t)), new TextEncoder().encode(`${name}@${t}`)); };
     c.on("data", (_ch, _tick, payload) => ls.receive(payload));

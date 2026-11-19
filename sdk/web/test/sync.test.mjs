@@ -92,7 +92,7 @@ test("owner ops encode as the node parses them (0xFF marker, u48 entity, u16 act
 
 test("an input is resent only under the tick it was stamped with", () => {
   const frames = [];
-  const client = { on() {}, send() {}, sendData(channel, payload) { frames.push({ first: new DataView(payload.buffer, payload.byteOffset).getUint32(1), count: payload[5] }); } };
+  const client = { rttMs: 0, on() {}, ping() {}, sendData(channel, payload) { frames.push({ first: new DataView(payload.buffer, payload.byteOffset).getUint32(1), count: payload[5] }); } };
   const session = new SyncSession(client, "component T {\n  x: f32\n}\n", 60, 2);
   session.world.serverTick = 10;
   assert.equal(session.spawn(), 12);

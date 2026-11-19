@@ -178,6 +178,23 @@ report it (`Hash` frame). The server compares hashes per tick; a minority is rep
 everyone as `desync`. The server keeps the canonical input journal, which is also the replay
 format (`net-rollback::Replay`): seed + schema hash + inputs per tick reproduces the game.
 
+An input frame carries the input for one tick and repeats the few before it, so a lost frame
+costs nothing while the next one is still in time. An input that arrives after its tick was
+bundled is late. The newest input of a late frame goes into the next bundle, so the player
+keeps acting; the older ones in it are repeats whose tick has passed and are dropped. Every 30
+ticks the room tells each client how early its inputs arrived (`InputStats`), and the client
+tunes its input delay from that.
+
+A client needs every bundle, in order. It tells the room which tick it needs next with an `Ack`
+frame (`0x29`: `u32 next`, big-endian, over `UnreliableSequenced`; every tick before `next` has
+arrived) after each bundle datagram it receives, and the room sends it every bundle from that
+tick on in one datagram, never fewer than the last three. When they no longer fit a datagram
+(1000 bytes, 255 bundles) the room sends the last three and, once, the missing bundles on the
+reliable channel in the same layout; when its journal no longer holds them, a catch-up as on
+join. A client that sends no `Ack` gets the last three bundles each tick and stops for good
+once three datagrams in a row are lost. Spectators are served the same way up to their delayed
+tick.
+
 **Commands**: a reliable message outside the per-tick input stream — buy, surrender, pause. The server stamps it onto the next tick and ships it inside that tick's bundle as the input of pseudo-actor 65535, so it is in the journal, in catch-ups, in replays and in the referee's input stream; every client sees it at the same tick (`SendCommand` / `OnCommand` in the SDKs). Up to 1 KB per command, 4 KB per tick.
 
 **Instant replay for sync rooms**: room props `replay_every` (ticks between snapshots, default hz/2) and `replay_secs` (window, default 30; 0 off) keep full-world delta frames on the node; `GET /v1/rooms/{id}/replay?from=&to=` returns them (`mode: "sync"`) and any SDK sync client replays them by feeding the frames, in order, to a fresh world.
@@ -196,10 +213,15 @@ compared must follow the same rule: an actor's avatar spawns at the first tick i
 bundle, state is a `net-sim` frame, hash = `hash_bytes(frame.snapshot())` every 10 ticks.
 On a desync the node stores its own state at that tick as the reference dump (actor `0` in
 `GET /v1/rooms/:id/desyncs`) next to the desynced client's, so nobody has to trust the master;
-room details report `referee: true` while the node hosts such a room. A desynced client is sent a
-catch-up (checkpoint + journal tail) for its first three strikes; from the fourth it is `untrusted`
-and no longer resynced, so a client lying about its hash cannot make the node re-send the state
-every few ticks.
+room details report `referee: true` while the node hosts such a room.
+
+A desynced client, in a room with a referee or without, is sent `Restore` (`0x2A`) on the
+reliable-ordered channel: the newest checkpoint in the layout of `Catchup` (u32 tick, u64 hash,
+u32 length, state), followed by every journal bundle from that tick. The client goes back to
+that tick whatever it has simulated since, which is why the frame is not `Catchup`: a client
+drops a `Catchup` behind the ticks it already has. `Restore` comes with each of the first three
+strikes; the third reports the client `untrusted`, and from the fourth it is no longer restored,
+so a client lying about its hash cannot make the node re-send the state every few ticks.
 
 `crates/net-sim-guest` is the reference module for this: `physics-arena`, avatars as fixed-point
 circles in a walled `net-sim-physics` world (input = i8 move_x, i8 move_z), built with
@@ -263,4 +285,6 @@ inputs are lost; sync rooms checkpoint every 2 s. A `room.rehosted` webhook fire
 | `0x23` CheckpointReq | server -> master (reliable) | lockstep |
 | `0x24` Catchup | server -> joiner (reliable), then `0x20` bundles | lockstep |
 | `0x25` InputStats (tick, least input margin, late inputs; every 30 ticks) | server -> client | sync, lockstep |
+| `0x29` Ack (the tick the client needs next) | client -> server | lockstep |
+| `0x2A` Restore (layout of `0x24`) | server -> desynced client (reliable), then `0x20` bundles | lockstep |
 | `0x28` Command | client -> server (reliable); delivered inside the next `0x20` bundle as the input of pseudo-actor 65535 (`[u16 actor, u16 len, bytes]*`) | lockstep |

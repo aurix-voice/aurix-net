@@ -27,7 +27,7 @@ protected:
 public:
 	AurixNetLockstep();
 	/// True when the payload was a lockstep frame (signals may have fired).
-	bool receive(const PackedByteArray &payload);
+	bool receive(AurixNetClient *client, const PackedByteArray &payload);
 	/// Sends this tick's local input; returns the tick it was stamped with, or -1.
 	int64_t send_input(AurixNetClient *client, const PackedByteArray &data);
 	/// Reliable command outside the input stream (1..1024 bytes); everyone gets it at the same tick via `command`.

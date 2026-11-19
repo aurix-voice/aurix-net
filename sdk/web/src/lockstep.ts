@@ -11,10 +11,12 @@ export const LS_HASH = 0x21;
 export const LS_CHECKPOINT = 0x22;
 export const LS_CHECKPOINT_REQ = 0x23;
 export const LS_CATCHUP = 0x24;
+export const LS_RESTORE = 0x2a;
 export const LS_INPUT_STATS = 0x25;
 export const LS_DUMP_REQ = 0x26;
 export const LS_DUMP = 0x27;
 const LS_COMMAND = 0x28;
+const LS_ACK = 0x29;
 /** Pseudo-actor whose per-tick input carries the commands. */
 export const COMMAND_ACTOR = 0xffff;
 
@@ -35,9 +37,13 @@ export class LockstepClient {
   private pending = new Map<number, TickInputs>();
   private recentInputs: Uint8Array[] = [];
   private started = false;
+  private anchored = false;
   private next = 0;
   private lastInput = 0;
   private slackStreak = 0;
+  private spare = 0;
+  private reportTick = 0;
+  private settleTick = 0;
   /** Next tick to be delivered to onTick. */
   get confirmedTick(): number {
     return this.next;
@@ -47,7 +53,7 @@ export class LockstepClient {
   /** Ticks ahead of the server clock inputs are stamped; tuned between min/max from margin reports when adaptive. */
   inputDelay = 2;
   inputDelayMin = 1;
-  inputDelayMax = 8;
+  inputDelayMax = 32;
   adaptiveDelay = true;
   /** Inputs repeated per datagram (1..8). */
   inputRedundancy = 3;
@@ -67,7 +73,8 @@ export class LockstepClient {
       return false;
     }
     switch (packet[0]) {
-      case LS_CATCHUP: {
+      case LS_CATCHUP:
+      case LS_RESTORE: {
         if (packet.length < 17) {
           return true;
         }
@@ -75,9 +82,15 @@ export class LockstepClient {
         const hash = u64(packet, 5);
         const len = u32(packet, 13);
         const state = packet.slice(17, 17 + Math.min(len, packet.length - 17));
+        // the catch-up of a join is reliable and can come after bundles that already took the client
+        // past it; a restore always rewinds
+        if (packet[0] === LS_CATCHUP && this.anchored && tick < this.next) {
+          return true;
+        }
         this.pending.clear();
         this.next = tick;
         this.started = true;
+        this.anchored = true;
         this.catchups++;
         this.onRestore?.(tick, hash, state);
         return true;
@@ -98,6 +111,7 @@ export class LockstepClient {
           offset += len;
         }
         this.drain();
+        this.sendAck();
         return true;
       }
       case LS_CHECKPOINT_REQ:
@@ -112,7 +126,7 @@ export class LockstepClient {
         return true;
       case LS_INPUT_STATS:
         if (packet.length >= 7) {
-          this.onInputStats((packet[5] << 24) >> 24, packet[6]);
+          this.onInputStats(u32(packet, 1), (packet[5] << 24) >> 24, packet[6]);
         }
         return true;
       case LS_CHECKPOINT:
@@ -123,29 +137,48 @@ export class LockstepClient {
     return false;
   }
 
-  /** Raises the delay as soon as inputs arrive late; lowers it one tick after three consecutive reports with >= 2 ticks of slack. */
-  onInputStats(margin: number, late: number): void {
+  /** Keeps one or two ticks of slack: a late report raises the delay by the lateness plus one tick;
+   *  three consecutive reports with more than two ticks to spare lower it by the excess. A late report
+   *  that still covers inputs stamped before the last raise does not raise again. */
+  onInputStats(tick: number, margin: number, late: number): void {
+    const windowStart = this.reportTick;
+    this.reportTick = tick;
     this.lastMargin = margin;
     this.lateInputs += late;
     if (!this.adaptiveDelay) {
       return;
     }
     if (margin < 0) {
-      this.inputDelay = Math.min(
-        this.inputDelayMax,
-        this.inputDelay + Math.min(4, -margin),
-      );
       this.slackStreak = 0;
-    } else if (margin >= 2) {
+      if (windowStart >= this.settleTick) {
+        this.inputDelay = Math.min(
+          this.inputDelayMax,
+          this.inputDelay - margin + 1,
+        );
+        this.settleTick = this.lastInput - margin;
+      }
+    } else if (margin > 2) {
+      this.spare =
+        this.slackStreak === 0 ? margin : Math.min(this.spare, margin);
       if (++this.slackStreak >= 3) {
         this.slackStreak = 0;
-        if (this.inputDelay > this.inputDelayMin) {
-          this.inputDelay--;
-        }
+        this.inputDelay = Math.max(
+          this.inputDelayMin,
+          this.inputDelay - (this.spare - 2),
+        );
       }
     } else {
       this.slackStreak = 0;
     }
+  }
+
+  /** Tells the room which tick this client needs next: the room then sends every bundle from that
+   *  tick on instead of the last three, so a run of lost packets leaves no gap. */
+  private sendAck(): void {
+    const bytes = new Uint8Array(5);
+    bytes[0] = LS_ACK;
+    new DataView(bytes.buffer).setUint32(1, this.anchored ? this.next : 0);
+    this.send(Channel.Unreliable, bytes);
   }
 
   private decodeBundle(bytes: Uint8Array, offset: number, len: number): void {
@@ -159,9 +192,13 @@ export class LockstepClient {
     if (tick + 1 > this.serverTick) {
       this.serverTick = tick + 1;
     }
-    if (!this.started) {
-      this.started = true;
-      this.next = tick;
+    this.started = true;
+    // ticks are delivered from tick 0 or from a catch-up, never from the middle
+    if (!this.anchored) {
+      if (tick !== 0) {
+        return;
+      }
+      this.anchored = true;
     }
     if (tick < this.next || this.pending.has(tick)) {
       return;
@@ -232,8 +269,12 @@ export class LockstepClient {
     }
   }
   /** Sends this tick's input and returns the tick it is stamped with. The room takes one input per tick:
-   *  called more often than that it sends nothing and returns -1, so sample the input again next time. */
+   *  called more often than that it sends nothing and returns -1, so sample the input again next time.
+   *  It does the same before the first frame from the room, while the room's tick is unknown. */
   sendInput(input: Uint8Array): number {
+    if (!this.started) {
+      return -1;
+    }
     const tick = Math.max(
       this.serverTick + this.inputDelay,
       this.lastInput + 1,

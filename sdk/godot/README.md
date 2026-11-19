@@ -65,7 +65,7 @@ for replays.
 
 ```gdscript
 var ls := AurixNetLockstep.new()
-client.data.connect(func(_channel, _tick, payload): ls.receive(payload))
+client.data.connect(func(_channel, _tick, payload): ls.receive(client, payload))
 ls.tick.connect(func(tick: int, inputs: Array):
     for i in inputs: sim.apply_input(i["actor"], i["data"])   # same order on every peer
     sim.step()

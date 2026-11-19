@@ -400,13 +400,15 @@ namespace Aurix.Net.Managed
                 switch (message)
                 {
                     case Text text:
-                        if (Json.Str(text.Json, "t") == "pong")
+                        // The answer to the client's own probe is not the game's business.
+                        if (
+                            Json.Str(text.Json, "t") == "pong"
+                            && Json.Num(text.Json, "ts") == _lastPingMs
+                        )
                         {
-                            float sample = Math.Max(
-                                0f,
-                                (float)(_clock.ElapsedMilliseconds - Json.Num(text.Json, "ts"))
-                            );
+                            float sample = Math.Max(0f, _clock.ElapsedMilliseconds - _lastPingMs);
                             RttMs = RttMs > 0f ? 0.875f * RttMs + 0.125f * sample : sample;
+                            break;
                         }
                         OnControl?.Invoke(text.Json);
                         if (

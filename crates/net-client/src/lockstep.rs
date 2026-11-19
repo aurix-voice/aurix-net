@@ -12,11 +12,13 @@ pub const LS_INPUT: u8 = 0x10;
 pub const LS_BUNDLE: u8 = 0x20;
 pub const LS_HASH: u8 = 0x21;
 pub const LS_COMMAND: u8 = 0x28;
+pub const LS_ACK: u8 = 0x29;
 /// Pseudo-actor whose per-tick input carries the commands.
 pub const COMMAND_ACTOR: u16 = 0xFFFF;
 pub const LS_CHECKPOINT: u8 = 0x22;
 pub const LS_CHECKPOINT_REQ: u8 = 0x23;
 pub const LS_CATCHUP: u8 = 0x24;
+pub const LS_RESTORE: u8 = 0x2A;
 pub const LS_INPUT_STATS: u8 = 0x25;
 pub const LS_DUMP_REQ: u8 = 0x26;
 pub const LS_DUMP: u8 = 0x27;
@@ -60,9 +62,16 @@ pub struct LockstepClient {
     pending: BTreeMap<u32, TickInputs>,
     recent_inputs: Vec<Bytes>,
     started: bool,
+    anchored: bool,
     next: u32,
     last_input: u32,
     slack_streak: u8,
+    /// Smallest margin of the current streak of slack reports.
+    spare: i8,
+    /// Tick of the last margin report.
+    report_tick: u32,
+    /// Server tick by which every input stamped before the last raise has arrived.
+    settle_tick: u32,
     /// Newest tick the node has bundled (+1).
     pub server_tick: u32,
     /// Ticks ahead of the server clock inputs are stamped; tuned between min/max from margin
@@ -92,13 +101,17 @@ impl LockstepClient {
             pending: BTreeMap::new(),
             recent_inputs: Vec::new(),
             started: false,
+            anchored: false,
             next: 0,
             last_input: 0,
             slack_streak: 0,
+            spare: i8::MAX,
+            report_tick: 0,
+            settle_tick: 0,
             server_tick: 0,
             input_delay: 2,
             input_delay_min: 1,
-            input_delay_max: 8,
+            input_delay_max: 32,
             adaptive_delay: true,
             input_redundancy: 3,
             last_margin: 0,
@@ -114,18 +127,25 @@ impl LockstepClient {
         self.next
     }
 
-    /// Feeds one data-path payload. `None` when it was not a lockstep frame.
+    /// Feeds one data-path payload. `None` when it was not a lockstep frame. After a bundle
+    /// frame (`LS_BUNDLE`) send [`Self::ack_frame`], so the room resends what was lost.
     pub fn receive(&mut self, p: &[u8]) -> Option<Vec<LsEvent>> {
         let mut out = Vec::new();
         match *p.first()? {
-            LS_CATCHUP => {
+            kind @ (LS_CATCHUP | LS_RESTORE) => {
                 if p.len() >= 17 {
                     let tick = u32_at(p, 1);
                     let hash = u64_at(p, 5);
                     let len = (u32_at(p, 13) as usize).min(p.len() - 17);
+                    // the catch-up of a join is reliable and can come after bundles that
+                    // already took the client past it; a restore always rewinds
+                    if kind == LS_CATCHUP && self.anchored && tick < self.next {
+                        return Some(out);
+                    }
                     self.pending.clear();
                     self.next = tick;
                     self.started = true;
+                    self.anchored = true;
                     self.catchups += 1;
                     out.push(LsEvent::Restore {
                         tick,
@@ -165,7 +185,8 @@ impl LockstepClient {
             }
             LS_INPUT_STATS => {
                 if p.len() >= 7 {
-                    self.on_input_stats(p[5] as i8, p[6]);
+                    let tick = u32::from_be_bytes([p[1], p[2], p[3], p[4]]);
+                    self.on_input_stats(tick, p[5] as i8, p[6]);
                 }
             }
             LS_CHECKPOINT | LS_HASH | LS_INPUT => {}
@@ -174,25 +195,37 @@ impl LockstepClient {
         Some(out)
     }
 
-    /// Raises the delay as soon as inputs arrive late; lowers it one tick after three consecutive
-    /// reports with >= 2 ticks of slack.
-    pub fn on_input_stats(&mut self, margin: i8, late: u8) {
+    /// Keeps one or two ticks of slack: a late report raises the delay by the lateness plus one
+    /// tick; three consecutive reports with more than two ticks to spare lower it by the excess.
+    /// A late report that still covers inputs stamped before the last raise does not raise again.
+    pub fn on_input_stats(&mut self, tick: u32, margin: i8, late: u8) {
+        let window_start = std::mem::replace(&mut self.report_tick, tick);
         self.last_margin = margin;
         self.late_inputs += late as u64;
         if !self.adaptive_delay {
             return;
         }
         if margin < 0 {
-            let bump = (-(margin as i32)).min(4) as u32;
-            self.input_delay = (self.input_delay + bump).min(self.input_delay_max);
             self.slack_streak = 0;
-        } else if margin >= 2 {
+            if window_start >= self.settle_tick {
+                let lateness = margin.unsigned_abs() as u32;
+                self.input_delay = (self.input_delay + lateness + 1).min(self.input_delay_max);
+                self.settle_tick = self.last_input + lateness;
+            }
+        } else if margin > 2 {
+            self.spare = if self.slack_streak == 0 {
+                margin
+            } else {
+                self.spare.min(margin)
+            };
             self.slack_streak += 1;
             if self.slack_streak >= 3 {
                 self.slack_streak = 0;
-                if self.input_delay > self.input_delay_min {
-                    self.input_delay -= 1;
-                }
+                let excess = self.spare as u32 - 2;
+                self.input_delay = self
+                    .input_delay
+                    .saturating_sub(excess)
+                    .max(self.input_delay_min);
             }
         } else {
             self.slack_streak = 0;
@@ -207,9 +240,13 @@ impl LockstepClient {
         let k = b[5] as usize;
         let mut o = 6;
         self.server_tick = self.server_tick.max(t + 1);
-        if !self.started {
-            self.started = true;
-            self.next = t;
+        self.started = true;
+        // ticks are delivered from tick 0 or from a catch-up, never from the middle
+        if !self.anchored {
+            if t != 0 {
+                return;
+            }
+            self.anchored = true;
         }
         if t < self.next || self.pending.contains_key(&t) {
             return;
@@ -248,8 +285,12 @@ impl LockstepClient {
 
     /// Queues this tick's local input (sent together with the previous ones for redundancy).
     /// Returns the tick it was stamped with and the unreliable frame to send. The room takes
-    /// one input per tick: called more often than that it returns `None` and sends nothing.
+    /// one input per tick: called more often than that it returns `None` and sends nothing, as
+    /// it does before the first frame from the room, while the room's tick is unknown.
     pub fn send_input(&mut self, input: Bytes) -> Option<(u32, Outgoing)> {
+        if !self.started {
+            return None;
+        }
         let tick = (self.server_tick + self.input_delay).max(self.last_input + 1);
         if tick > self.server_tick + self.input_delay + 1 {
             return None;
@@ -286,6 +327,19 @@ impl LockstepClient {
                 payload: b.freeze(),
             },
         ))
+    }
+
+    /// Tells the room which tick this client needs next: the room then sends every bundle from
+    /// that tick on instead of the last three, so a run of lost packets leaves no gap. Sent
+    /// after every bundle frame, also while a gap is open; a lost ack is not repeated.
+    pub fn ack_frame(&self) -> Outgoing {
+        let mut b = BytesMut::with_capacity(5);
+        b.put_u8(LS_ACK);
+        b.put_u32(if self.anchored { self.next } else { 0 });
+        Outgoing {
+            reliable: false,
+            payload: b.freeze(),
+        }
     }
 
     /// Hash of the confirmed state after `tick`; the node compares it across players (and the
@@ -398,6 +452,73 @@ mod tests {
     }
 
     #[test]
+    fn the_ack_names_the_tick_needed_next() {
+        let mut c = LockstepClient::new();
+        assert_eq!(c.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 0]);
+        c.receive(&bundle(&[(0, &[]), (1, &[])])).unwrap();
+        assert_eq!(c.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 2]);
+        // ticks 2 to 4 were lost: the ack stays on 2 while later bundles wait
+        c.receive(&bundle(&[(5, &[]), (6, &[])])).unwrap();
+        assert_eq!(c.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 2]);
+        // the room answers with everything from 2 on, more than three bundles in one frame
+        let resent: Vec<TickSpec<'_>> = (2..=7).map(|tick| (tick, &[][..])).collect();
+        let ev = c.receive(&bundle(&resent)).unwrap();
+        assert_eq!(ev.len(), 6);
+        assert_eq!(c.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 8]);
+        assert!(!c.ack_frame().reliable);
+    }
+
+    fn catchup(tick: u32) -> Vec<u8> {
+        let mut p = vec![LS_CATCHUP];
+        p.extend_from_slice(&tick.to_be_bytes());
+        p.extend_from_slice(&[0; 12]);
+        p
+    }
+
+    #[test]
+    fn ticks_start_at_tick_zero_or_at_a_catchup() {
+        let mut c = LockstepClient::new();
+        // a room past tick 0: its bundles come before the reliable catch-up
+        assert!(c
+            .receive(&bundle(&[(5, &[]), (6, &[])]))
+            .unwrap()
+            .is_empty());
+        assert_eq!(c.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 0]);
+        assert!(matches!(
+            c.receive(&catchup(6)).unwrap()[..],
+            [LsEvent::Restore { tick: 6, .. }]
+        ));
+        assert_eq!(c.receive(&bundle(&[(6, &[]), (7, &[])])).unwrap().len(), 2);
+        assert_eq!(c.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 8]);
+    }
+
+    #[test]
+    fn a_catchup_behind_the_delivered_ticks_is_ignored() {
+        let mut c = LockstepClient::new();
+        let first: Vec<TickSpec<'_>> = (0..=3).map(|tick| (tick, &[][..])).collect();
+        assert_eq!(c.receive(&bundle(&first)).unwrap().len(), 4);
+        assert!(c.receive(&catchup(1)).unwrap().is_empty());
+        assert_eq!(c.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 4]);
+        assert_eq!(c.receive(&bundle(&[(4, &[])])).unwrap().len(), 1);
+        assert_eq!(c.catchups, 0);
+    }
+
+    #[test]
+    fn a_restore_behind_the_delivered_ticks_rewinds() {
+        let mut c = LockstepClient::new();
+        let first: Vec<TickSpec<'_>> = (0..=3).map(|tick| (tick, &[][..])).collect();
+        assert_eq!(c.receive(&bundle(&first)).unwrap().len(), 4);
+        let mut restore = catchup(1);
+        restore[0] = LS_RESTORE;
+        assert!(matches!(
+            c.receive(&restore).unwrap()[..],
+            [LsEvent::Restore { tick: 1, .. }]
+        ));
+        assert_eq!(c.receive(&bundle(&[(1, &[]), (2, &[])])).unwrap().len(), 2);
+        assert_eq!(c.ack_frame().payload.as_ref(), [LS_ACK, 0, 0, 0, 3]);
+    }
+
+    #[test]
     fn catchup_restores_and_resets_the_cursor() {
         let mut c = LockstepClient::new();
         c.receive(&bundle(&[(0, &[])])).unwrap();
@@ -423,9 +544,9 @@ mod tests {
     #[test]
     fn an_input_is_resent_only_under_its_own_tick() {
         let mut c = LockstepClient::new();
-        c.server_tick = 10;
+        c.receive(&bundle(&[(9, &[])])).unwrap();
         c.send_input(Bytes::from_static(b"A")).unwrap();
-        c.server_tick = 20;
+        c.receive(&bundle(&[(19, &[])])).unwrap();
         let (tick, frame) = c.send_input(Bytes::from_static(b"B")).unwrap();
         assert_eq!(tick, 22);
         assert_eq!(frame.payload.as_ref(), &[LS_INPUT, 0, 0, 0, 22, 1, 1, b'B']);
@@ -435,7 +556,7 @@ mod tests {
     fn input_frames_carry_redundant_inputs_and_adaptive_delay() {
         let mut c = LockstepClient::new();
         c.input_redundancy = 2;
-        c.server_tick = 10;
+        c.receive(&bundle(&[(9, &[])])).unwrap();
         let (t1, _) = c.send_input(Bytes::from_static(b"A")).unwrap();
         assert_eq!(t1, 12);
         let (t2, f) = c.send_input(Bytes::from_static(b"BB")).unwrap();
@@ -447,19 +568,32 @@ mod tests {
             f.payload.as_ref(),
             &[LS_INPUT, 0, 0, 0, 12, 2, 1, b'A', 2, b'B', b'B']
         );
-        // late report: delay jumps; three slack reports: delay drops by one
+        // late report: delay covers the lateness plus one; three slack reports: the excess goes
         c.receive(&[LS_INPUT_STATS, 0, 0, 0, 30, 0xFE, 1]).unwrap();
-        assert_eq!((c.input_delay, c.last_margin, c.late_inputs), (4, -2, 1));
+        assert_eq!((c.input_delay, c.last_margin, c.late_inputs), (5, -2, 1));
         for _ in 0..3 {
             c.receive(&[LS_INPUT_STATS, 0, 0, 0, 60, 3, 0]).unwrap();
         }
-        assert_eq!(c.input_delay, 3);
+        assert_eq!(c.input_delay, 4);
+        // a round trip of 12 ticks is covered by one report and given back by three
+        c.receive(&bundle(&[(159, &[])])).unwrap();
+        c.send_input(Bytes::from_static(b"C")).unwrap();
+        c.on_input_stats(170, -12, 30);
+        assert_eq!(c.input_delay, 17);
+        // the next report still covers inputs stamped before the raise
+        c.on_input_stats(200, -12, 30);
+        assert_eq!((c.input_delay, c.late_inputs), (17, 61));
+        for (tick, margin) in [(230, 9), (260, 6), (290, 7)] {
+            c.on_input_stats(tick, margin, 0);
+        }
+        assert_eq!(c.input_delay, 13);
+        c.input_delay = 4;
         c.input_delay_max = 4;
-        c.on_input_stats(-100, 0);
+        c.on_input_stats(330, -100, 0);
         assert_eq!(c.input_delay, 4);
         c.adaptive_delay = false;
-        c.on_input_stats(-5, 2);
-        assert_eq!((c.input_delay, c.late_inputs), (4, 3));
+        c.on_input_stats(360, -5, 2);
+        assert_eq!((c.input_delay, c.late_inputs), (4, 63));
     }
 
     #[test]

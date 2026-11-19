@@ -93,7 +93,8 @@ typedef struct AurixNetLsEvent {
 } AurixNetLsEvent;
 AurixNetLockstep *aurix_net_lockstep_new(void);
 void aurix_net_lockstep_destroy(AurixNetLockstep *ls);
-int32_t aurix_net_lockstep_receive(AurixNetLockstep *ls, const uint8_t *data, size_t len); /* 1 = lockstep frame */
+/* 1 = lockstep frame. Bundles are acknowledged through client so the room resends lost ones; NULL sends nothing. */
+int32_t aurix_net_lockstep_receive(AurixNetLockstep *ls, AurixNetClient *client, const uint8_t *data, size_t len);
 int32_t aurix_net_lockstep_poll(AurixNetLockstep *ls, AurixNetLsEvent *out);               /* 1 = event filled */
 int32_t aurix_net_lockstep_input(AurixNetLockstep *ls, uint16_t index, uint16_t *actor, const uint8_t **data, size_t *len);
 int64_t aurix_net_lockstep_send_input(AurixNetLockstep *ls, AurixNetClient *client, const uint8_t *data, size_t len); /* stamped tick; -1 on error or when this tick's input is already sent (one per room tick) */

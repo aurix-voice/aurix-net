@@ -4,10 +4,12 @@ import { LockstepClient, Channel } from "../dist/index.js";
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 const bundle = (tick, inputs) => { const parts = []; for (const [a, d] of inputs) parts.push(a >> 8, a & 255, d.length, ...d); const one = [0x20, tick >>> 24, (tick >>> 16) & 255, (tick >>> 8) & 255, tick & 255, inputs.length, ...parts]; return one; };
 const datagram = (...bundles) => { const out = [0x20, bundles.length]; for (const b of bundles) out.push(b.length >> 8, b.length & 255, ...b); return Uint8Array.from(out); };
+const catchup = (tick) => Uint8Array.from([0x24, tick >>> 24, (tick >>> 16) & 255, (tick >>> 8) & 255, tick & 255, ...new Array(12).fill(0)]);
 
 test("bundles are delivered once, in tick order, with redundancy and gaps filled later", () => {
   const sent = []; const ls = new LockstepClient((ch, p) => sent.push([ch, p]));
   const ticks = []; ls.onTick = (t, inputs) => ticks.push([t, [...inputs.keys()]]);
+  ls.receive(catchup(5));
   ls.receive(datagram(bundle(5, [[1, [9]]])));
   ls.receive(datagram(bundle(5, [[1, [9]]]), bundle(6, [[1, [8]], [2, [7]]])));
   ls.receive(datagram(bundle(8, [])));                     // 7 missing
@@ -35,11 +37,17 @@ test("catch-up restores then continues; hashes/checkpoints/dumps are framed like
 
 test("adaptive input delay follows the node's margin reports; redundancy window is configurable", () => {
   const sent = []; const ls = new LockstepClient((ch, p) => sent.push([ch, p]));
-  ls.onInputStats(-2, 2); assert.equal(ls.inputDelay, 4); assert.equal(ls.lateInputs, 2);
-  ls.onInputStats(3, 0); ls.onInputStats(3, 0); assert.equal(ls.inputDelay, 4);
-  ls.onInputStats(3, 0); assert.equal(ls.inputDelay, 3);
-  ls.onInputStats(1, 0); ls.onInputStats(3, 0); ls.onInputStats(3, 0); ls.onInputStats(3, 0); assert.equal(ls.inputDelay, 2);
-  ls.inputDelay = ls.inputDelayMax; ls.onInputStats(-9, 1); assert.equal(ls.inputDelay, ls.inputDelayMax);
+  ls.onInputStats(30, -2, 2); assert.equal(ls.inputDelay, 5); assert.equal(ls.lateInputs, 2);
+  ls.onInputStats(60, 3, 0); ls.onInputStats(90, 3, 0); assert.equal(ls.inputDelay, 5);
+  ls.onInputStats(120, 3, 0); assert.equal(ls.inputDelay, 4);
+  ls.onInputStats(150, 1, 0); ls.onInputStats(180, 3, 0); ls.onInputStats(210, 3, 0); ls.onInputStats(240, 3, 0); assert.equal(ls.inputDelay, 3);
+  // a round trip of 12 ticks is covered by one report and given back by three
+  ls.receive(Uint8Array.of(0x20, 1, 0, 6, 0x20, 0, 0, 1, 3, 0)); ls.sendInput(new Uint8Array([1]));
+  ls.onInputStats(270, -12, 30); assert.equal(ls.inputDelay, 16);
+  // the next report still covers inputs stamped before the raise
+  ls.onInputStats(300, -12, 30); assert.equal(ls.inputDelay, 16);
+  ls.onInputStats(360, 9, 0); ls.onInputStats(390, 6, 0); ls.onInputStats(420, 7, 0); assert.equal(ls.inputDelay, 12);
+  ls.inputDelay = ls.inputDelayMax; ls.onInputStats(450, -9, 1); assert.equal(ls.inputDelay, ls.inputDelayMax);
   assert.ok(ls.receive(Uint8Array.of(0x25, 0, 0, 0, 10, 0xff, 1))); assert.equal(ls.lastMargin, -1);
   ls.inputRedundancy = 2; ls.sendInput(Uint8Array.of(1)); const t = ls.sendInput(Uint8Array.of(2));
   const frames = sent.length; assert.equal(ls.sendInput(Uint8Array.of(3)), -1, "one input per tick"); assert.equal(sent.length, frames);
@@ -48,9 +56,51 @@ test("adaptive input delay follows the node's margin reports; redundancy window 
 
 test("an input is resent only under the tick it was stamped with", () => {
   const sent = []; const ls = new LockstepClient((ch, p) => sent.push(p));
-  ls.serverTick = 10; ls.sendInput(Uint8Array.of(1));
-  ls.serverTick = 20; const tick = ls.sendInput(Uint8Array.of(2));
+  assert.equal(ls.sendInput(Uint8Array.of(0)), -1, "no input before the room's tick is known");
+  ls.receive(Uint8Array.of(0x20, 1, 0, 6, 0x20, 0, 0, 0, 9, 0)); ls.sendInput(Uint8Array.of(1));
+  ls.receive(Uint8Array.of(0x20, 1, 0, 6, 0x20, 0, 0, 0, 19, 0)); const tick = ls.sendInput(Uint8Array.of(2));
   const last = sent.at(-1);
   assert.equal(last[5], 1, "the input of an earlier, non-adjacent tick is not carried over");
   assert.equal(((last[1] << 24) | (last[2] << 16) | (last[3] << 8) | last[4]) >>> 0, tick);
+});
+
+test("a bundle frame is acknowledged with the tick needed next, also while a gap is open", () => {
+  const sent = []; const ls = new LockstepClient((ch, p) => sent.push([ch, hex(p)]));
+  ls.receive(catchup(7));
+  ls.receive(datagram(bundle(7, []), bundle(8, [])));
+  assert.deepEqual(sent.at(-1), [Channel.Unreliable, "2900000009"]);
+  ls.receive(datagram(bundle(12, []), bundle(13, [])));     // 9 to 11 lost
+  assert.deepEqual(sent.at(-1), [Channel.Unreliable, "2900000009"]);
+  // the room resends from 9 on: more than three bundles in one frame
+  ls.receive(datagram(...[9, 10, 11, 12, 13, 14].map((tick) => bundle(tick, []))));
+  assert.equal(ls.confirmedTick, 15);
+  assert.deepEqual(sent.at(-1), [Channel.Unreliable, "290000000f"]);
+  assert.equal(sent.length, 3);
+});
+
+test("ticks start at tick 0 or at a catch-up; a catch-up behind the delivered ticks is ignored", () => {
+  const sent = []; const ls = new LockstepClient((ch, p) => sent.push(hex(p)));
+  const ticks = []; let restores = 0; ls.onTick = (tick) => ticks.push(tick); ls.onRestore = () => restores++;
+  ls.receive(datagram(bundle(5, []), bundle(6, [])));       // a room past tick 0: bundles before the reliable catch-up
+  assert.deepEqual(ticks, []);
+  assert.equal(sent.at(-1), "2900000000");
+  ls.receive(catchup(6));
+  ls.receive(datagram(bundle(6, []), bundle(7, [])));
+  assert.deepEqual(ticks, [6, 7]);
+  assert.equal(sent.at(-1), "2900000008");
+  ls.receive(catchup(3));
+  assert.equal(restores, 1);
+  assert.equal(ls.confirmedTick, 8);
+});
+
+test("a restore behind the delivered ticks rewinds", () => {
+  const sent = []; const ls = new LockstepClient((ch, p) => sent.push(hex(p)));
+  const ticks = []; const restores = []; ls.onTick = (tick) => ticks.push(tick); ls.onRestore = (tick) => restores.push(tick);
+  ls.receive(datagram(...[0, 1, 2, 3].map((tick) => bundle(tick, []))));
+  const restore = catchup(1); restore[0] = 0x2a;
+  ls.receive(restore);
+  assert.deepEqual(restores, [1]);
+  ls.receive(datagram(bundle(1, []), bundle(2, [])));
+  assert.deepEqual(ticks, [0, 1, 2, 3, 1, 2]);
+  assert.equal(sent.at(-1), "2900000003");
 });

@@ -156,3 +156,18 @@ test("sync room: spawned entities, ownership transfer and despawn replicate", { 
   clearInterval(bk); clearInterval(keepalive);
   assert.equal(sa.world.gaps + sb.world.gaps, 0, "no unrepaired gaps");
 });
+
+test("the round-trip probes of a sync session stay out of the control events", { skip: !key }, async () => {
+  const a = await Client.connect(http, await grant("web-probe-a"));
+  try {
+    const pongs = [];
+    a.on("control", (message) => { if (message.t === "pong") pongs.push(message.ts); });
+    await a.joinOrCreate(`web-probe-${process.pid}`, "sync", 4, { schema: SCHEMA });
+    new SyncSession(a, SCHEMA, 60, 2);
+    a.send({ t: "ping", ts: 987654321 });
+    await sleep(2500);
+    assert.deepEqual(pongs, [987654321], "only the game's own ping is answered to the game");
+  } finally {
+    a.close();
+  }
+});

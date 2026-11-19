@@ -884,7 +884,6 @@ export class SyncSession {
   private recent: Uint8Array[] = [];
   private lastDeltaAt = 0;
   private held: { body: Uint8Array; keep: boolean }[] = [];
-  private rttMs = 0;
   private lastPingAt = 0;
   constructor(
     readonly client: Client,
@@ -910,17 +909,11 @@ export class SyncSession {
         this.pump();
       }
     });
-    client.on("control", (message) => {
-      if (message.t === "pong" && typeof message.ts === "number") {
-        const sample = Math.max(0, Math.floor(performance.now()) - message.ts);
-        this.rttMs = this.rttMs ? 0.875 * this.rttMs + 0.125 * sample : sample;
-      }
-    });
     this.ping();
   }
   private ping(): void {
     this.lastPingAt = performance.now();
-    this.client.send({ t: "ping", ts: Math.floor(this.lastPingAt) });
+    this.client.ping();
   }
   /** Call once per animation frame: advances the render tick between deltas. */
   advance(dtSeconds: number): number {
@@ -958,7 +951,10 @@ export class SyncSession {
   private pump(): void {
     const lead =
       2 +
-      Math.min(MAX_LEAD_TICKS, Math.ceil((this.rttMs * this.tickHz) / 1000));
+      Math.min(
+        MAX_LEAD_TICKS,
+        Math.ceil((this.client.rttMs * this.tickHz) / 1000),
+      );
     while (this.held.length) {
       const tick = Math.max(
         this.world.serverTick + lead,

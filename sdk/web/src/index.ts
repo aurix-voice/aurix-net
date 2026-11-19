@@ -145,6 +145,9 @@ export class Client {
   lastJoin: object | null = null;
   /** Events the room kept for late joiners, as received by the last join; also emitted as `event`. */
   cached: EventFrame[] = [];
+  /** Smoothed control round trip in milliseconds; 0 until `ping()` got its first answer. */
+  rttMs = 0;
+  private probe = -1;
   private opts: { timeoutMs?: number } = {};
   /** Region list and best-region ping: reads `/v1/regions` from the catalog (or any node), probes every
    *  live endpoint's `/healthz` and returns the fastest; pass `endpoint` to `connect`. */
@@ -239,6 +242,11 @@ export class Client {
   private onMessage(data: unknown) {
     if (typeof data === "string") {
       const message = JSON.parse(data) as ControlMessage;
+      if (message.t === "pong" && message.ts === this.probe) {
+        const sample = Math.max(0, Math.floor(performance.now()) - this.probe);
+        this.rttMs = this.rttMs ? 0.875 * this.rttMs + 0.125 * sample : sample;
+        return;
+      }
       this.emit("control", message);
       if (message.t === "left" && message.reason === "rehost") {
         this.emit("rehost");
@@ -285,6 +293,12 @@ export class Client {
   /** Any control message, e.g. {t:"set_room_props", props:{...}}. */
   send(msg: object) {
     this.ws.send(JSON.stringify(msg));
+  }
+
+  /** Measures the control round trip into `rttMs`. The answer is not emitted as `control`. */
+  ping(): void {
+    this.probe = Math.floor(performance.now());
+    this.send({ t: "ping", ts: this.probe });
   }
 
   /** connect + join, following one `room_elsewhere:<url>` redirect to the node hosting the room. */

@@ -64,10 +64,10 @@ func _start_sync() -> void:
 	wc = AurixNetSync.new(); wd = AurixNetSync.new()
 	if not wc.setup(SCHEMA, 20, 2) or not wd.setup(SCHEMA, 20, 2): fail("sync setup: " + wd.get_last_error()); return
 	c.data.connect(func(_ch, _tick, payload):
-		if ls_on: lc.receive(payload)
+		if ls_on: lc.receive(c, payload)
 		else: wc.receive(c, payload))
 	d.data.connect(func(_ch, _tick, payload):
-		if ls_on: ld.receive(payload)
+		if ls_on: ld.receive(d, payload)
 		else: wd.receive(d, payload))
 	# sync and lockstep frames are not relay events: the event signal must stay quiet in both rooms
 	c.event.connect(func(_code, _from, _payload): stray += 1)

@@ -13,7 +13,7 @@ use net_rooms::protocol::{ClientMsg, DataEndpoint, ServerMsg};
 use net_transport::{quic, Link};
 use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -207,15 +207,16 @@ impl Client {
         };
         // The control round trip, measured once a second: sync inputs are stamped ahead by it.
         let started = Instant::now();
+        let probe = Arc::new(AtomicU64::new(u64::MAX));
         let pinger = {
-            let ctl = c.ctl.clone();
+            let (ctl, probe) = (c.ctl.clone(), probe.clone());
             tokio::spawn(async move {
                 let mut every = tokio::time::interval(PING_EVERY);
                 loop {
                     every.tick().await;
-                    let ping = ClientMsg::Ping {
-                        ts: started.elapsed().as_millis() as u64,
-                    };
+                    let ts = started.elapsed().as_millis() as u64;
+                    probe.store(ts, Ordering::Relaxed);
+                    let ping = ClientMsg::Ping { ts };
                     let Ok(text) = serde_json::to_string(&ping) else {
                         break;
                     };
@@ -235,9 +236,11 @@ impl Client {
                 match m {
                     Ok(Message::Text(t)) => match serde_json::from_str::<ServerMsg>(&t) {
                         Ok(msg) => {
-                            if let ServerMsg::Pong { ts, .. } = &msg {
+                            // The answer to the client's own probe is not the game's business.
+                            let sent = probe.load(Ordering::Relaxed);
+                            if matches!(msg, ServerMsg::Pong { ts, .. } if ts == sent) {
                                 let sample = (started.elapsed().as_millis() as u64)
-                                    .saturating_sub(*ts)
+                                    .saturating_sub(sent)
                                     .min(u64::from(u32::MAX))
                                     as u32;
                                 let smoothed = match rtt_ms.load(Ordering::Relaxed) {
@@ -245,6 +248,7 @@ impl Client {
                                     rtt => (rtt * 7 + sample) / 8,
                                 };
                                 rtt_ms.store(smoothed, Ordering::Relaxed);
+                                continue;
                             }
                             if events_tx.send(Event::Control(msg)).await.is_err() {
                                 break;

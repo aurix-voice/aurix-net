@@ -13,9 +13,11 @@
 //!                                   tune their input delay instead of guessing from ping
 //! 0x26 DumpReq      server->client  u32 tick            after a desync: "send your state at tick"
 //! 0x27 Dump         client->server  u32 tick, u64 hash, bytes state (<= 60 KiB, reliable)
+//! 0x29 Ack          client->server  u32 next            the tick the client needs next
 //! ```
-//! Bundles for the last `BUNDLE_REDUNDANCY` ticks are re-sent each tick, so a lost datagram
-//! costs nothing unless several in a row disappear.
+//! Bundles for the last `BUNDLE_REDUNDANCY` ticks are re-sent each tick. A client that sends
+//! `Ack` gets every bundle from the tick it needs instead, so losing several datagrams in a row
+//! does not leave it waiting for a bundle that never comes again.
 //!
 //! Late join / rejoin (reliable-ordered channel):
 //! ```text
@@ -23,6 +25,8 @@
 //! 0x22 Checkpoint    master->server  u32 tick, u64 hash, bytes state (<= 60 KiB)
 //! 0x24 Catchup       server->joiner  u32 tick, u64 hash, u32 len, bytes state
 //! 0x20 InputBundle   server->joiner  (same layout as live bundles) ticks tick..now-1
+//! 0x2A Restore       server->client  same layout as Catchup, then the same bundles: sent to a
+//!                                    client whose hash differed, which goes back to that tick
 //! ```
 //! When a data link attaches to a room that is past tick 0 the server sends `Catchup`
 //! (the newest master checkpoint, or tick 0 with an empty state = "start from the seed")
@@ -71,6 +75,12 @@ pub const KIND_DUMP: u8 = 0x27;
 /// them inside that tick's bundle as the input of the pseudo-actor `COMMAND_ACTOR`, so they are in
 /// the journal, in catch-ups, in replays and in the referee's input stream.
 pub const KIND_COMMAND: u8 = 0x28;
+/// client->server  u32 next: the tick the client needs next, every earlier one received. The
+/// room then sends it each bundle from that tick on instead of the last `BUNDLE_REDUNDANCY`.
+pub const KIND_ACK: u8 = 0x29;
+/// server->client  u32 tick, u64 hash, u32 len, bytes state: `Catchup` for a desynced client.
+/// A kind of its own, because a client drops a `Catchup` behind the ticks it already has.
+pub const KIND_RESTORE: u8 = 0x2A;
 /// Pseudo-actor carrying the tick's commands: `[u16 actor, u16 len, bytes]*`.
 pub const COMMAND_ACTOR: ActorId = ActorId(0xFFFF);
 /// Commands kept per tick (bytes) and per command; more are dropped (the sender sees no effect).
@@ -99,6 +109,9 @@ pub struct Dump {
     pub state: Bytes,
 }
 pub const BUNDLE_REDUNDANCY: usize = 3;
+/// Bundles re-sent to a client that has acknowledged fewer ticks fit one datagram of this size;
+/// past it they go over the reliable channel.
+const MAX_BUNDLE_DATAGRAM: usize = 1000;
 pub const CHECKPOINT_EVERY_SECS: u32 = 5;
 pub const MAX_CHECKPOINT_BYTES: usize = 60 * 1024;
 /// Reliable catch-up frames are split at about this size.
@@ -153,6 +166,10 @@ pub struct LockstepRoom {
     server_states: BTreeMap<u32, Bytes>,
     /// Actors that have appeared in a bundle (see `tick`).
     seen: BTreeSet<ActorId>,
+    /// Per actor: the tick it needs next, from its last `KIND_ACK`.
+    acked: HashMap<ActorId, u32>,
+    /// Per actor: the tick up to which missing bundles were re-sent on the reliable channel.
+    resent: HashMap<ActorId, u32>,
 }
 
 /// Ticks between server state hashes; matches `RollbackConfig::default().hash_every`.
@@ -249,6 +266,8 @@ impl LockstepRoom {
             server_hashes: BTreeMap::new(),
             server_states: BTreeMap::new(),
             seen: BTreeSet::new(),
+            acked: HashMap::new(),
+            resent: HashMap::new(),
         }
     }
 
@@ -449,38 +468,88 @@ impl LockstepRoom {
     /// A data link attached (join or rejoin) while the room is running: everything the
     /// client needs to reach the current tick, as reliable-ordered frames. Empty at tick 0.
     pub fn on_late_join(&mut self) -> Vec<Bytes> {
-        self.catchup_until(self.tick.0)
+        self.catchup_until(KIND_CATCHUP, self.tick.0)
     }
 
-    /// Catch-up for a joining player, or for a spectator only up to the delayed tick.
-    pub fn catchup_for(&mut self, spectator: bool) -> Vec<Bytes> {
-        let end = if spectator {
+    /// The checkpoint and journal tail a desynced client reloads from.
+    pub fn on_desync(&mut self) -> Vec<Bytes> {
+        self.catchup_until(KIND_RESTORE, self.tick.0)
+    }
+
+    /// Catch-up for a joining player, or for a spectator only up to the delayed tick. It covers
+    /// everything, so what the actor acknowledged before no longer counts.
+    pub fn catchup_for(&mut self, actor: ActorId, spectator: bool) -> Vec<Bytes> {
+        self.acked.remove(&actor);
+        self.resent.remove(&actor);
+        self.catchup_until(KIND_CATCHUP, self.stream_end(spectator))
+    }
+
+    /// One past the newest tick an actor may be sent.
+    fn stream_end(&self, spectator: bool) -> u32 {
+        if spectator {
             self.tick.0.saturating_sub(self.spectator_delay)
         } else {
             self.tick.0
-        };
-        self.catchup_until(end)
+        }
     }
 
-    fn catchup_until(&mut self, end: u32) -> Vec<Bytes> {
-        if end == 0 {
-            return Vec::new();
-        }
-        let (from, hash, state) = match &self.checkpoint {
-            Some(checkpoint) => (checkpoint.tick, checkpoint.hash, checkpoint.state.clone()),
-            None => (0, 0, Bytes::new()),
+    /// What `actor` is sent after a tick: its datagram, and frames for the reliable channel when
+    /// it is further behind than a datagram holds. An actor that acknowledges bundles gets every
+    /// one from the tick it needs; the others get the last `BUNDLE_REDUNDANCY`.
+    pub fn bundles_for(&mut self, actor: ActorId) -> (Option<Bytes>, Vec<Bytes>) {
+        let spectator = self.spectators.contains(&actor);
+        let live = if spectator {
+            self.spectator_datagram()
+        } else {
+            self.past.back().cloned()
         };
-        if self.tick.0.saturating_sub(from) > 2 * self.checkpoint_every() {
-            self.want_checkpoint = true;
+        let end = self.stream_end(spectator);
+        let Some(&next) = self.acked.get(&actor) else {
+            return (live, Vec::new());
+        };
+        if next + BUNDLE_REDUNDANCY as u32 >= end {
+            return (live, Vec::new());
         }
+        if next >= self.journal.base() {
+            if let Some(datagram) = self.datagram_from(next, end) {
+                return (Some(datagram), Vec::new());
+            }
+        }
+        if self.resent.get(&actor).is_some_and(|until| *until > next) {
+            return (live, Vec::new());
+        }
+        self.resent.insert(actor, end);
+        let frames = if next >= self.journal.base() {
+            self.bundle_chunks(next, end)
+        } else {
+            self.catchup_until(KIND_CATCHUP, end)
+        };
+        (live, frames)
+    }
+
+    /// Bundles of ticks `from..end` as one datagram, or `None` when they do not fit.
+    fn datagram_from(&self, from: u32, end: u32) -> Option<Bytes> {
+        if end - from > 255 {
+            return None;
+        }
+        let empty = TickInputs::new();
+        let mut out = BytesMut::new();
+        out.put_u8(KIND_BUNDLE);
+        out.put_u8((end - from) as u8);
+        for tick in from..end {
+            let bundle = Self::encode_bundle(tick, self.journal.tick(Tick(tick)).unwrap_or(&empty));
+            if out.len() + 2 + bundle.len() > MAX_BUNDLE_DATAGRAM {
+                return None;
+            }
+            out.put_u16(bundle.len() as u16);
+            out.extend_from_slice(&bundle);
+        }
+        Some(out.freeze())
+    }
+
+    /// Bundles of ticks `from..end` in frames for the reliable channel.
+    fn bundle_chunks(&self, from: u32, end: u32) -> Vec<Bytes> {
         let mut frames = Vec::new();
-        let mut buf = BytesMut::with_capacity(17 + state.len());
-        buf.put_u8(KIND_CATCHUP);
-        buf.put_u32(from);
-        buf.put_u64(hash);
-        buf.put_u32(state.len() as u32);
-        buf.extend_from_slice(&state);
-        frames.push(buf.freeze());
         let empty = TickInputs::new();
         let mut chunk: Vec<Bytes> = Vec::new();
         let mut chunk_bytes = 0usize;
@@ -508,6 +577,29 @@ impl LockstepRoom {
             chunk.push(bundle);
         }
         flush(&mut chunk, &mut frames);
+        frames
+    }
+
+    fn catchup_until(&mut self, kind: u8, end: u32) -> Vec<Bytes> {
+        if end == 0 {
+            return Vec::new();
+        }
+        let (from, hash, state) = match &self.checkpoint {
+            Some(checkpoint) => (checkpoint.tick, checkpoint.hash, checkpoint.state.clone()),
+            None => (0, 0, Bytes::new()),
+        };
+        if self.tick.0.saturating_sub(from) > 2 * self.checkpoint_every() {
+            self.want_checkpoint = true;
+        }
+        let mut frames = Vec::new();
+        let mut buf = BytesMut::with_capacity(17 + state.len());
+        buf.put_u8(kind);
+        buf.put_u32(from);
+        buf.put_u64(hash);
+        buf.put_u32(state.len() as u32);
+        buf.extend_from_slice(&state);
+        frames.push(buf.freeze());
+        frames.extend(self.bundle_chunks(from, end));
         frames
     }
 
@@ -580,6 +672,8 @@ impl LockstepRoom {
         self.strikes.remove(&actor);
         self.spectators.remove(&actor);
         self.actors.remove(&actor);
+        self.acked.remove(&actor);
+        self.resent.remove(&actor);
     }
 
     /// Client data frame. Returns true when handled here.
@@ -610,7 +704,8 @@ impl LockstepRoom {
                     }
                     let data = payload.split_to(len).to_vec();
                     let stamped = first.wrapping_add(i as u32);
-                    if i + 1 == count.min(8) {
+                    let newest = i + 1 == count.min(8);
+                    if newest {
                         // the newest input in the packet tells how much slack this actor has
                         let margin = (stamped as i64 - self.tick.0 as i64).clamp(-127, 127) as i32;
                         let slack = self.margins.entry(actor).or_insert((i32::MAX, 0));
@@ -619,7 +714,11 @@ impl LockstepRoom {
                             slack.1 = slack.1.saturating_add(1);
                         }
                     }
-                    // Late inputs are stamped onto the next tick so the player keeps acting.
+                    // A late input that is not the packet's newest is a repeat whose tick has
+                    // passed. Only the newest moves to the next tick, so the player keeps acting.
+                    if stamped < self.tick.0 && !newest {
+                        continue;
+                    }
                     let tick = stamped.max(self.tick.0);
                     if tick > self.tick.0 + MAX_AHEAD {
                         continue;
@@ -711,6 +810,17 @@ impl LockstepRoom {
                     state: payload,
                 });
                 self.want_checkpoint = false;
+                true
+            }
+            KIND_ACK => {
+                payload.advance(1);
+                if payload.len() >= 4 {
+                    let next = payload.get_u32();
+                    if next <= self.tick.0 {
+                        let acked = self.acked.entry(actor).or_insert(next);
+                        *acked = (*acked).max(next);
+                    }
+                }
                 true
             }
             _ => false,
@@ -1251,7 +1361,7 @@ mod tests {
         assert_eq!(room.spectator_datagram(), Some(live[9].clone()));
         assert!(room.journal.tick(Tick(0)).unwrap().get(&watcher).is_none());
         // catch-up for a spectator stops at the delayed tick
-        let frames = room.catchup_for(true);
+        let frames = room.catchup_for(watcher, true);
         let mut last = 0;
         for frame in &frames[1..] {
             for (tick, _) in LockstepRoom::decode_bundles(frame.clone()) {
@@ -1322,6 +1432,110 @@ mod tests {
         let mut r2 = LockstepRoom::restore(snap);
         r2.attach_sim(schema, logic()).unwrap();
         assert_eq!(r2.sim.as_ref().unwrap().hash(), mirror_hashes[&320]);
+    }
+
+    fn ack(next: u32) -> Bytes {
+        let mut frame = BytesMut::new();
+        frame.put_u8(KIND_ACK);
+        frame.put_u32(next);
+        frame.freeze()
+    }
+
+    fn ticks_of(frame: Bytes) -> Vec<u32> {
+        LockstepRoom::decode_bundles(frame)
+            .into_iter()
+            .map(|(tick, _)| tick.0)
+            .collect()
+    }
+
+    #[test]
+    fn acked_client_gets_every_bundle_from_the_tick_it_needs() {
+        let mut room = LockstepRoom::new(60, 1);
+        let (alice, bob) = (ActorId(1), ActorId(2));
+        room.on_join(alice);
+        room.on_join(bob);
+        for _ in 0..20 {
+            room.tick();
+        }
+        assert!(room.handle(alice, ack(5)));
+        room.tick();
+
+        let (datagram, reliable) = room.bundles_for(alice);
+        assert_eq!(ticks_of(datagram.unwrap()), (5..=20).collect::<Vec<_>>());
+        assert!(reliable.is_empty());
+        // bob acknowledges nothing and gets the last three, as before
+        let (datagram, reliable) = room.bundles_for(bob);
+        assert_eq!(ticks_of(datagram.unwrap()), [18, 19, 20]);
+        assert!(reliable.is_empty());
+    }
+
+    #[test]
+    fn lag_past_a_datagram_is_resent_reliably_once() {
+        let mut room = LockstepRoom::new(60, 1);
+        let alice = ActorId(1);
+        room.on_join(alice);
+        for _ in 0..300 {
+            room.tick();
+        }
+        room.handle(alice, ack(2));
+
+        let (datagram, reliable) = room.bundles_for(alice);
+        assert_eq!(ticks_of(datagram.unwrap()), [297, 298, 299]);
+        let resent: Vec<u32> = reliable.into_iter().flat_map(ticks_of).collect();
+        assert_eq!(resent, (2..300).collect::<Vec<_>>());
+
+        room.tick();
+        let (datagram, reliable) = room.bundles_for(alice);
+        assert_eq!(ticks_of(datagram.unwrap()), [298, 299, 300]);
+        assert!(reliable.is_empty(), "resent again before the ack moved");
+
+        room.handle(alice, ack(300));
+        room.tick();
+        let (datagram, reliable) = room.bundles_for(alice);
+        assert_eq!(ticks_of(datagram.unwrap()), [299, 300, 301]);
+        assert!(reliable.is_empty());
+    }
+
+    #[test]
+    fn late_packet_keeps_its_newest_input() {
+        let mut room = LockstepRoom::new(60, 1);
+        let alice = ActorId(1);
+        room.on_join_as(alice, false);
+        for _ in 0..5 {
+            room.tick();
+        }
+        let late = crate::sync::SyncRoom::encode_input(
+            net_common::types::Tick(room.tick.0 - 3),
+            &[vec![1], vec![2], vec![3]],
+        );
+        room.handle(alice, late);
+        let (_, inputs) = LockstepRoom::decode_bundles(room.tick()).pop().unwrap();
+        assert_eq!(inputs[&alice], vec![3]);
+    }
+
+    #[test]
+    fn repeat_of_a_confirmed_input_does_not_take_a_later_tick() {
+        let mut room = LockstepRoom::new(60, 1);
+        let alice = ActorId(1);
+        room.on_join_as(alice, false);
+        for _ in 0..5 {
+            room.tick();
+        }
+        let first = room.tick;
+        room.handle(
+            alice,
+            crate::sync::SyncRoom::encode_input(first, &[vec![1]]),
+        );
+        room.tick();
+        // The frame with inputs 1 and 2 was lost; the next one repeats both.
+        room.handle(
+            alice,
+            crate::sync::SyncRoom::encode_input(first, &[vec![1], vec![2], vec![3]]),
+        );
+        let confirmed: Vec<Vec<u8>> = (0..2)
+            .map(|_| LockstepRoom::decode_bundles(room.tick()).pop().unwrap().1[&alice].clone())
+            .collect();
+        assert_eq!(confirmed, [vec![2], vec![3]]);
     }
 
     #[test]

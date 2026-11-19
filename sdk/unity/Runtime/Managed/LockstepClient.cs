@@ -18,6 +18,8 @@ namespace Aurix.Net.Managed
             KindDumpReq = 0x26,
             KindDump = 0x27;
         public const byte KindCommand = 0x28;
+        public const byte KindAck = 0x29;
+        public const byte KindRestore = 0x2A;
 
         /// <summary>Confirmed inputs for one tick, in tick order, every tick exactly once (empty dictionary = nobody sent).</summary>
         public event Action<uint, Dictionary<ushort, byte[]>> OnTick;
@@ -42,6 +44,7 @@ namespace Aurix.Net.Managed
             new SortedDictionary<uint, Dictionary<ushort, byte[]>>();
         readonly List<byte[]> _recentInputs = new List<byte[]>();
         bool _started;
+        bool _anchored;
         uint _next;
         uint _lastInput;
 
@@ -55,7 +58,7 @@ namespace Aurix.Net.Managed
         /// InputDelayMin and InputDelayMax from the node's input-margin reports when AdaptiveDelay is on.</summary>
         public uint InputDelay = 2;
         public uint InputDelayMin = 1,
-            InputDelayMax = 8;
+            InputDelayMax = 32;
         public bool AdaptiveDelay = true;
 
         /// <summary>Inputs repeated per datagram (1..8): higher survives more loss at the cost of bytes.</summary>
@@ -65,6 +68,9 @@ namespace Aurix.Net.Managed
         public sbyte LastMargin;
         public long LateInputs;
         int _slackStreak;
+        int _spare;
+        uint _reportTick;
+        uint _settleTick;
         public long Delivered,
             Catchups,
             Dropped;
@@ -85,6 +91,7 @@ namespace Aurix.Net.Managed
             switch (payload[0])
             {
                 case KindCatchup:
+                case KindRestore:
                 {
                     if (payload.Length < 17)
                     {
@@ -96,9 +103,17 @@ namespace Aurix.Net.Managed
                     int len = (int)U32(payload, 13);
                     var state = new byte[Math.Min(len, payload.Length - 17)];
                     Array.Copy(payload, 17, state, 0, state.Length);
+                    // the catch-up of a join is reliable and can come after bundles that already took the
+                    // client past it; a restore always rewinds
+                    if (payload[0] == KindCatchup && _anchored && tick < _next)
+                    {
+                        return true;
+                    }
+
                     _pending.Clear();
                     _next = tick;
                     _started = true;
+                    _anchored = true;
                     Catchups++;
                     OnRestore?.Invoke(tick, hash, state);
                     return true;
@@ -125,6 +140,7 @@ namespace Aurix.Net.Managed
                         offset += len;
                     }
                     Drain();
+                    SendAck();
                     return true;
                 }
                 case KindCheckpointReq:
@@ -144,7 +160,7 @@ namespace Aurix.Net.Managed
                 case KindInputStats:
                     if (payload.Length >= 7)
                     {
-                        OnInputStats((sbyte)payload[5], payload[6]);
+                        OnInputStats(U32(payload, 1), (sbyte)payload[5], payload[6]);
                     }
 
                     return true;
@@ -156,10 +172,13 @@ namespace Aurix.Net.Managed
             return false;
         }
 
-        /// <summary>Raises the input delay as soon as inputs arrive late, lowers it one tick at a time after three
-        /// consecutive reports with two or more ticks of slack.</summary>
-        internal void OnInputStats(sbyte margin, byte late)
+        /// <summary>Keeps one or two ticks of slack: a late report raises the input delay by the lateness plus one
+        /// tick; three consecutive reports with more than two ticks to spare lower it by the excess. A late report
+        /// that still covers inputs stamped before the last raise does not raise again.</summary>
+        internal void OnInputStats(uint tick, sbyte margin, byte late)
         {
+            uint windowStart = _reportTick;
+            _reportTick = tick;
             LastMargin = margin;
             LateInputs += late;
             if (!AdaptiveDelay)
@@ -169,24 +188,45 @@ namespace Aurix.Net.Managed
 
             if (margin < 0)
             {
-                InputDelay = Math.Min(InputDelayMax, InputDelay + (uint)Math.Min(4, -margin));
                 _slackStreak = 0;
+                if (windowStart >= _settleTick)
+                {
+                    InputDelay = Math.Min(InputDelayMax, InputDelay + (uint)(1 - margin));
+                    _settleTick = _lastInput + (uint)(-margin);
+                }
             }
-            else if (margin >= 2)
+            else if (margin > 2)
             {
+                _spare = _slackStreak == 0 ? margin : Math.Min(_spare, margin);
                 if (++_slackStreak >= 3)
                 {
                     _slackStreak = 0;
-                    if (InputDelay > InputDelayMin)
-                    {
-                        InputDelay--;
-                    }
+                    uint excess = (uint)(_spare - 2);
+                    InputDelay = Math.Max(InputDelayMin, InputDelay - Math.Min(InputDelay, excess));
                 }
             }
             else
             {
                 _slackStreak = 0;
             }
+        }
+
+        /// <summary>Tells the room which tick this client needs next: the room then sends every bundle from that
+        /// tick on instead of the last three, so a run of lost packets leaves no gap.</summary>
+        void SendAck()
+        {
+            uint next = _anchored ? _next : 0;
+            _send(
+                Channel.Unreliable,
+                new[]
+                {
+                    KindAck,
+                    (byte)(next >> 24),
+                    (byte)(next >> 16),
+                    (byte)(next >> 8),
+                    (byte)next,
+                }
+            );
         }
 
         void DecodeBundle(byte[] bytes, int offset, int len)
@@ -205,10 +245,16 @@ namespace Aurix.Net.Managed
                 ServerTick = tick + 1;
             }
 
-            if (!_started)
+            _started = true;
+            // ticks are delivered from tick 0 or from a catch-up, never from the middle
+            if (!_anchored)
             {
-                _started = true;
-                _next = tick;
+                if (tick != 0)
+                {
+                    return;
+                }
+
+                _anchored = true;
             }
             if (tick < _next || _pending.ContainsKey(tick))
             {
@@ -267,9 +313,15 @@ namespace Aurix.Net.Managed
         }
 
         /// <summary>Queues this tick's local input (sent with the previous two for redundancy). The room takes one
-        /// input per tick: called more often than that it sends nothing, so sample the input again next time.</summary>
+        /// input per tick: called more often than that it sends nothing, so sample the input again next time. It
+        /// does the same before the first frame from the room, while the room's tick is unknown.</summary>
         public void SendInput(byte[] input)
         {
+            if (!_started)
+            {
+                return;
+            }
+
             uint tick = Math.Max(ServerTick + InputDelay, _lastInput + 1);
             if (tick > ServerTick + InputDelay + 1)
             {

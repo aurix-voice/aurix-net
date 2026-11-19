@@ -57,10 +57,16 @@ Other room props stay private unless the room publishes them: `joinOrCreate` tak
 
 `net_client::lockstep::LockstepClient` is the same core the C# and Web SDKs use, as pure logic: feed
 every data-path payload to `receive()` and act on the events it returns (`Tick` with the confirmed
-inputs in tick order, `Restore` on catch-up, `CheckpointRequested` for the master, `DumpRequested`
-after a desync); send what `send_input()`, `hash_frame()`, `checkpoint_frame()` and `dump_frame()`
-hand back (`Outgoing::reliable` picks the channel). Input delay adapts to the node's margin reports
-(`0x25`) between `input_delay_min/max`; `input_redundancy` (1–8) past inputs ride in every datagram.
+inputs in tick order, `Restore` on a catch-up and after a desync, `CheckpointRequested` for the
+master, `DumpRequested` after a desync); send what `send_input()`, `hash_frame()`,
+`checkpoint_frame()` and `dump_frame()` hand back (`Outgoing::reliable` picks the channel). After
+every bundle frame send `ack_frame()`
+(`0x29`, the tick needed next): the room then resends what a run of lost packets took, instead of
+only the last three ticks. The C API, the C++ wrapper, Godot, C# and Web send it themselves, the
+first three through the client passed to `receive`. Input delay adapts to the node's margin reports
+(`0x25`) between `input_delay_min/max` (1 and 32 ticks): it settles at the round trip in ticks plus
+one or two ticks of slack. `input_redundancy` (1–8) past inputs ride in every datagram. `send_input()`
+sends nothing until the first frame from the room has told the client the room's tick.
 
 The C ABI mirrors it (`aurix_net_lockstep_*` in `aurix_net.h`) and the header-only
 `aurix::net::Lockstep` wraps it for C++ and the Godot extension:
@@ -71,7 +77,7 @@ c.joinOrCreate("duel", aurix::net::Mode::Lockstep, 2);
 aurix::net::Lockstep ls;
 // per frame
 ls.sendInput(c, input, sizeof input);
-c.poll(); // for each Data event: if (!ls.receive(ev.data, ev.len)) handleRelay(ev);
+c.poll(); // for each Data event: if (!ls.receive(c, ev.data, ev.len)) handleRelay(ev);
 for (auto e = ls.poll(); e.kind != aurix::net::Lockstep::Kind::None; e = ls.poll()) {
   switch (e.kind) {
     case aurix::net::Lockstep::Kind::Tick:    sim.step(e.tick, e.inputs); aurix::net::Lockstep::reportHash(c, e.tick, sim.hash()); break;

@@ -87,15 +87,19 @@ public class ManagedCoreTests
         var sent = new List<(Channel, byte[])>();
         var ls = new LockstepClient((ch, b) => sent.Add((ch, b)));
         // adaptive delay: late inputs raise it at once, steady slack lowers it slowly
-        ls.OnInputStats(-2, 2);
-        Assert.That(ls.InputDelay == 4 && ls.LateInputs == 2, "late by 2 -> delay 2 -> 4");
-        ls.OnInputStats(3, 0); ls.OnInputStats(3, 0);
-        Assert.That(ls.InputDelay == 4, "two slack reports: unchanged");
-        ls.OnInputStats(3, 0);
-        Assert.That(ls.InputDelay == 3, "third slack report: -1");
-        ls.OnInputStats(1, 0); ls.OnInputStats(3, 0); ls.OnInputStats(3, 0); ls.OnInputStats(3, 0);
-        Assert.That(ls.InputDelay == 2, "streak resets on a tight report");
-        ls.InputDelay = ls.InputDelayMax; ls.OnInputStats(-9, 1);
+        ls.OnInputStats(30, -2, 2);
+        Assert.That(ls.InputDelay == 5 && ls.LateInputs == 2, "late by 2 -> delay 2 -> 5");
+        ls.OnInputStats(60, 3, 0); ls.OnInputStats(90, 3, 0);
+        Assert.That(ls.InputDelay == 5, "two slack reports: unchanged");
+        ls.OnInputStats(120, 3, 0);
+        Assert.That(ls.InputDelay == 4, "third slack report: -1");
+        ls.OnInputStats(150, 1, 0); ls.OnInputStats(180, 3, 0); ls.OnInputStats(210, 3, 0); ls.OnInputStats(240, 3, 0);
+        Assert.That(ls.InputDelay == 3, "streak resets on a tight report");
+        ls.OnInputStats(270, -12, 30);
+        Assert.That(ls.InputDelay == 16, "a round trip of 12 ticks is covered by one report");
+        ls.OnInputStats(360, 9, 0); ls.OnInputStats(390, 6, 0); ls.OnInputStats(420, 7, 0);
+        Assert.That(ls.InputDelay == 12, "three slack reports give the excess back");
+        ls.InputDelay = ls.InputDelayMax; ls.OnInputStats(450, -9, 1);
         Assert.That(ls.InputDelay == ls.InputDelayMax, "capped at max");
         // the same frame through Receive
         Assert.That(ls.Receive(new byte[] { 0x25, 0, 0, 0, 10, unchecked((byte)(sbyte)-1), 1 }) && ls.LastMargin == -1, "0x25 parsed");
@@ -107,17 +111,47 @@ public class ManagedCoreTests
         var d = sent[sent.Count - 1];
         Assert.That(d.Item1 == Channel.Reliable && Hex(d.Item2) == "27000001001122334455667788" + "0707", "dump frame layout");
         // input redundancy window
-        ls.InputRedundancy = 2; ls.SendInput(new byte[] { 1 }); ls.SendInput(new byte[] { 2 });
+        ls.InputRedundancy = 2; ls.SendInput(new byte[] { 0 });
+        Assert.That(sent.Count == 1, "no input before the room's tick is known");
+        ls.Receive(Catchup(9)); ls.Receive(new byte[] { 0x20, 1, 0, 6, 0x20, 0, 0, 0, 9, 0 });
+        ls.SendInput(new byte[] { 1 }); ls.SendInput(new byte[] { 2 });
         Assert.That(sent[sent.Count - 1].Item2[5] == 2, "two inputs per datagram");
         int frames = sent.Count; ls.SendInput(new byte[] { 3 });
         Assert.That(sent.Count == frames, "one input per tick");
         ls.Receive(new byte[] { 0x20, 1, 0, 6, 0x20, 0, 0, 0, 40, 0 });
-        ls.SendInput(new byte[] { 4 });
+        var ack = sent[sent.Count - 1];
+        Assert.That(ack.Item1 == Channel.Unreliable && Hex(ack.Item2) == "290000000a", "a bundle frame is acknowledged with the tick needed next: 10 while 10 to 39 are missing");
+        frames = sent.Count; ls.SendInput(new byte[] { 4 });
         Assert.That(
             sent.Count == frames + 1 && sent[sent.Count - 1].Item2[5] == 1,
             "an input of an earlier, non-adjacent tick is not carried over"
         );
+        // the room resends from the acknowledged tick, more than three bundles in one frame
+        var resent = new List<byte> { 0x20, 30 };
+        for (uint tick = 10; tick < 40; tick++) resent.AddRange(new byte[] { 0, 6, 0x20, (byte)(tick >> 24), (byte)(tick >> 16), (byte)(tick >> 8), (byte)tick, 0 });
+        ls.Receive(resent.ToArray());
+        Assert.That(ls.ConfirmedTick == 41 && Hex(sent[sent.Count - 1].Item2) == "2900000029", "30 bundles in one frame close the gap; the ack moves to 41");
+        ls.InputDelay = 4; ls.OnInputStats(50, -12, 30);
+        Assert.That(ls.InputDelay == 17, "late by 12 -> delay 4 -> 17");
+        ls.OnInputStats(80, -12, 30);
+        Assert.That(ls.InputDelay == 17, "a report that still covers inputs stamped before the raise does not raise again");
+
+        // a room past tick 0: its bundles come before the reliable catch-up
+        var acks = new List<string>(); var ticks = new List<uint>(); int restores = 0;
+        var late = new LockstepClient((channel, bytes) => acks.Add(Hex(bytes)));
+        late.OnTick += (tick, inputs) => ticks.Add(tick); late.OnRestore += (tick, hash, state) => restores++;
+        late.Receive(new byte[] { 0x20, 1, 0, 6, 0x20, 0, 0, 0, 5, 0 });
+        Assert.That(ticks.Count == 0 && acks[acks.Count - 1] == "2900000000", "ticks do not start from the middle; the ack still asks for tick 0");
+        late.Receive(Catchup(5)); late.Receive(new byte[] { 0x20, 1, 0, 6, 0x20, 0, 0, 0, 5, 0 });
+        Assert.That(restores == 1 && ticks.Count == 1 && ticks[0] == 5 && acks[acks.Count - 1] == "2900000006", "they start at the catch-up");
+        late.Receive(Catchup(3));
+        Assert.That(restores == 1 && late.ConfirmedTick == 6, "a catch-up behind the delivered ticks is ignored");
+        var restore = Catchup(3); restore[0] = 0x2A;
+        late.Receive(restore); late.Receive(new byte[] { 0x20, 1, 0, 6, 0x20, 0, 0, 0, 3, 0 });
+        Assert.That(restores == 2 && ticks[ticks.Count - 1] == 3 && acks[acks.Count - 1] == "2900000004", "a restore behind the delivered ticks rewinds");
     }
+
+    static byte[] Catchup(uint tick) => new byte[] { 0x24, (byte)(tick >> 24), (byte)(tick >> 16), (byte)(tick >> 8), (byte)tick, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 
     sealed class Toy : ISimulation<(ulong state, int steps)>

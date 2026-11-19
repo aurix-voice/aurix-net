@@ -1331,7 +1331,7 @@ pub fn attach_data(
     ds.send(net_common::Channel::ReliableOrdered, Bytes::new());
     let spectator = hosted.room.player(actor).is_some_and(|p| p.spectator);
     if let Some(ls) = hosted.lockstep.as_mut() {
-        for frame in ls.catchup_for(spectator) {
+        for frame in ls.catchup_for(actor, spectator) {
             ds.send(net_common::Channel::ReliableOrdered, frame);
         }
     }
@@ -1569,12 +1569,12 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                 ));
             }
             let master = hosted.room.master();
-            let (bundle, desyncs, actors, ckpt_req, watch, reports, dump_reqs, dumps) = {
+            let (bundles, desyncs, actors, ckpt_req, reports, dump_reqs, dumps) = {
                 let Some(ls) = hosted.lockstep.as_mut() else {
                     return;
                 };
                 ls.master = master;
-                let bundle = ls.tick();
+                ls.tick();
                 if let Some(bundle) = ls.last_bundle() {
                     journal_buf.push(bundle.to_vec());
                 }
@@ -1584,11 +1584,11 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                     .into_iter()
                     .map(|(tick, actor)| {
                         let strikes = ls.strike(actor);
-                        // Catch-up (checkpoint + journal tail) only until the actor is untrusted:
+                        // Restore (checkpoint + journal tail) only until the actor is untrusted:
                         // a client that keeps lying about its hash must not make the node
                         // re-send the whole state every few ticks.
                         let resync = if strikes <= crate::lockstep::UNTRUSTED_AFTER {
-                            ls.on_late_join()
+                            ls.on_desync()
                         } else {
                             Vec::new()
                         };
@@ -1596,7 +1596,15 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                     })
                     .collect();
                 let actors: Vec<ActorId> = ls.actors.keys().copied().collect();
-                let watch = ls.spectator_datagram().map(|d| (ls.spectators(), d));
+                let bundles: Vec<(ActorId, Option<Bytes>, Vec<Bytes>)> = actors
+                    .iter()
+                    .copied()
+                    .chain(ls.spectators())
+                    .map(|actor| {
+                        let (datagram, resent) = ls.bundles_for(actor);
+                        (actor, datagram, resent)
+                    })
+                    .collect();
                 let reports = ls.input_reports();
                 let mut dump_reqs: Vec<(ActorId, Bytes)> = Vec::new();
                 for (tick, actor, _, _) in &desyncs {
@@ -1616,7 +1624,7 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                 }
                 let dumps = ls.take_dumps();
                 (
-                    bundle, desyncs, actors, ckpt_req, watch, reports, dump_reqs, dumps,
+                    bundles, desyncs, actors, ckpt_req, reports, dump_reqs, dumps,
                 )
             };
             for (actor, frame) in reports {
@@ -1647,25 +1655,26 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                     }
                 });
             }
-            if let Some((spectators, d)) = watch {
-                for spectator in &spectators {
-                    if let Some(ds) = hosted.sessions.get(spectator).and_then(|s| s.data.as_ref()) {
-                        ds.send(net_common::Channel::UnreliableSequenced, d.clone());
-                    }
-                }
-            }
             if let Some((req, m)) = ckpt_req.zip(master) {
                 if let Some(ds) = hosted.sessions.get(&m).and_then(|s| s.data.as_ref()) {
                     ds.send(net_common::Channel::ReliableOrdered, req);
                 }
             }
-            for actor in &actors {
-                if let Some(ds) = hosted.sessions.get(actor).and_then(|s| s.data.as_ref()) {
-                    ds.send(net_common::Channel::UnreliableSequenced, bundle.clone());
-                    st.metrics
-                        .events
-                        .with_label_values(&["lockstep_bundle"])
-                        .inc();
+            for (actor, datagram, resent) in bundles {
+                let Some(ds) = hosted.sessions.get(&actor).and_then(|s| s.data.as_ref()) else {
+                    continue;
+                };
+                for frame in resent {
+                    ds.send(net_common::Channel::ReliableOrdered, frame);
+                }
+                if let Some(datagram) = datagram {
+                    ds.send(net_common::Channel::UnreliableSequenced, datagram);
+                    if actors.contains(&actor) {
+                        st.metrics
+                            .events
+                            .with_label_values(&["lockstep_bundle"])
+                            .inc();
+                    }
                 }
             }
             for (tick, actor, strikes, resync) in desyncs {

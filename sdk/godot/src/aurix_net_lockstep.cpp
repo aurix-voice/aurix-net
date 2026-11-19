@@ -5,7 +5,7 @@
 namespace godot {
 
 void AurixNetLockstep::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("receive", "payload"), &AurixNetLockstep::receive);
+	ClassDB::bind_method(D_METHOD("receive", "client", "payload"), &AurixNetLockstep::receive);
 	ClassDB::bind_method(D_METHOD("send_input", "client", "data"), &AurixNetLockstep::send_input);
 	ClassDB::bind_method(D_METHOD("send_command", "client", "data"), &AurixNetLockstep::send_command);
 	ClassDB::bind_method(D_METHOD("report_hash", "client", "tick", "hash"), &AurixNetLockstep::report_hash);
@@ -42,8 +42,8 @@ static PackedByteArray to_pba(const uint8_t *data, size_t len) {
 	return out;
 }
 
-bool AurixNetLockstep::receive(const PackedByteArray &payload) {
-	if (!ls_ || !ls_->receive(payload.ptr(), payload.size())) {
+bool AurixNetLockstep::receive(AurixNetClient *client, const PackedByteArray &payload) {
+	if (!ls_ || !client || !ls_->receive(client->raw(), payload.ptr(), payload.size())) {
 		return false;
 	}
 	for (auto event = ls_->poll(); event.kind != aurix::net::Lockstep::Kind::None; event = ls_->poll()) {

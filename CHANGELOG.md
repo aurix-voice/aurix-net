@@ -63,15 +63,62 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   hash. A restore with an empty state (no checkpoint yet) was handed to the game as bytes to
   load; the runner now goes back to the state it started with. Checked in UE 5.8.2 against a
   Web SDK player, joining either way: 0 of 29 state comparisons matched before, 26 of 26 after.
+- Lockstep: the state a desynced client reloads from went out as `Catchup` (`0x24`), the frame
+  of a late join, and a client that drops a `Catchup` behind its own ticks never recovered. It
+  is now a frame of its own, `Restore` (`0x2A`), with the same layout. Clients have to handle
+  `0x2A`; one that does not skips it and stays desynced.
 - Billing: `rooms_created` in `GET /v1/operator/billing` was counted from the rooms table,
   where a closed room's row is deleted after `closed_rooms_days` (7 by default), so the report
   for a finished month showed only the rooms closed in the last week. A created room is now
   counted in the usage table, which is kept for `usage_days`, and shows as the `rooms_created`
   metric in `GET /v1/usage`. Rooms created before this version are not in the count.
+- Lockstep: a client stopped getting ticks for good once three bundle datagrams in a row were
+  lost, because the room only ever repeats the last three bundles and the client had no way to
+  ask for an older one. With 10 % of packets lost it happened within 4 to 20 seconds in 6 runs
+  of 8. A client can now tell the room which tick it needs next (`Ack`, `0x29`), and the room
+  sends it every bundle from that tick on, over the reliable channel when they no longer fit a
+  datagram; 6 runs of 6 then reached the end. Clients that send no `Ack` are served as before,
+  so each SDK has to send it to get the fix.
+- SDKs, lockstep: with real packet loss the reliable catch-up of a room past tick 0 could reach
+  the client after its first bundles. The client had started from those bundles, went back to
+  the catch-up and asked for ticks the room, which keeps the highest acknowledgement, no longer
+  resent. A client now starts at tick 0 or at the catch-up and ignores a catch-up behind the
+  ticks it already has. Chrome over WebTransport with 10 % loss: 1 run of 8 stalled from the
+  start, now 0 of 8.
+- SDKs, lockstep: the Rust, Web and C# clients go back to the state of a `Restore` (`0x2A`)
+  whatever they have delivered since; C++ and Godot get it through the Rust client. Web, three
+  clients, one reporting a wrong hash from tick 60 on: with the rule above it was never
+  restored and the room saw a desync at every hash, 30 in 12 s; now it is restored at the
+  first one. A late joiner whose `Catchup` comes 400 ms after its first bundles still gets
+  every tick once, 3 runs of 3.
+- SDKs, lockstep: a client that lost more than three bundle packets in a row stopped getting
+  ticks for good. The clients now acknowledge every bundle frame (`0x29`), so the room resends
+  from the tick they need. With 10 % of packets lost a client stalled in 5 runs of 8 in the Web
+  SDK, 4 of 8 in the managed C# client and 5 of 8 in the Rust client; with acknowledgements, in
+  0 of 8 each. `aurix_net_lockstep_receive`, `aurix::net::Lockstep::receive` and Godot's
+  `AurixNetLockstep.receive` take the client the acknowledgement goes through, as the sync
+  helpers do; `LockstepClient::ack_frame` builds it in Rust.
+- Lockstep: when an input frame arrived late, the room put the oldest input it repeated into the
+  next bundle instead of the newest, so the fresh input was lost and one the room had already
+  confirmed could be confirmed again. With 50 ms of delay each way a client that sent 594 inputs
+  had 12 lost, 10 confirmed twice and 6 out of order; now 1 lost and none twice or out of order.
+  Only the newest input of a late frame is moved to the next tick.
 - Usage: traffic a player moved after the node's last metering pass was never billed once he
   left, so a session shorter than a minute counted no `bytes_in` or `bytes_out` at all and every
   longer one lost its tail, in `/v1/usage`, the billing report and the monthly byte cap alike.
   The node now adds it when the data session closes.
+- SDKs, lockstep rooms: with a round trip of about 130 ms and more every input arrived late, and
+  the room then confirmed some inputs twice and dropped others (36 of 581 lost at 200 ms). The
+  input delay could not grow past 8 ticks, less than such a round trip takes at 60 Hz. It now
+  goes up to 32 ticks, covers the lateness of a report in one step and gives the excess back
+  after three reports with ticks to spare; a report that still covers inputs stamped before the
+  last raise does not raise it again. Inputs sent before the first frame from the room were
+  stamped from tick 0 and arrived late by the age of the room; `send_input` now sends nothing
+  until the room's tick is known. `on_input_stats` (`onInputStats` in the Web SDK) takes the
+  report's tick as its first argument.
+- SDKs: the answers to the round-trip probes the clients send once a second reached the game as
+  a `pong` control message every second. The clients keep them to themselves; a `ping` the game
+  sends still gets its `pong`. The Web `Client` has `ping()` and `rttMs` for it.
 - SDKs: a room made with `joinOrCreate` could not be found by the `expr` filter of `rooms` and
   `joinRandom`, and its props were missing from room listings: no SDK could name the props a room
   publishes. `joinOrCreate` takes them as `lobbyProps` in Web, C# and C++ and as `lobby_props` in

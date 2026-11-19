@@ -546,7 +546,7 @@ pub unsafe extern "C" fn aurix_net_destroy(h: *mut AurixNetClient) {
 
 // ---- lockstep rooms: a pure-logic helper next to the client (see net_client::lockstep) ----
 
-use net_client::lockstep::{LockstepClient, LsEvent, Outgoing};
+use net_client::lockstep::{LockstepClient, LsEvent, Outgoing, LS_BUNDLE};
 use std::collections::VecDeque;
 
 pub struct AurixNetLockstep {
@@ -591,9 +591,12 @@ pub unsafe extern "C" fn aurix_net_lockstep_destroy(ls: *mut AurixNetLockstep) {
 }
 
 /// Feeds one data-path payload. 1 = lockstep frame (events may be queued), 0 = not a lockstep frame.
+/// A frame of bundles is acknowledged through `h`, so the room resends the ones that were lost;
+/// with a null `h` (a replay) nothing is sent.
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_lockstep_receive(
     ls: *mut AurixNetLockstep,
+    h: *mut AurixNetClient,
     data: *const u8,
     len: usize,
 ) -> i32 {
@@ -602,13 +605,22 @@ pub unsafe extern "C" fn aurix_net_lockstep_receive(
         return 0;
     }
     let p = std::slice::from_raw_parts(data, len);
-    match ls.inner.lock().receive(p) {
-        Some(evs) => {
-            ls.queue.lock().extend(evs);
-            1
+    let ack = {
+        let mut lockstep = ls.inner.lock();
+        match lockstep.receive(p) {
+            Some(evs) => {
+                ls.queue.lock().extend(evs);
+                (p[0] == LS_BUNDLE).then(|| lockstep.ack_frame())
+            }
+            None => return 0,
         }
-        None => 0,
+    };
+    if let Some(ack) = ack {
+        if !h.is_null() {
+            send_frame(h, ack);
+        }
     }
+    1
 }
 
 /// Pops the next lockstep event; 1 = `out` filled, 0 = none.

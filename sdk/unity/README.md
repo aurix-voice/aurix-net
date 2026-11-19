@@ -191,8 +191,8 @@ a custom-schema owner room (vec3/quat/string/u8 decode, acks with 0 gaps) and a 
 compiled there against `Stubs/UnityEngine.cs`; the real editor build is a separate step.
 
 Lockstep tuning: `Runner.Lockstep.InputDelay` adapts between `InputDelayMin`/`InputDelayMax` from the node's
-input-margin reports (late inputs raise it at once, steady slack lowers it slowly; `AdaptiveDelay = false`
-to pin it), `InputRedundancy` (1–8) sets how many past inputs ride in each datagram. After a desync the
+input-margin reports (late inputs raise it at once to cover the round trip, steady slack lowers it again;
+`AdaptiveDelay = false` to pin it), `InputRedundancy` (1–8) sets how many past inputs ride in each datagram. After a desync the
 node asks for your state at the flagged tick: handle `OnDumpRequested(tick)` with `SendDump(tick, hash, state)`
 from your rollback history; the dumps are downloadable via the REST API next to the master's.
 

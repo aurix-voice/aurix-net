@@ -358,9 +358,10 @@ public:
     Lockstep(const Lockstep&) = delete;
     Lockstep& operator=(const Lockstep&) = delete;
 
-    /// True when the payload was a lockstep frame (events may now be pending in poll()).
-    bool receive(const uint8_t* data, size_t len) {
-        return aurix_net_lockstep_receive(lockstep_, data, len) == 1;
+    /// True when the payload was a lockstep frame (events may now be pending in poll()). Bundles
+    /// are acknowledged through `client`, so the room resends the ones that were lost.
+    bool receive(Client& client, const uint8_t* data, size_t len) {
+        return aurix_net_lockstep_receive(lockstep_, client.handle(), data, len) == 1;
     }
     /// Next event; Event::kind == Kind::None when there is nothing. Pointers stay valid until the
     /// next poll().
