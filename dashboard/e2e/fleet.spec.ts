@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { api, cleanupProjects, pinEnglish, uniq } from "./env";
+import { api, cleanupProjects, confirm, pinEnglish, uniq } from "./env";
 
 test.beforeEach(async ({ page }) => pinEnglish(page));
 test.afterEach(async ({ page }) => cleanupProjects(page));
@@ -43,7 +43,7 @@ test("rooms list shows a live room and its detail", async ({ page }) => {
   await expect(page.getByRole("columnheader", { name: "Events/s" })).toBeVisible();
   await page.goto("/rooms");
   await page.getByRole("row", { name: new RegExp(roomName) }).getByRole("button", { name: "Close room" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Close room" }).click();
+  await confirm(page, "Close room");
   await expect(page.getByText("Room closed")).toBeVisible();
   await expect(page.getByText(roomName)).toHaveCount(0);
 });

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { api, cleanupProjects, pinEnglish, uniq } from "./env";
+import { api, cleanupProjects, closeSecret, confirm, peerNodeUrl, pinEnglish, uniq } from "./env";
 
 test.beforeEach(async ({ page }) => pinEnglish(page));
 test.afterEach(async ({ page }) => cleanupProjects(page));
@@ -66,7 +66,7 @@ test("project page has a Connect card and lets the operator delete a webhook", a
   await page.getByRole("tab", { name: /Webhooks/ }).click();
   await expect(page.getByText("http://127.0.0.1:9/hook")).toBeVisible();
   await page.getByRole("button", { name: "Delete", exact: true }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Delete", exact: true }).click();
+  await confirm(page, "Delete");
   await expect(page.getByText("http://127.0.0.1:9/hook")).toHaveCount(0);
   await page.goto("/audit");
   await page.getByPlaceholder(/^Action/).fill("webhook.delete");
@@ -84,7 +84,7 @@ test("operator can suspend and resume a project; suspended keys cannot issue gra
   expect((await grant()).status()).toBe(200);
   await page.goto(`/projects/${project.project.id}`);
   await page.getByRole("button", { name: "Suspend" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Suspend" }).click();
+  await confirm(page, "Suspend");
   await expect(page.getByText("Suspended", { exact: true }).first()).toBeVisible();
   await expect(page.getByText(/This project is suspended since/)).toBeVisible();
   expect((await grant()).status()).toBe(403);
@@ -92,7 +92,7 @@ test("operator can suspend and resume a project; suspended keys cannot issue gra
   await expect(page.getByRole("row", { name: new RegExp(name) }).getByText("Suspended")).toBeVisible();
   await page.goto(`/projects/${project.project.id}`);
   await page.getByRole("button", { name: "Resume" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Resume" }).click();
+  await confirm(page, "Resume");
   await expect(page.getByText(/This project is suspended since/)).toHaveCount(0);
   expect((await grant()).status()).toBe(200);
   await page.goto("/audit");
@@ -102,17 +102,17 @@ test("operator can suspend and resume a project; suspended keys cannot issue gra
 
 test("operator can drain another node from the console and put it back", async ({ page }) => {
   const me = await api<{ node_id: string }>(page, "GET", "/v1/me");
-  const { nodes } = await api<{ nodes: { id: string; version: string; public_host: string; quic_port: number; draining: boolean; last_heartbeat: string }[] }>(page, "GET", "/v1/operator/nodes");
+  const { nodes } = await api<{ nodes: { id: string; version: string; http_url: string; public_host: string; quic_port: number; draining: boolean }[] }>(page, "GET", "/v1/operator/nodes");
   const self = nodes.find((n) => n.id === me.node_id);
-  const other = nodes.find((n) => n.id !== me.node_id && n.version === self?.version && !n.draining && Date.now() - Date.parse(n.last_heartbeat) < 30_000);
-  test.skip(!other, "needs a second live node");
+  const other = nodes.find((n) => n.id !== me.node_id && n.http_url === peerNodeUrl() && n.version === self?.version && !n.draining);
+  test.skip(!other, "needs the second node of the stand, named in AURIX_NET_E2E_PEER");
   const row = page.getByRole("row", { name: new RegExp(`${other!.public_host}:${other!.quic_port}`) });
   await page.goto("/nodes");
   await row.getByRole("button", { name: "Drain" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Drain" }).click();
+  await confirm(page, "Drain");
   await expect(row.getByText("Draining")).toBeVisible();
   await row.getByRole("button", { name: "Back in rotation" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Back in rotation" }).click();
+  await confirm(page, "Back in rotation");
   await expect(row.getByText("Draining")).toHaveCount(0);
   await page.goto("/audit");
   await page.getByPlaceholder(/^Action/).fill("node.");
@@ -190,7 +190,7 @@ test("operator bans a player from the project page; grants for that id are refus
   expect(refused.status()).toBe(403);
   expect(await refused.text()).toContain("speedhack");
   await page.getByRole("row").filter({ hasText: "cheater-1" }).getByRole("button", { name: "Lift" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Lift" }).click();
+  await confirm(page, "Lift");
   await expect(page.getByRole("row").filter({ hasText: "cheater-1" })).toHaveCount(0);
   expect((await grant()).status()).toBe(200);
 });
@@ -204,7 +204,7 @@ test("operator issues a key with an expiry and the table shows it", async ({ pag
   await dialog.getByLabel("Expires").selectOption("30");
   await dialog.getByRole("button", { name: "Create" }).click();
   await expect(dialog.getByText(/an_/)).toBeVisible();
-  await dialog.getByRole("button", { name: "Close", exact: true }).last().click();
+  await closeSecret(page);
   const row = page.getByRole("row").filter({ hasText: "short-lived" });
   await expect(row).toBeVisible();
   await expect(row.getByText("Never")).toHaveCount(0);
@@ -297,7 +297,7 @@ test("operator issues a named token on Settings, it authenticates and is named i
   await dialog.getByRole("button", { name: "Create" }).click();
   const token = (await page.getByRole("dialog").locator("pre, code").first().innerText()).trim();
   expect(token.length).toBeGreaterThan(20);
-  await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).last().click();
+  await closeSecret(page);
   const me = await page.request.get("/v1/me", { headers: { authorization: `Bearer ${token}` } });
   expect(me.ok()).toBeTruthy();
   expect(((await me.json()) as { actor: string }).actor).toBe(`op:${name}`);
@@ -305,7 +305,7 @@ test("operator issues a named token on Settings, it authenticates and is named i
   expect(((await audit.json()) as { audit: { details: { name: string } }[] }).audit.some((a) => a.details.name === name)).toBeTruthy();
   const row = page.getByRole("row").filter({ hasText: name });
   await row.getByRole("button", { name: "Revoke" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Revoke" }).click();
+  await confirm(page, "Revoke");
   await expect(row.getByText("Revoked")).toBeVisible();
   const after = await page.request.get("/v1/me", { headers: { authorization: `Bearer ${token}` } });
   expect(after.status()).toBe(401);
@@ -356,6 +356,38 @@ test("operator sets a monthly player-minutes cap and the health strip shows it",
   expect(detail.effective_limits.monthly_player_minutes).toBe(100);
 });
 
+test("the quota form shows the node's refusal of an out-of-range value", async ({ page }) => {
+  const project = await api<{ project: { id: string } }>(page, "POST", "/v1/operator/projects", { name: uniq("e2e-badcap") });
+  await page.goto(`/projects/${project.project.id}`);
+  await page.getByLabel("Max players per room").fill("100000");
+  await page.getByRole("button", { name: "Save quotas" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "expected u16" })).toBeVisible();
+  const detail = await api<{ project: { limits: Record<string, unknown> } }>(page, "GET", `/v1/operator/projects/${project.project.id}`);
+  expect(detail.project.limits.max_players_per_room).toBeUndefined();
+});
+
+test("overview and the project page flag quotas the node cannot read", async ({ page }) => {
+  const name = uniq("e2e-badquota");
+  const project = await api<{ project: { id: string } }>(page, "POST", "/v1/operator/projects", { name });
+  const id = project.project.id;
+  const error = "invalid value: integer `100000`, expected u16";
+  await page.route("**/v1/operator/attention", async (route) => {
+    const res = await route.fetch();
+    const body = (await res.json()) as Record<string, unknown>;
+    await route.fulfill({ response: res, json: { ...body, invalid_limits: [{ project_id: id, project_name: name, error }] } });
+  });
+  await page.route(`**/v1/operator/projects/${id}`, async (route) => {
+    const res = await route.fetch();
+    const body = (await res.json()) as Record<string, unknown>;
+    await route.fulfill({ response: res, json: { ...body, limits_error: error } });
+  });
+  await page.goto("/");
+  const item = page.getByRole("listitem").filter({ hasText: name });
+  await expect(item).toContainText("Quotas unreadable", { timeout: 20_000 });
+  await item.getByRole("link", { name }).click();
+  await expect(page.getByText(error)).toBeVisible();
+});
+
 test("operator issues a key restricted to networks and the table shows it", async ({ page }) => {
   const project = await api<{ project: { id: string } }>(page, "POST", "/v1/operator/projects", { name: uniq("e2e-cidr") });
   await page.goto(`/projects/${project.project.id}`);
@@ -364,7 +396,7 @@ test("operator issues a key restricted to networks and the table shows it", asyn
   await dialog.getByLabel("Name").fill("backend");
   await dialog.getByLabel("Allowed IPs").fill("203.0.113.0/24, 198.51.100.7");
   await dialog.getByRole("button", { name: "Create" }).click();
-  await dialog.getByRole("button", { name: "Close", exact: true }).last().click();
+  await closeSecret(page);
   await expect(page.getByRole("row", { name: /backend/ })).toContainText("2 network(s)");
 });
 
@@ -372,15 +404,16 @@ test("operator adds and removes a fleet alert webhook", async ({ page }) => {
   await page.goto("/settings");
   await page.getByRole("button", { name: "New alert webhook" }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("URL").fill("http://127.0.0.1:9/e2e-alert");
+  const hook = uniq("e2e-alert");
+  await dialog.getByLabel("URL").fill(`http://127.0.0.1:9/${hook}`);
   await dialog.getByLabel("node.stale").check();
   await dialog.getByRole("button", { name: "Create" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).last().click();
-  const row = page.getByRole("row", { name: /e2e-alert/ });
+  await closeSecret(page);
+  const row = page.getByRole("row", { name: new RegExp(hook) });
   await expect(row).toContainText("node.stale");
   await row.getByRole("button", { name: "Delete" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
-  await expect(page.getByRole("row", { name: /e2e-alert/ })).toHaveCount(0);
+  await confirm(page, "Delete");
+  await expect(row).toHaveCount(0);
 });
 
 test("operator sees the month billing table on the fleet usage page", async ({ page }) => {
@@ -400,11 +433,11 @@ test("operator token restricted to networks shows its allowlist", async ({ page 
   await dialog.getByLabel("Name").fill(name);
   await dialog.getByLabel("Allowed IPs").fill("203.0.113.0/24");
   await dialog.getByRole("button", { name: "Create" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).last().click();
+  await closeSecret(page);
   const row = page.getByRole("row", { name: new RegExp(name) });
   await expect(row).toContainText("1 network(s)");
   await row.getByRole("button", { name: "Revoke" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Revoke" }).click();
+  await confirm(page, "Revoke");
   await expect(row).toContainText("Revoked");
 });
 

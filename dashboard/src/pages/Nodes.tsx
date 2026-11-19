@@ -81,7 +81,7 @@ export function NodesPage() {
     {
       key: "hb",
       header: t("nodes.heartbeat"),
-      sort: (n) => n.last_heartbeat,
+      sort: (n) => Date.parse(n.last_heartbeat),
       cell: (n) => (
         <Tip content={fmtDateTimeShort(locale, n.last_heartbeat)}>
           <span className="text-fg-muted">{n.last_heartbeat ? fmtRelative(locale, n.last_heartbeat) : "—"}</span>

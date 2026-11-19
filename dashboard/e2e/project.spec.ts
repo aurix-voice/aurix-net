@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { api, cleanupProjects, pinEnglish, signIn, uniq } from "./env";
+import { api, cleanupProjects, closeSecret, pinEnglish, signIn, uniq } from "./env";
 
 test.beforeEach(async ({ page }) => pinEnglish(page));
 test.afterEach(async ({ page }) => cleanupProjects(page));
@@ -14,7 +14,7 @@ test("operator issues and revokes a project key; the audit log records it", asyn
   await dialog.getByLabel("Name").fill("console-e2e");
   await dialog.getByRole("button", { name: "Create" }).click();
   await expect(dialog.getByText(/^an_/)).toBeVisible();
-  await dialog.getByRole("button", { name: "Close", exact: true }).last().click();
+  await closeSecret(page);
   await expect(page.getByRole("row", { name: /console-e2e/ })).toBeVisible();
 
   await page.goto("/audit");
@@ -48,4 +48,21 @@ test("a project-key session can open the audit log of its own project", async ({
   await page.goto("/audit");
   await expect(page.getByRole("heading", { name: /Audit/ })).toBeVisible();
   await expect(page.getByRole("row").filter({ hasText: "key.create" }).first()).toBeVisible();
+});
+
+test("a matchmaking ticket filed from the console is for the size in the form", async ({ page }) => {
+  const project = await api<{ project: { id: string }; key: { key: string } }>(page, "POST", "/v1/operator/projects", { name: uniq("e2e-mmsize") });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Session" }).click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
+  await page.waitForURL((u) => u.pathname.startsWith("/login"));
+  await signIn(page, project.key.key);
+  await page.goto("/matchmaking");
+  await page.locator("#mm-size").fill("5");
+  await page.locator("form").getByRole("button").click();
+  await expect(page.getByText("searching", { exact: true })).toBeVisible();
+  const queue = await api<{ searching: { max_players: number }[] }>(page, "GET", `/v1/operator/projects/${project.project.id}/matchmaking`);
+  expect(queue.searching.map((ticket) => ticket.max_players)).toEqual([5]);
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByText("cancelled", { exact: true })).toBeVisible();
 });

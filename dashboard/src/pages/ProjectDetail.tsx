@@ -48,7 +48,7 @@ function LimitsForm({ projectId, limits, effective }: { projectId: string; limit
   const toast = useToast();
   const setLimits = useSetLimits(projectId);
   const [draft, setDraft] = useState(() => initialDraft(limits ?? {}));
-  async function save() {
+  function save() {
     const body: Record<string, unknown> = {};
     for (const k of LIMIT_KEYS) {
       const v = draft[k]?.trim();
@@ -59,8 +59,7 @@ function LimitsForm({ projectId, limits, effective }: { projectId: string; limit
       .map((s) => s.trim())
       .filter(Boolean);
     if (regions?.length) body.allowed_regions = regions;
-    await setLimits.mutateAsync(body);
-    toast.ok(t("common.save"));
+    setLimits.mutate(body, { onSuccess: () => toast.ok(t("common.save")), onError: (err) => toast.error(err.message) });
   }
   const fallback = (k: string) => {
     const v = effective[k];
@@ -77,7 +76,7 @@ function LimitsForm({ projectId, limits, effective }: { projectId: string; limit
       <Field label={t("projects.limit.allowed_regions")} htmlFor="lim-regions">
         <Input id="lim-regions" value={draft.allowed_regions ?? ""} onChange={(e) => setDraft((cur) => ({ ...cur, allowed_regions: e.target.value }))} placeholder="eu, us" />
       </Field>
-      <Button onClick={() => void save()} loading={setLimits.isPending} className="w-full">
+      <Button onClick={save} loading={setLimits.isPending} className="w-full">
         {t("projects.limits.save")}
       </Button>
     </Card>
@@ -151,6 +150,11 @@ function ProjectBody() {
         <Callout tone="warn" className="mb-4">
           {t("projects.suspended.callout", { since: fmtDateTimeShort(locale, p.disabled_at) })}
           {d.rooms.length ? ` ${t("projects.suspended.live", { n: d.rooms.length })}` : ""}
+        </Callout>
+      ) : null}
+      {d.limits_error ? (
+        <Callout tone="danger" className="mb-4">
+          {t("projects.limits.invalid")} <Mono className="text-xs">{d.limits_error}</Mono>
         </Callout>
       ) : null}
       <WebhookDeliveriesDialog webhook={inspecting} projectId={p.id} onClose={() => setInspecting(null)} />

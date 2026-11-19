@@ -341,6 +341,7 @@ export interface Attention {
   failing_webhooks: { project_id: string; project_name: string; webhook_id: string; url: string; failed: number; total: number }[];
   rejections: { project_id: string; project_name: string; total: number; by: Record<string, number> }[];
   usage_caps: { project_id: string; project_name: string; metric: "player_minutes" | "bytes"; used: number; cap: number }[];
+  invalid_limits: { project_id: string; project_name: string; error: string }[];
 }
 export interface Ban {
   project_id: string;
@@ -384,6 +385,7 @@ export interface AuditRow {
 export interface ProjectDetail {
   project: Project;
   effective_limits: Record<string, unknown>;
+  limits_error: string | null;
   keys: ApiKey[];
   webhooks: Webhook[];
   modules: Module[];
@@ -401,11 +403,15 @@ export interface Health {
   players: number;
   uptime_secs: number;
 }
+export type TicketState =
+  | { state: "searching"; waiting: number }
+  | { state: "matched"; room: string; mode: string; max_players: number; players: string[]; bots?: number }
+  | { state: "cancelled" };
+
 export interface Ticket {
   ticket: string;
-  state: string;
+  state: TicketState;
   age_secs?: number;
-  room?: string;
 }
 
 export interface DesyncDump { tick: number; actor: number; hash: string; bytes: number; at: string }

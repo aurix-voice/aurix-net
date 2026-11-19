@@ -8,7 +8,7 @@ import { Badge, Card, Mono } from "@/ui/Primitives";
 /** Operator "needs a look" list: empty state means the fleet is quiet. */
 export function AttentionPanel({ data, loading }: { data: Attention | undefined; loading?: boolean }) {
   const { t, locale } = useI18n();
-  const count = data ? data.stale_nodes.length + data.draining_nodes.length + data.suspended_projects.length + data.failing_webhooks.length + data.rejections.length + (data.usage_caps?.length ?? 0) : 0;
+  const count = data ? data.stale_nodes.length + data.draining_nodes.length + data.suspended_projects.length + data.failing_webhooks.length + data.rejections.length + (data.usage_caps?.length ?? 0) + (data.invalid_limits?.length ?? 0) : 0;
   return (
     <Card className="p-4">
       <div className="flex items-center justify-between gap-3 mb-3">
@@ -44,6 +44,15 @@ export function AttentionPanel({ data, loading }: { data: Attention | undefined;
               <Link to="/projects/$projectId" params={{ projectId: p.id }} className="truncate hover:underline">{p.name}</Link>
             </span>
             <span className="text-xs text-fg-muted whitespace-nowrap">{fmtRelative(locale, p.since)}</span>
+          </li>
+        ))}
+        {data?.invalid_limits?.map((p) => (
+          <li key={`l-${p.project_id}`} className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2 min-w-0">
+              <Badge tone="danger">{t("attention.invalid_limits")}</Badge>
+              <Link to="/projects/$projectId" params={{ projectId: p.project_id }} className="truncate hover:underline">{p.project_name}</Link>
+            </span>
+            <span className="text-xs text-fg-muted whitespace-nowrap" title={p.error}>{t("attention.invalid_limits.effect")}</span>
           </li>
         ))}
         {data?.failing_webhooks.map((w) => (

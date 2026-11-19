@@ -65,6 +65,11 @@ export function fmtDate(locale: Locale, iso: string | null | undefined): string 
   return new Intl.DateTimeFormat(bcp47[locale], { year: "numeric", month: "short", day: "2-digit" }).format(d);
 }
 
+/** "Nov 17, 07:00 AM", for a chart axis that covers more than one day. */
+export function fmtDayTime(locale: Locale, at: number): string {
+  return new Intl.DateTimeFormat(bcp47[locale], { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(at);
+}
+
 export function fmtTime(locale: Locale, iso: string | number | null | undefined): string {
   if (iso === null || iso === undefined) return "—";
   const d = new Date(iso);

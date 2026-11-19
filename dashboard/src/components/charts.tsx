@@ -3,7 +3,7 @@ import { Area, AreaChart, CartesianGrid, Line, LineChart, ResponsiveContainer, T
 import type { NameType, ValueType } from "recharts/types/component/DefaultTooltipContent";
 
 import { useI18n, type Locale } from "@/i18n";
-import { fmtDateTime, fmtMinutes, fmtMos, fmtNumber, fmtTime } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtDayTime, fmtMinutes, fmtMos, fmtNumber, fmtTime } from "@/lib/format";
 import { QueryError } from "@/ui/Page";
 import { Badge, Card, CardHeader, Progress, Skeleton, type Tone } from "@/ui/Primitives";
 
@@ -31,8 +31,13 @@ export interface SeriesDef {
 
 export type Point = { t: number } & Record<string, number | null>;
 
-function tickFormatter(locale: Locale, spanMs: number) {
-  return (v: number) => (spanMs > 2 * 86_400_000 ? fmtDateTime(locale, new Date(v).toISOString()).replace(/,? \d{2}:\d{2}.*$/, "") : fmtTime(locale, v));
+const DAY_MS = 86_400_000;
+
+/** Time axis labels. The time alone repeats once the chart covers more than a day. */
+export function tickFormatter(locale: Locale, spanMs: number): (v: number) => string {
+  if (spanMs > 2 * DAY_MS) return (v) => fmtDate(locale, new Date(v).toISOString());
+  if (spanMs > DAY_MS) return (v) => fmtDayTime(locale, v);
+  return (v) => fmtTime(locale, v);
 }
 
 /** Axis ticks must fit a 44px gutter: 1200 → "1.2k", 3_500_000 → "3.5M". */

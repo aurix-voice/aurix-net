@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 
 function required(name: string): string {
   const v = process.env[name];
@@ -7,6 +7,10 @@ function required(name: string): string {
 }
 
 export const operatorToken = (): string => required("AURIX_NET_E2E_TOKEN");
+
+/** `http_url` of the second node of the stand under test, for specs that act on another node.
+ * The node list also holds whatever else shares the stand's database for a moment. */
+export const peerNodeUrl = (): string | undefined => process.env.AURIX_NET_E2E_PEER;
 
 export const OPERATOR_STATE = "e2e/.auth/operator.json";
 
@@ -32,6 +36,22 @@ export async function signIn(page: Page, token: string): Promise<void> {
   await page.getByLabel("Token").fill(token);
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL((u) => !u.pathname.startsWith("/login"));
+}
+
+/** Clicks `name` in the open dialog and waits for the dialog to go. It stays open while its
+ * request is in flight, and role selectors do not see the page behind it: a check for a row
+ * that is gone would pass before the request has done anything. */
+export async function confirm(page: Page, name: string): Promise<void> {
+  await page.getByRole("dialog").getByRole("button", { name, exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+}
+
+/** Closes the dialog that shows a new secret once. It opens when the create request is back;
+ * until then the form is still there, with a Close button of its own. */
+export async function closeSecret(page: Page): Promise<void> {
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.locator("pre")).toBeVisible();
+  await dialog.getByRole("button", { name: "Close", exact: true }).last().click();
 }
 
 const createdProjects: string[] = [];

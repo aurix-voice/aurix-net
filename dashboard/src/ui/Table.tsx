@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, ChevronDown } from "lucide-react";
-import { isValidElement, type ReactNode } from "react";
+import { isValidElement, useState, type ReactNode } from "react";
 
 import { useT } from "@/i18n";
 import { cn } from "@/lib/cn";
@@ -38,8 +38,6 @@ export interface DataTableProps<Row> {
   empty?: ReactNode;
   onRowClick?: (row: Row) => void;
   rowClassName?: (row: Row) => string | undefined;
-  sort?: SortState | null;
-  onSortChange?: (s: SortState | null) => void;
   dense?: boolean;
   className?: string;
   selectedKey?: string | null;
@@ -73,8 +71,6 @@ export function DataTable<Row>({
   empty,
   onRowClick,
   rowClassName,
-  sort,
-  onSortChange,
   dense,
   className,
   selectedKey,
@@ -82,6 +78,7 @@ export function DataTable<Row>({
   skeletonRows = 6,
 }: DataTableProps<Row>) {
   const t = useT();
+  const [sort, setSort] = useState<SortState | null>(null);
   const cols = columns.filter((c) => !c.hidden);
   const sorted = rows ? sortRows(rows, cols, sort) : [];
   const alignCls = (a?: "left" | "right" | "center") => (a === "right" ? "text-right" : a === "center" ? "text-center" : "text-left");
@@ -94,7 +91,22 @@ export function DataTable<Row>({
           <tr className="border-b border-border">
             {cols.map((c) => {
               const active = sort?.key === c.key;
-              const sortable = !!c.sort && !!onSortChange;
+              const label = (
+                <span className={cn("inline-flex items-center gap-1", c.align === "right" && "flex-row-reverse")}>
+                  {c.header}
+                  {c.sort ? (
+                    active ? (
+                      sort.dir === "asc" ? (
+                        <ChevronUp className="size-3" />
+                      ) : (
+                        <ChevronDown className="size-3" />
+                      )
+                    ) : (
+                      <ChevronsUpDown className="size-3 opacity-50" />
+                    )
+                  ) : null}
+                </span>
+              );
               return (
                 <th
                   key={c.key}
@@ -103,34 +115,25 @@ export function DataTable<Row>({
                   className={cn(
                     "px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-fg-faint whitespace-nowrap select-none",
                     alignCls(c.align),
-                    sortable && "cursor-pointer hover:text-fg-muted",
                     c.headerClassName,
                   )}
-                  onClick={
-                    sortable
-                      ? () => {
-                          if (!active) onSortChange({ key: c.key, dir: "asc" });
-                          else if (sort.dir === "asc") onSortChange({ key: c.key, dir: "desc" });
-                          else onSortChange(null);
-                        }
-                      : undefined
-                  }
                   aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : undefined}
                 >
-                  <span className={cn("inline-flex items-center gap-1", c.align === "right" && "flex-row-reverse")}>
-                    {c.header}
-                    {sortable ? (
-                      active ? (
-                        sort.dir === "asc" ? (
-                          <ChevronUp className="size-3" />
-                        ) : (
-                          <ChevronDown className="size-3" />
-                        )
-                      ) : (
-                        <ChevronsUpDown className="size-3 opacity-50" />
-                      )
-                    ) : null}
-                  </span>
+                  {c.sort ? (
+                    <button
+                      type="button"
+                      className="uppercase tracking-wide hover:text-fg-muted"
+                      onClick={() => {
+                        if (!active) setSort({ key: c.key, dir: "asc" });
+                        else if (sort.dir === "asc") setSort({ key: c.key, dir: "desc" });
+                        else setSort(null);
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ) : (
+                    label
+                  )}
                 </th>
               );
             })}

@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import type { ProjectDetail, Rejections } from "@/api/client";
 import { type MessageKey, useI18n } from "@/i18n";
+import { fmtBytes } from "@/lib/format";
 import { Stat } from "@/ui/Primitives";
 
 const WEEK_MS = 7 * 24 * 3600 * 1000;
@@ -10,7 +11,7 @@ const WEEK_MS = 7 * 24 * 3600 * 1000;
  * webhook failures and keys about to expire. Everything comes from the detail payload plus the
  * rejections query, so there is no extra round trip. */
 export function ProjectHealthCard({ detail, rejections }: { detail: ProjectDetail; rejections?: Rejections }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [now] = useState(() => Date.now());
   const p = detail.project;
   const liveRooms = detail.rooms.filter((r) => r.open).length;
@@ -25,7 +26,7 @@ export function ProjectHealthCard({ detail, rejections }: { detail: ProjectDetai
   const capMinutes = typeof detail.effective_limits.monthly_player_minutes === "number" ? detail.effective_limits.monthly_player_minutes : undefined;
   const capBytes = typeof detail.effective_limits.monthly_bytes === "number" ? detail.effective_limits.monthly_bytes : undefined;
   const usedMinutes = Math.round(detail.usage_month.player_minutes);
-  const usedMb = Math.round(detail.usage_month.bytes / 1e6);
+  const usedBytes = fmtBytes(locale, detail.usage_month.bytes);
   const pct = (used: number, cap?: number) => (cap ? used / cap : 0);
   const capPct = Math.max(pct(detail.usage_month.player_minutes, capMinutes), pct(detail.usage_month.bytes, capBytes));
   const usageTone = capPct >= 1 ? "danger" : capPct >= 0.8 ? "warn" : "neutral";
@@ -48,7 +49,7 @@ export function ProjectHealthCard({ detail, rejections }: { detail: ProjectDetai
       <Stat
         label={t("health.usage")}
         value={capMinutes ? `${usedMinutes.toLocaleString()} / ${capMinutes.toLocaleString()}` : usedMinutes.toLocaleString()}
-        hint={capBytes ? t("health.usage.bytes.cap", { mb: usedMb.toLocaleString(), cap: Math.round(capBytes / 1e6).toLocaleString() }) : t("health.usage.bytes", { mb: usedMb.toLocaleString() })}
+        hint={capBytes ? t("health.usage.bytes.cap", { used: usedBytes, cap: fmtBytes(locale, capBytes) }) : t("health.usage.bytes", { used: usedBytes })}
         tone={usageTone}
       />
       <Stat label={t("health.keys")} value={String(openKeys.length)} hint={expiring ? t("health.keys.expiring", { n: expiring }) : t("health.none")} tone={expiring ? "warn" : "neutral"} />

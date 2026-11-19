@@ -19,10 +19,10 @@ export function keyColumns(t: (k: never, v?: never) => string, locale: "en" | "r
     { key: "name", header: tt("common.name"), sort: (k) => k.name, cell: (k) => <span className="font-medium">{k.name}</span> },
     { key: "prefix", header: tt("keys.prefix"), cell: (k) => <Mono>an_{k.prefix}…</Mono> },
     { key: "scopes", header: tt("keys.scopes"), cell: (k) => <span className="flex gap-1 flex-wrap">{k.scopes.map((s) => <Badge key={s}>{s}</Badge>)}</span> },
-    { key: "created", header: tt("common.created"), sort: (k) => k.created_at, cell: (k) => <span className="text-fg-muted">{fmtDateTimeShort(locale, k.created_at)}</span> },
-    { key: "used", header: tt("keys.lastUsed"), sort: (k) => k.last_used_at ?? "", cell: (k) => <span className="text-fg-muted">{k.last_used_at ? fmtRelative(locale, k.last_used_at) : "—"}</span> },
+    { key: "created", header: tt("common.created"), sort: (k) => Date.parse(k.created_at), cell: (k) => <span className="text-fg-muted">{fmtDateTimeShort(locale, k.created_at)}</span> },
+    { key: "used", header: tt("keys.lastUsed"), sort: (k) => (k.last_used_at ? Date.parse(k.last_used_at) : null), cell: (k) => <span className="text-fg-muted">{k.last_used_at ? fmtRelative(locale, k.last_used_at) : "—"}</span> },
     { key: "cidrs", header: tt("keys.cidrs"), cell: (k) => (k.allowed_cidrs?.length ? <span title={k.allowed_cidrs.join(", ")}><Badge>{tt("keys.cidrs.n", { n: k.allowed_cidrs.length })}</Badge></span> : <span className="text-fg-muted">{tt("keys.cidrs.any")}</span>) },
-    { key: "expires", header: tt("keys.expires"), sort: (k) => k.expires_at ?? "", cell: (k) => <span className="text-fg-muted">{k.expires_at ? fmtDateTimeShort(locale, k.expires_at) : tt("keys.expires.never")}</span> },
+    { key: "expires", header: tt("keys.expires"), sort: (k) => (k.expires_at ? Date.parse(k.expires_at) : null), cell: (k) => <span className="text-fg-muted">{k.expires_at ? fmtDateTimeShort(locale, k.expires_at) : tt("keys.expires.never")}</span> },
     {
       key: "state",
       header: tt("rooms.state"),

@@ -20,6 +20,14 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   at start. It used to start a node that refused every request of that kind.
 
 ### Fixed
+- Console: a chart covering one to two days labelled its time axis with the time alone, so the
+  same hour appeared twice with no date; the labels carry the date now (`Nov 17, 04:00 PM`).
+- Console: the project page counted a megabyte as 1 000 000 bytes and the rest of the console as
+  1 048 576, so the month's traffic read 196 MB there and 186.5 MB in billing.
+- Console: the matchmaking page crashed as soon as a ticket was filed; it took the ticket state
+  for a string, and the node sends an object.
+- Console: the matchmaking page filed every ticket for 8 players whatever size the form showed;
+  it sent the size in a field the node does not read.
 - Unreal plugin: first build and run with an engine (UE 5.8.2, Linux). `RunUAT BuildPlugin` passes
   for the editor and the game (Development, Shipping), the packaged plugin loads, and a listen
   server with two clients goes through login, replication and host migration. Before this the
@@ -107,6 +115,15 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   modes. Only relay events reach it, as in the Web SDK.
 - Node: `create` on the control channel holds the seats listed in `reserved`, as REST room
   creation and `join_or_create` do. The field was ignored there.
+- Console: the nodes, rooms, projects, keys and modules tables sort by a column when its header
+  is clicked. The columns were marked as sortable, but no page turned the sorting on. Date columns
+  sort by time.
+- Console: the quota form of a project and the matchmaking page showed nothing when the node
+  refused the request. A quota out of range, which the node now answers with `invalid_request`,
+  looked like a button that did nothing. Both show the node's message.
+- Console: a project whose stored quotas the node cannot read is listed under "Needs a look"
+  on the overview, and its page says that new rooms and joins are refused and shows the node's
+  error, until the quotas are saved again.
 
 ### CI
 - `release.yml`: the Web npm tarball is packed to the workspace root, so it sits beside the other

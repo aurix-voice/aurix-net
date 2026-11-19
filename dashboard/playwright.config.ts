@@ -6,6 +6,8 @@ import { defineConfig, devices } from "@playwright/test";
 //   DASHBOARD_URL                console origin under test (default: Vite dev server started here)
 //   NET_API_URL                  node the dev server proxies to (default http://127.0.0.1:8090)
 //   AURIX_NET_E2E_TOKEN          operator token of that node (`auth.admin_token`)
+//   AURIX_NET_E2E_PEER           `http_url` of a second node of the same fleet; the spec that
+//                                drains another node is skipped without it
 const dashboardUrl = process.env.DASHBOARD_URL;
 const baseURL = dashboardUrl ?? "http://127.0.0.1:5174";
 

@@ -26,7 +26,7 @@ function ModulesBody() {
     { key: "name", header: t("common.name"), sort: (m) => m.name, cell: (m) => <span className="font-medium">{m.name}</span> },
     { key: "hash", header: t("modules.hash"), cell: (m) => <Mono title={m.hash}>{m.hash.slice(0, 16)}…</Mono> },
     { key: "size", header: t("modules.size"), align: "right", sort: (m) => m.size, cell: (m) => fmtBytes(locale, m.size) },
-    { key: "updated", header: t("modules.updated"), sort: (m) => m.updated_at, cell: (m) => <span className="text-fg-muted">{fmtDateTimeShort(locale, m.updated_at)}</span> },
+    { key: "updated", header: t("modules.updated"), sort: (m) => Date.parse(m.updated_at), cell: (m) => <span className="text-fg-muted">{fmtDateTimeShort(locale, m.updated_at)}</span> },
     {
       key: "actions",
       header: "",
