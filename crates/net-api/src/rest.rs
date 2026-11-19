@@ -2792,10 +2792,8 @@ async fn add_ban(st: &Shared, project: Uuid, req: &BanReq, by: &str) -> Result<V
         .duration_secs
         .filter(|d| *d > 0)
         .map(|d| Timestamp::now() + time::Duration::seconds(d.min(10 * 365 * 86_400) as i64));
-    let row =
-        queries::upsert_ban(&st.pool, project, &req.player_id, &req.reason, by, expires).await?;
     let scope = req.scope.as_deref().unwrap_or("player");
-    let mut marks = Vec::new();
+    let mut wanted = Vec::new();
     if scope != "player" {
         if !matches!(scope, "player_ip" | "player_device" | "player_ip_device") {
             return Err(NetError::Invalid(
@@ -2808,11 +2806,9 @@ async fn add_ban(st: &Shared, project: Uuid, req: &BanReq, by: &str) -> Result<V
                 "this player has not connected yet: no IP or device is known".into(),
             ));
         };
-        let want_ip = scope.contains("ip");
-        let want_dev = scope.contains("device");
         for (kind, value, want) in [
-            ("ip", seen.ip.as_str(), want_ip),
-            ("device", seen.device.as_str(), want_dev),
+            ("ip", seen.ip, scope.contains("ip")),
+            ("device", seen.device, scope.contains("device")),
         ] {
             if !want {
                 continue;
@@ -2822,20 +2818,26 @@ async fn add_ban(st: &Shared, project: Uuid, req: &BanReq, by: &str) -> Result<V
                     "no {kind} is known for this player"
                 )));
             }
-            marks.push(
-                queries::upsert_mark(
-                    &st.pool,
-                    project,
-                    kind,
-                    value,
-                    &req.player_id,
-                    &req.reason,
-                    by,
-                    expires,
-                )
-                .await?,
-            );
+            wanted.push((kind, value));
         }
+    }
+    let row =
+        queries::upsert_ban(&st.pool, project, &req.player_id, &req.reason, by, expires).await?;
+    let mut marks = Vec::new();
+    for (kind, value) in &wanted {
+        marks.push(
+            queries::upsert_mark(
+                &st.pool,
+                project,
+                kind,
+                value,
+                &req.player_id,
+                &req.reason,
+                by,
+                expires,
+            )
+            .await?,
+        );
     }
     audit_log(
         st,

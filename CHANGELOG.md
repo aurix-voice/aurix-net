@@ -88,6 +88,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   for someone who had left. A ticket now leaves `searching` once: whichever of the cancel and the
   pass comes second sees that and backs off, and a room that lost a player this way is not
   started; its other tickets are matched again on the next pass.
+- Bans: a ban request the node refused with 400 (unknown `scope`, or an address or device ban
+  for a player who never connected) banned the player by id all the same, with no audit entry.
+  Nothing is written now unless the whole request is accepted.
 - Webhooks: a webhook created through the project API got no events for up to 30 seconds if the
   project had already produced one, and a deleted webhook kept being called for as long. Both,
   and a rotated secret, take effect at once on every node: the node that handled the request

@@ -307,3 +307,33 @@ async fn player_left_webhook_tells_a_kick_from_a_leave() {
     assert_eq!(data["actor"], master);
     assert!(data.get("kicked").is_none(), "{data}");
 }
+
+#[tokio::test]
+async fn refused_ban_request_bans_nobody() {
+    let node = Node::start().await;
+    let p = node.project("ban-refused").await;
+    for (player, scope) in [("eve", "planet"), ("fred", "player_ip")] {
+        let ban = json!({"player_id": player, "scope": scope});
+        let (status, reply) = p.api.post("/v1/bans", ban).await;
+        assert_eq!(status, 400, "{reply}");
+    }
+    let (_, listed) = p.api.get("/v1/bans").await;
+    assert_eq!(listed["bans"], json!([]), "{listed}");
+    p.grant("eve").await;
+    p.grant("fred").await;
+}
+
+#[tokio::test]
+async fn address_ban_stops_the_next_player_from_that_address() {
+    let node = Node::start().await;
+    let p = node.project("ban-address").await;
+    let mut alice = p.player("alice").await;
+    joined(&alice.call(json!({"t": "create", "name": "arena"})).await);
+    let ban = json!({"player_id": "alice", "scope": "player_ip"});
+    let (status, reply) = p.api.post("/v1/bans", ban).await;
+    assert_eq!(status, 200, "{reply}");
+
+    let mut zed = p.player("zed").await;
+    let reply = zed.call(json!({"t": "create", "name": "other"})).await;
+    refused(&reply, "forbidden");
+}
