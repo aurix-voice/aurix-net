@@ -102,6 +102,43 @@ function mutableLink() {
   return { url: `http://127.0.0.1:${server.address().port}`, mute: () => { muted = true; }, gag: (on) => { gagged = on; }, close: () => server.close() };
 }
 
+test("a join the node ends with a kick fails at once with the reason", { skip: !key }, async (t) => {
+  // a master that kicks a player as soon as it sees it: this proxy follows the node's `joined`
+  // with the `left` of the kick, at once and then 50 ms later, and lets nothing of the data
+  // path through
+  const server = new WebSocketServer({ port: 0 });
+  t.after(() => server.close());
+  const asked = [];
+  let after = 0;
+  server.on("connection", (near, request) => {
+    const far = new WebSocket(http.replace(/^http/, "ws") + request.url);
+    const opened = new Promise((resolve) => far.on("open", resolve));
+    near.on("message", async (data, binary) => { await opened; if (!binary) { asked.push(JSON.parse(data.toString()).t); far.send(data.toString()); } });
+    far.on("message", (data, binary) => {
+      if (binary) return;
+      near.send(data.toString());
+      const message = JSON.parse(data.toString());
+      const kick = () => near.send(JSON.stringify({ t: "left", reason: "cheater", room: message.room }));
+      if (message.t === "joined") after ? setTimeout(kick, after) : kick();
+    });
+    far.on("close", () => near.close()); near.on("close", () => far.close());
+  });
+  const lefts = [];
+  for (after of [0, 50]) {
+    const a = await Client.connect(`http://127.0.0.1:${server.address().port}`, await grant(`web-kicked-at-join-${after}`));
+    t.after(() => a.close());
+    a.on("control", (message) => { if (message.t === "left") lefts.push(message.reason); });
+    const began = performance.now();
+    const error = await a.joinOrCreate(`web-kicked-at-join-${process.pid}-${after}`, "relay", 4).catch((error) => error);
+    assert.deepEqual([error.code, error.message], ["left", "cheater"]);
+    assert.ok(performance.now() - began < 1000, "the join did not wait for a data path that would not open");
+    assert.equal(a.joined, undefined);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.deepEqual(lefts, [], "the game hears of no room it was never in");
+  assert.ok(!asked.includes("leave"), "the client does not leave a room the node took it out of");
+});
+
 test("a joined that repeats the id of another join does not answer this one", { skip: !key }, async (t) => {
   // ahead of the node's answer to a join, this proxy sends the answer to a join the client gave up
   const server = new WebSocketServer({ port: 0 });

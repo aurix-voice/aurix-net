@@ -67,6 +67,7 @@ pub(crate) enum ErrorCode {
     SchemaMismatch = 107,
     QuotaExceeded = 108,
     RateLimited = 109,
+    Left = 110,
     Server = 199,
 }
 
@@ -78,6 +79,7 @@ impl From<&ClientError> for ErrorCode {
             ClientError::Data(_) => ErrorCode::DataPath,
             ClientError::Disconnected => ErrorCode::Disconnected,
             ClientError::Timeout => ErrorCode::Timeout,
+            ClientError::Left(_) => ErrorCode::Left,
             ClientError::Server { code, .. } => match code.as_str() {
                 "unauthorized" => ErrorCode::Unauthorized,
                 "forbidden" => ErrorCode::Forbidden,

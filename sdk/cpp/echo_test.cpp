@@ -1,4 +1,5 @@
 #include "aurix_net.hpp"
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -124,5 +125,28 @@ int main() {
         std::printf("cpp broken link: skipped (NET_BREAK_HTTP not set)\n");
         handedBack = !std::getenv("NET_LIVE_REQUIRED");
     }
-    a.leave(); return (hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && refused && matched && shaped && rejoined && handedBack) ? 0 : 1;
+    // a master that kicks a player as soon as it sees it, while the `joined` of the player is on its way
+    // over the same link: the join fails at once with the reason, and the player hears of no room, with
+    // the data path over QUIC and through the tunnel
+    bool turnedOut = true;
+    const char* slow = std::getenv("NET_BREAK_HTTP");
+    for (bool tunnel : {false, true}) {
+        if (!slow) break;
+        std::string name = room + (tunnel ? "-blacklist-tunnel" : "-blacklist");
+        Client master, c; master.connect(http, Client::issueGrant(http, key, "cpp-m-" + name, "M")); c.connect(slow, Client::issueGrant(http, key, "cpp-u-" + name, "U"), tunnel);
+        std::atomic<bool> joining{true}; std::string lefts, why; int code = 0;
+        master.onControl = [&](const std::string& json) { if (Client::jsonStr(json, "t") == "player_joined") master.sendControl("{\"t\":\"kick\",\"actor\":2,\"reason\":\"cheater\"}"); };
+        c.onControl = [&](const std::string& json) { if (Client::jsonStr(json, "t") == "left") lefts += Client::jsonStr(json, "reason") + " "; };
+        master.joinOrCreate(name, Mode::Relay, 4);
+        std::thread watch([&] { while (joining) { master.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(1)); } });
+        auto began = std::chrono::steady_clock::now();
+        try { c.join(name); } catch (const Error& e) { code = e.code; why = e.what(); }
+        long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began).count();
+        joining = false; watch.join();
+        for (int s = 0; s < 50; s++) { c.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+        bool ok = code == AURIX_NET_ERR_LEFT && why == "left: cheater" && ms < 1000 && lefts.empty();
+        std::printf("cpp join ended by a kick%s: code=%d (%s) after %ld ms, told of [%s] -> %s\n", tunnel ? ", tunnel" : "", code, why.c_str(), ms, lefts.c_str(), ok ? "ok" : "FAIL");
+        turnedOut = turnedOut && ok;
+    }
+    a.leave(); return (hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && refused && matched && shaped && rejoined && turnedOut && handedBack) ? 0 : 1;
 }

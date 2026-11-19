@@ -111,6 +111,15 @@ from `get_last_error_code()` (`AurixNetClient.ERROR_*`). A wrapper that runs a c
 thread and reports its failure on another carries the two over with
 `aurix_net_set_last_error(code, message)`, as the Unreal plugin does for its async calls.
 
+A master can kick a player the moment it sees it (a blacklist on `player_joined`), before the
+join of that player has returned. The join then fails at once with the reason of the kick, and
+the game gets no `left`: it was never in the room. Rust returns `ClientError::Left(reason)`; the C
+ABI sets `AURIX_NET_ERR_LEFT` and the text `left: <reason>` (`Error::code` in C++, `ERROR_LEFT` in
+Godot, `EAurixNetError::Left` in Unreal); Web rejects with an error whose `code` is `left` and
+whose message is the reason; the C# clients throw `NetException` with `left: <reason>`. After any
+other join that failed once the node had let the client in, the native clients leave the room and
+keep the answer to that leave from the game too.
+
 ## Rehost
 
 When a node shuts down (deploy) it hands its rooms to another node and sends `left{reason:"rehost"}`. Clients rejoin the same room with the same grant: Rust `client.rejoin(&[fallback_urls])`, Web `client.rejoin(fallbackUrls)` (or listen to the `rehost` event), C# `ManagedClient.RejoinAsync(fallbacks)`; Unity `NetRunner` does it automatically (`FallbackUrls`). The rejoin is a `join` by the name of the room the client was in, whichever call led it there: a random join or a `join_or_create` is not asked again. C++, Godot and Unreal have no `rejoin` call: connect again with the same grant and join the same room (Unreal reports the `left` with `OnLeft(Reason, RoomId)`). Actor ids are preserved by player id.

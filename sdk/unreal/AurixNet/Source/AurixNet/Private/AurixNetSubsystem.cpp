@@ -153,7 +153,8 @@ static_assert((int32)EAurixNetError::InvalidArgument == AURIX_NET_ERR_INVALID_AR
 	&& (int32)EAurixNetError::Conflict == AURIX_NET_ERR_CONFLICT && (int32)EAurixNetError::InvalidRequest == AURIX_NET_ERR_INVALID_REQUEST
 	&& (int32)EAurixNetError::RoomFull == AURIX_NET_ERR_ROOM_FULL && (int32)EAurixNetError::RoomClosed == AURIX_NET_ERR_ROOM_CLOSED
 	&& (int32)EAurixNetError::SchemaMismatch == AURIX_NET_ERR_SCHEMA_MISMATCH && (int32)EAurixNetError::QuotaExceeded == AURIX_NET_ERR_QUOTA_EXCEEDED
-	&& (int32)EAurixNetError::RateLimited == AURIX_NET_ERR_RATE_LIMITED && (int32)EAurixNetError::Server == AURIX_NET_ERR_SERVER,
+	&& (int32)EAurixNetError::RateLimited == AURIX_NET_ERR_RATE_LIMITED && (int32)EAurixNetError::Left == AURIX_NET_ERR_LEFT
+	&& (int32)EAurixNetError::Server == AURIX_NET_ERR_SERVER,
 	"EAurixNetError must match AURIX_NET_ERR_*");
 
 static EAurixNetError LastErrorCode() { return static_cast<EAurixNetError>(aurix_net_last_error_code()); }

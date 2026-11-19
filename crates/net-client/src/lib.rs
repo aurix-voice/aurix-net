@@ -42,6 +42,10 @@ pub enum ClientError {
     Disconnected,
     #[error("timeout")]
     Timeout,
+    /// The node took the client out of the room before the join had entered it: the reason of
+    /// its `left`.
+    #[error("left: {0}")]
+    Left(String),
 }
 
 pub type Result<T> = std::result::Result<T, ClientError>;
@@ -195,6 +199,8 @@ pub struct Client {
     /// Leaves a node without [`JOIN_ID`] has not answered yet. It answers in the order it was
     /// asked, so what comes before the answer to a leave was asked before that leave.
     leaves_unanswered: u32,
+    /// The room of the `joined` a join has in hand, while it opens the data path.
+    entering: Option<String>,
     tunnel_slot: Option<Arc<Mutex<Option<Arc<DataPath>>>>>,
     /// What `rejoin` needs after a rehost: the URL given to `connect`, the grant, the last join.
     entry_url: String,
@@ -292,6 +298,7 @@ impl Client {
             join_ids: false,
             asked: 0,
             leaves_unanswered: 0,
+            entering: None,
             tunnel_slot: None,
             entry_url: http_url.to_string(),
             grant: grant.to_string(),
@@ -484,11 +491,44 @@ impl Client {
 
     pub async fn join(&mut self, msg: ClientMsg) -> Result<Joined> {
         let joined = self.enter(msg).await;
-        if !matches!(joined, Ok(_) | Err(ClientError::Server { .. })) {
+        let room = self.entering.take();
+        match joined {
+            Ok(_) | Err(ClientError::Server { .. }) => joined,
+            // the node took the client out itself
+            Err(ClientError::Left(_)) => {
+                self.end_data().await;
+                joined
+            }
             // the node may have let the client in, or may yet: the client is in no room after this
-            let _ = self.leave().await;
+            Err(error) => Err(self.give_up(error, room).await),
         }
-        joined
+    }
+
+    /// Leaves after a join that failed with `error`. When the node had let the client into
+    /// `room`, the game hears nothing of that room: not the answer to this leave, awaited no
+    /// longer than [`LEAVE_WAIT`], and not a kick the node sent before it. The join then fails
+    /// with the reason of the kick.
+    async fn give_up(&mut self, mut error: ClientError, room: Option<String>) -> ClientError {
+        let (Ok(Some(id)), Some(room)) = (self.ask_to_leave().await, room) else {
+            return error;
+        };
+        let deadline = tokio::time::Instant::now() + LEAVE_WAIT;
+        let mut passed = VecDeque::new();
+        while let Ok(Some(event)) = tokio::time::timeout_at(deadline, self.next_event()).await {
+            match event {
+                Event::Control(ServerMsg::Left { id: answered, .. }) if answered == Some(id) => {
+                    break
+                }
+                Event::Control(ServerMsg::Left {
+                    reason,
+                    room: Some(left),
+                    ..
+                }) if reason != "left" && left == room => error = ClientError::Left(reason),
+                event => passed.push_back(event),
+            }
+        }
+        self.keep(passed);
+        error
     }
 
     async fn enter(&mut self, msg: ClientMsg) -> Result<Joined> {
@@ -557,10 +597,11 @@ impl Client {
         };
         self.keep(passed);
         let (joined, cached) = answer?;
+        self.entering = Some(joined.room.clone());
         self.last_join = Some(way_back(&asked, &joined.name));
         // the room announces the avatar as soon as the data path is up
         self.avatar = None;
-        self.open_data(&joined.data).await?;
+        self.open_data(&joined.data, &joined.room).await?;
         let cached = cached.into_iter().filter_map(|(code, from, data)| {
             let payload = base64::engine::general_purpose::STANDARD
                 .decode(data)
@@ -614,7 +655,10 @@ impl Client {
         }
     }
 
-    async fn open_data(&mut self, ep: &DataEndpoint) -> Result<()> {
+    /// Opens the data path of `room`, the room a join is entering. A `left` by which the node
+    /// takes the client out of that room meanwhile ends the join with its reason, and is not
+    /// the game's: it was never in the room.
+    async fn open_data(&mut self, ep: &DataEndpoint, room: &str) -> Result<()> {
         self.end_data().await;
         self.data_stop = CancellationToken::new();
         let ticket = base64::engine::general_purpose::STANDARD
@@ -722,6 +766,11 @@ impl Client {
         let ready = loop {
             match self.answer_by(deadline).await {
                 Ok(Event::DataReady) => break Ok(()),
+                Ok(Event::Control(ServerMsg::Left {
+                    reason,
+                    room: Some(left),
+                    ..
+                })) if reason != "left" && left == room => break Err(ClientError::Left(reason)),
                 Ok(event) => passed.push_back(event),
                 Err(error) => break Err(error),
             }
@@ -999,6 +1048,11 @@ impl Client {
     /// [`LEAVE_WAIT`]: the events it has not acknowledged by then come as [`Event::Undelivered`]
     /// before the `left`.
     pub async fn leave(&mut self) -> Result<()> {
+        self.ask_to_leave().await.map(drop)
+    }
+
+    /// Returns the id of the `leave`, which a node that repeats ids puts on its answer.
+    async fn ask_to_leave(&mut self) -> Result<Option<u32>> {
         self.acknowledged().await;
         let unacknowledged = self.unacknowledged();
         self.replay.extend(unacknowledged);
@@ -1010,7 +1064,7 @@ impl Client {
         if id.is_none() {
             self.leaves_unanswered += 1;
         }
-        Ok(())
+        Ok(id)
     }
 
     /// Ask for project-wide room/player counts per lobby; the answer arrives as

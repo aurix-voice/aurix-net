@@ -62,6 +62,7 @@ enum class EAurixNetError : uint8
 	SchemaMismatch = 107,
 	QuotaExceeded = 108,
 	RateLimited = 109,
+	Left = 110,
 	Server = 199,
 };
 

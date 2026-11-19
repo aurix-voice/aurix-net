@@ -44,7 +44,9 @@ the managed C# check also lose a room with reliable events the node did not ackn
 `NET_BREAK_HTTP` points at the proxy started with a delay and `cut stats`:
 `node sdk/web/test/slow-link.mjs 100 8203 cut stats`, then `NET_BREAK_HTTP=http://127.0.0.1:8203`.
 The events take 100 ms to reach the node, so a kick, the proxy closing the connection on `stats`
-or the client's own leave gets there first.
+or the client's own leave gets there first. `echo_test` also joins through that proxy a room whose
+master kicks the player as soon as it sees it: the `joined` is still on its way then, and the join
+fails with the reason of the kick.
 
 `rehost_test.cpp` and the plain C `ctest/rehost.c` need two nodes and are built and run by
 `scripts/sdk-rehost-test.sh`: the node hands the room over, the client forgets it and joins it again

@@ -194,6 +194,16 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Every client: a join the master ended with a kick before it had returned (a blacklist on
+  `player_joined`) did not say so. Through the WebSocket tunnel it stood for the whole 10 s of
+  the join timeout and failed with `timeout`, over QUIC it failed with `disconnected`; the game
+  then got the `left` of the kick for a room it had never entered, and from the native clients
+  a second `left`, the answer to the leave the client sent after the failure. The join now
+  fails at once with the reason of the kick: `ClientError::Left` in Rust, the new
+  `AURIX_NET_ERR_LEFT` in C (`ERROR_LEFT` in Godot, `EAurixNetError::Left` in Unreal), an error
+  with the code `left` in Web, `NetException` with `left: <reason>` in C#. The game gets no
+  `left` for that room, and none for the leave after any other join that failed once the node
+  had let the client in.
 - Lockstep replay: `hashes` was always empty, in a live room and in a stored replay, so a
   replay could not be verified. It holds the hash of the state after a tick: the node's own
   in a room with a `logic` module, otherwise the one most of the players reported. A window

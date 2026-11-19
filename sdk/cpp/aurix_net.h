@@ -60,6 +60,8 @@ enum {
   AURIX_NET_ERR_SCHEMA_MISMATCH = 107,
   AURIX_NET_ERR_QUOTA_EXCEEDED = 108,
   AURIX_NET_ERR_RATE_LIMITED = 109,
+  AURIX_NET_ERR_LEFT = 110,           /* join: the node took the client out of the room before it was in; the text
+                                         is the reason of its `left` */
   AURIX_NET_ERR_SERVER = 199          /* any other failure on the node */
 };
 

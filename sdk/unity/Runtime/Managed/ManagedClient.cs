@@ -53,6 +53,9 @@ namespace Aurix.Net.Managed
         internal int Waiting => _inbox.Count;
         bool _dataReady;
 
+        // The reason the node took the client out of a room its join had not entered yet.
+        string _turnedOut;
+
         public int Actor { get; private set; } = -1;
 
         /// <summary>The player id of the grant this client signed in with: the id the node knows the player by in rooms, held seats and webhooks.</summary>
@@ -350,7 +353,18 @@ namespace Aurix.Net.Managed
             // A node that repeats the id of a join answers this one and no other with it.
             uint? id = _nodeRepeatsJoinIds ? NextRequestId() : (uint?)null;
             await SendControlAsync(WithId(json, id));
-            var joined = await AnswerAsync("joined", timeoutMs, id);
+            _turnedOut = null;
+            // A `left` of this room that follows is the end of this join.
+            var joined = await AnswerAsync(
+                "joined",
+                timeoutMs,
+                id,
+                answer =>
+                {
+                    JoinedJson = answer;
+                    _dataReady = false;
+                }
+            );
             if (joined == null)
             {
                 // The node may have let the client in, or may yet: the client is in no room after this.
@@ -358,7 +372,7 @@ namespace Aurix.Net.Managed
                 throw new NetException("timeout waiting for joined");
             }
 
-            JoinedJson = joined;
+            ThrowIfTurnedOut();
             LastJoinJson = Json.WayBack(json, Json.Str(joined, "name"));
             Actor = (int)Json.Num(joined, "actor");
             RoomMode = Json.Str(joined, "mode");
@@ -375,7 +389,6 @@ namespace Aurix.Net.Managed
                 _dataOpen = true;
             }
             _lost = false;
-            _dataReady = false;
             var data = Json.Obj(joined, "data");
             if (Json.Bool(data, "ws_tunnel") == false)
             {
@@ -394,9 +407,18 @@ namespace Aurix.Net.Managed
 
                 await _socket.Delay(5);
                 Poll();
+                ThrowIfTurnedOut();
                 ThrowIfControlClosed();
             }
             return Actor;
+        }
+
+        void ThrowIfTurnedOut()
+        {
+            if (_turnedOut != null)
+            {
+                throw new NetException("left: " + _turnedOut);
+            }
         }
 
         public Task SendControlAsync(string json) =>
@@ -570,8 +592,16 @@ namespace Aurix.Net.Managed
                             && Json.Str(text.Json, "room") == Json.Str(JoinedJson, "room")
                         )
                         {
+                            bool entered = _dataReady;
                             var events = UnacknowledgedEvents();
                             ForgetRoom();
+                            if (!entered)
+                            {
+                                // The join fails with the reason, and the game hears of no room it was never in.
+                                _turnedOut = Json.Str(text.Json, "reason");
+                                break;
+                            }
+
                             HandBack(events);
                         }
                         if (Json.Str(text.Json, "t") == "hello")
@@ -899,7 +929,12 @@ namespace Aurix.Net.Managed
             ?? throw new NetException("timeout waiting for " + type);
 
         /// <summary>`WaitForAsync` that returns null when the answer did not come in time.</summary>
-        async Task<string> AnswerAsync(string type, int timeoutMs, uint? id)
+        async Task<string> AnswerAsync(
+            string type,
+            int timeoutMs,
+            uint? id,
+            Action<string> taken = null
+        )
         {
             var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
             string got = null,
@@ -911,6 +946,7 @@ namespace Aurix.Net.Managed
                 if (ty == type && (id == null || repeated == null || repeated == id))
                 {
                     got = json;
+                    taken?.Invoke(json);
                 }
                 else if (ty == "error" && (repeated == null || repeated == id))
                 {

@@ -815,7 +815,9 @@ public class ManagedCoreTests
     }
 
     // A node that repeats the id of a join: ahead of its refusal of one it sends the `joined` of a join
-    // the client gave up. It does not answer a join into the room `silent`.
+    // the client gave up. It does not answer a join into the room `silent`, and a join into the room
+    // `blacklist` it follows with the `left` of a kick, at once or after the milliseconds in `kick_after`,
+    // without ever opening the data path.
     static async Task AnswerAJoinGivenUp(HttpListener listener, List<string> asked)
     {
         var socket = (await (await listener.GetContextAsync()).AcceptWebSocketAsync(null)).WebSocket;
@@ -836,6 +838,13 @@ public class ManagedCoreTests
                 ulong id = ManagedClientTestHooks.ULong(json, "id") ?? 0;
                 if (type == "leave") { await Say("{\"t\":\"left\",\"reason\":\"left\",\"id\":" + id + "}"); continue; }
                 if (ManagedClientTestHooks.Str(json, "name") == "silent") continue;
+                if (ManagedClientTestHooks.Str(json, "name") == "blacklist")
+                {
+                    await Say("{\"t\":\"joined\",\"room\":\"b\",\"name\":\"blacklist\",\"mode\":\"relay\",\"actor\":2,\"master\":1,\"max_players\":4,\"props\":{},\"players\":[],\"data\":{\"host\":\"\",\"port\":0,\"cert_sha256\":\"\",\"ticket\":\"\",\"ws_tunnel\":true},\"cached\":[],\"id\":" + id + "}");
+                    await Task.Delay((int)(ManagedClientTestHooks.ULong(json, "kick_after") ?? 0));
+                    await Say("{\"t\":\"left\",\"reason\":\"cheater\",\"room\":\"b\"}");
+                    continue;
+                }
                 await Say("{\"t\":\"joined\",\"room\":\"r\",\"name\":\"given-up\",\"mode\":\"relay\",\"actor\":1,\"master\":1,\"max_players\":4,\"props\":{},\"players\":[],\"data\":{\"host\":\"\",\"port\":0,\"cert_sha256\":\"\",\"ticket\":\"\",\"ws_tunnel\":true},\"cached\":[],\"id\":" + (id + 1) + "}");
                 await Say("{\"t\":\"error\",\"code\":\"room_closed\",\"message\":\"\",\"id\":" + id + "}");
             }
@@ -878,5 +887,29 @@ public class ManagedCoreTests
         var clock = System.Diagnostics.Stopwatch.StartNew();
         while (asked.Count < 2 && clock.ElapsedMilliseconds < 2000) await Task.Delay(10);
         Assert.That(asked.Select(json => ManagedClientTestHooks.Str(json, "t")), Is.EqualTo(new[] { "join", "leave" }));
+    }
+
+    [TestCase(0)]
+    [TestCase(50)]
+    public async Task AJoinTheNodeEndsWithAKickFailsAtOnceWithTheReason(int kickAfter)
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+        using var listener = new HttpListener();
+        listener.Prefixes.Add("http://127.0.0.1:" + port + "/"); listener.Start();
+        var asked = new List<string>();
+        _ = AnswerAJoinGivenUp(listener, asked);
+        using var client = await ManagedClient.ConnectAsync("http://127.0.0.1:" + port, "grant");
+        var lefts = new List<string>();
+        client.OnControl += json => { if (ManagedClientTestHooks.Str(json, "t") == "left") lefts.Add(json); };
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var kicked = Assert.ThrowsAsync<NetException>(() => client.JoinRawAsync("{\"t\":\"join\",\"name\":\"blacklist\",\"kick_after\":" + kickAfter + "}"));
+        Assert.That(kicked.Message, Is.EqualTo("left: cheater"));
+        Assert.That(clock.ElapsedMilliseconds, Is.LessThan(1000));
+        Assert.That(client.JoinedJson, Is.Null);
+        for (int i = 0; i < 30; i++) { await Task.Delay(10); client.Poll(); }
+        Assert.That(lefts, Is.Empty, "the game hears of no room it was never in");
+        Assert.That(asked.Select(json => ManagedClientTestHooks.Str(json, "t")), Is.EqualTo(new[] { "join" }));
     }
 }

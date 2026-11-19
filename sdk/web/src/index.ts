@@ -166,6 +166,10 @@ export class Client {
   /** The leave that waits for the node's acknowledgements, and what tells it of a change. */
   private leaving?: Promise<void>;
   private acknowledged?: (late?: boolean) => void;
+  /** True once the data path of the room in `joined` is up: until then a join is entering it. */
+  private entered = false;
+  /** With what a join fails that the node ended before the join got to open the data path. */
+  private turnedOut?: Error;
   forceTunnel = false;
   /** Which data path is in use after join(). */
   get dataPath() {
@@ -334,9 +338,22 @@ export class Client {
         this.joined &&
         message.room === this.joined.room
       ) {
+        const entered = this.entered;
         const events = this.unacknowledgedEvents();
         this.closePath();
         this.forgetRoom();
+        if (!entered) {
+          // the join fails with the reason, and the game hears of no room it was never in
+          const error = Object.assign(new Error(String(message.reason)), {
+            code: "left",
+          });
+          if (this.failReady) {
+            this.failReady(error);
+          } else {
+            this.turnedOut = error;
+          }
+          return;
+        }
         this.handBack(events);
       }
       this.emit("control", message);
@@ -372,6 +389,7 @@ export class Client {
   /** The client is out of its room: by `leave`, or the node took it out (kick, room closed). */
   private forgetRoom() {
     this.joined = undefined;
+    this.entered = false;
     this.actor = -1;
     this.avatar = undefined;
   }
@@ -528,7 +546,16 @@ export class Client {
     let joined: Joined;
     try {
       joined = await this.waitFor<Joined>(
-        (reply) => reply.t === "joined" && reply.id === id,
+        (reply) => {
+          if (reply.t !== "joined" || reply.id !== id) {
+            return false;
+          }
+          // a `left` of this room that follows is the end of this join
+          this.joined = reply as unknown as Joined;
+          this.entered = false;
+          this.turnedOut = undefined;
+          return true;
+        },
         (reply) => refuses(reply, id),
       );
     } catch (error) {
@@ -541,8 +568,10 @@ export class Client {
       }
       throw error;
     }
+    if (this.turnedOut) {
+      throw this.turnedOut;
+    }
     this.lastJoin = wayBack(msg as Record<string, unknown>, joined.name);
-    this.joined = joined;
     this.actor = joined.actor;
     this.avatar = undefined;
     // open the data path: ticket as the first datagram/frame, wait for the server's empty ack
@@ -564,6 +593,7 @@ export class Client {
       };
       this.onReady = () => {
         settle();
+        this.entered = true;
         res();
       };
       this.failReady = (error) => {
