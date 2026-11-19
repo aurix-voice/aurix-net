@@ -568,3 +568,73 @@ async fn replay_names_the_schema_of_a_room_with_a_referee() {
         assert_eq!(stored["schema_hash"], hash, "stored, {name}");
     }
 }
+
+#[tokio::test]
+async fn replay_of_a_room_that_moved_starts_where_the_match_did() {
+    let fast = &[("NET__SERVER__HEARTBEAT_SECS", "1")];
+    let mut node_a = Node::start_with(fast).await;
+    let node_b = Node::start_with(fast).await;
+    let pa = node_a.project("replay-moved").await;
+    let pb = node_b.same_project(&pa);
+    let upload = reqwest::Client::new()
+        .put(format!("{}/v1/modules/idle", pa.api.http))
+        .bearer_auth(&pa.api.token)
+        .body(IDLE_MODULE)
+        .send()
+        .await
+        .expect("upload");
+    assert!(upload.status().is_success(), "upload: {}", upload.status());
+
+    // The referee checkpoints a room every five seconds. The rooms start a little apart, so
+    // the node stops just after the checkpoint of some of them and just before that of others.
+    let began = Instant::now();
+    let mut creators = Vec::new();
+    let mut rooms = Vec::new();
+    for room in 0..16 {
+        let mut ann = pa.player(&format!("ann{room}")).await;
+        let props = json!({"tick_hz": 8, "logic": "idle"});
+        let name = format!("arena{room}");
+        let create = json!({"t": "create", "name": name, "mode": "lockstep", "props": props});
+        let id = ann.call(create).await["room"]
+            .as_str()
+            .expect("room")
+            .to_string();
+        creators.push(ann);
+        rooms.push((name, format!("/v1/rooms/{id}/replay"), id));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let spread = began.elapsed();
+    tokio::time::sleep_until((began + Duration::from_secs(5) + spread / 2).into()).await;
+    let (_, before) = pa.api.get(&rooms[0].1).await;
+    let hashed = before["hashes"].as_array().expect("hashes").clone();
+    assert!(hashed.len() > 3, "{}", hashed.len());
+
+    node_a.terminate();
+    for (name, replay, _) in &rooms {
+        let mut bob = pb.player(&format!("bob-{name}")).await;
+        bob.call(json!({"t": "join", "name": name})).await;
+        let (_, after) = pb.api.get(replay).await;
+        assert_eq!(after["from_tick"], 0, "{name}");
+    }
+    let (_, after) = pb.api.get(&rooms[0].1).await;
+    let kept = after["hashes"].as_array().expect("hashes");
+    assert_eq!(kept[..hashed.len()], hashed[..]);
+
+    let room = &rooms[0].2;
+    let (status, _) = pb.api.delete(&format!("/v1/rooms/{room}")).await;
+    assert_eq!(status, 204);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let url = std::env::var("NET__REDIS__URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".into());
+    let mut redis = redis::Client::open(url)
+        .expect("redis url")
+        .get_multiplexed_async_connection()
+        .await
+        .expect("redis");
+    let left: Vec<String> = redis::cmd("KEYS")
+        .arg(format!("*{room}*"))
+        .query_async(&mut redis)
+        .await
+        .expect("keys");
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert!(left[0].contains(":replay:"), "{left:?}");
+}

@@ -368,6 +368,8 @@ Two ways to rewind a lockstep match:
   a room with a `logic` module, otherwise the one most of the players reported, and no pair
   for a tick that not all of them or only one reported, or that they split evenly on.
   `inputs` end at the last tick that had an input; the hashes of later ticks are there.
+  From the stop of the node that hosted a room until a player joins the room through another
+  node, the room is on no node and the request answers `not_found`.
 
 
 ## Aurix Sim: deterministic physics in every SDK

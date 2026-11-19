@@ -220,6 +220,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   returned was a later one. It is the tick of the first frame returned.
 - Replay of a relay room: the refusal said replays exist for lockstep rooms only. It names
   sync rooms too.
+- Replay of a lockstep room that moved to another node started at the last checkpoint and
+  held no hash from before the move. A node keeps the whole journal of a room and its hashes
+  in Redis, not the last ten seconds, and the node that takes the room over has them. The
+  checkpoint of a room is deleted with the room; it used to stay ten minutes after the close.
 - Every client: a reliable message sent just before a leave could be lost without a word. The
   leave closed the data path at once, with what the node had not yet acknowledged. Of 40
   events each followed at once by a leave, over a link that loses data frames, the room got 36

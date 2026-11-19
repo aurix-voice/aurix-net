@@ -149,6 +149,10 @@ pub struct LockstepRoom {
     /// The hash of the state after a tick the journal holds: the referee's, or the one most
     /// of the actors reported.
     agreed: BTreeMap<u32, u64>,
+    /// The bundles of the ticks, and those of `agreed`, not yet given to
+    /// [`Self::take_journal`].
+    unlisted: Vec<Vec<u8>>,
+    fresh_hashes: Vec<(u32, u64)>,
     /// Of the schema the referee steps; empty in a room without one.
     schema_hash: String,
     pub desyncs: Vec<(u32, ActorId)>,
@@ -289,6 +293,8 @@ impl LockstepRoom {
             recent: VecDeque::new(),
             hashes: BTreeMap::new(),
             agreed: BTreeMap::new(),
+            unlisted: Vec::new(),
+            fresh_hashes: Vec::new(),
             schema_hash: String::new(),
             desyncs: Vec::new(),
             margins: HashMap::new(),
@@ -394,13 +400,64 @@ impl LockstepRoom {
             .is_some_and(|n| *n >= UNTRUSTED_AFTER)
     }
 
-    /// The bundle produced by the last [`Self::tick`]: one input-journal entry for Redis, so a node
-    /// that adopts this room after a crash loses no inputs between checkpoints.
-    pub fn last_bundle(&self) -> Option<Bytes> {
-        self.recent.back().cloned()
+    /// How many ticks the room has made since [`Self::take_journal`] was last called.
+    pub fn unlisted(&self) -> usize {
+        self.unlisted.len()
     }
 
-    /// Applies journal entries (from `last_bundle`) stored after the snapshot this room was
+    /// What the room has made since the last call, for the journal a node keeps in Redis so
+    /// that a node that adopts the room has all of its ticks: the bundle of each tick, and each
+    /// hash the room has come to hold as twelve bytes, tick and hash.
+    pub fn take_journal(&mut self) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+        let encode = |(tick, hash): (u32, u64)| {
+            let mut entry = Vec::with_capacity(12);
+            entry.extend_from_slice(&tick.to_be_bytes());
+            entry.extend_from_slice(&hash.to_be_bytes());
+            entry
+        };
+        let hashes = self.fresh_hashes.drain(..).map(encode).collect();
+        (std::mem::take(&mut self.unlisted), hashes)
+    }
+
+    /// Gives a room restored from a snapshot the ticks before the snapshot's journal and the
+    /// hashes of the ticks it then holds, from what [`Self::take_journal`] gave, in any order.
+    /// Ticks before a gap in `journal` are left out.
+    pub fn restore_history(&mut self, journal: &[Vec<u8>], hashes: &[Vec<u8>]) {
+        let base = self.journal.base();
+        let mut earlier: Vec<_> = journal
+            .iter()
+            .filter_map(|entry| Self::decode_bundle(entry))
+            .filter(|(tick, _)| tick.0 < base)
+            .collect();
+        earlier.sort_by_key(|(tick, _)| tick.0);
+        let mut before: Vec<TickInputs> = Vec::new();
+        let mut next = 0;
+        for (tick, inputs) in earlier {
+            if tick.0 != next {
+                before.clear();
+            }
+            before.push(inputs);
+            next = tick.0 + 1;
+        }
+        if next == base && !before.is_empty() {
+            let from = base - before.len() as u32;
+            before.extend(self.journal.tail(base));
+            self.journal = Journal::from_parts(from, before);
+        }
+        let base = self.journal.base();
+        for entry in hashes {
+            let Ok(entry) = <[u8; 12]>::try_from(entry.as_slice()) else {
+                continue;
+            };
+            let tick = u32::from_be_bytes(entry[..4].try_into().unwrap());
+            if tick >= base {
+                let hash = u64::from_be_bytes(entry[4..].try_into().unwrap());
+                self.agreed.insert(tick, hash);
+            }
+        }
+    }
+
+    /// Applies journal entries (from [`Self::take_journal`]) stored after the snapshot this room was
     /// restored from: inputs go into the journal and the clock moves past them. Entries at or
     /// before the current tick are already covered and skipped. Returns ticks applied.
     pub fn apply_journal(&mut self, entries: &[Vec<u8>]) -> u32 {
@@ -961,6 +1018,7 @@ impl LockstepRoom {
         }
         if held * 2 > reports.len() && tick >= self.journal.base() {
             self.agreed.insert(tick, *majority);
+            self.fresh_hashes.push((tick, *majority));
         }
         self.hashes.remove(&tick);
         // forget very old partial reports
@@ -1100,6 +1158,7 @@ impl LockstepRoom {
                 let fits = state.len() <= MAX_CHECKPOINT_BYTES;
                 if hashed {
                     self.agreed.insert(tick, hash);
+                    self.fresh_hashes.push((tick, hash));
                     self.server_hashes.insert(tick, hash);
                     let cutoff = tick.saturating_sub(600);
                     self.server_hashes.retain(|k, _| *k >= cutoff);
@@ -1125,6 +1184,7 @@ impl LockstepRoom {
         }
         let encoded = Self::encode_bundle(tick, &inputs);
         let bundle = encoded;
+        self.unlisted.push(bundle.to_vec());
         self.recent.push_back(bundle);
         while self.recent.len() > BUNDLE_REDUNDANCY {
             self.recent.pop_front();
@@ -1322,6 +1382,45 @@ mod tests {
         assert!(matches!(refused, Err(NetError::RateLimited)));
         assert_eq!(tick_commands(&mut room), [(1, 100), (1, 100)]);
         room.command(alice, Bytes::from(vec![7; 100])).unwrap();
+    }
+
+    #[test]
+    fn restored_room_takes_the_ticks_before_its_snapshot_up_to_a_gap() {
+        let mut room = LockstepRoom::new(60, 7);
+        let alice = ActorId(1);
+        room.on_join(alice);
+        room.master = Some(alice);
+        let mut list = Vec::new();
+        for t in 0..400u32 {
+            room.handle(alice, SyncRoom::encode_input(Tick(t), &[vec![t as u8]]));
+            let _ = room.tick();
+            list.extend(room.take_journal().0);
+            if t == 299 {
+                assert!(room.handle(alice, LockstepRoom::encode_checkpoint(Tick(300), 1, b"s")));
+            }
+        }
+        let hash = |tick: u32| [tick.to_be_bytes().to_vec(), 9u64.to_be_bytes().to_vec()].concat();
+        let hashes = [hash(100), hash(200), hash(350)];
+
+        let mut whole = LockstepRoom::restore(room.snapshot());
+        assert_eq!(whole.replay().from_tick, 300);
+        whole.restore_history(&list, &hashes);
+        let replay = whole.replay();
+        assert_eq!((replay.from_tick, replay.inputs.len()), (0, 400));
+        assert_eq!(replay.inputs, room.replay().inputs);
+        assert_eq!(replay.hashes, [(100, 9), (200, 9), (350, 9)]);
+
+        list.swap(10, 250);
+        let mut shuffled = LockstepRoom::restore(room.snapshot());
+        shuffled.restore_history(&list, &hashes);
+        assert_eq!(shuffled.replay().inputs, room.replay().inputs);
+
+        list.drain(100..150);
+        let mut broken = LockstepRoom::restore(room.snapshot());
+        broken.restore_history(&list, &hashes);
+        let replay = broken.replay();
+        assert_eq!((replay.from_tick, replay.inputs.len()), (150, 250));
+        assert_eq!(replay.hashes, [(200, 9), (350, 9)]);
     }
 
     #[test]
@@ -1539,7 +1638,7 @@ mod tests {
             if t == 49 {
                 snap = Some(room.snapshot());
             } else if t > 49 {
-                entries.push(room.last_bundle().unwrap().to_vec());
+                entries.extend(room.take_journal().0);
             }
         }
         let mut r2 = LockstepRoom::restore(snap.unwrap());

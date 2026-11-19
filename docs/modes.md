@@ -346,7 +346,13 @@ reconnects get the same actor ids, `rejoin_actor` works) and restarts the tick l
 joiners then get the normal catch-up; sync clients get fresh baselines. Lockstep rooms also
 append every tick's input bundle to a Redis list (`net:<project>:journal:<room>`, flushed every
 6 ticks), and the adopting node replays the entries after the checkpoint, so at most ~100 ms of
-inputs are lost; sync rooms checkpoint every 2 s. A `room.rehosted` webhook fires; orphans nobody adopts within
+inputs are lost; sync rooms checkpoint every 2 s. The list holds as many ticks as the journal of
+the room, and the hashes of the room are kept beside it (`net:<project>:hashes:<room>`), so
+the adopting node has the ticks from before the checkpoint too and the replay of a room that
+moved starts where it did before. For two players with 8-byte inputs the two lists take 31
+bytes a tick: 6.6 MB of Redis memory for an hour of a match at 60 Hz, 26 MB at the 4 hours the
+journal keeps. Adopting a room reads them once: 120 ms for that hour. The lists and the
+checkpoint are deleted when the room closes. A `room.rehosted` webhook fires; orphans nobody adopts within
 10 min are closed. Relay rooms are re-created with name/props/slots but no event cache.
 
 ## Data frames (first byte)

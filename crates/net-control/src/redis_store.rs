@@ -207,28 +207,46 @@ impl RedisStore {
         format!("net:{project}:journal:{room}")
     }
 
-    /// Appends lockstep input-journal entries (one per tick) and keeps the newest `keep`.
+    fn hashes_key(project: ProjectId, room: RoomId) -> String {
+        format!("net:{project}:hashes:{room}")
+    }
+
+    /// Appends lockstep input-journal entries (one per tick) and the state hashes of those
+    /// ticks, and keeps the newest `keep` of each.
     pub async fn append_journal(
         &self,
         project: ProjectId,
         room: RoomId,
         entries: &[Vec<u8>],
+        hashes: &[Vec<u8>],
         keep: isize,
         ttl_secs: i64,
     ) -> Result<()> {
-        if entries.is_empty() {
-            return Ok(());
-        }
         let mut conn = self.conn.clone();
-        let key = Self::journal_key(project, room);
-        let _: () = redis::pipe()
-            .rpush(&key, entries)
-            .ltrim(&key, -keep, -1)
-            .expire(&key, ttl_secs)
+        let mut pipe = redis::pipe();
+        let lists = [
+            (Self::journal_key(project, room), entries),
+            (Self::hashes_key(project, room), hashes),
+        ];
+        for (key, added) in &lists {
+            if !added.is_empty() {
+                pipe.rpush(key, *added).ltrim(key, -keep, -1);
+            }
+            pipe.expire(key, ttl_secs);
+        }
+        let _: () = pipe
             .query_async(&mut conn)
             .await
             .map_err(|e| NetError::Redis(e.to_string()))?;
         Ok(())
+    }
+
+    /// The state hashes stored with the journal of a room, oldest first.
+    pub async fn get_hashes(&self, project: ProjectId, room: RoomId) -> Result<Vec<Vec<u8>>> {
+        let mut conn = self.conn.clone();
+        conn.lrange::<_, Vec<Vec<u8>>>(Self::hashes_key(project, room), 0, -1)
+            .await
+            .map_err(|e| NetError::Redis(e.to_string()))
     }
 
     pub async fn get_journal(&self, project: ProjectId, room: RoomId) -> Result<Vec<Vec<u8>>> {
@@ -346,7 +364,9 @@ impl RedisStore {
         let gone = serde_json::json!({"room": room, "removed": true}).to_string();
         let _: () = redis::pipe()
             .del(Self::room_key(project, room))
+            .del(Self::checkpoint_key(project, room))
             .del(Self::journal_key(project, room))
+            .del(Self::hashes_key(project, room))
             .srem(Self::index_key(project), room.to_string())
             .publish(Self::lobby_channel(project), gone)
             .query_async(&mut conn)

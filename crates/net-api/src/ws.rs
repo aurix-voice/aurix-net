@@ -1656,7 +1656,8 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
 /// One Redis write of a room's tick loop.
 pub enum RedisWrite {
     Checkpoint(ProjectId, Vec<u8>),
-    Journal(ProjectId, Vec<Vec<u8>>, isize),
+    /// Ticks of the journal, the hashes the room has come to hold with them, how many to keep.
+    Journal(ProjectId, Vec<Vec<u8>>, Vec<Vec<u8>>, isize),
 }
 
 /// Per-room single writer: checkpoints and journal batches reach Redis in tick order, each
@@ -1690,11 +1691,11 @@ impl RoomWriter {
                                 redis.put_checkpoint(project, room, &body, 600).await
                             }),
                         ),
-                        RedisWrite::Journal(project, entries, keep) => (
+                        RedisWrite::Journal(project, entries, hashes, keep) => (
                             "journal",
                             Box::pin(async move {
                                 redis
-                                    .append_journal(project, room, &entries, keep, 600)
+                                    .append_journal(project, room, &entries, &hashes, keep, 600)
                                     .await
                             }),
                         ),
@@ -1753,10 +1754,9 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
     let mut iv = tokio::time::interval(period);
     iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let checkpoint_every = (5_000_000 / period.as_micros().max(1)) as u64;
-    // Input journal between checkpoints: every tick's bundle goes to Redis in batches of
-    // JOURNAL_FLUSH ticks, so an adopting node loses at most that many ticks of inputs.
-    let journal_keep = (10_000_000 / period.as_micros().max(1)) as isize;
-    let mut journal_buf: Vec<Vec<u8>> = Vec::new();
+    // Every tick's bundle goes to Redis in batches of JOURNAL_FLUSH ticks, so an adopting node
+    // loses at most that many ticks of inputs and has the ticks from before the checkpoint.
+    let journal_keep = crate::lockstep::MAX_JOURNAL_TICKS as isize;
     let writer = RoomWriter::spawn(st.clone(), room);
     let mut ticks: u64 = 0;
     loop {
@@ -1766,6 +1766,7 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
         };
         let t0 = Instant::now();
         let mut checkpoint: Option<(ProjectId, Vec<u8>)> = None;
+        let mut journal = None;
         let project;
         {
             let mut hosted = handle.lock();
@@ -1793,8 +1794,8 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                 };
                 ls.master = master;
                 ls.tick();
-                if let Some(bundle) = ls.last_bundle() {
-                    journal_buf.push(bundle.to_vec());
+                if ls.unlisted() >= JOURNAL_FLUSH || checkpoint.is_some() {
+                    journal = Some(ls.take_journal());
                 }
                 let ckpt_req = ls.checkpoint_request();
                 let desyncs: Vec<(u32, ActorId, u8, Option<Bytes>)> = ls
@@ -1931,9 +1932,8 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                 }
             }
         }
-        if journal_buf.len() >= JOURNAL_FLUSH {
-            let entries = std::mem::take(&mut journal_buf);
-            writer.push(RedisWrite::Journal(project, entries, journal_keep));
+        if let Some((entries, hashes)) = journal {
+            writer.push(RedisWrite::Journal(project, entries, hashes, journal_keep));
         }
         let took = t0.elapsed();
         if took > period {
@@ -2184,6 +2184,11 @@ pub async fn adopt_room(
                 .with_spectator_delay(prop_secs(&props, "spectator_delay_secs", 3) as u32);
             match st.redis.get_journal(project, room_id).await {
                 Ok(entries) => {
+                    let hashes = st.redis.get_hashes(project, room_id).await;
+                    if let Err(e) = &hashes {
+                        tracing::warn!(room = %room_id, error = %e, "hashes read failed");
+                    }
+                    ls.restore_history(&entries, &hashes.unwrap_or_default());
                     let applied = ls.apply_journal(&entries);
                     tracing::info!(room = %room_id, applied, tick = ls.tick.0, "journal tail applied");
                 }
@@ -2455,16 +2460,27 @@ pub async fn handoff_all(st: &Shared, settle_until: tokio::time::Instant) -> usi
     let rooms = st.host.all();
     settle_links(&rooms, settle_until).await;
     for handle in &rooms {
-        let (project, id, body) = {
+        let (project, id, body, journal) = {
             let mut hosted = handle.lock();
             let sync = hosted.sync.as_mut().map(|s| s.checkpoint());
+            let journal = hosted.lockstep.as_mut().map(|l| l.take_journal());
             let ls = hosted.lockstep.as_ref().map(|l| l.snapshot());
             (
                 hosted.project,
                 hosted.room.id(),
                 RoomCheckpoint::of(&hosted, sync, ls).encode(),
+                journal,
             )
         };
+        if let Some((entries, hashes)) = journal {
+            let keep = crate::lockstep::MAX_JOURNAL_TICKS as isize;
+            let listed = st
+                .redis
+                .append_journal(project, id, &entries, &hashes, keep, 600);
+            if let Err(e) = listed.await {
+                tracing::warn!(room = %id, error = %e, "handoff journal failed");
+            }
+        }
         if let Err(e) = st.redis.put_checkpoint(project, id, &body, 600).await {
             tracing::warn!(room = %id, error = %e, "handoff checkpoint failed");
         }
