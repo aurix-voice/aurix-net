@@ -33,6 +33,7 @@ void AurixNetClient::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_connected_to"), &AurixNetClient::is_connected_to);
 	ClassDB::bind_method(D_METHOD("get_joined_json"), &AurixNetClient::get_joined_json);
 	ClassDB::bind_method(D_METHOD("get_seed"), &AurixNetClient::get_seed);
+	ClassDB::bind_method(D_METHOD("get_avatar"), &AurixNetClient::get_avatar);
 	ClassDB::bind_method(D_METHOD("get_last_error"), &AurixNetClient::get_last_error);
 	ClassDB::bind_method(D_METHOD("get_last_error_code"), &AurixNetClient::get_last_error_code);
 	ADD_SIGNAL(MethodInfo("control", PropertyInfo(Variant::STRING, "json")));

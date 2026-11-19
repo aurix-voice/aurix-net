@@ -57,6 +57,8 @@ export interface Joined {
   schema_hash?: string;
   /** Lockstep rooms: the seed every client and the node start the game from. */
   seed?: number;
+  /** Sync rooms that answer tagged spawns: the first tag the room has not seen from this actor. */
+  next_spawn_tag?: number;
   /** Relay events the room kept for late joiners: `[code, from, base64 payload]`, oldest first. */
   cached?: [number, number, string][];
   data: {
@@ -125,6 +127,9 @@ export class Client {
   private rpcSeq = 0;
   joined?: Joined;
   actor = -1;
+  /** Sync rooms: the entity the room made for this client as its avatar, once the room has
+   *  announced it. Kept from the join on, whether or not anything listens to `data`. */
+  avatar?: number;
 
   on<K extends keyof ClientEvents>(event: K, listener: ClientEvents[K]) {
     const listeners: ClientEvents[K][] = (this.listeners[event] ??= []);
@@ -275,10 +280,21 @@ export class Client {
       this.onDatagram(new Uint8Array(data as ArrayBuffer));
     }
   }
+  // A sync room announces the avatar as the answer (0x14) to spawn tag 0.
+  private noteAvatar(frame: Uint8Array) {
+    if (frame.length !== 18 || frame[0] !== 0x14) {
+      return;
+    }
+    const view = new DataView(frame.buffer, frame.byteOffset);
+    if (view.getUint32(1) === 0 && view.getUint8(5) === 0) {
+      this.avatar = Number(view.getBigUint64(6));
+    }
+  }
   /** The client is out of its room: by `leave`, or the node took it out (kick, room closed). */
   private forgetRoom() {
     this.joined = undefined;
     this.actor = -1;
+    this.avatar = undefined;
   }
 
   private waitFor<T = ControlMessage>(
@@ -415,6 +431,7 @@ export class Client {
     );
     this.joined = joined;
     this.actor = joined.actor;
+    this.avatar = undefined;
     // open the data path: ticket as the first datagram/frame, wait for the server's empty ack
     const ticket = Uint8Array.from(atob(joined.data.ticket), (char) =>
       char.charCodeAt(0),
@@ -468,6 +485,7 @@ export class Client {
         this.emit("ready");
         continue;
       }
+      this.noteAvatar(received.payload);
       this.emit("data", received.channel, received.tick, received.payload);
       if (
         this.joined?.mode === "relay" ||

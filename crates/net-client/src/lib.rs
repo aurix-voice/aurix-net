@@ -148,6 +148,9 @@ pub struct Client {
     data: Option<Arc<DataPath>>,
     opts: Options,
     pub joined: Option<Joined>,
+    /// Sync rooms: the entity the room made for this client as its avatar, once the room has
+    /// announced it. Kept from the join on, whether or not the game reads the frame.
+    pub avatar: Option<u64>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     /// Tasks of the current data path; they end with it.
     data_tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -171,7 +174,15 @@ pub struct Joined {
     pub schema_hash: Option<String>,
     /// Lockstep rooms: the seed every client and the node start the game from.
     pub seed: Option<u64>,
+    /// Sync rooms that answer tagged spawns: the first tag the room has not seen from this actor.
+    pub next_spawn_tag: Option<u32>,
     pub data: DataEndpoint,
+}
+
+/// The avatar entity of a sync room's announcement: the answer (`0x14`) to spawn tag 0.
+fn announced_avatar(frame: &[u8]) -> Option<u64> {
+    let created = frame.len() == 18 && frame[0] == 0x14 && frame[1..6] == [0; 5];
+    created.then(|| u64::from_be_bytes(frame[6..14].try_into().expect("8 bytes")))
 }
 
 impl Client {
@@ -204,6 +215,7 @@ impl Client {
             data: None,
             opts,
             joined: None,
+            avatar: None,
             tasks: vec![writer],
             data_tasks: Vec::new(),
             tunnel_slot: None,
@@ -392,6 +404,7 @@ impl Client {
                     tick_hz,
                     schema_hash,
                     seed,
+                    next_spawn_tag,
                     cached,
                     ..
                 })) => {
@@ -404,6 +417,7 @@ impl Client {
                         tick_hz,
                         schema_hash,
                         seed,
+                        next_spawn_tag,
                         data,
                     };
                     break (joined, cached);
@@ -415,6 +429,8 @@ impl Client {
                 _ => continue,
             }
         };
+        // the room announces the avatar as soon as the data path is up
+        self.avatar = None;
         self.open_data(&joined.data).await?;
         self.replay = cached
             .into_iter()
@@ -624,7 +640,7 @@ impl Client {
                 Some(event) => event,
                 None => {
                     let event = self.events.recv().await?;
-                    self.forget_room_on_left(&event);
+                    self.note(&event);
                     event
                 }
             };
@@ -641,7 +657,7 @@ impl Client {
                 Some(event) => event,
                 None => {
                     let event = self.events.try_recv().ok()?;
-                    self.forget_room_on_left(&event);
+                    self.note(&event);
                     event
                 }
             };
@@ -654,13 +670,26 @@ impl Client {
     /// The node took the client out of its room (kick, room closed, rehost). `left` names the
     /// room: one about a room left earlier, or the answer to the client's own `leave`, changes
     /// nothing.
-    fn forget_room_on_left(&mut self, event: &Event) {
-        let Event::Control(ServerMsg::Left { reason, room }) = event else {
-            return;
-        };
+    fn forget_room_on_left(&mut self, reason: &str, room: Option<&String>) {
         let current = self.joined.as_ref().map(|joined| &joined.room);
-        if reason != "left" && current.is_some() && current == room.as_ref() {
+        if reason != "left" && current.is_some() && current == room {
             self.joined = None;
+            self.avatar = None;
+        }
+    }
+
+    /// What the client keeps of an event whether or not the game reads it.
+    fn note(&mut self, event: &Event) {
+        match event {
+            Event::Control(ServerMsg::Left { reason, room }) => {
+                self.forget_room_on_left(reason, room.as_ref());
+            }
+            Event::Data { payload, .. } => {
+                if let Some(entity) = announced_avatar(payload) {
+                    self.avatar = Some(entity);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -680,6 +709,7 @@ impl Client {
     pub async fn leave(&mut self) -> Result<()> {
         self.close_data();
         self.joined = None;
+        self.avatar = None;
         self.send(ClientMsg::Leave).await
     }
 

@@ -116,12 +116,19 @@ test("sync room: spawned entities, ownership transfer and despawn replicate", { 
   const avatarA = mine(sb.world, ja.actor)[0].id;
 
   // a spawns a second entity it owns; b sees it with a's ownership and the initial write
-  sa.spawn([[tr, pose(9)]]);
+  const answers = [];
+  sa.onSpawnAnswer = (answer) => answers.push(answer);
+  const tag = sa.spawn([[tr, pose(9)]]);
   const keepalive = setInterval(() => sa.sendWrites([[tr, pose(0.5)]]), 1000 / 30);
   t.after(() => clearInterval(keepalive));
   await until("spawned entity on b", () => mine(sb.world, ja.actor).length === 2);
   const spawned = mine(sb.world, ja.actor).find((e) => e.id !== avatarA);
   assert.ok(Math.abs(sb.world.get(spawned, tr).fields[0][0] - 9) < 0.02, "initial write arrived with the spawn");
+  // the room tells a which entity its spawn made and which one is its avatar
+  await until("the answer to the spawn", () => answers.some((answer) => answer.tag === tag));
+  const answer = answers.find((answer) => answer.tag === tag);
+  assert.deepEqual([answer.status, answer.entity], ["created", spawned.id]);
+  assert.equal(a.avatar, avatarA);
 
   // a hands it to b; b now owns two entities and may write it, a sees the new value
   sa.transfer(spawned.id, jb.actor);

@@ -77,6 +77,15 @@ namespace Aurix.Net.Unity
         float _lastDeltaTime;
         bool _synced;
         byte[] _heldInput;
+        readonly Queue<byte[]> _heldOps = new Queue<byte[]>();
+        PendingSpawns _spawns = new PendingSpawns();
+
+        /// <summary>An answer to <see cref="SpawnEntity"/>. It and the delta that carries the entity come in
+        /// either order.</summary>
+        public event Action<SpawnAnswer> OnSpawnAnswer;
+
+        /// <summary>The avatar the room made for this client, once the room has announced it.</summary>
+        public ulong? Avatar => Client?.Avatar;
 
         void Awake()
         {
@@ -208,6 +217,8 @@ namespace Aurix.Net.Unity
             _synced = false;
             _recentInputs.Clear();
             _heldInput = null; // input ticks belong to the room just left
+            _heldOps.Clear();
+            _spawns = new PendingSpawns();
             if (Mode == RoomMode.Sync)
             {
                 Schema = Schema.Parse(
@@ -250,6 +261,15 @@ namespace Aurix.Net.Unity
                     | ((uint)payload[3] << 8)
                     | payload[4];
                 _leadAdjust += _margin.Adjust(reportTick, (sbyte)payload[5], _lastInputTick);
+                return;
+            }
+
+            if (SyncWorld.ReadSpawnAnswer(payload) is SpawnAnswer answer)
+            {
+                if (_spawns.Take(answer))
+                {
+                    OnSpawnAnswer?.Invoke(answer);
+                }
                 return;
             }
 
@@ -379,6 +399,7 @@ namespace Aurix.Net.Unity
             if (World != null)
             {
                 SendHeldInput();
+                SendHeldOps();
             }
 
             if (World != null && Settings.TickHz > 0)
@@ -472,14 +493,20 @@ namespace Aurix.Net.Unity
                 return false;
             }
 
+            SendAt(tick, _heldInput);
+            _heldInput = null;
+            return true;
+        }
+
+        void SendAt(uint tick, byte[] body)
+        {
             if (tick != _lastInputTick + 1)
             {
                 _recentInputs.Clear();
             }
 
             _lastInputTick = tick;
-            _recentInputs.Add(_heldInput);
-            _heldInput = null;
+            _recentInputs.Add(body);
             while (_recentInputs.Count > 3)
             {
                 _recentInputs.RemoveAt(0);
@@ -489,7 +516,70 @@ namespace Aurix.Net.Unity
                 Channel.Unreliable,
                 SyncWorld.EncodeInput(tick - (uint)(_recentInputs.Count - 1), _recentInputs)
             );
-            return true;
+        }
+
+        /// <summary>Owner-authoritative ops on entities you own; returns the tick they are stamped with. Unlike
+        /// an input, ops are not replaced by newer ones: each waits for its own tick.</summary>
+        public uint SendOps(IList<SyncOp> ops)
+        {
+            if (World == null || Client == null)
+            {
+                return 0;
+            }
+
+            return Hold(World.EncodeOps(ops));
+        }
+
+        /// <summary>Spawns an entity you own and returns its tag: the room answers with the entity it made
+        /// (<see cref="OnSpawnAnswer"/>). The spawn is repeated until the room answers.</summary>
+        public uint SpawnEntity(IList<(ComponentDef, ComponentValue)> writes = null)
+        {
+            if (World == null || Client?.NextSpawnTag == null)
+            {
+                throw new NetException("spawn: the room does not answer tagged spawns");
+            }
+
+            uint tag = _spawns.NextTag(Client.NextSpawnTag.Value);
+            var body = World.EncodeOps(new[] { SyncOp.SpawnTaggedEntity(tag, writes) });
+            _spawns.Sent(tag, body, Hold(body));
+            return tag;
+        }
+
+        uint Hold(byte[] ops)
+        {
+            _heldOps.Enqueue(ops);
+            SendHeldOps();
+            return _lastInputTick + (uint)_heldOps.Count;
+        }
+
+        void SendHeldOps()
+        {
+            if (!_synced)
+            {
+                return;
+            }
+
+            uint lead = InputLead;
+            // half a second without an answer: the spawn was lost
+            _spawns.Repeat(
+                World.ServerTick,
+                (uint)Settings.TickHz / 2,
+                body =>
+                {
+                    _heldOps.Enqueue(body);
+                    return Math.Max(World.ServerTick + lead, _lastInputTick + (uint)_heldOps.Count);
+                }
+            );
+            while (_heldOps.Count > 0)
+            {
+                uint tick = Math.Max(World.ServerTick + lead, _lastInputTick + 1);
+                if (tick > World.ServerTick + lead + 1)
+                {
+                    return;
+                }
+
+                SendAt(tick, _heldOps.Dequeue());
+            }
         }
 
         // ---- events / RPC (relay channel) ----

@@ -1,0 +1,23 @@
+<!doctype html>
+<html><body><pre id="result">running</pre>
+<script type="module">
+  import { Client, SyncSession } from "../dist/index.js";
+  const q = new URLSearchParams(location.search);
+  const http = q.get("http"), ga = q.get("ga"), gb = q.get("gb"), room = q.get("room");
+  const out = (t) => { document.getElementById("result").textContent = t; };
+  const SCHEMA = "component Transform {\n  pos: vec3 @range(-4096, 4096, 0.01)\n  rot: quat\n}\n";
+  const until = async (ready) => { for (let i = 0; i < 150 && !ready(); i++) await new Promise(r => setTimeout(r, 20)); return ready(); };
+  try {
+    const a = await Client.connect(http, ga); const b = await Client.connect(http, gb);
+    const ja = await a.joinOrCreate(room, "sync", 4, { schema: SCHEMA });
+    const jb = await b.joinOrCreate(room, "sync", 4, { schema: SCHEMA });
+    const sa = new SyncSession(a, SCHEMA, 60, 2); const sb = new SyncSession(b, SCHEMA, 60, 2);
+    let answer; sa.onSpawnAnswer = (x) => { if (x.tag !== 0) answer = x; };
+    await until(() => sa.world.serverTick > 0 && sb.world.serverTick > 0);
+    const tag = sa.spawn([]);
+    const owned = (world, actor, id) => world.entities.get(id)?.owner === actor;
+    const avatars = await until(() => owned(sb.world, ja.actor, a.avatar) && owned(sa.world, jb.actor, b.avatar));
+    const spawned = await until(() => answer?.tag === tag && answer.entity !== a.avatar && owned(sb.world, ja.actor, answer.entity));
+    out(`path=${a.dataPath}/${b.dataPath} avatars=${avatars ? 1 : 0} answer=${answer?.status ?? "none"} spawned=${spawned ? 1 : 0}`);
+  } catch (e) { out("error: " + (e && e.message || e)); }
+</script></body></html>

@@ -8,6 +8,11 @@ export type SyncOp =
       writes: Array<[ComponentDef, ComponentValue]>;
     }
   | { op: "spawn"; writes: Array<[ComponentDef, ComponentValue]> }
+  | {
+      op: "spawn_tagged";
+      tag: number;
+      writes: Array<[ComponentDef, ComponentValue]>;
+    }
   | { op: "despawn"; entity: number }
   | { op: "transfer"; entity: number; to: number }
   | { op: "set_policy"; entity: number; policy: OwnerPolicy }
@@ -26,6 +31,7 @@ export const KIND_INPUT = 0x10;
 export const KIND_DELTA = 0x11;
 export const KIND_RESYNC = 0x12;
 export const KIND_ACK = 0x13;
+export const KIND_SPAWN_ANSWER = 0x14;
 export const KIND_INPUT_STATS = 0x25;
 
 export class SyncError extends Error {}
@@ -780,6 +786,11 @@ export class SyncWorld {
           writer.writeBits(1, 8);
           writes(op.writes);
           break;
+        case "spawn_tagged":
+          writer.writeBits(7, 8);
+          writer.writeBits(op.tag, 32);
+          writes(op.writes);
+          break;
         case "despawn":
           writer.writeBits(2, 8);
           writer.writeBits(op.entity, 48);
@@ -879,6 +890,19 @@ const MAX_LEAD_TICKS = 60;
 
 /** Drives a `SyncWorld` from a joined sync-room `Client`: decodes deltas, acks them, advances a render
  *  tick `interpolationTicks` behind the server, and stamps/sends owner writes or raw inputs. */
+/** The room's answer to `SyncSession.spawn`: the entity it made for `tag`, or why it made none.
+ *  `tag` 0 names the avatar (`Client.avatar`). */
+export interface SpawnAnswer {
+  tag: number;
+  /** `refused`: the actor's entity limit, or the room is full. `invalid`: the room could not
+   *  read the spawn. */
+  status: "created" | "refused" | "invalid";
+  /** The entity as deltas name it. Read it only when created: 0 is an entity too. */
+  entity: number;
+  /** The tick the room ran the spawn at. */
+  tick: number;
+}
+
 export class SyncSession {
   readonly world: SyncWorld;
   renderTick = 0;
@@ -891,6 +915,11 @@ export class SyncSession {
   private readonly margin = new MarginControl();
   /** Ticks the room's margin reports have added to the input lead (negative: taken off it). */
   private leadAdjust = 0;
+  private nextTag = 1;
+  /** Tagged spawns the room has not answered; `tick` is the one the latest input was stamped with. */
+  private unanswered: { tag: number; body: Uint8Array; tick: number }[] = [];
+  /** An answer to `spawn`. It and the delta that carries the entity come in either order. */
+  onSpawnAnswer?: (answer: SpawnAnswer) => void;
   constructor(
     readonly client: Client,
     schema: Schema | string,
@@ -910,6 +939,10 @@ export class SyncSession {
         );
         return;
       }
+      if (payload.length === 18 && payload[0] === KIND_SPAWN_ANSWER) {
+        this.takeSpawnAnswer(payload);
+        return;
+      }
       const ack = this.world.receive(payload);
       if (ack) {
         client.sendData(Channel.Unreliable, ack);
@@ -926,6 +959,25 @@ export class SyncSession {
       }
     });
     this.ping();
+  }
+  // An answer to a spawn already answered (the room answers every repeat) is not reported again.
+  private takeSpawnAnswer(payload: Uint8Array): void {
+    const view = new DataView(payload.buffer, payload.byteOffset);
+    const tag = view.getUint32(1);
+    const entity = Number(view.getBigUint64(6));
+    if (tag !== 0) {
+      const left = this.unanswered.filter((spawn) => spawn.tag !== tag);
+      if (left.length === this.unanswered.length) {
+        return;
+      }
+      this.unanswered = left;
+    }
+    this.onSpawnAnswer?.({
+      tag,
+      status: (["created", "refused"] as const)[view.getUint8(5)] ?? "invalid",
+      entity,
+      tick: view.getUint32(14),
+    });
   }
   private ping(): void {
     this.lastPingAt = performance.now();
@@ -981,6 +1033,17 @@ export class SyncSession {
       Math.max(1, estimate + this.leadAdjust),
     );
     this.leadAdjust = lead - estimate;
+    // a tagged spawn the room passed half a second ago with no answer was lost; the room makes
+    // nothing new out of a tag it knows
+    for (const spawn of this.unanswered) {
+      if (this.world.serverTick > spawn.tick + this.tickHz / 2) {
+        this.held.push({ body: spawn.body, keep: true });
+        spawn.tick = Math.max(
+          this.world.serverTick + lead,
+          this.lastInputTick + this.held.length,
+        );
+      }
+    }
     while (this.held.length) {
       const tick = Math.max(
         this.world.serverTick + lead,
@@ -1004,8 +1067,18 @@ export class SyncSession {
       );
     }
   }
+  /** Spawns an entity you own and returns its tag: the room answers with the entity it made
+   *  (`onSpawnAnswer`). The spawn is repeated until the room answers. */
   spawn(writes: Array<[ComponentDef, ComponentValue]> = []): number {
-    return this.sendOps([{ op: "spawn", writes }]);
+    const firstFree = this.client.joined?.next_spawn_tag;
+    if (firstFree === undefined) {
+      throw new SyncError("spawn: the room does not answer tagged spawns");
+    }
+    const tag = Math.max(this.nextTag, firstFree);
+    const body = this.world.encodeOps([{ op: "spawn_tagged", tag, writes }]);
+    this.nextTag = tag + 1;
+    this.unanswered.push({ tag, body, tick: this.queue(body, true) });
+    return tag;
   }
   despawn(entity: number): number {
     return this.sendOps([{ op: "despawn", entity }]);

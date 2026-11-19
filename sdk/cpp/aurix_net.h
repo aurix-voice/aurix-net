@@ -69,6 +69,7 @@ int32_t aurix_net_send_control(AurixNetClient *client, const char *json);
 int32_t aurix_net_join(AurixNetClient *client, const char *json);          /* returns actor id or -1 */
 char *aurix_net_joined_json(AurixNetClient *client);
 int32_t aurix_net_joined_seed(AurixNetClient *client, uint64_t *seed);     /* seed of the lockstep room; 0, or -1 when not in one */
+int32_t aurix_net_avatar(AurixNetClient *client, uint64_t *entity); /* sync rooms: 1 = the avatar the room made for this client, kept from the join on; 0 = not announced yet */
 int32_t aurix_net_send_data(AurixNetClient *client, uint8_t channel, const uint8_t *data, size_t len);
 int32_t aurix_net_send_event(AurixNetClient *client, uint8_t code, int32_t target, const uint16_t *actors, size_t n_actors,
                              const uint8_t *data, size_t len, int32_t reliable);
@@ -114,10 +115,13 @@ uint64_t aurix_net_lockstep_fnv1a(const uint8_t *data, size_t len);
 typedef struct AurixNetSync AurixNetSync;
 enum { AURIX_NET_SYNC_NONE = 0, AURIX_NET_SYNC_SPAWN = 1, AURIX_NET_SYNC_CHANGE = 2, AURIX_NET_SYNC_DESPAWN = 3 };
 typedef struct AurixNetSyncEvent { int32_t kind; uint64_t entity; int32_t owner; /* -1 = server-owned */ } AurixNetSyncEvent;
+enum { AURIX_NET_SPAWN_CREATED = 0, AURIX_NET_SPAWN_REFUSED = 1, AURIX_NET_SPAWN_INVALID = 2 };
+typedef struct AurixNetSyncSpawn { uint32_t tag; /* 0 = the avatar */ int32_t status; uint64_t entity; /* read only when created: 0 is an entity too */ uint32_t tick; } AurixNetSyncSpawn;
 AurixNetSync *aurix_net_sync_new(const char *schema);                                   /* NULL + last_error on a bad schema */
 void aurix_net_sync_destroy(AurixNetSync *sync);
-int32_t aurix_net_sync_receive(const AurixNetSync *sync, const uint8_t *data, size_t len, uint8_t *ack9); /* 1 = delta applied, ack9 filled (send it unreliable); 2 = input margin report taken; 0 = not a sync frame; -1 = error */
+int32_t aurix_net_sync_receive(const AurixNetSync *sync, const uint8_t *data, size_t len, uint8_t *ack9); /* 1 = delta applied, ack9 filled (send it unreliable); 2 = input margin report taken; 3 = spawn answer taken; 0 = not a sync frame; -1 = error */
 int32_t aurix_net_sync_poll(const AurixNetSync *sync, AurixNetSyncEvent *out);           /* 1 = spawn/change/despawn filled */
+int32_t aurix_net_sync_poll_spawn(const AurixNetSync *sync, AurixNetSyncSpawn *out);     /* 1 = answer to aurix_net_sync_spawn filled; it and the delta with the entity come in either order */
 uint32_t aurix_net_sync_server_tick(const AurixNetSync *sync);
 uint64_t aurix_net_sync_gaps(const AurixNetSync *sync);
 int32_t aurix_net_sync_entity_count(const AurixNetSync *sync);
@@ -137,6 +141,7 @@ int32_t aurix_net_sync_write_end(const AurixNetSync *sync);
 int64_t aurix_net_sync_send_writes(const AurixNetSync *sync, AurixNetClient *client);           /* queued writes as this tick's input (owner-authoritative rooms); stamped tick or -1 */
 int32_t aurix_net_sync_pump(const AurixNetSync *sync, AurixNetClient *client);                  /* sends inputs that were waiting for a tick; call after every applied delta */
 int64_t aurix_net_sync_send_op(const AurixNetSync *sync, AurixNetClient *client, int32_t op, uint64_t entity, int32_t to); /* 0 write entity (queued writes), 1 spawn (queued writes), 2 despawn, 3 transfer to actor `to`, 4 set ownership policy `to` (0 destroy_on_leave, 1 to_master, 2 orphan, 3 dynamic), 5 request ownership, 6 release; stamped tick or -1 */
+int64_t aurix_net_sync_spawn(const AurixNetSync *sync, AurixNetClient *client);                 /* spawn (queued writes) under a tag the room answers with the entity; repeated until answered; the tag or -1 (the room does not answer tagged spawns) */
 
 #ifdef __cplusplus
 }

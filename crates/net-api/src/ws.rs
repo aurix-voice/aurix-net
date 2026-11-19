@@ -1161,6 +1161,7 @@ impl Session {
                     .or(hr.lockstep.as_ref().map(|l| l.hz)),
                 tick: hr.lockstep.as_ref().map(|l| l.tick.0),
                 seed: hr.lockstep.as_ref().map(|l| l.seed),
+                next_spawn_tag: hr.sync.as_ref().and_then(|s| s.next_spawn_tag(actor)),
             }
         };
         let (id, actor) = match &joined {
@@ -1361,12 +1362,16 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
         {
             let mut hosted = handle.lock();
             let project = hosted.project;
-            let (out, reports, events, actors) = {
-                let Some(sy) = hosted.sync.as_mut() else {
+            let (out, reports, spawned, events, actors) = {
+                let room = &mut *hosted;
+                let Some(sy) = room.sync.as_mut() else {
                     return;
                 };
+                let sessions = &room.sessions;
                 let out = sy.tick();
                 let reports = sy.input_reports();
+                let spawned =
+                    sy.take_spawned(|actor| sessions.get(&actor).is_some_and(|s| s.data.is_some()));
                 let events = sy.take_events();
                 let actors: Vec<ActorId> = sy.avatars.keys().copied().collect();
                 st.metrics.sync_lost_deltas.inc_by(sy.take_lost_deltas());
@@ -1381,13 +1386,18 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
                 if ticks.is_multiple_of(checkpoint_every) {
                     checkpoint = Some((project, sy.checkpoint()));
                 }
-                (out, reports, events, actors)
+                (out, reports, spawned, events, actors)
             };
             if let Some((_, body)) = checkpoint.take() {
                 checkpoint = Some((
                     project,
                     RoomCheckpoint::of(&hosted, Some(body), None).encode(),
                 ));
+            }
+            for (actor, frame) in spawned {
+                if let Some(ds) = hosted.sessions.get(&actor).and_then(|s| s.data.as_ref()) {
+                    ds.send(net_common::Channel::ReliableOrdered, frame);
+                }
             }
             for (actor, delta) in out {
                 if let Some(ds) = hosted.sessions.get(&actor).and_then(|s| s.data.as_ref()) {
@@ -1809,6 +1819,10 @@ pub struct RoomCheckpoint {
     pub sync: Option<Vec<u8>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lockstep: Option<crate::lockstep::LockstepSnapshot>,
+    /// Sync rooms: the tags each actor's spawns were made under (actor, tag, entity), so a spawn
+    /// repeated after the room moved creates nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spawn_tags: Vec<(ActorId, u32, u64)>,
 }
 
 impl RoomCheckpoint {
@@ -1827,6 +1841,11 @@ impl RoomCheckpoint {
             master: hosted.room.master(),
             sync,
             lockstep,
+            spawn_tags: hosted
+                .sync
+                .as_ref()
+                .map(crate::sync::SyncRoom::spawn_tags)
+                .unwrap_or_default(),
         }
     }
 
@@ -1909,6 +1928,7 @@ pub async fn adopt_room(
             let mut sy = build_sync(st, project, &props, 0).await?;
             if let Some(body) = checkpoint.sync {
                 sy.restore(&body).map_err(NetError::Invalid)?;
+                sy.restore_spawn_tags(checkpoint.spawn_tags);
                 restored = "sync";
             }
             sync = Some(sy);

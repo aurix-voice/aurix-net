@@ -6,7 +6,7 @@ const SCHEMA := "component Transform {\n  pos: vec3 @range(-4096, 4096, 0.01)\n 
 var grant_c := ""; var grant_d := ""; var net_http := ""; var ls_room := ""
 var c: AurixNetClient; var d: AurixNetClient
 var wc: AurixNetSync; var wd: AurixNetSync
-var sync_on := false; var acc := 0.0; var writes := 0; var updates := 0; var x := 0.0; var last := Vector3.ZERO; var drain := 0
+var sync_on := false; var acc := 0.0; var writes := 0; var updates := 0; var x := 0.0; var last := Vector3.ZERO; var drain := 0; var spawn_tag := -1; var spawned := -1
 var lc: AurixNetLockstep; var ld: AurixNetLockstep
 var ls_on := false; var ls_frames := 0; var ticks_c := 0; var ticks_d := 0; var actors := {}; var stray := 0
 
@@ -75,6 +75,10 @@ func _start_sync() -> void:
 	wd.change.connect(func(entity, owner):
 		if owner == c.get_actor():
 			updates += 1; last = wd.get_field(entity, "Transform", "pos"))
+	wc.spawn_answer.connect(func(tag, status, entity, _tick):
+		if tag == spawn_tag and status == 0: spawned = entity)
+	spawn_tag = wc.spawn_entity(c)
+	if spawn_tag < 1: fail("spawn_entity: the room does not answer tagged spawns"); return
 	sync_on = true
 
 func _sync_step(dt: float) -> void:
@@ -94,6 +98,9 @@ func _sync_step(dt: float) -> void:
 	var ok: bool = wd.get_server_tick() > 30 and wd.get_gaps() == 0 and updates >= 20 and abs(last.x - x) < 0.02 and abs(last.y - 1) < 0.02 and abs(last.z + 2) < 0.02 and wd.get_entities().size() >= 1
 	print("godot sync: serverTick=%d gaps=%d updates=%d last=%s x=%.1f entities=%d renderTick=%.1f -> %s" % [wd.get_server_tick(), wd.get_gaps(), updates, last, x, wd.get_entities().size(), wd.get_render_tick(), "ok" if ok else "FAIL"])
 	if not ok: fail("sync replication"); return
+	# the room told which entity the spawn made and which one is the avatar
+	if spawned < 0 or c.get_avatar() < 0 or c.get_avatar() == spawned or not wc.get_entities().has(spawned):
+		fail("spawn answer: tag=%d entity=%d avatar=%d" % [spawn_tag, spawned, c.get_avatar()]); return
 	if stray > 0: fail("%d event signals from sync frames" % stray); return
 	_start_lockstep()
 

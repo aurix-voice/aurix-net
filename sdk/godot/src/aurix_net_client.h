@@ -64,6 +64,11 @@ public:
 	bool is_connected_to() const { return client_.connected(); }
 	String get_joined_json() const { return String::utf8(client_.joinedJson().c_str()); }
 	int64_t get_seed() const { return static_cast<int64_t>(client_.seed().value_or(0)); }
+	/// The avatar a sync room made for this client, -1 until the room announces it.
+	int64_t get_avatar() const {
+		auto avatar = client_.avatar();
+		return avatar ? static_cast<int64_t>(*avatar) : -1;
+	}
 	String get_last_error() const { return last_error_; }
 	int get_last_error_code() const { return last_error_code_; }
 	aurix::net::Client &raw() { return client_; }

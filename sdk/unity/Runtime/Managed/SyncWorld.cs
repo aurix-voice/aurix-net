@@ -35,11 +35,13 @@ namespace Aurix.Net.Managed
             Transfer = 3,
             SetPolicy = 4,
             Request = 5,
-            Release = 6;
+            Release = 6,
+            SpawnTagged = 7;
 
         /// <summary>Ownership policy: 0 destroy on leave (default), 1 to master, 2 orphan, 3 dynamic.</summary>
         public byte Policy;
         public byte Op;
+        public uint Tag;
         public ulong Entity;
         public ushort To;
         public IList<(ComponentDef, ComponentValue)> Writes;
@@ -57,6 +59,17 @@ namespace Aurix.Net.Managed
 
         public static SyncOp SpawnEntity(IList<(ComponentDef, ComponentValue)> writes = null) =>
             new SyncOp { Op = Spawn, Writes = writes };
+
+        public static SyncOp SpawnTaggedEntity(
+            uint tag,
+            IList<(ComponentDef, ComponentValue)> writes = null
+        ) =>
+            new SyncOp
+            {
+                Op = SpawnTagged,
+                Tag = tag,
+                Writes = writes,
+            };
 
         public static SyncOp DespawnEntity(ulong entity) =>
             new SyncOp { Op = Despawn, Entity = entity };
@@ -85,12 +98,76 @@ namespace Aurix.Net.Managed
             new SyncOp { Op = Release, Entity = entity };
     }
 
+    /// <summary>Refused: the actor's entity limit, or the room is full. Invalid: the room could not read the
+    /// spawn.</summary>
+    public enum SpawnStatus : byte
+    {
+        Created = 0,
+        Refused = 1,
+        Invalid = 2,
+    }
+
+    /// <summary>The room's answer to a tagged spawn: the entity it made for the tag, or why it made none. Tag 0
+    /// names the avatar.</summary>
+    public struct SpawnAnswer
+    {
+        public uint Tag;
+        public SpawnStatus Status;
+
+        /// <summary>The entity as deltas name it. Read it only when created: 0 is an entity too.</summary>
+        public ulong Entity;
+
+        /// <summary>The tick the room ran the spawn at.</summary>
+        public uint Tick;
+    }
+
+    /// <summary>The tagged spawns of one stay in a room: hands out tags and keeps each spawn until the room
+    /// answers it.</summary>
+    public sealed class PendingSpawns
+    {
+        readonly List<(uint Tag, byte[] Body, uint Tick)> _unanswered =
+            new List<(uint, byte[], uint)>();
+        uint _next = 1;
+
+        /// <summary>`firstFree` is the first tag the room has not seen from this actor (`joined.next_spawn_tag`).</summary>
+        public uint NextTag(uint firstFree)
+        {
+            uint tag = Math.Max(_next, firstFree);
+            _next = tag + 1;
+            return tag;
+        }
+
+        /// <summary>`tick` is the one the input with the spawn was stamped with.</summary>
+        public void Sent(uint tag, byte[] body, uint tick) => _unanswered.Add((tag, body, tick));
+
+        /// <summary>False for an answer to a spawn already answered: the room answers every repeat.</summary>
+        public bool Take(SpawnAnswer answer)
+        {
+            return answer.Tag == 0 || _unanswered.RemoveAll(spawn => spawn.Tag == answer.Tag) > 0;
+        }
+
+        /// <summary>Sends again every spawn the room passed `after` ticks ago with no answer: the room makes
+        /// nothing new out of a tag it knows. `send` returns the tick the repeat is stamped with.</summary>
+        public void Repeat(uint serverTick, uint after, Func<byte[], uint> send)
+        {
+            for (int i = 0; i < _unanswered.Count; i++)
+            {
+                var spawn = _unanswered[i];
+                if (serverTick > spawn.Tick + after)
+                {
+                    _unanswered[i] = (spawn.Tag, spawn.Body, send(spawn.Body));
+                }
+            }
+        }
+    }
+
     public sealed class SyncWorld
     {
         public const byte KindInput = 0x10,
             KindDelta = 0x11,
             KindResync = 0x12,
-            KindAck = 0x13;
+            KindAck = 0x13,
+            KindSpawnAnswer = 0x14;
         public readonly Schema Schema;
         public readonly Dictionary<ulong, NetEntity> Entities = new Dictionary<ulong, NetEntity>();
         public uint ServerTick { get; private set; }
@@ -225,6 +302,33 @@ namespace Aurix.Net.Managed
             return behind <= 32 && (_history & (1u << (int)(behind - 1))) != 0;
         }
 
+        /// <summary>The room's answer to a tagged spawn, or null when the payload is not one.</summary>
+        public static SpawnAnswer? ReadSpawnAnswer(byte[] payload)
+        {
+            if (payload.Length != 18 || payload[0] != KindSpawnAnswer)
+            {
+                return null;
+            }
+
+            ulong Read(int at, int bytes)
+            {
+                ulong value = 0;
+                for (int i = 0; i < bytes; i++)
+                {
+                    value = (value << 8) | payload[at + i];
+                }
+                return value;
+            }
+
+            return new SpawnAnswer
+            {
+                Tag = (uint)Read(1, 4),
+                Status = payload[5] <= 1 ? (SpawnStatus)payload[5] : SpawnStatus.Invalid,
+                Entity = Read(6, 8),
+                Tick = (uint)Read(14, 4),
+            };
+        }
+
         public static byte[] EncodeAck(uint last, uint bits) =>
             new byte[]
             {
@@ -290,7 +394,11 @@ namespace Aurix.Net.Managed
             foreach (var op in ops)
             {
                 writer.WriteBits(op.Op, 8);
-                if (op.Op != SyncOp.Spawn)
+                if (op.Op == SyncOp.SpawnTagged)
+                {
+                    writer.WriteBits(op.Tag, 32);
+                }
+                else if (op.Op != SyncOp.Spawn)
                 {
                     writer.WriteBits(op.Entity, 48);
                 }

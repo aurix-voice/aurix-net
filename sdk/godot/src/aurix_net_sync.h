@@ -39,6 +39,10 @@ public:
 	bool end_write();
 	int send_writes(AurixNetClient *client);
 	int write_entity(AurixNetClient *client, int64_t entity);
+	/// The tag the room answers with, or -1 when the room does not answer tagged spawns. The answer
+	/// is `spawn_answer(tag, status, entity, tick)`: status 0 created, 1 refused (the actor's entity
+	/// limit, or the room is full), 2 the room could not read the spawn. It and the `spawn` of the
+	/// entity come in either order.
 	int spawn_entity(AurixNetClient *client);
 	int despawn_entity(AurixNetClient *client, int64_t entity);
 	int transfer_entity(AurixNetClient *client, int64_t entity, int to_actor);

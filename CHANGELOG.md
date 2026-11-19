@@ -8,6 +8,22 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 ## [Unreleased]
 
 ### Added
+- Sync: a spawn can carry a tag of the client's (op 7), and the room answers the client with
+  the entity it created (`0x14`), or with the refusal. A client could not tell the entity it had
+  spawned from its avatar or from another spawn, and a spawn sent twice was created twice. The
+  room remembers the last 64 tags of a player, also across a move to another node, so the op can
+  be repeated until answered; `joined.next_spawn_tag` says where a client's tags start, and
+  every sync room now names the avatar the same way (`0x14`, tag 0). `spawn` without a tag works
+  as before ([modes](docs/modes.md)).
+- SDKs: `spawn` in a `sync` room sends the tagged spawn and returns the tag; the room's answer
+  reaches the game as an event (created with the entity, refused, invalid). The SDK counts the
+  tags and repeats a spawn until it is answered. The client keeps the avatar the room announces
+  from the join on. C `aurix_net_sync_spawn` / `aurix_net_sync_poll_spawn` / `aurix_net_avatar`,
+  C++ `Sync::spawn` / `pollSpawn` and `Client::avatar`, Godot `spawn_entity` / `spawn_answer`
+  and `AurixNetClient.get_avatar`, Web `SyncSession.spawn` / `onSpawnAnswer` and
+  `Client.avatar`, Unity `NetRunner.SpawnEntity` / `OnSpawnAnswer` / `Avatar`. C++, Godot and
+  Web `spawn` returned the input tick before; on a room that does not answer tagged spawns it
+  now fails ([SDKs](docs/sdk.md)).
 - Rooms: `left` names the room it is about (`room`, the id from `joined.room`) for every reason:
   own leave, kick, closed room, `session_replaced`, `rehost`. A `left` that arrived after the
   client had joined another room could not be told from one about the new room. Clients that

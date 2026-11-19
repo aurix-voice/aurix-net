@@ -127,8 +127,29 @@ float mine[3] = {x, y, z};
 world.begin(tr).write(pos, mine, 3).end().sendWrites(c);   // owner-authoritative rooms
 world.begin(tr).write(pos, mine, 3).end().spawn(c);        // a second entity you own; despawn/transfer/writeEntity likewise
 // world.sendInput(c, bytes, n) for rooms with server-side `logic`
-// Web: session.spawn(writes) / writeEntity(id, writes) / despawn(id) / transfer(id, actor); C#: SyncWorld.EncodeOps(SyncOp[...])
+// Web: session.spawn(writes) / writeEntity(id, writes) / despawn(id) / transfer(id, actor); Unity: NetRunner.SpawnEntity(writes) / SendOps(SyncOp[...])
 ```
+
+A spawn returns a tag, not the entity: the room picks the entity and answers with it. The SDK
+counts the tags and repeats the spawn until the room answers, and the room makes one entity per
+tag, so a lost spawn is not made twice. The answer says `created` with the entity and the tick
+the spawn ran at, `refused` (the actor has 32 entities, or the room is full) or `invalid` (the
+room could not read the spawn). A refused spawn is not repeated: spawn again when there is room.
+Tag 0 is the answer that names the avatar. The answer and the delta that carries the entity
+travel on different channels: either may come first, so an answered entity may not be in the
+world yet. A room that does not answer tagged spawns (no schema, a `logic` module, an older node)
+and a spectator fail the spawn at the call.
+
+| | spawn | answer | avatar |
+|---|---|---|---|
+| C | `aurix_net_sync_spawn` | `aurix_net_sync_poll_spawn` | `aurix_net_avatar` |
+| C++ | `Sync::spawn` | `Sync::pollSpawn` | `Client::avatar` |
+| Godot | `AurixNetSync.spawn_entity` | signal `spawn_answer(tag, status, entity, tick)` | `AurixNetClient.get_avatar` |
+| Web | `SyncSession.spawn` | `onSpawnAnswer` | `Client.avatar` |
+| Unity | `NetRunner.SpawnEntity` | `OnSpawnAnswer` | `NetRunner.Avatar`, `ManagedClient.Avatar` |
+
+The room announces the avatar once, right after the join. The client keeps it from then on, so
+the avatar answers whenever the game asks, also when the game set up its sync world later.
 
 Godot: `AurixNetSync` (RefCounted): `setup(schema)`, feed the client's `data` signal to
 `receive(client, payload)`, listen to `spawn(entity, owner)` / `change` / `despawn`, read

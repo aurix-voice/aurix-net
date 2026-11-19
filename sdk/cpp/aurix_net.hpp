@@ -233,6 +233,15 @@ public:
         }
         return seed;
     }
+    /// The entity a sync room made for this client as its avatar, once the room has announced
+    /// it. Kept from the join on, so it answers whenever the game asks.
+    std::optional<uint64_t> avatar() const {
+        uint64_t entity = 0;
+        if (aurix_net_avatar(handle_, &entity) != 1) {
+            return std::nullopt;
+        }
+        return entity;
+    }
 
     void sendEvent(uint8_t code, const uint8_t* data, size_t len, Target target = Target::Others,
                    bool reliable = false, const std::vector<uint16_t>& actors = {}) {
@@ -455,6 +464,17 @@ public:
         uint64_t entity;
         int owner;
     };
+    /// Refused: the actor's entity limit, or the room is full. Invalid: the room could not read
+    /// the spawn.
+    enum class SpawnStatus { Created = 0, Refused = 1, Invalid = 2 };
+    /// The room's answer to spawn(): the entity it made for `tag`, or why it made none. `tag` 0
+    /// names the avatar (Client::avatar()).
+    struct SpawnAnswer {
+        uint32_t tag;
+        SpawnStatus status;
+        uint64_t entity;
+        uint32_t tick;
+    };
 
     explicit Sync(const std::string& schema, int tickHz = 60, int interpolationTicks = 2)
         : sync_(aurix_net_sync_new(schema.c_str())), tickHz_(tickHz), interp_(interpolationTicks) {
@@ -475,7 +495,7 @@ public:
             throw Error::last();
         }
         if (result != 1) {
-            return result == 2;
+            return result != 0;
         }
         client.sendData(Channel::Unreliable, ack, sizeof ack);
         aurix_net_sync_pump(sync_, client.handle());
@@ -495,6 +515,14 @@ public:
             out.owner = event.owner;
         }
         return out;
+    }
+    /// The next answer to spawn(). It and the delta that carries the entity come in either order.
+    std::optional<SpawnAnswer> pollSpawn() {
+        AurixNetSyncSpawn answer{};
+        if (aurix_net_sync_poll_spawn(sync_, &answer) != 1) {
+            return std::nullopt;
+        }
+        return SpawnAnswer{answer.tag, SpawnStatus(answer.status), answer.entity, answer.tick};
     }
     uint32_t serverTick() const { return aurix_net_sync_server_tick(sync_); }
     uint64_t gaps() const { return aurix_net_sync_gaps(sync_); }
@@ -578,9 +606,9 @@ public:
     int64_t writeEntity(Client& client, uint64_t entity) {
         return aurix_net_sync_send_op(sync_, client.handle(), 0, entity, 0);
     }
-    int64_t spawn(Client& client) {
-        return aurix_net_sync_send_op(sync_, client.handle(), 1, 0, 0);
-    }
+    /// Returns the tag the room answers with (pollSpawn()), or -1 when the room does not answer
+    /// tagged spawns. The spawn is repeated until the room answers.
+    int64_t spawn(Client& client) { return aurix_net_sync_spawn(sync_, client.handle()); }
     int64_t despawn(Client& client, uint64_t entity) {
         return aurix_net_sync_send_op(sync_, client.handle(), 2, entity, 0);
     }

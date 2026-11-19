@@ -7,6 +7,10 @@
 //! 0x11 Delta    server->client  replication delta (see net-replication)
 //! 0x12 Resync   client->server  drop baselines, next delta is a full snapshot
 //! 0x13 Ack      client->server  u32 last delta tick, u32 history bits (see `AckTracker`)
+//! 0x14 Spawned  server->client  u32 tag, u8 status (0 created, 1 refused, 2 invalid op),
+//!                               u64 entity, u32 tick
+//!                               reliable, to the actor alone: its avatar (tag 0) and the
+//!                               answer to each `OP_SPAWN_TAGGED`
 //! 0x25 InputStats server->client u32 tick, i8 min_margin, u8 late   (same as lockstep) every 30
 //!                               ticks per actor: how early its inputs arrived (negative = late)
 //! ```
@@ -24,6 +28,7 @@ pub const KIND_INPUT: u8 = 0x10;
 pub const KIND_DELTA: u8 = 0x11;
 pub const KIND_RESYNC: u8 = 0x12;
 pub const KIND_ACK: u8 = 0x13;
+pub const KIND_SPAWNED: u8 = 0x14;
 
 /// Redundant input ticks per packet (client resends the last K).
 pub const INPUT_REDUNDANCY: usize = 3;
@@ -43,6 +48,19 @@ pub trait GameLogic: Send {
     fn hitboxes(&self, frame: &Frame) -> Vec<(EntityId, Hitbox)>;
     /// Called after the frame was restored from a checkpoint (node failover).
     fn reset(&mut self) {}
+    /// Answers to tagged spawns since the last call.
+    fn take_spawned(&mut self) -> Vec<(ActorId, u32, Spawned)> {
+        Vec::new()
+    }
+    /// The first tag `actor` has not used; `None` when the logic takes no tagged spawns.
+    fn next_spawn_tag(&self, _actor: ActorId) -> Option<u32> {
+        None
+    }
+    /// The spawn tags remembered for each actor, oldest first: (actor, tag, entity).
+    fn spawn_tags(&self) -> Vec<(ActorId, u32, EntityId)> {
+        Vec::new()
+    }
+    fn restore_spawn_tags(&mut self, _tags: Vec<(ActorId, u32, EntityId)>) {}
 }
 
 /// Project-supplied logic in the WebAssembly sandbox (`net-game`).
@@ -145,7 +163,11 @@ impl GameLogic for ArenaLogic {
 /// body is either the plain form (`u8 n, n × (cid, encode_full)` applied to the avatar) or,
 /// when the first byte is `OPS_MARKER`, a list of ops: `u8 n_ops`, each `u8 op` followed by
 /// `OP_WRITE: u48 entity, u8 n, writes` · `OP_SPAWN: u8 n, writes` (new entity owned by the
-/// actor, at most `MAX_OWNED` per actor) · `OP_DESPAWN: u48 entity` · `OP_TRANSFER: u48 entity,
+/// actor, at most `MAX_OWNED` per actor) · `OP_SPAWN_TAGGED: u32 tag, u8 n, writes` (the same,
+/// and the room answers the actor with `0x14`: the entity, or that the op was refused or
+/// invalid, in which case nothing is created; a tag among the actor's last `SPAWN_TAGS` creates
+/// nothing and is answered again, so the op can be repeated; tag 0 is the avatar's and invalid
+/// here) · `OP_DESPAWN: u48 entity` · `OP_TRANSFER: u48 entity,
 /// u16 actor` (hand ownership to another joined actor) · `OP_SET_POLICY: u48 entity, u8 policy`
 /// (owner only) · `OP_REQUEST: u48 entity` (take an unowned entity, or any entity whose policy is
 /// `dynamic`; the cell arbitrates, the first request in a tick wins and the loser sees the owner
@@ -159,6 +181,10 @@ impl GameLogic for ArenaLogic {
 pub struct OwnerLogic {
     /// Ownership policy per entity; absent = `DestroyOnLeave`.
     pub policies: HashMap<EntityId, OwnerPolicy>,
+    /// The last `SPAWN_TAGS` tags each actor spawned under, oldest first, with their entities.
+    tags: HashMap<ActorId, VecDeque<(u32, EntityId)>>,
+    /// Spawn answers not yet handed to the room.
+    spawned: Vec<(ActorId, u32, Spawned)>,
 }
 pub const OPS_MARKER: u8 = 0xFF;
 pub const OP_WRITE: u8 = 0;
@@ -168,7 +194,21 @@ pub const OP_TRANSFER: u8 = 3;
 pub const OP_SET_POLICY: u8 = 4;
 pub const OP_REQUEST: u8 = 5;
 pub const OP_RELEASE: u8 = 6;
+pub const OP_SPAWN_TAGGED: u8 = 7;
 pub const MAX_OWNED: usize = 32;
+/// Tags of an actor the room remembers, so that a repeated spawn creates nothing.
+pub const SPAWN_TAGS: usize = 64;
+
+/// How a tagged spawn ended: the status byte of `0x14`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Spawned {
+    /// The entity the tag stands for, created now or by an earlier input with the same tag.
+    Created(EntityId),
+    /// The actor owns `MAX_OWNED` entities already, or the room has no room for another.
+    Refused,
+    /// The writes of the op do not follow the schema.
+    Invalid,
+}
 
 /// Per-entity ownership policy (`OP_SET_POLICY`): what the cell does when the owner leaves and who
 /// may take the entity over.
@@ -202,7 +242,9 @@ fn owns(frame: &mut Frame, id: EntityId, actor: ActorId) -> bool {
 }
 
 /// `u8 n, n × (cid, encode_full)` applied to `entity`; false on a malformed list.
-fn read_writes(frame: &mut Frame, entity: EntityId, reader: &mut BitReader) -> bool {
+/// Reads `u8 n, n × (cid, encode_full)` and writes the components to `entity`; without one the
+/// writes are only read past.
+fn read_writes(frame: &mut Frame, entity: Option<EntityId>, reader: &mut BitReader) -> bool {
     let cid_bits = frame.schema.component_id_bits();
     let Ok(count) = reader.read_bits(8) else {
         return false;
@@ -217,7 +259,7 @@ fn read_writes(frame: &mut Frame, entity: EntityId, reader: &mut BitReader) -> b
         let Ok(value) = ComponentValue::decode_full(&component, reader) else {
             return false;
         };
-        if let Some(ent) = frame.entity_mut(entity) {
+        if let Some(ent) = entity.and_then(|id| frame.entity_mut(id)) {
             ent.components.insert(component.id, value);
         }
     }
@@ -229,6 +271,8 @@ impl GameLogic for OwnerLogic {
         frame.spawn(Some(actor)).ok()
     }
     fn on_leave(&mut self, frame: &mut Frame, actor: ActorId, _avatar: Option<EntityId>) {
+        self.tags.remove(&actor);
+        self.spawned.retain(|(of, ..)| *of != actor);
         let owned: Vec<EntityId> = frame
             .entities()
             .filter(|e| e.owner == Some(actor))
@@ -271,7 +315,7 @@ impl GameLogic for OwnerLogic {
             let mut reader = BitReader::new(data);
             if data.first() != Some(&OPS_MARKER) {
                 if let Some(entity) = avatar {
-                    read_writes(frame, *entity, &mut reader);
+                    read_writes(frame, Some(*entity), &mut reader);
                 }
                 continue;
             }
@@ -289,7 +333,7 @@ impl GameLogic for OwnerLogic {
                             break;
                         };
                         let id = EntityId::from_u64(id);
-                        owns(frame, id, *actor) && read_writes(frame, id, &mut reader)
+                        owns(frame, id, *actor) && read_writes(frame, Some(id), &mut reader)
                     }
                     OP_SPAWN => {
                         let owned = frame.entities().filter(|e| e.owner == Some(*actor)).count();
@@ -297,8 +341,51 @@ impl GameLogic for OwnerLogic {
                             break;
                         }
                         match frame.spawn(Some(*actor)) {
-                            Ok(id) => read_writes(frame, id, &mut reader),
+                            Ok(id) => read_writes(frame, Some(id), &mut reader),
                             Err(_) => break,
+                        }
+                    }
+                    OP_SPAWN_TAGGED => {
+                        let Ok(tag) = reader.read_bits(32) else {
+                            break;
+                        };
+                        let tag = tag as u32;
+                        if tag == 0 {
+                            break;
+                        }
+                        let known = self
+                            .tags
+                            .get(actor)
+                            .and_then(|tags| tags.iter().find(|(seen, _)| *seen == tag))
+                            .map(|(_, entity)| *entity);
+                        if let Some(entity) = known {
+                            self.spawned.push((*actor, tag, Spawned::Created(entity)));
+                            // The entity has moved on since: its first writes are only read past.
+                            read_writes(frame, None, &mut reader)
+                        } else if !read_writes(frame, None, &mut reader.clone()) {
+                            self.spawned.push((*actor, tag, Spawned::Invalid));
+                            false
+                        } else {
+                            let owned =
+                                frame.entities().filter(|e| e.owner == Some(*actor)).count();
+                            let created = (owned < MAX_OWNED)
+                                .then(|| frame.spawn(Some(*actor)).ok())
+                                .flatten();
+                            match created {
+                                Some(entity) => {
+                                    let tags = self.tags.entry(*actor).or_default();
+                                    if tags.len() == SPAWN_TAGS {
+                                        tags.pop_front();
+                                    }
+                                    tags.push_back((tag, entity));
+                                    self.spawned.push((*actor, tag, Spawned::Created(entity)));
+                                    read_writes(frame, Some(entity), &mut reader)
+                                }
+                                None => {
+                                    self.spawned.push((*actor, tag, Spawned::Refused));
+                                    false
+                                }
+                            }
                         }
                     }
                     OP_DESPAWN => {
@@ -391,7 +478,46 @@ impl GameLogic for OwnerLogic {
     fn hitboxes(&self, _frame: &Frame) -> Vec<(EntityId, Hitbox)> {
         Vec::new()
     }
+    fn take_spawned(&mut self) -> Vec<(ActorId, u32, Spawned)> {
+        std::mem::take(&mut self.spawned)
+    }
+    fn next_spawn_tag(&self, actor: ActorId) -> Option<u32> {
+        let newest = self
+            .tags
+            .get(&actor)
+            .and_then(|tags| tags.iter().map(|(tag, _)| *tag).max());
+        Some(newest.map_or(1, |tag| tag.wrapping_add(1).max(1)))
+    }
+    fn spawn_tags(&self) -> Vec<(ActorId, u32, EntityId)> {
+        self.tags
+            .iter()
+            .flat_map(|(actor, tags)| tags.iter().map(|(tag, entity)| (*actor, *tag, *entity)))
+            .collect()
+    }
+    fn restore_spawn_tags(&mut self, tags: Vec<(ActorId, u32, EntityId)>) {
+        self.tags.clear();
+        for (actor, tag, entity) in tags {
+            self.tags.entry(actor).or_default().push_back((tag, entity));
+        }
+    }
 }
+
+/// `0x14`: the entity `tag` stands for (the avatar under tag 0), or why there is none.
+fn spawned_frame(tag: u32, spawned: Spawned, tick: u32) -> Bytes {
+    let (status, entity) = match spawned {
+        Spawned::Created(entity) => (0, entity.to_u64()),
+        Spawned::Refused => (1, 0),
+        Spawned::Invalid => (2, 0),
+    };
+    let mut frame = BytesMut::with_capacity(18);
+    frame.put_u8(KIND_SPAWNED);
+    frame.put_u32(tag);
+    frame.put_u8(status);
+    frame.put_u64(entity);
+    frame.put_u32(tick);
+    frame.freeze()
+}
+
 pub struct SyncRoom {
     pub frame: Frame,
     pub rep: Replicator,
@@ -409,6 +535,8 @@ pub struct SyncRoom {
     pub late_inputs: u64,
     /// Per actor since the last report: (min input margin in ticks, late input frames).
     margins: HashMap<ActorId, (i32, u16)>,
+    /// `0x14` frames not yet sent: an actor gets its own once its data path is up.
+    spawned: Vec<(ActorId, Bytes)>,
     /// Newest input taken from each actor: (tick it was sent for, tick it runs on). An input for
     /// a tick already simulated runs on the current tick instead, so its ops are not lost: once,
     /// in the order sent, one such input a tick; the repeats in later frames bring the rest.
@@ -514,6 +642,7 @@ impl SyncRoom {
             invalid_inputs: 0,
             late_inputs: 0,
             margins: HashMap::new(),
+            spawned: Vec::new(),
             taken: HashMap::new(),
             resyncs: 0,
             spectators: HashSet::new(),
@@ -539,7 +668,9 @@ impl SyncRoom {
                 .or_insert_with(|| ClientView::new(actor));
             return;
         }
-        if self.avatars.contains_key(&actor) {
+        if let Some(avatar) = self.avatars.get(&actor) {
+            // A second connection of the player took the slot over: it has to be told as well.
+            self.announce_avatar(actor, *avatar);
             return;
         }
         let existing = self
@@ -552,6 +683,7 @@ impl SyncRoom {
             None => self.logic.on_join(&mut self.frame, actor),
         };
         self.avatars.insert(actor, avatar);
+        self.announce_avatar(actor, avatar);
         let mut view = ClientView::new(actor);
         view.viewpoint = avatar;
         self.views.insert(actor, view);
@@ -592,8 +724,18 @@ impl SyncRoom {
         )
     }
 
+    fn announce_avatar(&mut self, actor: ActorId, avatar: Option<EntityId>) {
+        if let Some(entity) = avatar {
+            self.spawned
+                .retain(|(of, frame)| *of != actor || frame[1..5] != [0; 4]);
+            let frame = spawned_frame(0, Spawned::Created(entity), self.frame.tick.0);
+            self.spawned.push((actor, frame));
+        }
+    }
+
     pub fn on_leave(&mut self, actor: ActorId) {
         self.input_tokens.remove(&actor);
+        self.spawned.retain(|(of, _)| *of != actor);
         self.margins.remove(&actor);
         self.taken.remove(&actor);
         self.spectators.remove(&actor);
@@ -707,8 +849,12 @@ impl SyncRoom {
             let (data, fresh) = self.frame.input_for(*actor);
             inputs.push((*actor, self.avatars[actor], data, fresh));
         }
+        let ran = self.frame.tick.0;
         let logic = &mut self.logic;
         self.frame.advance(|f| logic.step(f, &inputs));
+        for (actor, tag, spawned) in self.logic.take_spawned() {
+            self.spawned.push((actor, spawned_frame(tag, spawned, ran)));
+        }
         let boxes = self.logic.hitboxes(&self.frame);
         self.history.record(self.frame.tick, boxes);
         let mut out = Vec::with_capacity(self.views.len());
@@ -780,9 +926,43 @@ impl SyncRoom {
             .collect()
     }
 
+    /// The `0x14` frames of the actors `connected` holds for, in the order they were raised; the
+    /// rest wait for their actor's data path.
+    pub fn take_spawned(&mut self, connected: impl Fn(ActorId) -> bool) -> Vec<(ActorId, Bytes)> {
+        let (ready, waiting) = std::mem::take(&mut self.spawned)
+            .into_iter()
+            .partition(|(actor, _)| connected(*actor));
+        self.spawned = waiting;
+        ready
+    }
+
     /// Checkpoint body: frame snapshot (tick, rng, entities). Views are rebuilt on restore.
     pub fn checkpoint(&self) -> Vec<u8> {
         self.frame.snapshot()
+    }
+
+    /// The first spawn tag `actor` has not used, for `joined`; `None` for a spectator and in a
+    /// room that takes no tagged spawns.
+    pub fn next_spawn_tag(&self, actor: ActorId) -> Option<u32> {
+        if self.spectators.contains(&actor) {
+            return None;
+        }
+        self.logic.next_spawn_tag(actor)
+    }
+
+    /// The spawn tags the room remembers, for the checkpoint: (actor, tag, entity).
+    pub fn spawn_tags(&self) -> Vec<(ActorId, u32, u64)> {
+        let tags = self.logic.spawn_tags().into_iter();
+        tags.map(|(actor, tag, entity)| (actor, tag, entity.to_u64()))
+            .collect()
+    }
+
+    pub fn restore_spawn_tags(&mut self, tags: Vec<(ActorId, u32, u64)>) {
+        let tags = tags.into_iter();
+        self.logic.restore_spawn_tags(
+            tags.map(|(actor, tag, entity)| (actor, tag, EntityId::from_u64(entity)))
+                .collect(),
+        );
     }
 
     /// Re-host from a checkpoint: avatars are re-linked by owner on the next on_join.
@@ -790,6 +970,7 @@ impl SyncRoom {
         self.frame.restore(body).map_err(|e| e.to_string())?;
         self.views.clear();
         self.avatars.clear();
+        self.spawned.clear();
         self.history = History::new(self.hz as usize * 2);
         self.logic.reset();
         Ok(())
@@ -1287,6 +1468,161 @@ mod tests {
             let _ = room.tick();
         }
         assert_eq!(room.frame.entities().count(), 4);
+    }
+
+    /// (tag, status, entity, tick) of a `0x14` frame.
+    fn spawn_answer(frame: &Bytes) -> (u32, u8, u64, u32) {
+        assert_eq!((frame.len(), frame[0]), (18, KIND_SPAWNED));
+        (
+            u32::from_be_bytes(frame[1..5].try_into().unwrap()),
+            frame[5],
+            u64::from_be_bytes(frame[6..14].try_into().unwrap()),
+            u32::from_be_bytes(frame[14..18].try_into().unwrap()),
+        )
+    }
+
+    #[test]
+    fn tagged_spawn_is_answered_and_a_repeat_creates_nothing() {
+        let src = "component Pose {\n x: f32 @range(-100, 100, 0.1)\n}";
+        let mut room = SyncRoom::new(Some(src), 30, 1).unwrap();
+        let alice = ActorId(1);
+        room.on_join(alice);
+        let pose_schema = room.frame.schema.component("Pose").unwrap().clone();
+        let cb = room.frame.schema.component_id_bits();
+        let pose = |x: f32| ComponentValue {
+            fields: vec![Value::F32(x)],
+        };
+        let op = |code: u8| {
+            let mut writer = net_wire::BitWriter::new();
+            writer.write_bits(OPS_MARKER as u64, 8);
+            writer.write_bits(1, 8);
+            writer.write_bits(code as u64, 8);
+            writer
+        };
+        let write_pose = |writer: &mut net_wire::BitWriter, x: f32| {
+            writer.write_bits(1, 8);
+            writer.write_bits(pose_schema.id as u64, cb);
+            pose(x).encode_full(&pose_schema, writer).unwrap();
+        };
+        let spawn = |tag: u32, x: f32| {
+            let mut writer = op(OP_SPAWN_TAGGED);
+            writer.write_bits(tag as u64, 32);
+            write_pose(&mut writer, x);
+            writer
+        };
+        // Runs one input with one op; returns the answers it raised.
+        let run = |room: &mut SyncRoom, writer: net_wire::BitWriter| {
+            let tick = room.frame.tick;
+            room.handle(alice, SyncRoom::encode_input(tick, &[writer.finish()]));
+            room.tick();
+            let answers = room.take_spawned(|_| true);
+            answers
+                .iter()
+                .map(|(to, frame)| {
+                    assert_eq!(*to, alice);
+                    spawn_answer(frame)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // The avatar is announced under tag 0 once the data path is there.
+        let avatar = room.avatars[&alice].unwrap();
+        assert!(room.take_spawned(|_| false).is_empty());
+        let announced = room.take_spawned(|_| true);
+        assert_eq!(spawn_answer(&announced[0].1), (0, 0, avatar.to_u64(), 0));
+        assert_eq!(room.next_spawn_tag(alice), Some(1));
+
+        let tick = room.frame.tick.0;
+        let answers = run(&mut room, spawn(7, 7.0));
+        let [(7, 0, entity, at)] = answers[..] else {
+            panic!("{answers:?}");
+        };
+        assert_eq!(at, tick);
+        let entity = EntityId::from_u64(entity);
+        assert_eq!(room.frame.entity_mut(entity).unwrap().owner, Some(alice));
+        assert_eq!(room.frame.get(entity, "Pose"), Some(&pose(7.0)));
+        assert_eq!(room.next_spawn_tag(alice), Some(8));
+
+        // The entity moves on; the same op again names it and leaves it alone.
+        let mut writer = op(OP_WRITE);
+        writer.write_bits(entity.to_u64(), 48);
+        write_pose(&mut writer, 9.0);
+        assert_eq!(run(&mut room, writer), []);
+        let answers = run(&mut room, spawn(7, 7.0));
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].0, 7);
+        assert_eq!((answers[0].1, answers[0].2), (0, entity.to_u64()));
+        assert_eq!(room.frame.get(entity, "Pose"), Some(&pose(9.0)));
+        assert_eq!(room.frame.entities().count(), 2);
+
+        // Tag 0 is the avatar's; writes cut short are answered as invalid. Neither creates.
+        assert_eq!(run(&mut room, spawn(0, 1.0)), []);
+        let mut writer = op(OP_SPAWN_TAGGED);
+        writer.write_bits(8, 32);
+        writer.write_bits(1, 8);
+        let tick = room.frame.tick.0;
+        assert_eq!(run(&mut room, writer), [(8, 2, 0, tick)]);
+        assert_eq!(room.frame.entities().count(), 2);
+        assert_eq!(room.next_spawn_tag(alice), Some(8));
+
+        // Past the limit of owned entities the spawn is refused, and may be sent again.
+        for tag in 10..40 {
+            assert_eq!(run(&mut room, spawn(tag, 0.0))[0].1, 0, "tag {tag}");
+        }
+        assert_eq!(room.frame.entities().count(), MAX_OWNED);
+        let tick = room.frame.tick.0;
+        assert_eq!(run(&mut room, spawn(40, 0.0)), [(40, 1, 0, tick)]);
+        let mut writer = op(OP_DESPAWN);
+        writer.write_bits(entity.to_u64(), 48);
+        assert_eq!(run(&mut room, writer), []);
+        assert_eq!(run(&mut room, spawn(40, 0.0))[0].1, 0);
+        assert_eq!(room.frame.entities().count(), MAX_OWNED);
+    }
+
+    #[test]
+    fn spawn_tags_are_remembered_past_the_entity_up_to_a_number() {
+        let src = "component Pose {\n x: f32 @range(-100, 100, 0.1)\n}";
+        let mut room = SyncRoom::new(Some(src), 30, 1).unwrap();
+        let alice = ActorId(1);
+        room.on_join(alice);
+        let op = |code: u8, tail: &[(u64, u32)]| {
+            let mut writer = net_wire::BitWriter::new();
+            writer.write_bits(OPS_MARKER as u64, 8);
+            writer.write_bits(1, 8);
+            writer.write_bits(code as u64, 8);
+            for (value, bits) in tail {
+                writer.write_bits(*value, *bits);
+            }
+            writer.finish()
+        };
+        // Spawns under `tag` and returns the entity the room answers with.
+        let spawn = |room: &mut SyncRoom, tag: u32| {
+            let tick = room.frame.tick;
+            let body = op(OP_SPAWN_TAGGED, &[(tag as u64, 32), (0, 8)]);
+            room.handle(alice, SyncRoom::encode_input(tick, &[body]));
+            room.tick();
+            let answers = room.take_spawned(|_| true);
+            let (answered, status, entity, _) = spawn_answer(&answers.last().unwrap().1);
+            assert_eq!((answered, status), (tag, 0));
+            entity
+        };
+        let mut first = Vec::new();
+        for tag in 1..=SPAWN_TAGS as u32 + 1 {
+            let entity = spawn(&mut room, tag);
+            first.push(entity);
+            let tick = room.frame.tick;
+            let body = op(OP_DESPAWN, &[(entity, 48)]);
+            room.handle(alice, SyncRoom::encode_input(tick, &[body]));
+            room.tick();
+        }
+        assert_eq!(room.frame.entities().count(), 1);
+
+        // Tag 2 is among the last 64 and still stands for its entity, despawned since.
+        assert_eq!(spawn(&mut room, 2), first[1]);
+        assert_eq!(room.frame.entities().count(), 1);
+        // Tag 1 has been pushed out: the room takes it for a new spawn.
+        spawn(&mut room, 1);
+        assert_eq!(room.frame.entities().count(), 2);
     }
 
     #[test]

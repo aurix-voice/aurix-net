@@ -59,6 +59,8 @@ class P
         oa.OnData += (ch, t, p) => { var ack = wa.Receive(p); if (ack != null) oa.SendData(Channel.Unreliable, ack); };
         ob.OnData += (ch, t, p) => { var ack = wb.Receive(p); if (ack != null) ob.SendData(Channel.Unreliable, ack); };
         int spawns = 0, changes = 0; wb.OnSpawn += e => spawns++; wb.OnChange += e => changes++;
+        var pending = new PendingSpawns(); SpawnAnswer? made = null;
+        oa.OnData += (ch, t, p) => { if (SyncWorld.ReadSpawnAnswer(p) is SpawnAnswer answer && pending.Take(answer) && answer.Tag != 0) made = answer; };
         int actA = await oa.JoinOrCreateAsync("cs-owner-" + room, "sync", 8, "{\"schema\":\"" + idl + "\",\"tick_hz\":60}");
         var hash = Aurix.Net.Managed.ManagedClientTestHooks.Str(oa.JoinedJson, "schema_hash");
         await ob.JoinAsync("cs-owner-" + room, hash);
@@ -77,6 +79,20 @@ class P
         var sp = seen?.Get(tr)?.Fields[0]; var sq = seen?.Get(tr)?.Fields[1]; var st = seen?.Get(tag);
         Console.WriteLine($"schema sync: entities on B={wb.Entities.Count} spawns={spawns} changes={changes} gaps={wb.Gaps} A.pos=({sp?.X:F2},{sp?.Y:F2},{sp?.Z:F2}) rot.y={sq?.Y:F3} tag={st?.Fields[0].S}/{st?.Fields[1].U}");
         bool schemaOk = seen != null && wb.Entities.Count == 2 && Math.Abs((sp?.X ?? 0) - 5f) < 0.02 && Math.Abs((sp?.Z ?? 0) + 2f) < 0.02 && Math.Abs((sq?.Y ?? 0) - 0.7071f) < 0.01 && st?.Fields[0].S == "alice" && st?.Fields[1].U == 77;
+        // A spawns a second entity under a tag: the room answers with the entity it made and has named A's avatar
+        uint SendSpawn(byte[] ops) { oa.SendData(Channel.Unreliable, SyncWorld.EncodeInput(wa.ServerTick + 2, new[] { ops })); return wa.ServerTick + 2; }
+        uint spawnTag = pending.NextTag(oa.NextSpawnTag ?? 0);
+        var spawnOps = wa.EncodeOps(new[] { SyncOp.SpawnTaggedEntity(spawnTag) });
+        pending.Sent(spawnTag, spawnOps, SendSpawn(spawnOps));
+        until = DateTime.UtcNow.AddSeconds(3);
+        while ((made == null || !wa.Entities.ContainsKey(made.Value.Entity)) && DateTime.UtcNow < until)
+        {
+            pending.Repeat(wa.ServerTick, 30, SendSpawn);
+            oa.Flush(); ob.Flush(); oa.Poll(); ob.Poll(); await Task.Delay(16);
+        }
+        bool spawnOk = oa.NextSpawnTag != null && made?.Tag == spawnTag && made?.Status == SpawnStatus.Created && oa.Avatar != null && made?.Entity != oa.Avatar
+            && wa.Entities.TryGetValue(made.Value.Entity, out var spawned) && spawned.Owner == actA && wa.Entities.ContainsKey(oa.Avatar.Value);
+        Console.WriteLine($"tagged spawn: tag={spawnTag} status={made?.Status} entity={made?.Entity} avatar={oa.Avatar} -> {(spawnOk ? "ok" : "FAIL")}");
         await oa.LeaveAsync(); await ob.LeaveAsync(); oa.Dispose(); ob.Dispose();
         // lockstep: A (master) and B confirm identical input streams, C joins late and catches up contiguously
         var lsRoom = "cs-ls-" + room; var clients = new List<ManagedClient>(); var ls = new List<LockstepClient>(); var journals = new List<List<string>>(); var seenTicks = new List<HashSet<uint>>();
@@ -204,7 +220,7 @@ class P
             Console.WriteLine($"slow link, NetRunner: owner moves that reached the room={reached.Count}/{moves}");
             runnerOk = moves > 0 && reached.Count >= moves * 3 / 4; runner.Client.Dispose(); watcher.Dispose();
         }
-        bool ok = lsOk && schemaOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && rejoined && runnerOk;
+        bool ok = lsOk && schemaOk && spawnOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && rejoined && runnerOk;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");
         return ok ? 0 : 1;
     }

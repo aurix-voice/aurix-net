@@ -92,9 +92,9 @@ test("owner ops encode as the node parses them (0xFF marker, u48 entity, u16 act
 
 const emptyDelta = (tick) => Uint8Array.of(0x11, 0, 0, tick >>> 8, tick & 255, 0, 0, 0, 0, 0, 0, 0, 0);
 // a session over a client that records the input frames sent through it
-function recordedSession() {
+function recordedSession(joined) {
   const frames = []; const handlers = {};
-  const client = { rttMs: 0, on(name, handler) { handlers[name] = handler; }, ping() {}, sendData(channel, payload) { if (payload[0] === 0x10) frames.push({ first: new DataView(payload.buffer, payload.byteOffset).getUint32(1), count: payload[5] }); } };
+  const client = { joined, rttMs: 0, on(name, handler) { handlers[name] = handler; }, ping() {}, sendData(channel, payload) { if (payload[0] === 0x10) frames.push({ first: new DataView(payload.buffer, payload.byteOffset).getUint32(1), count: payload[5] }); } };
   const session = new SyncSession(client, "component T {\n  x: f32\n}\n", 60, 2);
   return { session, frames, delta: (tick) => handlers.data(0, 0, emptyDelta(tick)), data: (payload) => handlers.data(0, 0, payload) };
 }
@@ -102,7 +102,7 @@ function recordedSession() {
 test("an input is resent only under the tick it was stamped with", () => {
   const { session, frames, delta } = recordedSession();
   delta(10);
-  assert.equal(session.spawn(), 12);
+  assert.equal(session.sendOps([{ op: "spawn", writes: [] }]), 12);
   assert.equal(session.sendInput(new Uint8Array([1])), 13);
   delta(14);
   assert.equal(session.sendInput(new Uint8Array([2])), 16);
@@ -112,11 +112,45 @@ test("an input is resent only under the tick it was stamped with", () => {
 
 test("an op sent before the first delta waits for the room's tick", () => {
   const { session, frames, delta } = recordedSession();
-  session.spawn();
+  session.sendOps([{ op: "spawn", writes: [] }]);
   session.sendInput(new Uint8Array([1]));
   assert.deepEqual(frames, []);
   delta(10);
   assert.deepEqual(frames, [{ first: 12, count: 1 }, { first: 12, count: 2 }]);
+});
+
+const spawnAnswer = (tag, status, entity, tick) => {
+  const frame = new Uint8Array(18); const view = new DataView(frame.buffer);
+  view.setUint8(0, 0x14); view.setUint32(1, tag); view.setUint8(5, status); view.setBigUint64(6, BigInt(entity)); view.setUint32(14, tick);
+  return frame;
+};
+
+test("a spawn is tagged, answered once and sent again while the room is silent", () => {
+  assert.throws(() => recordedSession({}).session.spawn(), /does not answer tagged spawns/);
+  const { session, frames, delta, data } = recordedSession({ next_spawn_tag: 5 });
+  const answers = []; session.onSpawnAnswer = (answer) => answers.push(answer);
+  delta(10);
+  assert.deepEqual([session.spawn(), session.spawn()], [5, 6]);
+  assert.deepEqual(session.world.encodeOps([{ op: "spawn_tagged", tag: 0x01020304, writes: [] }]), Uint8Array.of(0xff, 1, 7, 1, 2, 3, 4, 0));
+
+  data(spawnAnswer(5, 0, 0x010203040506, 12));
+  data(spawnAnswer(5, 0, 0x010203040506, 12));
+  assert.deepEqual(answers, [{ tag: 5, status: "created", entity: 0x010203040506, tick: 12 }]);
+  data(spawnAnswer(0, 0, 9, 3));
+  assert.deepEqual(answers[1], { tag: 0, status: "created", entity: 9, tick: 3 });
+
+  // tag 6 went out for tick 13: the room is half a second past it at tick 44
+  const sent = frames.length;
+  delta(43);
+  assert.equal(frames.length, sent);
+  delta(44);
+  assert.equal(frames.length, sent + 1);
+  delta(45);
+  assert.equal(frames.length, sent + 1);
+  data(spawnAnswer(6, 1, 0, 46));
+  assert.deepEqual(answers[2], { tag: 6, status: "refused", entity: 0, tick: 46 });
+  delta(120);
+  assert.equal(frames.length, sent + 1);
 });
 
 test("a late margin report from the room moves the next inputs further ahead", () => {

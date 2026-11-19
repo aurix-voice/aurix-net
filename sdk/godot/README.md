@@ -51,7 +51,7 @@ world.change.connect(func(entity, _owner): var p: Vector3 = world.get_field(enti
 func _process(dt):
     world.advance(dt)                     # render tick, 2 ticks behind the server
     world.begin_write("Transform"); world.write_field("pos", position); world.end_write(); world.send_writes(client)
-    # more entities you own: queue writes, then world.spawn_entity(client); world.write_entity(client, id); world.despawn_entity(client, id); world.transfer_entity(client, id, other_actor)
+    # more entities you own: queue writes, then var tag := world.spawn_entity(client) (the entity comes in spawn_answer); world.write_entity(client, id); world.despawn_entity(client, id); world.transfer_entity(client, id, other_actor)
 ```
 `send_input(client, bytes)` is the raw input for rooms with server-side `logic`. The room takes one
 input per tick, so `send_writes` and `send_input` can be called every frame: the newest of a tick is

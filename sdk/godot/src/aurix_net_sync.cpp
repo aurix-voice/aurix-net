@@ -35,6 +35,7 @@ void AurixNetSync::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("spawn", PropertyInfo(Variant::INT, "entity"), PropertyInfo(Variant::INT, "owner")));
 	ADD_SIGNAL(MethodInfo("change", PropertyInfo(Variant::INT, "entity"), PropertyInfo(Variant::INT, "owner")));
 	ADD_SIGNAL(MethodInfo("despawn", PropertyInfo(Variant::INT, "entity")));
+	ADD_SIGNAL(MethodInfo("spawn_answer", PropertyInfo(Variant::INT, "tag"), PropertyInfo(Variant::INT, "status"), PropertyInfo(Variant::INT, "entity"), PropertyInfo(Variant::INT, "tick")));
 }
 
 #define AURIX_TRY(fail, ...)                   \
@@ -73,6 +74,9 @@ bool AurixNetSync::receive(AurixNetClient *client, const PackedByteArray &payloa
 			default:
 				break;
 		}
+	}
+	for (auto answer = sync_->pollSpawn(); answer; answer = sync_->pollSpawn()) {
+		emit_signal("spawn_answer", (int64_t)answer->tag, (int)answer->status, (int64_t)answer->entity, (int64_t)answer->tick);
 	}
 	return true;
 }

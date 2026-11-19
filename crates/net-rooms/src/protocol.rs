@@ -282,6 +282,9 @@ pub enum ServerMsg {
         tick: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seed: Option<u64>,
+        /// Sync rooms that take tagged spawns only: the first spawn tag the player has not used.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_spawn_tag: Option<u32>,
     },
     Left {
         reason: String,

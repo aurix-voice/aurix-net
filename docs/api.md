@@ -108,7 +108,7 @@ JSON messages, `"t"` is the type (snake_case). Client → server: `auth{grant}`,
 `get_rooms{expr?, limit?}` (one-shot filtered room list, SQL-like `expr` on lobby props as in `join_random`; same one-per-second budget), `rpc{id, name, body}` (call your backend through the node, see Webhooks; body ≤ 8 KiB, 5 per second per session), `ping{ts}`.
 
 Server → client: `hello{session, version, region}`, `authed{player_id, name}`,
-`joined{room, name, mode, actor, master, max_players, props, players, data, cached, schema_hash?, tick_hz?}`,
+`joined{room, name, mode, actor, master, max_players, props, players, data, cached, schema_hash?, tick_hz?, next_spawn_tag?}`,
 `left{reason, room?}`, `player_joined{player}`, `player_left{actor, reason}`, `room_props`,
 `player_props`, `event{code, from, data}` (control fallback), `master_changed{actor}`,
 `lobby_rooms{rooms}`, `lobby_update{room, removed}`, `stats{rooms, players, lobbies[{lobby, rooms, players}]}`,
@@ -144,7 +144,8 @@ same as raw QUIC: the ticket datagram comes first, then packets flow as HTTP/3 d
 through the same link/channels. Browsers pin the certificate via `serverCertificateHashes`
 (= `cert_sha256`), so the self-signed dev certificate works; it is valid 13 days and
 regenerated on every start. The WebSocket tunnel remains the fallback. Manual browser check:
-`sdk/web/test/browser.html` (two clients, echo over WebTransport).
+`sdk/web/test/browser.html` (two clients, echo over WebTransport) and
+`sdk/web/test/browser-sync.html` (a sync room: avatars and a tagged spawn).
 
 ## Metrics (`GET /metrics`, Prometheus)
 

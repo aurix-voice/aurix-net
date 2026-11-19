@@ -82,6 +82,47 @@ public class ManagedCoreTests
     }
 
     [Test]
+    public void TaggedSpawns()
+    {
+        var world = new SyncWorld(Schema.Parse("component T {\n  x: f32\n}\n"));
+        Assert.That(Hex(world.EncodeOps(new[] { SyncOp.SpawnTaggedEntity(0x01020304) })), Is.EqualTo("ff010701020304" + "00"), "op");
+
+        byte[] Answer(uint tag, byte status, ulong entity, uint tick)
+        {
+            var frame = new List<byte> { 0x14 };
+            frame.AddRange(BitConverter.GetBytes(tag).Reverse()); frame.Add(status);
+            frame.AddRange(BitConverter.GetBytes(entity).Reverse()); frame.AddRange(BitConverter.GetBytes(tick).Reverse());
+            return frame.ToArray();
+        }
+        var created = SyncWorld.ReadSpawnAnswer(Answer(5, 0, 0x0102030405060708, 77)).Value;
+        Assert.That((created.Tag, created.Status, created.Entity, created.Tick), Is.EqualTo((5u, SpawnStatus.Created, 0x0102030405060708ul, 77u)));
+        Assert.That(SyncWorld.ReadSpawnAnswer(Answer(6, 1, 0, 78)).Value.Status, Is.EqualTo(SpawnStatus.Refused));
+        Assert.That(SyncWorld.ReadSpawnAnswer(Answer(6, 2, 0, 78)).Value.Status, Is.EqualTo(SpawnStatus.Invalid));
+        Assert.That(SyncWorld.ReadSpawnAnswer(Answer(5, 0, 1, 1).Take(17).ToArray()), Is.Null, "short");
+        Assert.That(SyncWorld.ReadSpawnAnswer(SyncWorld.EncodeAck(1, 1)), Is.Null, "another frame");
+
+        var spawns = new PendingSpawns();
+        Assert.That(new[] { spawns.NextTag(5), spawns.NextTag(5), spawns.NextTag(9) }, Is.EqualTo(new uint[] { 5, 6, 9 }));
+        spawns.Sent(5, new byte[] { 5 }, 12);
+        spawns.Sent(6, new byte[] { 6 }, 13);
+        Assert.That(spawns.Take(created), Is.True);
+        Assert.That(spawns.Take(created), Is.False, "the answer to a repeat is reported again");
+        Assert.That(spawns.Take(new SpawnAnswer { Tag = 0, Entity = 9 }), Is.True, "the avatar");
+
+        // tag 6 went out for tick 13: the room is half a second past it at tick 44
+        var repeated = new List<byte[]>();
+        uint Send(byte[] body) { repeated.Add(body); return 46; }
+        spawns.Repeat(43, 30, Send);
+        Assert.That(repeated, Is.Empty);
+        spawns.Repeat(44, 30, Send);
+        spawns.Repeat(45, 30, Send);
+        Assert.That(repeated, Is.EqualTo(new[] { new byte[] { 6 } }));
+        Assert.That(spawns.Take(new SpawnAnswer { Tag = 6, Status = SpawnStatus.Refused }), Is.True);
+        spawns.Repeat(200, 30, Send);
+        Assert.That(repeated.Count, Is.EqualTo(1));
+    }
+
+    [Test]
     public void LockstepTests()
     {
         var sent = new List<(Channel, byte[])>();

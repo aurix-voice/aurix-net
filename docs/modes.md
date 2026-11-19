@@ -107,6 +107,23 @@ actor in the room; the new owner shows up in the next delta) — so a client can
 objects (projectiles, pickups, vehicles) and pass them around; a leaving actor's entities are
 despawned. With `logic`, the WASM module decides what inputs mean (below).
 
+A spawn the client wants to find again is sent as a tagged spawn (op 7: `u32 tag, u8 n,
+writes`); the tag is a number the client picks, counting up and never 0. The room answers the
+sender alone with `0x14` (`u32 tag, u8 status, u64 entity, u32 tick`, big-endian, 18 bytes, over
+`ReliableOrdered`) in the tick the op ran: status 0 with the entity as the deltas name it and
+the tick it was created on, 1 when the spawn was refused (32 owned entities, or no room for
+another), 2 when the writes do not follow the schema. 1 and 2 create nothing and carry entity 0.
+Deltas are unreliable, so the entity may show up before or after its answer. The room keeps the
+last 64 tags of each actor while the actor is in the room: the same tag again creates nothing
+and is answered with the same entity, so a client that got no answer sends the op again in a
+new input. The tags move with the room to another node and stay when a second connection of the
+player takes the slot over; they go when the actor leaves or drops off, together with the
+entities despawned then. `joined.next_spawn_tag` is the first tag the player has not used: a
+client counts from there, and a room whose `joined` has no such field takes no tagged spawns
+(the built-in arena, a `logic` module, an older node). Every sync room also sends each player
+`0x14` with tag 0 for its avatar on entering. An SDK that hands raw data frames to the
+application hands these over as well.
+
 Deltas go over `UnreliableSequenced`; the client acks every delta (`0x13`: last tick + 32-bit
 history, `net_replication::AckTracker`). A delta the client never got has its entities forgotten
 on the server, so the next delta carries them in full instead of a diff against state the client
@@ -287,6 +304,7 @@ inputs are lost; sync rooms checkpoint every 2 s. A `room.rehosted` webhook fire
 | `0x11` Delta | server -> client | sync |
 | `0x12` Resync | client -> server | sync |
 | `0x13` Ack (last delta tick + 32-bit history) | client -> server | sync |
+| `0x14` Spawned (tag, status, entity, tick; tag 0 is the avatar) | server -> the client that spawned (reliable) | sync |
 | `0x20` InputBundle | server -> client | lockstep |
 | `0x21` Hash | client -> server | lockstep |
 | `0x22` Checkpoint | master -> server (reliable) | lockstep |

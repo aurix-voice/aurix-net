@@ -56,6 +56,13 @@ namespace Aurix.Net.Managed
         /// <summary>Lockstep rooms: the seed every client and the node start the game from.</summary>
         public ulong? Seed { get; private set; }
 
+        /// <summary>Sync rooms that answer tagged spawns: the first tag the room has not seen from this actor.</summary>
+        public uint? NextSpawnTag { get; private set; }
+
+        /// <summary>Sync rooms: the entity the room made for this client as its avatar, once the room has
+        /// announced it. Kept from the join on, whether or not anything listens to the data.</summary>
+        public ulong? Avatar { get; private set; }
+
         /// <summary>Events the room kept for late joiners, as received by the last join; also raised through OnEvent.</summary>
         public IReadOnlyList<EventFrame> Cached { get; private set; } = Array.Empty<EventFrame>();
 
@@ -289,6 +296,8 @@ namespace Aurix.Net.Managed
             Actor = (int)Json.Num(joined, "actor");
             RoomMode = Json.Str(joined, "mode");
             Seed = Json.ULong(joined, "seed");
+            NextSpawnTag = (uint?)Json.ULong(joined, "next_spawn_tag");
+            Avatar = null;
             Cached = Json.CachedEvents(joined);
             // Every join gets its own data path, and the node starts a fresh link on it.
             _link = new Link();
@@ -471,6 +480,14 @@ namespace Aurix.Net.Managed
                                 }
                                 continue;
                             }
+                            if (
+                                SyncWorld.ReadSpawnAnswer(received.Payload) is SpawnAnswer answer
+                                && answer.Tag == 0
+                                && answer.Status == SpawnStatus.Created
+                            )
+                            {
+                                Avatar = answer.Entity;
+                            }
                             OnData?.Invoke(received.Channel, received.Tick, received.Payload);
                             byte kind = (byte)(received.Payload[0] & 0xf0);
                             if (RoomMode == "relay" || (kind != 0x10 && kind != 0x20))
@@ -503,6 +520,8 @@ namespace Aurix.Net.Managed
             JoinedJson = null;
             RoomMode = null;
             Seed = null;
+            NextSpawnTag = null;
+            Avatar = null;
         }
 
         public Task LeaveAsync()
