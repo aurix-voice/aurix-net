@@ -296,3 +296,341 @@ async fn unsequenced_event_goes_sequenced_to_a_path_whose_client_did_not_announc
     let _ = tokio::time::timeout(Duration::from_secs(5), all).await;
     assert_eq!(got, [Channel::UnreliableSequenced; 5]);
 }
+
+fn ticket(reply: &Value) -> Vec<u8> {
+    base64::engine::general_purpose::STANDARD
+        .decode(reply["data"]["ticket"].as_str().expect("ticket"))
+        .expect("base64")
+}
+
+/// A datagram with a frame no room takes.
+fn refused_frame(link: &mut Link) -> Bytes {
+    packet(link, &[0xff])
+}
+
+fn errors(heard: &[Value]) -> Vec<(&str, &str)> {
+    heard
+        .iter()
+        .filter(|message| message["t"] == "error")
+        .map(|message| {
+            (
+                message["code"].as_str().expect("code"),
+                message["message"].as_str().expect("message"),
+            )
+        })
+        .collect()
+}
+
+const REFUSED: (&str, &str) = ("invalid_request", "invalid request: frame too short");
+
+#[tokio::test]
+async fn refused_data_frame_is_answered_over_quic() {
+    let node = Node::start().await;
+    let project = node.project("datapath").await;
+    let mut ann = project.player("ann").await;
+    let reply = ann.call(json!({"t": "create", "name": "room"})).await;
+    joined(&reply);
+    let path = connect(&reply).await;
+    path.conn.send_datagram(path.ticket.clone()).expect("send");
+    let mut link = Link::new(Instant::now(), IDLE);
+    assert!(path.opened(&mut link).await, "the path did not open");
+
+    path.conn
+        .send_datagram(refused_frame(&mut link))
+        .expect("send");
+    let heard = ann.drain(Duration::from_millis(500)).await;
+    assert_eq!(errors(&heard), [REFUSED]);
+}
+
+#[tokio::test]
+async fn refused_data_frame_is_answered_over_webtransport() {
+    let node = Node::start().await;
+    let project = node.project("datapath").await;
+    let mut ann = project.player("ann").await;
+    let reply = ann.call(json!({"t": "create", "name": "room"})).await;
+    joined(&reply);
+    let data = &reply["data"];
+    let endpoint = net_transport::webtransport::client_endpoint(
+        data["cert_sha256"].as_str().expect("cert_sha256"),
+    )
+    .expect("endpoint");
+    let conn = endpoint
+        .connect(data["webtransport_url"].as_str().expect("webtransport_url"))
+        .await
+        .expect("webtransport session");
+    conn.send_datagram(ticket(&reply)).expect("send");
+    let mut link = Link::new(Instant::now(), IDLE);
+    let opened = async {
+        loop {
+            let datagram = conn.receive_datagram().await.expect("the path closed");
+            let messages = link.receive(datagram.payload(), Instant::now());
+            if messages.iter().any(|m| m.payload.is_empty()) {
+                return;
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(3), opened)
+        .await
+        .expect("the path did not open");
+
+    conn.send_datagram(refused_frame(&mut link)).expect("send");
+    let heard = ann.drain(Duration::from_millis(500)).await;
+    assert_eq!(errors(&heard), [REFUSED]);
+}
+
+#[tokio::test]
+async fn refused_data_frame_is_answered_over_the_tunnel() {
+    let node = Node::start().await;
+    let project = node.project("datapath").await;
+    let mut ann = project.player("ann").await;
+    let reply = ann.call(json!({"t": "create", "name": "room"})).await;
+    joined(&reply);
+    ann.send_binary(ticket(&reply)).await;
+    let mut link = Link::new(Instant::now(), IDLE);
+
+    ann.send_binary(refused_frame(&mut link).to_vec()).await;
+    let heard = ann.drain(Duration::from_millis(500)).await;
+    assert_eq!(errors(&heard), [REFUSED]);
+}
+
+#[tokio::test]
+async fn frames_on_their_way_when_a_player_is_kicked_are_not_answered() {
+    let node = Node::start().await;
+    let project = node.project("datapath").await;
+    let mut ann = project.player("ann").await;
+    joined(&ann.call(json!({"t": "create", "name": "room"})).await);
+    let mut bob = project.player("bob").await;
+    let reply = bob.call(json!({"t": "join", "name": "room"})).await;
+    let actor = joined(&reply);
+    bob.send_binary(ticket(&reply)).await;
+    let mut link = Link::new(Instant::now(), IDLE);
+
+    ann.send(json!({"t": "kick", "actor": actor})).await;
+    bob.until("left").await;
+    // what bob sent before it read `left`: frames of its tunnel and the ticket once more
+    for _ in 0..8 {
+        bob.send_binary(refused_frame(&mut link).to_vec()).await;
+    }
+    bob.send_binary(ticket(&reply)).await;
+    let heard = bob.drain(Duration::from_millis(500)).await;
+    assert_eq!(errors(&heard), []);
+
+    // the next room and its tunnel are not affected
+    let reply = bob.call(json!({"t": "create", "name": "other"})).await;
+    joined(&reply);
+    bob.send_binary(ticket(&reply)).await;
+    let mut link = Link::new(Instant::now(), IDLE);
+    bob.send_binary(refused_frame(&mut link).to_vec()).await;
+    let heard = bob.drain(Duration::from_millis(500)).await;
+    assert_eq!(errors(&heard), [REFUSED]);
+}
+
+#[tokio::test]
+async fn tunnel_that_was_given_up_is_answered_once() {
+    let node = Node::start_with(&[("NET__TRANSPORT__IDLE_TIMEOUT_MS", "1000")]).await;
+    let project = node.project("datapath").await;
+    let mut ann = project.player("ann").await;
+    let reply = ann.call(json!({"t": "create", "name": "room"})).await;
+    joined(&reply);
+    ann.send_binary(ticket(&reply)).await;
+    let mut link = Link::new(Instant::now(), IDLE);
+    let mut bob = project.player("bob").await;
+    joined(&bob.call(json!({"t": "join", "name": "room"})).await);
+    // ann acknowledges nothing, so the node gives her tunnel up: bob's events then reach her
+    // over the control channel
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(Instant::now() < deadline, "the tunnel was not given up");
+        bob.send(json!({"t": "event", "code": 1, "data": "AQI=", "target": {"kind": "others"}}))
+            .await;
+        let heard = ann.drain(Duration::from_millis(200)).await;
+        if heard.iter().any(|message| message["t"] == "event") {
+            break;
+        }
+    }
+
+    let frame = refused_frame(&mut link).to_vec();
+    for _ in 0..50 {
+        ann.send_binary(frame.clone()).await;
+    }
+    let heard = ann.drain(Duration::from_millis(500)).await;
+    assert_eq!(
+        errors(&heard),
+        [("transport", "transport: data path closed: link dead")]
+    );
+}
+
+#[tokio::test]
+async fn foreign_ticket_and_a_second_session_are_still_refused() {
+    let node = Node::start().await;
+    let project = node.project("datapath").await;
+    let mut ann = project.player("ann").await;
+    let reply = ann.call(json!({"t": "create", "name": "room"})).await;
+    joined(&reply);
+    let mut bob = project.player("bob").await;
+    joined(&bob.call(json!({"t": "join", "name": "room"})).await);
+
+    let mismatch = (
+        "unauthorized",
+        "unauthorized: ticket does not match session",
+    );
+    bob.send_binary(ticket(&reply)).await;
+    bob.send_binary(ticket(&reply)).await;
+    let heard = bob.drain(Duration::from_millis(500)).await;
+    assert_eq!(errors(&heard), [mismatch, mismatch]);
+
+    // what is no ticket at all is answered once
+    bob.send_binary(vec![7; 40]).await;
+    bob.send_binary(vec![7; 40]).await;
+    let heard = bob.drain(Duration::from_millis(500)).await;
+    assert_eq!(
+        errors(&heard),
+        [("unauthorized", "unauthorized: bad data ticket")]
+    );
+
+    ann.send_binary(ticket(&reply)).await;
+    let mut link = Link::new(Instant::now(), IDLE);
+    let mut second = project.player("ann").await;
+    joined(&second.call(json!({"t": "join", "name": "room"})).await);
+    ann.until("left").await;
+    ann.send_binary(refused_frame(&mut link).to_vec()).await;
+    let heard = ann.drain(Duration::from_millis(500)).await;
+    assert_eq!(errors(&heard), [("conflict", "conflict: session_replaced")]);
+}
+
+#[tokio::test]
+async fn frames_of_a_kicked_player_are_not_answered_over_quic() {
+    let node = Node::start().await;
+    let project = node.project("datapath").await;
+    let mut ann = project.player("ann").await;
+    joined(&ann.call(json!({"t": "create", "name": "room"})).await);
+    let mut bob = project.player("bob").await;
+    let reply = bob.call(json!({"t": "join", "name": "room"})).await;
+    let actor = joined(&reply);
+    let path = connect(&reply).await;
+    path.conn.send_datagram(path.ticket.clone()).expect("send");
+    let mut link = Link::new(Instant::now(), IDLE);
+    assert!(path.opened(&mut link).await, "the path did not open");
+
+    ann.send(json!({"t": "kick", "actor": actor})).await;
+    bob.until("left").await;
+    for _ in 0..8 {
+        // the node closes the connection when it reads the first of them
+        let _ = path.conn.send_datagram(refused_frame(&mut link));
+    }
+    let heard = bob.drain(Duration::from_millis(500)).await;
+    assert_eq!(errors(&heard), []);
+}
+
+#[tokio::test]
+async fn frames_of_a_kicked_player_are_not_answered_over_webtransport() {
+    let node = Node::start().await;
+    let project = node.project("datapath").await;
+    let mut ann = project.player("ann").await;
+    joined(&ann.call(json!({"t": "create", "name": "room"})).await);
+    let mut bob = project.player("bob").await;
+    let reply = bob.call(json!({"t": "join", "name": "room"})).await;
+    let actor = joined(&reply);
+    let data = &reply["data"];
+    let endpoint = net_transport::webtransport::client_endpoint(
+        data["cert_sha256"].as_str().expect("cert_sha256"),
+    )
+    .expect("endpoint");
+    let conn = endpoint
+        .connect(data["webtransport_url"].as_str().expect("webtransport_url"))
+        .await
+        .expect("webtransport session");
+    conn.send_datagram(ticket(&reply)).expect("send");
+    let mut link = Link::new(Instant::now(), IDLE);
+    let opened = async {
+        loop {
+            let datagram = conn.receive_datagram().await.expect("the path closed");
+            let messages = link.receive(datagram.payload(), Instant::now());
+            if messages.iter().any(|m| m.payload.is_empty()) {
+                return;
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(3), opened)
+        .await
+        .expect("the path did not open");
+
+    ann.send(json!({"t": "kick", "actor": actor})).await;
+    bob.until("left").await;
+    for _ in 0..8 {
+        let _ = conn.send_datagram(refused_frame(&mut link));
+    }
+    let heard = bob.drain(Duration::from_millis(500)).await;
+    assert_eq!(errors(&heard), []);
+}
+
+#[tokio::test]
+async fn frames_the_node_cannot_read_are_answered_at_a_bounded_rate() {
+    let node = Node::start_with(&[("NET__LIMITS__FRAME_ERRORS_PER_SEC_PER_PLAYER", "2")]).await;
+    let project = node.project("datapath").await;
+    let mut ann = project.player("ann").await;
+    let reply = ann.call(json!({"t": "create", "name": "room"})).await;
+    joined(&reply);
+    ann.send_binary(ticket(&reply)).await;
+    let mut link = Link::new(Instant::now(), IDLE);
+
+    // as many as the link sends before it waits for an acknowledgement
+    for _ in 0..30 {
+        ann.send_binary(refused_frame(&mut link).to_vec()).await;
+    }
+    let heard = ann.drain(Duration::from_millis(500)).await;
+    // a burst of twice the limit and what half a second adds to it
+    let answered = errors(&heard).len();
+    assert!((4..=6).contains(&answered), "{answered} answers");
+}
+
+/// The node closes the path of a player it took out of the room; an acknowledgement that
+/// leaves before the close tells him the packet was taken. WebTransport lets it out in most
+/// rounds, hence several.
+#[tokio::test]
+async fn packet_of_a_kicked_player_is_not_acknowledged_over_webtransport() {
+    let node = Node::start().await;
+    let project = node.project("datapath").await;
+    let mut ann = project.player("ann").await;
+    joined(&ann.call(json!({"t": "create", "name": "room"})).await);
+    for round in 0..8 {
+        let mut bob = project.player(&format!("bob-{round}")).await;
+        let reply = bob.call(json!({"t": "join", "name": "room"})).await;
+        let actor = joined(&reply);
+        let data = &reply["data"];
+        let endpoint = net_transport::webtransport::client_endpoint(
+            data["cert_sha256"].as_str().expect("cert_sha256"),
+        )
+        .expect("endpoint");
+        let conn = endpoint
+            .connect(data["webtransport_url"].as_str().expect("webtransport_url"))
+            .await
+            .expect("webtransport session");
+        conn.send_datagram(ticket(&reply)).expect("send");
+        let mut link = Link::new(Instant::now(), IDLE);
+        let opened = async {
+            loop {
+                let datagram = conn.receive_datagram().await.expect("the path closed");
+                let messages = link.receive(datagram.payload(), Instant::now());
+                if messages.iter().any(|m| m.payload.is_empty()) {
+                    return;
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(3), opened)
+            .await
+            .expect("the path did not open");
+
+        ann.send(json!({"t": "kick", "actor": actor})).await;
+        bob.until("left").await;
+        let _ = conn.send_datagram(packet(&mut link, b"late"));
+        let wait = Duration::from_millis(500);
+        while let Ok(Ok(datagram)) = tokio::time::timeout(wait, conn.receive_datagram()).await {
+            link.receive(datagram.payload(), Instant::now());
+        }
+
+        // The link repeats what is not acknowledged.
+        link.poll(Instant::now() + 2 * link.rto()).expect("poll");
+        assert_eq!(link.stats().retransmits, 1, "round {round}");
+    }
+}

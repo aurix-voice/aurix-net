@@ -124,3 +124,27 @@ async fn a_client_the_node_took_out_of_its_room_refuses_what_is_sent() {
     let sent = client.send_event(1, EventTarget::Others, Bytes::new(), true);
     assert!(matches!(sent, Err(ClientError::Disconnected)));
 }
+
+#[tokio::test]
+async fn a_data_path_the_node_gave_up_is_closed_by_its_answer() {
+    let given_up = ServerMsg::Error {
+        code: "transport".into(),
+        message: "transport: data path closed: link dead".into(),
+        id: None,
+    };
+    let mut client = in_a_room(&node(Some(given_up)).await).await;
+    let mut heard = Vec::new();
+    while let Some(event) = client.next_event().await {
+        match event {
+            Event::Control(ServerMsg::Error { code, .. }) => heard.push(code),
+            Event::Closed(reason) => {
+                heard.push(reason);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(heard, ["transport", "link dead"]);
+    let sent = client.send_event(1, EventTarget::Others, Bytes::new(), true);
+    assert!(matches!(sent, Err(ClientError::Disconnected)));
+}

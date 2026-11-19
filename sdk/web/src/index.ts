@@ -286,6 +286,10 @@ export class Client {
         this.forgetRoom();
       }
       this.emit("control", message);
+      if (message.t === "error" && message.code === "transport") {
+        // the node gave the data path up and will take nothing more over it
+        this.lost("link dead");
+      }
       if (message.t === "left" && message.reason === "rehost") {
         this.emit("rehost");
       }
@@ -592,7 +596,9 @@ export class Client {
           }
         };
         wt.closed.then(
-          () => gone("webtransport closed"),
+          // the node closes the session with code 4 when it gave the link up
+          (info) =>
+            gone(info?.closeCode === 4 ? "link dead" : "webtransport closed"),
           () => gone("webtransport error"),
         );
         return path;

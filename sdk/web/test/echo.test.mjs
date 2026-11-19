@@ -85,18 +85,19 @@ test("leave and join another room on the same client", { skip: !key }, async (t)
   assert.deepEqual(got.map((f) => f.payload[0]), [0, 1, 2, 3, 4]);
 });
 
-// A WebSocket proxy in front of the node that stops passing the node's datagrams once `mute()` is called.
+// A WebSocket proxy in front of the node that stops passing the node's datagrams once `mute()` is called,
+// and the client's while `gag(true)` holds.
 function mutableLink() {
-  let muted = false;
+  let muted = false, gagged = false;
   const server = new WebSocketServer({ port: 0 });
   server.on("connection", (near, request) => {
     const far = new WebSocket(http.replace(/^http/, "ws") + request.url);
     const opened = new Promise((resolve) => far.on("open", resolve));
-    near.on("message", async (data, binary) => { await opened; if (far.readyState === 1) far.send(binary ? data : data.toString()); });
+    near.on("message", async (data, binary) => { await opened; if (far.readyState === 1 && !(binary && gagged)) far.send(binary ? data : data.toString()); });
     far.on("message", (data, binary) => { if (near.readyState === 1 && !(binary && muted)) near.send(binary ? data : data.toString()); });
     far.on("close", () => near.close()); near.on("close", () => far.close());
   });
-  return { url: `http://127.0.0.1:${server.address().port}`, mute: () => { muted = true; }, close: () => server.close() };
+  return { url: `http://127.0.0.1:${server.address().port}`, mute: () => { muted = true; }, gag: (on) => { gagged = on; }, close: () => server.close() };
 }
 
 test("a lost connection is reported once, also when the handler closes the client", { skip: !key }, async () => {
@@ -113,6 +114,35 @@ test("a lost connection is reported once, also when the handler closes the clien
     assert.deepEqual(reasons, ["link dead"]);
   } finally {
     a.close(); link.close();
+  }
+});
+
+test("a data path the node gave up is closed at the client by the node's answer", { skip: !key }, async () => {
+  const link = mutableLink();
+  const a = await Client.connect(link.url, await grant("web-given-up"));
+  const b = await Client.connect(http, await grant("web-given-up-b"));
+  const reasons = [], errors = [];
+  a.on("closed", (why) => reasons.push(why));
+  a.on("control", (message) => { if (message.t === "error") errors.push(`${message.code}: ${message.message}`); });
+  try {
+    const room = `web-given-up-${process.pid}`;
+    await a.joinOrCreate(room, "relay", 4);
+    await b.joinOrCreate(room, "relay", 4);
+    // the node's reliable messages reach a, a's acknowledgements do not reach the node: a itself
+    // sends nothing reliable, so only the node sees the link die
+    link.gag(true);
+    b.sendEvent(1, new Uint8Array(8), "others", true);
+    await new Promise((resolve) => setTimeout(resolve, 17000));
+    assert.deepEqual(reasons, []);
+    link.gag(false);
+    for (let i = 0; i < 5; i++) a.sendEvent(2, new Uint8Array(8), "others", false);
+    for (let i = 0; i < 120 && !reasons.length; i++) await new Promise((resolve) => setTimeout(resolve, 25));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.deepEqual(errors, ["transport: transport: data path closed: link dead"]);
+    assert.deepEqual(reasons, ["link dead"]);
+    assert.throws(() => a.sendEvent(2, new Uint8Array(8), "others", true));
+  } finally {
+    a.close(); b.close(); link.close();
   }
 });
 

@@ -21,7 +21,7 @@ fn at_least_one(limit: u32) -> NonZeroU32 {
 }
 
 /// `limit` a second, in bursts of up to twice that.
-fn per_second(limit: u32) -> Quota {
+pub(crate) fn per_second(limit: u32) -> Quota {
     Quota::per_second(at_least_one(limit)).allow_burst(at_least_one(limit.saturating_mul(2)))
 }
 
@@ -180,6 +180,7 @@ mod tests {
             auth_failures_per_min_per_ip: 1,
             writes_per_sec_per_key: 1,
             grants_per_sec_per_key: 1,
+            frame_errors_per_sec_per_player: 1,
         };
         let guards = Guards::new(&limits, &["10.0.0.0/8".into()]);
         let mut headers = HeaderMap::new();

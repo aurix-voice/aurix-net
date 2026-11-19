@@ -246,3 +246,36 @@ async fn commands_reach_clients_the_referee_and_the_replay_in_the_same_ticks() {
         .collect();
     assert_eq!(recorded, ann.commands);
 }
+
+#[tokio::test]
+async fn every_command_is_delivered_or_refused() {
+    // refusals of a command are not held to the rate of the answers to unreadable frames
+    let node = Node::start_with(&[("NET__LIMITS__FRAME_ERRORS_PER_SEC_PER_PLAYER", "1")]).await;
+    let project = node.project("referee").await;
+    let (mut ann, _) = arena(&node, &project).await;
+    ann.play_for(Duration::from_millis(500)).await;
+
+    // more than the node keeps for the ticks to come
+    for fill in 1..=40 {
+        let command = Bytes::from(vec![fill; 200]);
+        send(
+            &ann.client,
+            LockstepClient::command_frame(&command).unwrap(),
+        );
+    }
+    ann.play_for(Duration::from_secs(2)).await;
+
+    let delivered = ann
+        .commands
+        .values()
+        .flat_map(|entry| commands_of(Bytes::from(entry.clone())))
+        .count();
+    let refused = ann.refusals.len();
+    assert!(
+        ann.refusals.iter().all(|(code, _)| code == "rate_limited"),
+        "{:?}",
+        ann.refusals
+    );
+    assert!(refused >= 10, "{refused} refusals");
+    assert_eq!(delivered + refused, 40);
+}

@@ -113,6 +113,25 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   that wait for the window (`RELIABLE_BACKLOG_BYTES`); a sender that outruns its peer by more
   loses the link with `LinkError::Backlog`. `Link::new` takes the idle timeout of its carrier.
   `LinkStats::retransmits` counted first sends that had waited for the window as repeats.
+- Data path: over WebTransport the node acknowledged a packet of a player it had taken out
+  of the room and dropped it, so his client took a reliable message sent after a kick for
+  delivered. Such a packet is not acknowledged, over QUIC either.
+- Data path: the frames a client had sent over the tunnel before it read `left` were answered
+  with errors: a kicked player got `conflict: session_replaced` and then `unauthorized: bad
+  data ticket` for every frame. They are dropped now, and so is a control message for the room
+  the session is no longer in, which gets `not in a room` instead of `session_replaced`. A
+  session whose slot another session of the player took is still told `session_replaced`.
+- Data path: a client that kept sending over a tunnel the node had given up got `unauthorized:
+  bad data ticket` for every frame, 7507 errors in 4 s. The node now answers the first frame
+  with `transport: data path closed: link dead` and drops the rest; a frame that is no ticket
+  is answered once as well ([API](docs/api.md)).
+- Data path: a frame the room refused (a malformed event, a lockstep command that is too
+  long) reached the player as `error` only over the tunnel; over QUIC and WebTransport the
+  node counted it and said nothing. It is answered on every transport.
+- Data path: a player who kept sending frames the node cannot read got an `error` for every
+  one of them. The node answers `frame_errors_per_sec_per_player` of them a second now (10 by
+  default) and counts the rest in `net_errors_total`. A refused lockstep command or event is
+  still answered every time.
 - Lockstep: a command longer than 251 bytes reached no client, and of several that came to more
   than 255 bytes in one tick with their headers only the first ones did: the bundle carries the
   length of an input in one byte and cut the commands of the tick to 255 bytes, while the
@@ -219,6 +238,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   with the reason and the game gets `closed` (`link dead`). The repeat timer is the core's too:
   one round-trip estimate for the link, 250 ms before the first sample, 60 to 1500 ms after; it
   was one per stream, 300 ms and 50 to 2000 ms.
+- All SDKs: a game whose link the node had given up was not told. Over the tunnel a client
+  that sent nothing reliable kept a data path the node no longer served, and over QUIC and
+  WebTransport the reason read `data path closed` or `webtransport closed`. The node's answer
+  `transport` to a frame of a tunnel it gave up, and its close of a QUIC or WebTransport
+  connection with code 4, now end the data path with `closed` (`link dead`), and sends fail
+  from there.
 - Unity SDK (native client): `Client.JoinOrCreate` had no `lobbyProps`, so a room it created
   published no props, and neither a room list nor a random join with an `expr` found it. It
   takes them as the managed client does.

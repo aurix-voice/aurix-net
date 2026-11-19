@@ -77,6 +77,8 @@ struct Session {
     grant: Option<Grant>,
     room: Option<InRoom>,
     data: Option<Arc<DataSession>>,
+    /// The session's room has answered a frame that opens no tunnel.
+    tunnel_refused: bool,
     lobby: Option<ProjectId>,
     /// From `auth.supports`.
     unsequenced: bool,
@@ -124,6 +126,7 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
         grant: None,
         room: None,
         data: None,
+        tunnel_refused: false,
         lobby: None,
         unsequenced: false,
         ip,
@@ -238,6 +241,25 @@ impl Session {
             .is_some_and(|a| a.session == self.id)
     }
 
+    /// Forgets a room the session is no longer in (kicked, the room closed): `left` has told
+    /// the player. Returns whether another session of the player took the slot over instead.
+    fn slot_taken_over(&mut self) -> bool {
+        let Some(joined) = &self.room else {
+            return false;
+        };
+        let holder = joined
+            .hosted
+            .lock()
+            .sessions
+            .get(&joined.actor)
+            .map(|attached| attached.session);
+        if holder.is_none() {
+            self.room = None;
+            self.data = None;
+        }
+        holder.is_some_and(|session| session != self.id)
+    }
+
     fn replaced(&mut self) -> NetError {
         self.room = None;
         self.data = None;
@@ -245,25 +267,22 @@ impl Session {
     }
 
     async fn handle(&mut self, msg: ClientMsg) -> Result<()> {
-        if let Some(joined) = &self.room {
-            let mine = self.owns_slot(&joined.hosted.lock(), joined.actor);
-            if !mine {
-                // The slot is gone (taken over, kicked, room closed). Only a message meant for
-                // that room is refused; the session is free to create or join another one.
-                let error = self.replaced();
-                if matches!(
-                    msg,
-                    ClientMsg::SetRoomProps { .. }
-                        | ClientMsg::SetPlayerProps { .. }
-                        | ClientMsg::Event { .. }
-                        | ClientMsg::SetGroups { .. }
-                        | ClientMsg::CacheSlice { .. }
-                        | ClientMsg::SetView { .. }
-                        | ClientMsg::SetMaster { .. }
-                        | ClientMsg::Kick { .. }
-                ) {
-                    return Err(error);
-                }
+        if self.slot_taken_over() {
+            // Only a message meant for that room is refused; the session is free to create
+            // or join another one.
+            let error = self.replaced();
+            if matches!(
+                msg,
+                ClientMsg::SetRoomProps { .. }
+                    | ClientMsg::SetPlayerProps { .. }
+                    | ClientMsg::Event { .. }
+                    | ClientMsg::SetGroups { .. }
+                    | ClientMsg::CacheSlice { .. }
+                    | ClientMsg::SetView { .. }
+                    | ClientMsg::SetMaster { .. }
+                    | ClientMsg::Kick { .. }
+            ) {
+                return Err(error);
             }
         }
         match msg {
@@ -1156,6 +1175,9 @@ impl Session {
                     session: self.id,
                     data: None,
                     unsequenced: self.unsequenced,
+                    frame_errors: governor::RateLimiter::direct(crate::ratelimit::per_second(
+                        self.st.cfg.limits.frame_errors_per_sec_per_player,
+                    )),
                 },
             );
             self.st.webhooks.emit(
@@ -1215,6 +1237,7 @@ impl Session {
             actor,
             hosted: handle,
         });
+        self.tunnel_refused = false;
         let _ = self.ctl.try_send(joined);
         self.st.metrics.players.set(self.st.host.players() as i64);
         self.publish_current().await;
@@ -1273,55 +1296,62 @@ impl Session {
     }
 
     fn on_binary(&mut self, frame: Bytes) -> Result<()> {
-        // A tunnel whose link died is gone; the next frame has to be a ticket for a new one.
-        if self.data.as_ref().is_some_and(|ds| ds.lost()) {
-            self.data = None;
+        if self.slot_taken_over() {
+            return Err(self.replaced());
         }
-        match &self.data {
-            None => {
-                let kind = self
-                    .st
-                    .tickets
-                    .verify(&frame)
-                    .ok_or_else(|| NetError::Unauthorized("bad data ticket".into()))?;
-                let joined = self.in_room()?;
-                if kind.room != joined.id || kind.actor != joined.actor || kind.session != self.id {
-                    return Err(NetError::Unauthorized(
-                        "ticket does not match session".into(),
-                    ));
+        let ticket = self.st.tickets.verify(&frame);
+        let Some(joined) = &self.room else {
+            // Frames that were on their way when the player left its room, its own ticket
+            // among them, are not answered.
+            return match ticket {
+                Some(ticket) if ticket.session != self.id => Err(mismatched_ticket()),
+                _ => Ok(()),
+            };
+        };
+        let (hosted, actor) = (joined.hosted.clone(), joined.actor);
+        let lost = self.data.as_ref().is_some_and(|ds| ds.lost());
+        if let Some(ds) = self.data.as_ref().filter(|_| !lost) {
+            for message in ds.receive(frame) {
+                let mut room = hosted.lock();
+                if !self.owns_slot(&room, actor) {
+                    return Ok(());
                 }
-                let project = joined.hosted.lock().project;
-                let ds = self.st.host.data_session(
-                    project,
-                    DataSink::Ws(self.bin.clone()),
-                    self.st.metrics.clone(),
-                    Duration::from_millis(self.st.cfg.transport.idle_timeout_ms),
+                handle_data_frame(
+                    &mut room,
+                    actor,
+                    message.channel,
+                    message.payload,
+                    &self.st.metrics,
                 );
-                let ds = attach_data(&joined.hosted, joined.actor, ds);
-                spawn_ticker(&self.st, ds.clone());
-                self.data = Some(ds);
-                Ok(())
             }
-            Some(ds) => {
-                let joined = self.in_room()?;
-                let (hosted, actor) = (joined.hosted.clone(), joined.actor);
-                for message in ds.receive(frame) {
-                    let mut room = hosted.lock();
-                    if !self.owns_slot(&room, actor) {
-                        drop(room);
-                        return Err(self.replaced());
-                    }
-                    handle_data_frame(
-                        &mut room,
-                        actor,
-                        message.channel,
-                        message.payload,
-                        &self.st.metrics,
-                    )?;
-                }
-                Ok(())
-            }
+            return Ok(());
         }
+        let Some(ticket) = ticket else {
+            // A tunnel is refused once; what its client still sends after that is dropped.
+            if std::mem::replace(&mut self.tunnel_refused, true) {
+                return Ok(());
+            }
+            return Err(if lost {
+                NetError::Transport("data path closed: link dead".into())
+            } else {
+                NetError::Unauthorized("bad data ticket".into())
+            });
+        };
+        if ticket.room != joined.id || ticket.actor != actor || ticket.session != self.id {
+            return Err(mismatched_ticket());
+        }
+        let project = hosted.lock().project;
+        let ds = self.st.host.data_session(
+            project,
+            DataSink::Ws(self.bin.clone()),
+            self.st.metrics.clone(),
+            Duration::from_millis(self.st.cfg.transport.idle_timeout_ms),
+        );
+        let ds = attach_data(&hosted, actor, ds);
+        spawn_ticker(&self.st, ds.clone());
+        self.data = Some(ds);
+        self.tunnel_refused = false;
+        Ok(())
     }
 
     /// `stats` / `find_friends` fan out across the fleet: one per second per session.
@@ -1793,6 +1823,10 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
             writer.push(RedisWrite::Checkpoint(project, body));
         }
     }
+}
+
+fn mismatched_ticket() -> NetError {
+    NetError::Unauthorized("ticket does not match session".into())
 }
 
 /// A new room's seed. It reaches clients as a JSON number, and those are only portable up to

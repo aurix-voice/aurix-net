@@ -135,6 +135,19 @@ the ticket. A connection that shows no valid ticket within 5 s is closed with co
 UDP is blocked send the ticket as the first binary WebSocket frame and use binary frames as
 datagrams.
 
+A frame the room refuses is answered with `error` on the control channel, whatever carries
+the data path. Frames that were on their way when the session left its room (`left`, a kick,
+the room closed) are not answered and not acknowledged. The node gives up a link whose
+reliable messages stay unacknowledged ([modes](modes.md)): it closes a QUIC or WebTransport
+connection with code 4, and answers the next frame of a tunnel with one `error` `transport`
+(`data path closed: link dead`) and drops the frames after it. A binary frame that is no
+ticket, from a session in a room without a tunnel, is answered once with `unauthorized`
+(`bad data ticket`).
+
+Every refused request of the player is answered: a lockstep command, an event over the rate.
+Frames the node cannot read are answered `frame_errors_per_sec_per_player` times a second (10,
+in bursts of up to twice that); the rest are only counted.
+
 ### Capabilities
 
 What a side can do beyond the base protocol it lists by name in `supports` of its first

@@ -135,6 +135,8 @@ impl DataPath {
 
 /// Idle timeout of the data connection, and of the link on it.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+/// The code the node closes a data connection with when it gave the link up.
+const LINK_DEAD_CLOSE: u32 = 4;
 const PING_EVERY: Duration = Duration::from_secs(1);
 const TICKET_RESEND: Duration = Duration::from_millis(100);
 
@@ -281,7 +283,17 @@ impl Client {
                                 rtt_ms.store(smoothed, Ordering::Relaxed);
                                 continue;
                             }
+                            // the node gave the data path up and will take nothing more over it
+                            let given_up = matches!(&msg, ServerMsg::Error { code, .. } if code == "transport");
                             if events_tx.send(Event::Control(msg)).await.is_err() {
+                                break;
+                            }
+                            if given_up
+                                && events_tx
+                                    .send(Event::Closed("link dead".into()))
+                                    .await
+                                    .is_err()
+                            {
                                 break;
                             }
                         }
@@ -564,19 +576,28 @@ impl Client {
                 let start = tokio::time::Instant::now() + TICKET_RESEND;
                 let mut again = tokio::time::interval_at(start, TICKET_RESEND);
                 let mut answered = false;
-                loop {
+                let reason = loop {
                     tokio::select! {
                         datagram = conn.read_datagram() => {
-                            let Ok(datagram) = datagram else { break };
-                            answered = true;
-                            deliver(&dp2, datagram, &ev).await;
+                            match datagram {
+                                Ok(datagram) => {
+                                    answered = true;
+                                    deliver(&dp2, datagram, &ev).await;
+                                }
+                                Err(quinn::ConnectionError::ApplicationClosed(close))
+                                    if close.error_code == LINK_DEAD_CLOSE.into() =>
+                                {
+                                    break "link dead";
+                                }
+                                Err(_) => break "data path closed",
+                            }
                         }
                         _ = again.tick(), if !answered => {
                             let _ = conn.send_datagram(ticket.clone());
                         }
                     }
-                }
-                let _ = ev.send(Event::Closed("data path closed".into())).await;
+                };
+                let _ = ev.send(Event::Closed(reason.into())).await;
             }));
             dp
         };

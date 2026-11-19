@@ -3,7 +3,7 @@
 use crate::metrics::Metrics;
 use bytes::Bytes;
 use dashmap::DashMap;
-use net_common::{ActorId, Channel, NetError, ProjectId, Result, RoomId};
+use net_common::{ActorId, Channel, NetError, ProjectId, RoomId};
 use net_rooms::protocol::ServerMsg;
 use net_rooms::{EventFrame, Outgoing, Room};
 use net_transport::Link;
@@ -164,6 +164,22 @@ pub struct Attached {
     pub data: Option<Arc<DataSession>>,
     /// The client announced that it takes the unsequenced channel.
     pub unsequenced: bool,
+    /// How often a data frame the node cannot read is still answered.
+    pub frame_errors: governor::DefaultDirectRateLimiter,
+}
+
+/// Why a data frame was not taken.
+enum Refused {
+    /// The node cannot read the frame.
+    Frame(NetError),
+    /// The room turned the player's request down.
+    Request(NetError),
+}
+
+impl From<NetError> for Refused {
+    fn from(e: NetError) -> Self {
+        Self::Request(e)
+    }
 }
 
 pub struct HostedRoom {
@@ -474,14 +490,43 @@ pub fn channel_name(channel: Channel) -> &'static str {
     }
 }
 
-/// Routes one data-path frame from `actor` through the room.
+/// Routes one data-path frame from `actor` through the room. A refusal goes to the player's
+/// control channel, whatever carries its data path.
 pub fn handle_data_frame(
     hosted: &mut HostedRoom,
     actor: ActorId,
     channel: Channel,
     payload: Bytes,
     metrics: &Metrics,
-) -> Result<()> {
+) {
+    let Err(refused) = route_data_frame(hosted, actor, channel, payload, metrics) else {
+        return;
+    };
+    let (e, unreadable) = match refused {
+        Refused::Frame(e) => (e, true),
+        Refused::Request(e) => (e, false),
+    };
+    metrics.errors.with_label_values(&[e.code()]).inc();
+    let told = hosted
+        .sessions
+        .get(&actor)
+        .filter(|session| !unreadable || session.frame_errors.check().is_ok());
+    if let Some(session) = told {
+        let _ = session.control.try_send(ServerMsg::Error {
+            code: e.code().to_string(),
+            message: e.public_message(),
+            id: None,
+        });
+    }
+}
+
+fn route_data_frame(
+    hosted: &mut HostedRoom,
+    actor: ActorId,
+    channel: Channel,
+    payload: Bytes,
+    metrics: &Metrics,
+) -> Result<(), Refused> {
     // Simulation frames travel on any channel (inputs unreliable, checkpoint uploads
     // reliable); unknown kinds fall through to relay events.
     if let Some(sy) = hosted.sync.as_mut() {
@@ -494,21 +539,10 @@ pub fn handle_data_frame(
     }
     if let Some(ls) = hosted.lockstep.as_mut() {
         if payload.first() == Some(&crate::lockstep::KIND_COMMAND) {
-            let refused = ls.command(actor, payload.slice(1..)).err();
             hosted
                 .room
                 .count_input(actor, payload.len(), Instant::now());
-            // The same answer on every transport: a refusal returned from here reaches only
-            // a player on the tunnel.
-            if let Some((e, session)) = refused.zip(hosted.sessions.get(&actor)) {
-                metrics.errors.with_label_values(&[e.code()]).inc();
-                let _ = session.control.try_send(ServerMsg::Error {
-                    code: e.code().to_string(),
-                    message: e.public_message(),
-                    id: None,
-                });
-            }
-            return Ok(());
+            return Ok(ls.command(actor, payload.slice(1..))?);
         }
         if ls.handle(actor, payload.clone()) {
             hosted
@@ -517,7 +551,8 @@ pub fn handle_data_frame(
             return Ok(());
         }
     }
-    let frame = EventFrame::decode(payload).map_err(|e| NetError::Invalid(e.to_string()))?;
+    let frame = EventFrame::decode(payload)
+        .map_err(|e| Refused::Frame(NetError::Invalid(e.to_string())))?;
     let out = hosted
         .room
         .raise_event(actor, frame, channel, Instant::now())

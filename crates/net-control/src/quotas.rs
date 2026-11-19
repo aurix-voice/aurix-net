@@ -106,6 +106,7 @@ mod tests {
             auth_failures_per_min_per_ip: 20,
             writes_per_sec_per_key: 20,
             grants_per_sec_per_key: 500,
+            frame_errors_per_sec_per_player: 10,
         };
         let limits = ProjectLimits::from_json(
             &serde_json::json!({"max_players_per_room": 1000, "max_rooms": 5}),

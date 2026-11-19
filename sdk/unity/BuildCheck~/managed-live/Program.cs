@@ -1,12 +1,15 @@
 using System.Collections.Generic;
 using System;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
+using System.Net.WebSockets;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Aurix.Net;
 using Aurix.Net.Managed;
@@ -35,6 +38,62 @@ sealed class Relay : IDisposable
         catch (Exception error) when (error is SocketException || error is ObjectDisposedException) { }
     }
     public void Dispose() { _listener.Stop(); lock (_ends) foreach (var end in _ends) end.Close(); }
+}
+
+/// A WebSocket relay to the node that can hold back the binary frames of its client: the node's
+/// reliable frames reach the client, the client's acknowledgements do not reach the node.
+sealed class GagRelay : IDisposable
+{
+    readonly HttpListener _listener = new HttpListener();
+    readonly CancellationTokenSource _stop = new CancellationTokenSource();
+    public string Url { get; }
+    public volatile bool Gagged;
+
+    public GagRelay()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+        Url = "http://127.0.0.1:" + port;
+        _listener.Prefixes.Add(Url + "/"); _listener.Start(); _ = Accept();
+    }
+
+    async Task Accept()
+    {
+        try
+        {
+            while (true)
+            {
+                var context = await _listener.GetContextAsync();
+                if (!context.Request.IsWebSocketRequest) { context.Response.StatusCode = 404; context.Response.Close(); continue; }
+                var near = (await context.AcceptWebSocketAsync(null)).WebSocket; var far = new ClientWebSocket();
+                await far.ConnectAsync(new Uri("ws://127.0.0.1:8090" + context.Request.RawUrl), _stop.Token);
+                _ = Pump(near, far, true); _ = Pump(far, near, false);
+            }
+        }
+        catch (Exception error) when (error is HttpListenerException || error is ObjectDisposedException || error is OperationCanceledException) { }
+    }
+
+    async Task Pump(WebSocket from, WebSocket to, bool fromClient)
+    {
+        var buffer = new byte[1 << 16]; var message = new MemoryStream();
+        try
+        {
+            while (true)
+            {
+                var part = await from.ReceiveAsync(new ArraySegment<byte>(buffer), _stop.Token);
+                if (part.MessageType == WebSocketMessageType.Close) break;
+                message.Write(buffer, 0, part.Count);
+                if (!part.EndOfMessage) continue;
+                bool held = fromClient && Gagged && part.MessageType == WebSocketMessageType.Binary;
+                if (!held) await to.SendAsync(new ArraySegment<byte>(message.GetBuffer(), 0, (int)message.Length), part.MessageType, true, _stop.Token);
+                message.SetLength(0);
+            }
+        }
+        catch (Exception error) when (error is WebSocketException || error is ObjectDisposedException || error is OperationCanceledException) { }
+        to.Abort();
+    }
+
+    public void Dispose() { _stop.Cancel(); _listener.Close(); }
 }
 
 class P
@@ -429,7 +488,35 @@ class P
             runnerOk = moves > 0 && Math.Abs(written.Count - ticks) <= 1 && reached.Contains(moves) && reached.SetEquals(written);
             runner.Client.Dispose(); watcher.Dispose();
         }
-        bool ok = refused && lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && failedFast && runnerOk;
+        // the node gives up a link whose acknowledgements stop reaching it and says so once, on the
+        // client's next frame: that answer ends the data path of a client that sent nothing reliable
+        bool givenUpOk;
+        using (var gag = new GagRelay())
+        {
+            var quiet = await ManagedClient.ConnectAsync(gag.Url, await Grant(h, key, "cs-gag-a"));
+            var talker = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-gag-b"));
+            var answers = new List<string>(); var reasons = new List<string>();
+            quiet.OnControl += json => { if (ManagedClientTestHooks.Str(json, "t") == "error") answers.Add(ManagedClientTestHooks.Str(json, "code")); };
+            quiet.OnClosed += reason => reasons.Add(reason);
+            string gagRoom = "cs-gag-" + Environment.ProcessId;
+            await quiet.JoinOrCreateAsync(gagRoom, "relay", 4); await talker.JoinAsync(gagRoom);
+            gag.Gagged = true;
+            talker.SendEvent(1, new byte[8], Target.Others, reliable: true); talker.Flush();
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            while (clock.ElapsedMilliseconds < 17000) { quiet.Poll(); talker.Poll(); await Task.Delay(10); }
+            bool aliveBefore = reasons.Count == 0;
+            gag.Gagged = false;
+            for (int i = 0; i < 5; i++) quiet.SendEvent(2, new byte[8], Target.Others, reliable: false);
+            quiet.Flush();
+            for (int i = 0; i < 120 && reasons.Count == 0; i++) { quiet.Poll(); await Task.Delay(25); }
+            for (int i = 0; i < 12; i++) { quiet.Poll(); await Task.Delay(25); }
+            bool sendRefused = false;
+            try { quiet.SendEvent(2, new byte[8], Target.Others, reliable: true); } catch (NetException) { sendRefused = true; }
+            Console.WriteLine($"given-up link: alive before={aliveBefore}, answers=[{string.Join(",", answers)}], closed=[{string.Join(",", reasons)}], send refused={sendRefused}");
+            givenUpOk = aliveBefore && answers.SequenceEqual(new[] { "transport" }) && reasons.SequenceEqual(new[] { "link dead" }) && sendRefused;
+            quiet.Dispose(); talker.Dispose();
+        }
+        bool ok = givenUpOk && refused && lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && failedFast && runnerOk;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");
         return ok ? 0 : 1;
     }

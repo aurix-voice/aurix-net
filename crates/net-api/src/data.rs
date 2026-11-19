@@ -23,6 +23,15 @@ fn slot_project(room: &HostedRoom, ticket: &DataTicket) -> Option<ProjectId> {
 
 /// Clears the slot's data path when the connection ends, unless a newer one took it; events
 /// then reach the player over the control channel.
+/// Whether `ds` carries the data of `actor`: no longer once the player is out of the room or
+/// a newer connection of his (a reconnect, another session) owns the slot.
+fn attached(room: &HostedRoom, actor: ActorId, ds: &Arc<DataSession>) -> bool {
+    room.sessions
+        .get(&actor)
+        .and_then(|a| a.data.as_ref())
+        .is_some_and(|d| Arc::ptr_eq(d, ds))
+}
+
 fn detach(room: &mut HostedRoom, actor: ActorId, ds: &Arc<DataSession>) {
     if let Some(session) = room.sessions.get_mut(&actor) {
         if session.data.as_ref().is_some_and(|d| Arc::ptr_eq(d, ds)) {
@@ -93,29 +102,25 @@ async fn handle(st: Shared, incoming: quinn::Incoming) -> anyhow::Result<()> {
         if datagram == first {
             continue;
         }
+        // Taking the packet acknowledges it.
+        if !attached(&hosted.lock(), ticket.actor, &ds) {
+            return Ok(());
+        }
         for message in ds.receive(datagram) {
             if message.payload.is_empty() {
                 continue;
             }
             let mut room = hosted.lock();
-            // A newer connection (reconnect or another session of the player) owns the slot.
-            if !room
-                .sessions
-                .get(&ticket.actor)
-                .and_then(|a| a.data.as_ref())
-                .is_some_and(|d| Arc::ptr_eq(d, &ds))
-            {
+            if !attached(&room, ticket.actor, &ds) {
                 return Ok(());
             }
-            if let Err(e) = handle_data_frame(
+            handle_data_frame(
                 &mut room,
                 ticket.actor,
                 message.channel,
                 message.payload,
                 &st.metrics,
-            ) {
-                st.metrics.errors.with_label_values(&[e.code()]).inc();
-            }
+            );
         }
     }
     detach(&mut hosted.lock(), ticket.actor, &ds);
@@ -186,29 +191,25 @@ async fn handle_wt(
         if datagram == first {
             continue;
         }
+        // Taking the packet acknowledges it.
+        if !attached(&hosted.lock(), ticket.actor, &ds) {
+            return Ok(());
+        }
         for message in ds.receive(datagram) {
             if message.payload.is_empty() {
                 continue;
             }
             let mut room = hosted.lock();
-            // A newer connection (reconnect or another session of the player) owns the slot.
-            if !room
-                .sessions
-                .get(&ticket.actor)
-                .and_then(|a| a.data.as_ref())
-                .is_some_and(|d| Arc::ptr_eq(d, &ds))
-            {
+            if !attached(&room, ticket.actor, &ds) {
                 return Ok(());
             }
-            if let Err(e) = handle_data_frame(
+            handle_data_frame(
                 &mut room,
                 ticket.actor,
                 message.channel,
                 message.payload,
                 &st.metrics,
-            ) {
-                st.metrics.errors.with_label_values(&[e.code()]).inc();
-            }
+            );
         }
     }
     detach(&mut hosted.lock(), ticket.actor, &ds);

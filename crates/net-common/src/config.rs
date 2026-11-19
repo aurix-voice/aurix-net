@@ -160,6 +160,10 @@ pub struct LimitsConfig {
     /// Grant minting is every player login of the tenant's backend: its own, much higher budget.
     #[serde(default = "d_key_grants")]
     pub grants_per_sec_per_key: u32,
+    /// Data frames the node cannot read that one player is told about per second; the rest
+    /// are only counted.
+    #[serde(default = "d_frame_errors")]
+    pub frame_errors_per_sec_per_player: u32,
 }
 
 fn d_sessions_per_ip() -> u32 {
@@ -179,6 +183,9 @@ fn d_key_writes() -> u32 {
 }
 fn d_key_grants() -> u32 {
     500
+}
+fn d_frame_errors() -> u32 {
+    10
 }
 fn d_log_format() -> String {
     "text".into()
@@ -232,6 +239,7 @@ ws_connects_per_min_per_ip = 600
 auth_failures_per_min_per_ip = 20
 writes_per_sec_per_key = 20
 grants_per_sec_per_key = 500
+frame_errors_per_sec_per_player = 10
 
 [retention]
 closed_rooms_days = 7

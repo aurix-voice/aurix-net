@@ -508,6 +508,15 @@ namespace Aurix.Net.Managed
 
                         OnControl?.Invoke(text.Json);
                         if (
+                            Json.Str(text.Json, "t") == "error"
+                            && Json.Str(text.Json, "code") == "transport"
+                        )
+                        {
+                            // the node gave the data path up and will take nothing more over it
+                            Lose("link dead");
+                        }
+
+                        if (
                             Json.Str(text.Json, "t") == "left"
                             && Json.Str(text.Json, "reason") == "rehost"
                         )
@@ -570,17 +579,25 @@ namespace Aurix.Net.Managed
                         break;
                     case Closed closed:
                         _controlClosed |= closed.Control;
-                        if (!_lost)
-                        {
-                            _lost = true;
-                            _dataOpen = false;
-                            _link = new Link();
-                            OnClosed?.Invoke(closed.Reason);
-                        }
+                        Lose(closed.Reason);
                         break;
                 }
             }
             return count;
+        }
+
+        /// <summary>The data path is gone: the game is told once, and sends fail from here on.</summary>
+        void Lose(string reason)
+        {
+            if (_lost)
+            {
+                return;
+            }
+
+            _lost = true;
+            _dataOpen = false;
+            _link = new Link();
+            OnClosed?.Invoke(reason);
         }
 
         /// <summary>The client is out of its room: by LeaveAsync, or the node took it out (kick, room closed, rehost). Its data path closes with what was queued for it.</summary>
