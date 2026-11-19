@@ -295,6 +295,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   held no hash from before the move. A node keeps the whole journal of a room and its hashes
   in Redis, not the last ten seconds, and the node that takes the room over has them. The
   checkpoint of a room is deleted with the room; it used to stay ten minutes after the close.
+- A player could hear of a room before its own `joined`: the node let the room go before it
+  queued the answer, and what the room sent its players in between (`player_joined` of someone
+  who joined at the same moment, `room_props`, `master_changed`, an event) came first. The
+  answer is queued while the room is still held.
 - `net-rollback`: `replay()` and `Rollback::hashes()` gave the hash of the state after tick T
   under T + 1, and a node keeps it under T. No hash `replay()` returned for a replay from a
   node was the one the replay held, and a client that reported the hashes of `Rollback` to a

@@ -1244,7 +1244,7 @@ impl Session {
                 }
             }
         }
-        let joined = {
+        let (id, actor) = {
             let mut hr = handle.lock();
             if hr.project != grant.project {
                 return Err(NetError::NotFound("room".into()));
@@ -1317,7 +1317,9 @@ impl Session {
             }
             dispatch(&hr, out, &self.st.metrics);
             let ticket = self.st.tickets.issue(self.id, hr.room.id(), actor);
-            ServerMsg::Joined {
+            // Queued before the room is let go, so that nothing the room sends its players
+            // from here on reaches this one ahead of it.
+            self.ctl.send(ServerMsg::Joined {
                 room: hr.room.id().to_string(),
                 name: hr.room.cfg.name.clone(),
                 mode: hr.room.cfg.mode,
@@ -1348,11 +1350,8 @@ impl Session {
                 seed: hr.lockstep.as_ref().map(|l| l.seed),
                 next_spawn_tag: hr.sync.as_ref().and_then(|s| s.next_spawn_tag(actor)),
                 id: asked,
-            }
-        };
-        let (id, actor) = match &joined {
-            ServerMsg::Joined { room, actor, .. } => (room.parse::<RoomId>().unwrap(), *actor),
-            _ => unreachable!(),
+            });
+            (hr.room.id(), actor)
         };
         self.room = Some(InRoom {
             id,
@@ -1360,7 +1359,6 @@ impl Session {
             hosted: handle,
         });
         self.tunnel_refused = false;
-        self.ctl.send(joined);
         self.st.metrics.players.set(self.st.host.players() as i64);
         self.publish_current().await;
         Ok(())
