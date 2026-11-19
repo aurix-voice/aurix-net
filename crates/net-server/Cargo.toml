@@ -22,6 +22,7 @@ net-rooms = { path = "../net-rooms" }
 net-api = { path = "../net-api" }
 net-game = { path = "../net-game" }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true }
 anyhow = { workspace = true }

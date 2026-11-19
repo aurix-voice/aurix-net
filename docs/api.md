@@ -178,8 +178,13 @@ automatically; the C ABI returns the error and the caller reconnects to the URL.
 
 POST JSON `{event, project, at, data}` with `X-Aurix-Event` and
 `X-Aurix-Signature: sha256=<hex HMAC-SHA256(secret, body)>`. Events: `room.created
-{room, name, mode, region}`, `room.closed {room}`, `player.joined {room, actor}`,
-`player.left {room, actor}`, `desync {room, tick, actor}`, `room.rehosted {room, name, mode, node, restored}` (room adopted by another node after a node failure). Three attempts; 4xx stops retries.
+{room, name, mode, region}`, `room.closed {room, name, mode, props, state?}`,
+`player.joined {room, actor}`, `player.left {room, actor, kicked?}`,
+`match.found {room, mode, players, tickets, bots}`,
+`desync {room, tick, actor, strikes, untrusted}`,
+`room.rehosted {room, name, mode, node, restored}` (room adopted by another node after a drain
+or a node failure). Three attempts; 4xx stops retries. [webhooks.md](webhooks.md) has every
+field.
 
 Two events are synchronous calls rather than notifications: `join.validate` (the receiver
 answers `{"allow": bool, "reason"?}` within 2 s; see Keys, grants, scopes) and `rpc` — a

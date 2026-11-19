@@ -156,14 +156,19 @@ impl Node {
     }
 }
 
-impl Drop for Node {
-    fn drop(&mut self) {
-        self.delete_projects();
-        // SIGTERM lets the node remove its row from the fleet; kill it if that takes too long.
+impl Node {
+    /// Tells the node to stop, as a deploy does, without waiting for it.
+    pub fn stop(&self) {
         let _ = Command::new("kill")
             .args(["-TERM", &self.child.id().to_string()])
             .status();
-        for _ in 0..50 {
+    }
+
+    /// Stops the node the way a deploy does and waits for it to exit. SIGTERM lets it remove
+    /// its row from the fleet; it is killed if that takes too long.
+    pub fn terminate(&mut self) {
+        self.stop();
+        for _ in 0..100 {
             if matches!(self.child.try_wait(), Ok(Some(_))) {
                 return;
             }
@@ -171,6 +176,13 @@ impl Drop for Node {
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+impl Drop for Node {
+    fn drop(&mut self) {
+        self.delete_projects();
+        self.terminate();
     }
 }
 

@@ -11,12 +11,16 @@ use net_transport::quic;
 use net_transport::TicketSigner;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 /// glibc malloc keeps per-thread arenas at their high-water mark (RSS kept climbing by tens of MB
 /// per batch of referee desyncs with nothing leaked); mimalloc returns freed pages to the OS.
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// How long a stopping node keeps delivering the webhooks it still owes.
+const WEBHOOK_FLUSH: Duration = Duration::from_secs(4);
 
 #[derive(Parser)]
 #[command(name = "aurix-net-server", version, about = "Aurix Net node")]
@@ -197,12 +201,17 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(net_api::ws::flusher(st.clone()));
     tokio::spawn(net_api::metering::meter(st.clone()));
     tokio::spawn(net_api::janitor::run(st.clone()));
-    tokio::spawn({
+    let stop_matchmaking = CancellationToken::new();
+    let matchmaking = tokio::spawn({
         let st = st.clone();
+        let stop = stop_matchmaking.clone();
         async move {
             let mut iv = tokio::time::interval(std::time::Duration::from_millis(500));
             loop {
-                iv.tick().await;
+                tokio::select! {
+                    () = stop.cancelled() => break,
+                    _ = iv.tick() => {}
+                }
                 match st
                     .matchmaker
                     .run_cycle(&st.redis, &st.node_id.to_string())
@@ -283,6 +292,9 @@ async fn main() -> anyhow::Result<()> {
             if let Err(e) = heartbeat(&st, &http_url, true).await {
                 warn!(error = %e, "drain heartbeat failed");
             }
+            // A cycle under way is finished, so no match is made without its webhook.
+            stop_matchmaking.cancel();
+            let _ = matchmaking.await;
             let moved = net_api::ws::handoff_all(&st).await;
             info!(rooms = moved, "shutdown: rooms handed off");
             if let Err(e) = queries::delete_node(&st.pool, st.node_id.0).await {
@@ -296,6 +308,9 @@ async fn main() -> anyhow::Result<()> {
     )
     .with_graceful_shutdown(shutdown)
     .await?;
+    if !st.webhooks.flush(WEBHOOK_FLUSH).await {
+        warn!("shutdown: webhooks still undelivered");
+    }
     Ok(())
 }
 

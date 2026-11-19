@@ -21,21 +21,22 @@ The envelope is always `event`, `project`, `at` (RFC 3339, UTC) and `data`. Veri
 | Event | `data` | When |
 |---|---|---|
 | `room.created` | `{"room":"<uuid>","name":"lobby-1","mode":"relay|sync|lockstep","region":"eu"}` | a room was opened (by a client join with `create`, or by `POST /v1/rooms`) |
-| `join.validate` | `{"room":"<uuid>","name":"ranked-7","mode":"sync","room_props":{...},"player_id":"p1","player_name":"Ann","player_props":{...},"spectator":false}` | **synchronous**: sent before a player enters a room (not on rejoin); answer 2xx with `{"allow":true}` (or an empty body) within 2 s, or `{"allow":false,"reason":"season over"}` to refuse — the client gets `join rejected: <reason>`. Receiver down / non-2xx / non-JSON = refused (fail closed) and the rejection counter shows `validate_unavailable`. Subscribe explicitly (`*` does not include it) |
-| `room.closed` | `{"room":"<uuid>","name":"ranked-7","mode":"sync","props":{...},"state":"<base64>"}` | `state` only with room prop `export_state_on_close: true`: the final checkpoint JSON (players, master, sync state or lockstep snapshot), ≤ 256 KiB (`state_too_large: <bytes>` otherwise) — persist matches on your side |
-| `room.closed` (minimal) | `{"room":"<uuid>"}` | the room ended: last player left and `empty_ttl` passed, or it was closed by the game / an operator |
-| `room.rehosted` | `{"room":"<uuid>","name":"lobby-1","mode":"sync","node":"<node-uuid>","restored":true}` | the room was adopted by another node after a drain or node loss; `restored` is false when no checkpoint was found and the room started fresh |
+| `join.validate` | `{"room":"<uuid>","name":"ranked-7","mode":"sync","room_props":{...},"player_id":"p1","player_name":"Ann","player_props":{...},"spectator":false}` | **synchronous**: sent before a player enters a room (not on rejoin); answer 2xx with `{"allow":true}` (or an empty body) within 2 s, or `{"allow":false,"reason":"season over"}` to refuse — the client gets `join rejected: <reason>`. Receiver down / non-2xx / non-JSON = refused (fail closed) and the rejection counter shows `validate_unavailable`. Subscribe by name: an empty `events` list does not include it |
+| `room.closed` | `{"room":"<uuid>","name":"ranked-7","mode":"sync","props":{...},"state":"<base64>"}` | the room ended: last player left and `empty_ttl` passed, or it was closed by the game / an operator. `state` only with room prop `export_state_on_close: true`: the final checkpoint JSON (players, master, sync state or lockstep snapshot), ≤ 256 KiB (`state_too_large: <bytes>` otherwise) — persist matches on your side |
+| `room.closed` (minimal) | `{"room":"<uuid>"}` | the room was closed while no node held it in memory (its node was lost and no other had taken it over yet) |
+| `room.rehosted` | `{"room":"<uuid>","name":"lobby-1","mode":"sync","node":"<node-uuid>","restored":"sync"}` | the room was adopted by another node after a drain or node loss; `restored` says what was brought back from the checkpoint: `"sync"` (the entity state), `"lockstep"` (the tick and input history) or `"none"` (a relay room, or no checkpoint was found and the room started fresh) |
 | `player.joined` | `{"room":"<uuid>","actor":3}` | a player finished auth + join; `actor` is the per-room id, counted from 1 |
 | `player.left` | `{"room":"<uuid>","actor":3,"kicked":true}` | a player left or timed out (`player_ttl`); `kicked` is present only for kicks |
 | `match.found` | `{"room":"lobby-7f3a","mode":"sync","players":["p1","p2"],"tickets":["<uuid>","<uuid>"],"bots":2}` | matchmaking grouped tickets; `room` is the room name the players will join with their grants (`tickets` lists the matched ticket ids) |
 | `desync` | `{"room":"<uuid>","tick":310,"actor":3,"strikes":1,"untrusted":false}` | lockstep: the state hash `actor` reported for `tick` differs from the majority; `strikes` counts that player's desyncs in the room, `untrusted` is true from the third |
+| `rpc` | `{"name":"claim_reward","player_id":"p1","actor":3,"room":"<uuid>","body":{...}}` | **synchronous**: a client sent `rpc`; `actor` and `room` are `null` when it is in no room. Goes to the first webhook that names `rpc` (an empty `events` list does not include it), one attempt; the answer, up to 16 KiB of JSON within 5 s, goes back to that client as `rpc_result` |
 | `test` | `{"webhook":"<uuid>"}` | sent by `POST /v1/webhooks/:id/test` or the console; ignores the event filter |
 
 A webhook with an empty `events` list receives every event. Unknown names are rejected at registration.
 
 ## Delivery semantics
 
-- Up to 3 attempts per event with 0.5 s / 1 s / 2 s backoff; a 4xx answer stops retries (the receiver rejected it on purpose), 5xx and network errors retry. Request timeout 5 s.
+- Up to 3 attempts per event, 0.5 s and then 1 s apart; a 4xx answer stops retries (the receiver rejected it on purpose), 5xx and network errors retry. Request timeout 5 s.
 - At-least-once: a receiver that answered slowly may see the same event twice — de-duplicate on (`event`, `data.room`, `data.actor`, `at`) if that matters.
 - Ordering is per node, not global: `player.left` for a rehosted room can arrive from a different node than its `player.joined`.
 - Outcomes are kept `retention.webhook_deliveries_days` (7) and visible under *Deliveries* in the console or `GET /v1/webhooks/:id/deliveries`: HTTP status, attempts, latency, error text.

@@ -52,7 +52,8 @@ not be baked into images or committed; use your orchestrator's secret store.
 - Run as an unprivileged user; raise `nofile` (one fd per connection, ≥ 65536).
 - Send `SIGTERM` to stop. The node marks itself draining (new joins refused, `/healthz` 503),
   checkpoints every room to Redis and marks them `orphaned`; the next node a player reaches
-  adopts the room. Give it ≥ 10 s before `SIGKILL`. Rolling deploys with ≥ 2 nodes per region
+  adopts the room. It stops matchmaking and, before it exits, delivers the webhooks it still
+  owes, for up to 4 s. Give it ≥ 10 s before `SIGKILL`. Rolling deploys with ≥ 2 nodes per region
   therefore do not end matches.
 - Readiness probe: `GET /healthz` (200 = serving, 503 = draining). Liveness: TCP on the HTTP
   port.

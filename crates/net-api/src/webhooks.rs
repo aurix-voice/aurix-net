@@ -13,7 +13,8 @@ use net_db::{queries, DbPool};
 use sha2::Sha256;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
+use tokio_util::task::TaskTracker;
 use uuid::Uuid;
 
 /// Every event a webhook can subscribe to (`events: []` means all). Kept in sync with docs/webhooks.md.
@@ -79,9 +80,16 @@ pub struct WebhookEvent {
     pub only: Option<Uuid>,
 }
 
+enum Queued {
+    Event(WebhookEvent),
+    /// Answered once every event queued before it has been handed to its deliveries.
+    Flush(oneshot::Sender<()>),
+}
+
 #[derive(Clone)]
 pub struct Dispatcher {
-    tx: mpsc::Sender<WebhookEvent>,
+    tx: mpsc::Sender<Queued>,
+    deliveries: TaskTracker,
     hooks: Hooks,
     pool: Option<DbPool>,
     http: reqwest::Client,
@@ -129,9 +137,17 @@ impl Dispatcher {
     pub fn start(pool: DbPool, allow_private: bool) -> Self {
         let (tx, rx) = mpsc::channel(4096);
         let hooks = hooks_cache();
-        tokio::spawn(worker(pool.clone(), rx, allow_private, hooks.clone()));
+        let deliveries = TaskTracker::new();
+        tokio::spawn(worker(
+            pool.clone(),
+            rx,
+            allow_private,
+            hooks.clone(),
+            deliveries.clone(),
+        ));
         Self {
             tx,
+            deliveries,
             hooks,
             pool: Some(pool),
             http: validate_client(),
@@ -144,6 +160,7 @@ impl Dispatcher {
         let (tx, _rx) = mpsc::channel(1);
         Self {
             tx,
+            deliveries: TaskTracker::new(),
             hooks: hooks_cache(),
             pool: None,
             http: validate_client(),
@@ -405,12 +422,26 @@ impl Dispatcher {
     }
 
     pub fn emit(&self, project: ProjectId, event: &'static str, payload: serde_json::Value) {
-        let _ = self.tx.try_send(WebhookEvent {
+        let _ = self.tx.try_send(Queued::Event(WebhookEvent {
             project,
             event,
             payload,
             only: None,
-        });
+        }));
+    }
+
+    /// Waits until every event emitted so far is delivered or given up on, `within` at most.
+    /// False when that time ran out.
+    pub async fn flush(&self, within: Duration) -> bool {
+        let delivered = async {
+            let (reached, queue_empty) = oneshot::channel();
+            if self.tx.send(Queued::Flush(reached)).await.is_ok() {
+                let _ = queue_empty.await;
+            }
+            self.deliveries.close();
+            self.deliveries.wait().await;
+        };
+        tokio::time::timeout(within, delivered).await.is_ok()
     }
 
     /// Fleet-level alert: delivered to operator webhooks, `project` is null in the body.
@@ -425,12 +456,12 @@ impl Dispatcher {
     /// Sends a `test` event to one webhook only (ignores its event filter); the outcome lands in
     /// the delivery log like any other emission.
     pub fn test(&self, project: ProjectId, webhook: Uuid) {
-        let _ = self.tx.try_send(WebhookEvent {
+        let _ = self.tx.try_send(Queued::Event(WebhookEvent {
             project,
             event: "test",
             payload: serde_json::json!({"webhook": webhook}),
             only: Some(webhook),
-        });
+        }));
     }
 }
 
@@ -586,16 +617,24 @@ async fn resolves_public(url: &str) -> bool {
 
 async fn worker(
     pool: DbPool,
-    mut rx: mpsc::Receiver<WebhookEvent>,
+    mut rx: mpsc::Receiver<Queued>,
     allow_private: bool,
     hooks: Hooks,
+    deliveries: TaskTracker,
 ) {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("reqwest");
-    while let Some(ev) = rx.recv().await {
+    while let Some(queued) = rx.recv().await {
+        let ev = match queued {
+            Queued::Event(ev) => ev,
+            Queued::Flush(reached) => {
+                let _ = reached.send(());
+                continue;
+            }
+        };
         if ev.only.is_some() {
             hooks.fresh.invalidate(&ev.project).await;
         }
@@ -632,9 +671,7 @@ async fn worker(
             match ev.only {
                 Some(only) if only != id => continue,
                 Some(_) => {}
-                None if !events.is_empty() && !events.iter().any(|e| e == ev.event || e == "*") => {
-                    continue
-                }
+                None if !events.is_empty() && !events.iter().any(|e| e == ev.event) => continue,
                 None => {}
             }
             let http = http.clone();
@@ -644,7 +681,7 @@ async fn worker(
             let sig_prev = previous.map(|p| sign(&p, body.as_bytes()));
             let event = ev.event;
             let project = ev.project.0;
-            tokio::spawn(async move {
+            deliveries.spawn(async move {
                 let started = Instant::now();
                 let outcome = deliver(
                     &http,

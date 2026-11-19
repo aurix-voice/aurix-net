@@ -80,6 +80,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - A room continued on another node without a checkpoint always got the same seed: 1 in
   lockstep (the `seed` of `joined`), 0 in sync. It gets a random one below 2^53, as a new room
   does.
+- A node that was stopped exited without the webhooks it still owed: an event queued moments
+  before, or a delivery waiting for its retry, was lost. A match made by a node about to stop
+  could reach nobody's backend. The node now finishes the matchmaking cycle under way, makes no
 - Sync: the room checkpoint did not say which entity was a player's avatar. A room continued on
   another node took the first entity the player owned, which could be one the player had
   spawned. The avatars are in the checkpoint now.
