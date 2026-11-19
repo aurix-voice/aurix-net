@@ -34,6 +34,7 @@ test("lockstep: confirmed ticks flow, margin reports arrive, a liar's desync yie
   }
   const timer = setInterval(() => { for (const p of peers) p.ls.sendInput(Uint8Array.of(p.name.charCodeAt(3))); }, 1000 / 30);
   await sleep(5000); clearInterval(timer);
+  for (const p of peers) assert.ok(Number.isSafeInteger(p.joined.seed) && p.joined.seed === peers[0].joined.seed, `${p.name} joined with seed ${p.joined.seed}`);
   for (const p of peers) assert.ok(p.ticks > 60, `${p.name} delivered ${p.ticks} ticks`);
   for (const p of peers) assert.ok(p.stats >= 1, `${p.name} got ${p.stats} input-stat reports (delay now ${p.ls.inputDelay}, margin ${p.ls.lastMargin})`);
   const liar = peers[2];

@@ -248,7 +248,8 @@ meaning "start from the seed") followed by every journal bundle from that tick u
 current one, in ~32 KiB frames. Live bundles keep flowing unreliably in parallel, so the
 client buffers them until the reliable tail reaches a tick the live stream already covers
 (the tail always overlaps thanks to bundle redundancy). `joined.tick` and `joined.seed` tell
-the client where it enters. Start the client with `Rollback::from_checkpoint(cfg, actors,
+the client where it enters; the seed is a random number below 2^53, so it survives a JSON
+reader that keeps numbers as doubles. Start the client with `Rollback::from_checkpoint(cfg, actors,
 tick, state)` and feed the tail bundles as confirmed inputs. If a joiner had to replay from a
 stale checkpoint the server asks the master for a fresh one at once, so catch-up stays bounded.
 

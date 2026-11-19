@@ -11,7 +11,7 @@ Live checks against a local node (README quickstart; `NET_HTTP` defaults to `htt
 
 ```bash
 export NET_API_KEY=an_...
-for t in echo_test sync_test; do
+for t in echo_test sync_test lockstep_test; do
   g++ -std=c++17 -O1 sdk/cpp/$t.cpp -Isdk/cpp -Ltarget/release -laurix_net -lpthread \
       -Wl,-rpath,$PWD/target/release -o /tmp/$t && /tmp/$t
 done

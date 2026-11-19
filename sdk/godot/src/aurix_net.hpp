@@ -2,6 +2,7 @@
 #pragma once
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -223,6 +224,14 @@ public:
         std::string result(joined);
         aurix_net_string_free(joined);
         return result;
+    }
+    /// The seed of the lockstep room: every client and the node start the game from it.
+    std::optional<uint64_t> seed() const {
+        uint64_t seed = 0;
+        if (aurix_net_joined_seed(handle_, &seed) != 0) {
+            return std::nullopt;
+        }
+        return seed;
     }
 
     void sendEvent(uint8_t code, const uint8_t* data, size_t len, Target target = Target::Others,

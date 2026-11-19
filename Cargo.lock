@@ -2037,6 +2037,7 @@ dependencies = [
  "prometheus",
  "proptest",
  "quinn",
+ "rand 0.10.3",
  "redis",
  "reqwest",
  "serde",

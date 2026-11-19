@@ -23,6 +23,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   every input in them for a tick it has already simulated. They left no trace.
 - Rust client: `Joined` has the lockstep room's `seed`. The node sent it in `joined`, the client
   dropped it, so a game on the Rust client could not start from the state the node starts from.
+- C ABI, C++, Godot, C#: the lockstep room's `seed` is there too: `aurix_net_joined_seed()`,
+  `aurix::net::Client::seed()`, `AurixNetClient.get_seed()` and `ManagedClient.Seed`.
 
 ### Changed
 - Dates: the node reads and writes dates as strict RFC 3339 through the `time` crate; its own
@@ -52,6 +54,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- A room continued on another node without a checkpoint always got the same seed: 1 in
+  lockstep (the `seed` of `joined`), 0 in sync. It gets a random one below 2^53, as a new room
+  does.
+- Lockstep: the room seed in `joined` was a nanosecond timestamp, more than a JSON number keeps
+  (2^53), so a client reading it as a double started from a different seed than the node. The
+  seed is a random number below 2^53 now.
 - Sync: an input that reached the room after its tick was simulated was dropped, and its ops
   with it: a spawn sent right after a short stall of the client never happened. Such an input
   runs on the room's current tick now, once and in the order sent.

@@ -95,6 +95,11 @@ late joiner restored from a mislabelled state desyncs. `Restore` with tick 0 and
 "start from the initial state". `sendInput` returns the stamped tick, or -1 when this room tick
 already has your input (the room takes one per tick).
 
+The initial state of a game with random numbers comes from the room's seed, the same for every
+client and for the node when it runs the game itself. It comes with the join: `Joined::seed` in
+Rust, `aurix_net_joined_seed()` in C, `Client::seed()` in C++, `get_seed()` in Godot,
+`ManagedClient.Seed` in C# and `joined.seed` on the Web.
+
 ## Sync rooms from C++ and Godot
 
 Inputs are stamped ahead of the last delta by a lead: two ticks plus the measured round trip, then

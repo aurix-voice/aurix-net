@@ -398,3 +398,57 @@ async fn client_hashing_by_the_documented_rule_agrees_with_the_referee() {
     assert_eq!(tick, 300);
     assert_eq!(restore[17..], mirror.states[&tick][..]);
 }
+
+#[tokio::test]
+async fn room_seed_is_a_number_every_json_reader_keeps() {
+    let node = Node::start().await;
+    let project = node.project("seed").await;
+    let mut seeds = Vec::new();
+    for (player, t) in [("ann", "create"), ("bob", "join")] {
+        let mut player = project.player(player).await;
+        player
+            .send(json!({"t": t, "name": "arena", "mode": "lockstep"}))
+            .await;
+        seeds.push(player.until("joined").await["seed"].clone());
+    }
+    let seed = seeds[0].as_u64().expect("seed");
+    // What a reader that keeps numbers as doubles sees.
+    assert_eq!(seeds[0].as_f64().expect("seed") as u64, seed);
+    assert!(seed < 1 << 53, "{seed}");
+    assert_eq!(seeds[1].as_u64(), Some(seed));
+}
+
+#[tokio::test]
+async fn room_continued_without_a_checkpoint_gets_a_seed_of_its_own() {
+    let fast = &[("NET__SERVER__HEARTBEAT_SECS", "1")];
+    let node_a = Node::start_with(fast).await;
+    let node_b = Node::start_with(fast).await;
+    let pa = node_a.project("seed-moved").await;
+    let pb = node_b.same_project(&pa);
+    let mut creators = Vec::new();
+    for (player, room) in [("ann", "arena"), ("cat", "duel")] {
+        let mut player = pa.player(player).await;
+        player
+            .send(json!({"t": "create", "name": room, "mode": "lockstep"}))
+            .await;
+        player.until("joined").await;
+        creators.push(player);
+    }
+
+    // A falls silent before the first checkpoint of either room, due five seconds in; B
+    // continues them when a player asks for them.
+    let frozen = node_a.freeze(Duration::from_secs(8));
+    let moved = async {
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        let mut seeds = Vec::new();
+        for (player, room) in [("bob", "arena"), ("dan", "duel")] {
+            let mut player = pb.player(player).await;
+            player.send(json!({"t": "join", "name": room})).await;
+            seeds.push(player.until("joined").await["seed"].as_u64().expect("seed"));
+        }
+        seeds
+    };
+    let (_, seeds) = tokio::join!(frozen, moved);
+    assert_ne!(seeds[0], seeds[1]);
+    assert!(seeds.iter().all(|seed| *seed < 1 << 53), "{seeds:?}");
+}

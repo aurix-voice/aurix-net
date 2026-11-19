@@ -93,6 +93,7 @@ class P
         }
         await clients[0].JoinOrCreateAsync(lsRoom, "lockstep", 8, "{\"tick_hz\":60}");
         await clients[1].JoinAsync(lsRoom);
+        if (clients[0].Seed == null || clients[0].Seed != clients[1].Seed) throw new Exception($"lockstep seed: {clients[0].Seed} and {clients[1].Seed}");
         until = DateTime.UtcNow.AddSeconds(8.5); bool cJoined = false; int frame = 0;
         while (DateTime.UtcNow < until)
         {

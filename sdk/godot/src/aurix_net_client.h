@@ -63,6 +63,7 @@ public:
 	int get_actor() const { return client_.actor(); }
 	bool is_connected_to() const { return client_.connected(); }
 	String get_joined_json() const { return String::utf8(client_.joinedJson().c_str()); }
+	int64_t get_seed() const { return static_cast<int64_t>(client_.seed().value_or(0)); }
 	String get_last_error() const { return last_error_; }
 	int get_last_error_code() const { return last_error_code_; }
 	aurix::net::Client &raw() { return client_; }

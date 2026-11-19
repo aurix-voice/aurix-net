@@ -1,0 +1,45 @@
+#include "aurix_net.hpp"
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <map>
+#include <thread>
+#include <unistd.h>
+using namespace aurix::net;
+// Two clients of one lockstep room get the same inputs for every tick, in order, and the same seed.
+struct Peer {
+    Client client; Lockstep lockstep; std::map<uint32_t, std::string> ticks; int desyncs = 0; bool gap = false; uint64_t hash = 14695981039346656037ull;
+    void start(const std::string& http, const char* key, const char* player, const std::string& room) {
+        client.connect(http, Client::issueGrant(http, key, player, player));
+        client.onData = [this](Channel, uint16_t, const uint8_t* d, size_t n) { lockstep.receive(client, d, n); };
+        client.onControl = [this](const std::string& json) { if (Client::jsonStr(json, "t") == "desync") desyncs++; };
+        client.joinOrCreate(room, Mode::Lockstep, 4, "{\"tick_hz\":30}");
+    }
+    void step(uint8_t input) {
+        lockstep.sendInput(client, &input, 1); client.flush(); client.poll();
+        for (auto e = lockstep.poll(); e.kind != Lockstep::Kind::None; e = lockstep.poll()) {
+            if (e.kind != Lockstep::Kind::Tick) continue;
+            if (!ticks.empty() && e.tick != ticks.rbegin()->first + 1) gap = true;
+            std::string& line = ticks[e.tick];
+            for (const auto& in : e.inputs) line += std::to_string(in.actor) + "=" + std::to_string(in.len ? in.data[0] : -1) + ",";
+            for (char c : line) hash = (hash ^ uint8_t(c)) * 1099511628211ull;
+            if (e.tick % 10 == 0) Lockstep::reportHash(client, e.tick, hash);
+        }
+    }
+};
+int main() {
+    const char* key = std::getenv("NET_API_KEY"); if (!key) { std::fprintf(stderr, "NET_API_KEY missing\n"); return 2; }
+    const char* env = std::getenv("NET_HTTP"); std::string http = env ? env : "http://127.0.0.1:8090";
+    std::string room = "cpp-ls-" + std::to_string(getpid());
+    Peer a, b; a.start(http, key, "cpp-la", room); b.start(http, key, "cpp-lb", room);
+    for (int frame = 0; frame < 180; frame++) { a.step(uint8_t(frame)); b.step(uint8_t(255 - frame % 200)); std::this_thread::sleep_for(std::chrono::milliseconds(16)); }
+    int common = 0, same = 0, both = 0;
+    for (const auto& [tick, line] : a.ticks) {
+        auto other = b.ticks.find(tick); if (other == b.ticks.end()) continue;
+        common++; same += other->second == line; both += line.find(',') != line.rfind(',');
+    }
+    auto seedA = a.client.seed(), seedB = b.client.seed();
+    bool ok = common >= 60 && same == common && both >= 30 && !a.gap && !b.gap && a.desyncs + b.desyncs == 0 && seedA && seedA == seedB;
+    std::printf("cpp lockstep: ticks=%zu/%zu common=%d same=%d with both inputs=%d gaps=%d desyncs=%d seed=%s -> %s\n", a.ticks.size(), b.ticks.size(), common, same, both, a.gap + b.gap, a.desyncs + b.desyncs, seedA && seedA == seedB ? "same" : "differs", ok ? "ok" : "FAILED");
+    return ok ? 0 : 1;
+}

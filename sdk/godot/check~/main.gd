@@ -103,6 +103,7 @@ func _start_lockstep() -> void:
 	var props := JSON.stringify({"tick_hz": 30})
 	if c.join_or_create(room, AurixNetClient.MODE_LOCKSTEP, 4, props) < 0: fail("c lockstep join: " + c.get_last_error()); return
 	if d.join_or_create(room, AurixNetClient.MODE_LOCKSTEP, 4, props) < 0: fail("d lockstep join: " + d.get_last_error()); return
+	if c.get_seed() == 0 or c.get_seed() != d.get_seed(): fail("lockstep seed: %d and %d" % [c.get_seed(), d.get_seed()]); return
 	lc = AurixNetLockstep.new(); ld = AurixNetLockstep.new()
 	lc.tick.connect(func(_tick, inputs):
 		ticks_c += 1

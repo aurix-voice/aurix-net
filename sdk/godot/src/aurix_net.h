@@ -68,6 +68,7 @@ AurixNetClient *aurix_net_connect(const char *http, const char *grant, int32_t t
 int32_t aurix_net_send_control(AurixNetClient *client, const char *json);
 int32_t aurix_net_join(AurixNetClient *client, const char *json);          /* returns actor id or -1 */
 char *aurix_net_joined_json(AurixNetClient *client);
+int32_t aurix_net_joined_seed(AurixNetClient *client, uint64_t *seed);     /* seed of the lockstep room; 0, or -1 when not in one */
 int32_t aurix_net_send_data(AurixNetClient *client, uint8_t channel, const uint8_t *data, size_t len);
 int32_t aurix_net_send_event(AurixNetClient *client, uint8_t code, int32_t target, const uint16_t *actors, size_t n_actors,
                              const uint8_t *data, size_t len, int32_t reliable);

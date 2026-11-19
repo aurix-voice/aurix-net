@@ -55,6 +55,8 @@ export interface Joined {
   master: number;
   tick_hz?: number;
   schema_hash?: string;
+  /** Lockstep rooms: the seed every client and the node start the game from. */
+  seed?: number;
   /** Relay events the room kept for late joiners: `[code, from, base64 payload]`, oldest first. */
   cached?: [number, number, string][];
   data: {

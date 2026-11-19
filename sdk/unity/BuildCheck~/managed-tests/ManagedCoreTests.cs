@@ -384,4 +384,12 @@ public class ManagedCoreTests
         Assert.That(Aurix.Net.Managed.ManagedClientTestHooks.Num(joined, "actor") == 7, "json: a room named like a field does not hide the field");
         Assert.That(Aurix.Net.Managed.ManagedClientTestHooks.Str(joined, "schema_hash") == "ab\"c", "json: a player named like a field does not hide the field");
     }
+
+    [Test]
+    public void SeedKeepsEveryDigit()
+    {
+        const string joined = "{\"t\":\"joined\",\"mode\":\"lockstep\",\"tick\":1,\"seed\":1795052993049961715}";
+        Assert.That(Aurix.Net.Managed.ManagedClientTestHooks.ULong(joined, "seed"), Is.EqualTo(1795052993049961715UL));
+        Assert.That(Aurix.Net.Managed.ManagedClientTestHooks.ULong(joined, "mode"), Is.Null);
+    }
 }

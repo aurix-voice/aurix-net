@@ -881,10 +881,7 @@ impl Session {
         crate::rest::validate_room_create(&name, &lobby_props)?;
         let mut lockstep = if mode == RoomMode::Lockstep {
             let hz = props.get("tick_hz").and_then(|v| v.as_u64()).unwrap_or(60) as u16;
-            let seed = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(1);
+            let seed = room_seed();
             Some(
                 crate::lockstep::LockstepRoom::new(hz, seed).with_spectator_delay(prop_secs(
                     &props,
@@ -897,10 +894,7 @@ impl Session {
             None
         };
         let sync = if mode == RoomMode::Sync {
-            let seed = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(1);
+            let seed = room_seed();
             Some(build_sync(&self.st, grant.project, &props, seed).await?)
         } else {
             None
@@ -1717,6 +1711,12 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
     }
 }
 
+/// A new room's seed. It reaches clients as a JSON number, and those are only portable up to
+/// 2^53 (RFC 8259, section 6).
+fn room_seed() -> u64 {
+    rand::random::<u64>() >> 11
+}
+
 /// Sync room from room props: `tick_hz`, `schema` (IDL text), replication settings and
 /// `logic` (name of a project WASM module uploaded via `PUT /v1/modules/:name`).
 pub async fn build_sync(
@@ -1922,16 +1922,14 @@ pub async fn adopt_room(
         }
     }
     if mode == RoomMode::Sync && sync.is_none() {
-        sync = Some(build_sync(st, project, &props, 0).await?);
+        sync = Some(build_sync(st, project, &props, room_seed()).await?);
     }
     if mode == RoomMode::Lockstep && lockstep.is_none() {
-        lockstep = Some(
-            crate::lockstep::LockstepRoom::new(hz, 1).with_spectator_delay(prop_secs(
-                &props,
-                "spectator_delay_secs",
-                3,
-            ) as u32),
-        );
+        lockstep =
+            Some(
+                crate::lockstep::LockstepRoom::new(hz, room_seed())
+                    .with_spectator_delay(prop_secs(&props, "spectator_delay_secs", 3) as u32),
+            );
     }
     if let Some(ls) = lockstep.as_mut() {
         if let Err(e) = attach_lockstep_sim(st, project, &props, ls).await {

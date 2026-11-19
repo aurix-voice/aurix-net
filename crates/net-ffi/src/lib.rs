@@ -331,6 +331,28 @@ pub unsafe extern "C" fn aurix_net_joined_json(client: *mut AurixNetClient) -> *
         .unwrap_or(std::ptr::null_mut())
 }
 
+/// The seed of the lockstep room the client is in: every client and the node start the game
+/// from it. Returns 0, or -1 when the client is not in a lockstep room.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_joined_seed(client: *mut AurixNetClient, seed: *mut u64) -> i32 {
+    let (Some(client), Some(seed)) = (client.as_ref(), seed.as_mut()) else {
+        return -1;
+    };
+    match client
+        .inner
+        .lock()
+        .joined
+        .as_ref()
+        .and_then(|joined| joined.seed)
+    {
+        Some(value) => {
+            *seed = value;
+            0
+        }
+        None => -1,
+    }
+}
+
 /// Raw data-path message. channel: 0 unreliable-sequenced, 1 reliable-ordered, 2 reliable-unordered.
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_send_data(

@@ -53,6 +53,9 @@ namespace Aurix.Net.Managed
         public string JoinedJson { get; private set; }
         public string RoomMode { get; private set; }
 
+        /// <summary>Lockstep rooms: the seed every client and the node start the game from.</summary>
+        public ulong? Seed { get; private set; }
+
         /// <summary>Events the room kept for late joiners, as received by the last join; also raised through OnEvent.</summary>
         public IReadOnlyList<EventFrame> Cached { get; private set; } = Array.Empty<EventFrame>();
 
@@ -285,6 +288,7 @@ namespace Aurix.Net.Managed
             JoinedJson = joined;
             Actor = (int)Json.Num(joined, "actor");
             RoomMode = Json.Str(joined, "mode");
+            Seed = Json.ULong(joined, "seed");
             Cached = Json.CachedEvents(joined);
             // Every join gets its own data path, and the node starts a fresh link on it.
             _link = new Link();
@@ -768,6 +772,11 @@ namespace Aurix.Net.Managed
                 ? (double)value
                 : double.NaN;
 
+        public static ulong? ULong(string json, string key) =>
+            Field(json, key) is JValue { Type: JTokenType.Integer } value
+                ? (ulong)value
+                : (ulong?)null;
+
         public static bool? Bool(string json, string key) =>
             Field(json, key) is JValue { Type: JTokenType.Boolean } value
                 ? (bool)value
@@ -806,5 +815,7 @@ namespace Aurix.Net.Managed
         public static string Str(string json, string key) => Json.Str(json, key);
 
         public static double Num(string json, string key) => Json.Num(json, key);
+
+        public static ulong? ULong(string json, string key) => Json.ULong(json, key);
     }
 }
