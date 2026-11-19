@@ -142,6 +142,9 @@ class P
         for (int i = 0; i < 5; i++) ra.SendEvent(2, new byte[] { (byte)i }, Target.Others, reliable: true);
         until = DateTime.UtcNow.AddSeconds(3); while (DateTime.UtcNow < until && again < 5) { ra.Poll(); rb.Poll(); await Task.Delay(5); }
         Console.WriteLine($"second room on the same client: reliable={again}/5");
+        // two calls to the backend in flight: each gets its own answer
+        var first = ra.RpcAsync("first"); var second = ra.RpcAsync("second");
+        if (ManagedClientTestHooks.Num(await first, "id") == ManagedClientTestHooks.Num(await second, "id")) throw new Exception("rpc: two calls in flight got the same answer");
         // the node takes a client out of its room: the client no longer describes it
         var gone = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-gone"));
         await gone.JoinOrCreateAsync(room + "-gone", "lockstep", 8);

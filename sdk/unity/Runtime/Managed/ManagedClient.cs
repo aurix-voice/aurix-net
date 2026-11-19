@@ -591,7 +591,7 @@ namespace Aurix.Net.Managed
                     + (string.IsNullOrEmpty(bodyJson) ? "null" : bodyJson)
                     + "}"
             );
-            return await WaitForAsync("rpc_result", timeoutMs);
+            return await WaitForAsync("rpc_result", timeoutMs, json => Json.Num(json, "id") == id);
         }
 
         /// <summary>Relay interest groups: events raised with a group reach only its members.</summary>
@@ -660,8 +660,8 @@ namespace Aurix.Net.Managed
             }
         }
 
-        /// <summary>Waits for a control message of type `t`, polling the inbox (other messages are dispatched normally).</summary>
-        async Task<string> WaitForAsync(string type, int timeoutMs)
+        /// <summary>Waits for a control message of type `t` that `match` accepts, polling the inbox (other messages are dispatched normally).</summary>
+        async Task<string> WaitForAsync(string type, int timeoutMs, Func<string, bool> match = null)
         {
             var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
             string got = null,
@@ -669,7 +669,7 @@ namespace Aurix.Net.Managed
             Action<string> handler = json =>
             {
                 var ty = Json.Str(json, "t");
-                if (ty == type)
+                if (ty == type && (match == null || match(json)))
                 {
                     got = json;
                 }

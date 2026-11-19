@@ -78,6 +78,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   got `room_elsewhere` and had no call to follow it, unlike Rust, Web and C#.
   `aurix_net_connect_and_join`, `Client::connectAndJoin` and `connect_and_join` connect, join
   and move to the room's node in one call.
+- Unity SDK: `RpcAsync` took the first `rpc_result` to arrive, so of two calls in flight the
+  second returned the answer to the first. Each call waits for the answer with its own id now.
 - A node started with port 0 in `server.http_addr` registered itself in the fleet under port 0
   and logged that address. It registers and logs the port it was given. The node tests start
   their nodes this way now instead of picking a free port in advance, which another process
