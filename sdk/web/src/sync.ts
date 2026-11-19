@@ -959,8 +959,9 @@ export class SyncSession {
       typeof schema === "string" ? Schema.parse(schema) : schema,
     );
     this.room = client.joined;
-    client.on("data", (_ch: Channel, _tick: number, payload: Uint8Array) => {
+    const listener = (_ch: Channel, _tick: number, payload: Uint8Array) => {
       if (!this.inRoom()) {
+        client.off("data", listener);
         return;
       }
       if (payload.length >= 7 && payload[0] === KIND_INPUT_STATS) {
@@ -991,7 +992,8 @@ export class SyncSession {
         this.synced = true;
         this.pump();
       }
-    });
+    };
+    client.on("data", listener);
   }
   private inRoom(): boolean {
     this.room ??= this.client.joined;

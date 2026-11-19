@@ -20,6 +20,10 @@ A listener given to `on` that throws is treated as a listener of an `EventTarget
 goes to the global error handler (`reportError`), the other listeners still get the event, and
 the client goes on.
 
+`off` with the same event and function takes the listener off, as `removeListener` of a Node
+`EventEmitter` does: one that was put on more than once is taken off once a call, the last one
+first, and an event being handed out still reaches it.
+
 ## Sync rooms
 
 `SyncSession` turns a joined sync-room client into a replicated world (same wire format as the Unity

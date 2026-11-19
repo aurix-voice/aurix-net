@@ -199,6 +199,17 @@ export class Client {
     listeners.push(listener);
     return this;
   }
+  /** Takes off a listener `on` put on; one that was put on more than once, the last time only. */
+  off<K extends keyof ClientEvents>(event: K, listener: ClientEvents[K]) {
+    const listeners: ClientEvents[K][] = this.listeners[event] ?? [];
+    const at = listeners.lastIndexOf(listener);
+    if (at >= 0) {
+      // a new list: an event being handed out goes on to the listeners it started with
+      const all: { [E in keyof ClientEvents]?: unknown[] } = this.listeners;
+      all[event] = listeners.filter((_, index) => index !== at);
+    }
+    return this;
+  }
   private emit<K extends keyof ClientEvents>(
     event: K,
     ...args: Parameters<ClientEvents[K]>

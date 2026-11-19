@@ -8,6 +8,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 ## [Unreleased]
 
 ### Added
+- Web: `Client.off(event, listener)` takes off a listener `on` put on; there was no way to. It
+  follows `removeListener` of a Node `EventEmitter`, as `on` follows its `on`. A `SyncSession`
+  whose stay in the room is over takes its own listener off with it.
 - Every client: the reliable events the node had not acknowledged when the game lost its room.
   They were dropped without a word: a reliable message is resent on the connection it was sent
   on and on no other, so an event sent just before the link died, the socket closed or the node

@@ -626,3 +626,34 @@ test("chat: a channel is of the room, and is joined again in the next one", { sk
   }
   assert.deepEqual(texts, ["match one", "match two"]);
 });
+
+test("client: off takes a listener off, the last time it was put on", { skip: !key }, async (t) => {
+  const a = await Client.connect(http, await grant("web-off-a"));
+  const b = await Client.connect(http, await grant("web-off-b"));
+  t.after(() => { a.close(); b.close(); });
+  const room = `web-off-${process.pid}`;
+  await a.joinOrCreate(room, "relay", 4);
+  await b.joinOrCreate(room, "relay", 4);
+  const got = [];
+  const say = async (code) => {
+    a.sendEvent(code, new Uint8Array([code]), "others", true);
+    a.flush();
+    for (let i = 0; i < 300 && !got.includes(`end ${code}`); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  };
+  const twice = (frame) => got.push(`twice ${frame.code}`);
+  const late = (frame) => got.push(`late ${frame.code}`);
+  // as with an EventEmitter: a listener taken off while an event is handed out still gets that event
+  const first = (frame) => { got.push(`first ${frame.code}`); b.off("event", late); };
+  const end = (frame) => got.push(`end ${frame.code}`);
+  assert.equal(b.on("event", first).on("event", twice).on("event", twice).on("event", late).on("event", end), b);
+  await say(1);
+  assert.equal(b.off("event", twice).off("event", () => {}), b);
+  await say(2);
+  b.off("event", twice).off("event", twice).off("event", first);
+  await say(3);
+  assert.deepEqual(got, [
+    "first 1", "twice 1", "twice 1", "late 1", "end 1",
+    "first 2", "twice 2", "end 2",
+    "end 3",
+  ]);
+});

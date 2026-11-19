@@ -205,6 +205,9 @@ test("sync room: the session of a room the client left takes nothing of the next
   const sends = [];
   const sendData = b.sendData.bind(b);
   b.sendData = (channel, bytes) => { sends.push(bytes); return sendData(channel, bytes); };
+  let dropped = 0;
+  const off = b.off.bind(b);
+  b.off = (event, listener) => { dropped++; return off(event, listener); };
   // a match: both in a room of the schema, a writes its avatar, b takes a second of deltas
   const match = async (name, schema, value) => {
     const room = `web-stay-${name}-${process.pid}`;
@@ -234,5 +237,6 @@ test("sync room: the session of a room the client left takes nothing of the next
   // another schema: neither earlier session can read the room, and must not try
   await match("three", "component Health {\n  hp: u8\n}\n", [7]);
   assert.deepEqual(errors, []);
+  assert.equal(dropped, 2, "each session of a room the client left takes its listener off");
   assert.throws(() => first.session.sendWrites([[first.session.world.schema.components[0], new ComponentValue(pose)]]), /out of the room/);
 });
