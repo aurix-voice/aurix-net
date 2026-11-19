@@ -188,6 +188,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- SDKs: a game on Linux that loads the C library (C, C++, Godot, Unreal, the native C#
+  client) was killed by SIGPIPE, exit code 141, when its connection to an `https://` node was
+  reset: a write to the reset connection raises the signal, and a game, unlike a Rust program,
+  does not ignore it. The library now keeps SIGPIPE off the threads it writes on, its own and
+  the game's for the length of a call, and leaves the game's signal handling as it is.
 - Godot SDK: a Windows build of the extension was not found by Godot. `SConstruct` names the
   library `libaurixnet_godot.windows.*.dll`, the way godot-cpp names its own test extension, and
   `aurix_net.gdextension` listed it without the `lib`, so the file had to be renamed by hand. The

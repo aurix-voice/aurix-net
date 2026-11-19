@@ -2153,6 +2153,7 @@ name = "net-ffi"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "libc",
  "net-client",
  "net-common",
  "net-replication",

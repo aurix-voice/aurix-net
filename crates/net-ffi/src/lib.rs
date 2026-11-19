@@ -8,6 +8,7 @@
 /// linked so the `#[no_mangle]` symbols end up in the cdylib/staticlib.
 pub use net_sim_wasm;
 
+mod sigpipe;
 /// `aurix_net_sync_*`: client-side replicated world for sync rooms.
 pub mod sync;
 
@@ -27,9 +28,16 @@ fn rt() -> &'static tokio::runtime::Runtime {
             .worker_threads(2)
             .enable_all()
             .thread_name("aurix-net")
+            .on_thread_start(sigpipe::block)
             .build()
             .expect("tokio runtime")
     })
+}
+
+/// Runs a call of the game to its end on the game's thread.
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    let _sigpipe = sigpipe::Blocked::new();
+    rt().block_on(future)
 }
 
 thread_local! {
@@ -315,7 +323,7 @@ pub unsafe extern "C" fn aurix_net_issue_grant(
         set_error(ErrorCode::InvalidArgument, "null or non-utf8 argument");
         return std::ptr::null_mut();
     };
-    match rt().block_on(net_client::issue_grant(http, key, pid, name)) {
+    match block_on(net_client::issue_grant(http, key, pid, name)) {
         Ok(grant) => CString::new(grant)
             .map(CString::into_raw)
             .unwrap_or(std::ptr::null_mut()),
@@ -337,7 +345,7 @@ pub unsafe extern "C" fn aurix_net_best_region(
         set_error(ErrorCode::InvalidArgument, "best_region: bad url");
         return std::ptr::null_mut();
     };
-    match rt().block_on(net_client::best_region(url, probes.clamp(1, 10) as u8)) {
+    match block_on(net_client::best_region(url, probes.clamp(1, 10) as u8)) {
         Ok(pick) => CString::new(serde_json::to_string(&pick).unwrap_or_default())
             .map(CString::into_raw)
             .unwrap_or(std::ptr::null_mut()),
@@ -390,7 +398,7 @@ pub unsafe extern "C" fn aurix_net_connect(
         tunnel: tunnel != 0,
         ..Default::default()
     };
-    match rt().block_on(Client::connect(http, grant, opts)) {
+    match block_on(Client::connect(http, grant, opts)) {
         Ok(inner) => Box::into_raw(Box::new(AurixNetClient {
             inner: Mutex::new(inner),
         })),
@@ -423,7 +431,7 @@ pub unsafe extern "C" fn aurix_net_connect_and_join(
         tunnel: tunnel != 0,
         ..Default::default()
     };
-    match rt().block_on(Client::connect_and_join(http, grant, opts, msg)) {
+    match block_on(Client::connect_and_join(http, grant, opts, msg)) {
         Ok((inner, joined)) => {
             if let Some(actor) = actor.as_mut() {
                 *actor = joined.actor.0 as i32;
@@ -451,7 +459,7 @@ pub unsafe extern "C" fn aurix_net_send_control(
     let Some(msg) = control_message(json) else {
         return -1;
     };
-    match rt().block_on(client.inner.lock().send(msg)) {
+    match block_on(client.inner.lock().send(msg)) {
         Ok(()) => 0,
         Err(error) => {
             set_client_error(&error);
@@ -471,7 +479,7 @@ pub unsafe extern "C" fn aurix_net_join(client: *mut AurixNetClient, json: *cons
         return -1;
     };
     let mut inner = client.inner.lock();
-    match rt().block_on(inner.join(msg)) {
+    match block_on(inner.join(msg)) {
         Ok(joined) => joined.actor.0 as i32,
         Err(error) => {
             set_client_error(&error);
@@ -820,7 +828,7 @@ pub unsafe extern "C" fn aurix_net_leave(client: *mut AurixNetClient) -> i32 {
         return -1;
     };
     let mut inner = client.inner.lock();
-    match rt().block_on(inner.leave()) {
+    match block_on(inner.leave()) {
         Ok(()) => 0,
         Err(error) => {
             set_client_error(&error);
