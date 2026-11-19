@@ -29,8 +29,9 @@ impl SequencedRx {
 pub struct InFlight {
     pub seq: u16,
     pub payload: Bytes,
+    pub first_sent: Instant,
     pub sent_at: Instant,
-    pub retries: u8,
+    pub resent: bool,
 }
 
 /// Send side of a reliable channel: a sliding window of unacked packets.
@@ -39,22 +40,19 @@ pub struct ReliableTx {
     next_seq: u16,
     in_flight: VecDeque<InFlight>,
     pending: VecDeque<Bytes>,
+    pending_bytes: usize,
 }
-
-pub const MAX_RETRIES: u8 = 20;
-
-/// A packet was retransmitted MAX_RETRIES times without an ack.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LinkDead;
 
 impl ReliableTx {
     /// Queues a payload; returns packets that may be sent now (window permitting).
     pub fn push(&mut self, payload: Bytes, now: Instant) -> Vec<(u16, Bytes)> {
+        self.pending_bytes += payload.len();
         self.pending.push_back(payload);
         self.drain_window(now)
     }
 
-    fn drain_window(&mut self, now: Instant) -> Vec<(u16, Bytes)> {
+    /// Sends what waits for the window, as far as the window allows.
+    pub fn drain_window(&mut self, now: Instant) -> Vec<(u16, Bytes)> {
         let mut out = Vec::new();
         loop {
             // Bound the *span* of outstanding seqs, not just their count: the receiver can
@@ -70,13 +68,15 @@ impl ReliableTx {
             let Some(packet) = self.pending.pop_front() else {
                 break;
             };
+            self.pending_bytes -= packet.len();
             let seq = self.next_seq;
             self.next_seq = self.next_seq.wrapping_add(1);
             self.in_flight.push_back(InFlight {
                 seq,
                 payload: packet.clone(),
+                first_sent: now,
                 sent_at: now,
-                retries: 0,
+                resent: false,
             });
             out.push((seq, packet));
         }
@@ -95,7 +95,7 @@ impl ReliableTx {
             } else {
                 false
             };
-            if acked && p.retries == 0 {
+            if acked && !p.resent {
                 rtts.push(now.duration_since(p.sent_at));
             }
             !acked
@@ -103,22 +103,29 @@ impl ReliableTx {
         rtts
     }
 
-    /// Returns packets to retransmit (older than `rto`) and newly windowed packets.
-    /// `Err(LinkDead)` when a packet exceeded MAX_RETRIES.
-    pub fn poll(&mut self, now: Instant, rto: Duration) -> Result<Vec<(u16, Bytes)>, LinkDead> {
+    /// Returns the packets to retransmit: those sent `rto` ago or earlier.
+    pub fn repeat(&mut self, now: Instant, rto: Duration) -> Vec<(u16, Bytes)> {
         let mut out = Vec::new();
         for packet in self.in_flight.iter_mut() {
             if now.duration_since(packet.sent_at) >= rto {
-                if packet.retries >= MAX_RETRIES {
-                    return Err(LinkDead);
-                }
-                packet.retries += 1;
+                packet.resent = true;
                 packet.sent_at = now;
                 out.push((packet.seq, packet.payload.clone()));
             }
         }
-        out.extend(self.drain_window(now));
-        Ok(out)
+        out
+    }
+
+    /// When the oldest unacknowledged packet first left.
+    pub fn waiting_since(&self) -> Option<Instant> {
+        self.in_flight.front().map(|p| p.first_sent)
+    }
+
+    /// Drops everything queued and in flight.
+    pub fn clear(&mut self) {
+        self.in_flight = VecDeque::new();
+        self.pending = VecDeque::new();
+        self.pending_bytes = 0;
     }
 
     pub fn in_flight(&self) -> usize {
@@ -126,6 +133,10 @@ impl ReliableTx {
     }
     pub fn pending(&self) -> usize {
         self.pending.len()
+    }
+    /// Bytes waiting for the window.
+    pub fn pending_bytes(&self) -> usize {
+        self.pending_bytes
     }
 }
 
@@ -277,9 +288,7 @@ mod tests {
         assert_eq!(samples.len(), 2);
         assert_eq!(tx.in_flight(), 0);
         tx.push(Bytes::from_static(b"z"), now);
-        let again = tx
-            .poll(now + Duration::from_millis(500), Duration::from_millis(200))
-            .unwrap();
+        let again = tx.repeat(now + Duration::from_millis(500), Duration::from_millis(200));
         assert_eq!(again.len(), 1);
         assert_eq!(again[0].0, 2);
     }

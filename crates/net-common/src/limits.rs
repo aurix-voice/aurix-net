@@ -13,6 +13,9 @@ pub const MAX_UNFRAGMENTED: usize = MAX_DATAGRAM - HEADER_LEN;
 /// Reliable window: unacked packets in flight per channel. Must not exceed the 32-bit ack
 /// bitfield plus one, otherwise a packet could fall behind the acknowledgeable range.
 pub const RELIABLE_WINDOW: u16 = 32;
+/// Bytes of reliable messages a link holds while they wait for the window. A sender that
+/// outruns its peer by more has lost it: the link ends instead of queueing without bound.
+pub const RELIABLE_BACKLOG_BYTES: usize = 1024 * 1024;
 /// Redundant input ticks sent with every input packet.
 pub const INPUT_REDUNDANCY: usize = 3;
 /// Data ticket lifetime after a successful join.

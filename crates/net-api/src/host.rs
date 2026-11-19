@@ -10,7 +10,7 @@ use net_transport::Link;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 /// Where a session's datagrams go.
@@ -56,9 +56,10 @@ impl DataSession {
         sink: DataSink,
         metrics: Arc<Metrics>,
         unmetered: Unmetered,
+        idle: Duration,
     ) -> Arc<Self> {
         Arc::new(Self {
-            link: Mutex::new(Link::new(Instant::now())),
+            link: Mutex::new(Link::new(Instant::now(), idle)),
             sink,
             metrics,
             metered_in: Default::default(),
@@ -126,6 +127,21 @@ impl DataSession {
         recv
     }
 
+    /// Bytes of reliable messages the link holds until the player takes them.
+    pub fn backlog(&self) -> usize {
+        self.link.lock().backlog()
+    }
+
+    /// Ends the link; the node-wide flusher then closes what carries it.
+    pub fn close(&self) {
+        self.link.lock().close();
+    }
+
+    /// The link is dead: nothing more reaches the player over it.
+    pub fn lost(&self) -> bool {
+        self.link.lock().is_dead()
+    }
+
     /// Timer-driven retransmits/acks. Returns false when the link is dead.
     pub fn tick(&self) -> bool {
         let (alive, out) = {
@@ -184,8 +200,9 @@ impl RoomHost {
         project: ProjectId,
         sink: DataSink,
         metrics: Arc<Metrics>,
+        idle: Duration,
     ) -> Arc<DataSession> {
-        DataSession::new(project, sink, metrics, self.unmetered.clone())
+        DataSession::new(project, sink, metrics, self.unmetered.clone(), idle)
     }
 
     pub fn register_data(&self, ds: &Arc<DataSession>) {
@@ -432,9 +449,9 @@ pub fn dispatch(hosted: &HostedRoom, out: Vec<Outgoing>, metrics: &Metrics) {
                     .with_label_values(&[channel_name(channel)])
                     .inc();
                 match &session.data {
-                    Some(data) => data.send(channel, frame.encode()),
-                    None => {
-                        // No data path yet: fall back to the control channel.
+                    Some(data) if !data.lost() => data.send(channel, frame.encode()),
+                    _ => {
+                        // No data path, or a lost one: fall back to the control channel.
                         use base64::Engine;
                         let _ = session.control.try_send(ServerMsg::Event {
                             code: frame.code,

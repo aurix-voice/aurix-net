@@ -81,7 +81,7 @@ async fn node() -> String {
                         .await
                         .unwrap();
                     let now = Instant::now();
-                    let mut link = Link::new(now);
+                    let mut link = Link::new(now, Duration::from_secs(15));
                     link.send(Channel::ReliableOrdered, Bytes::new(), now)
                         .unwrap();
                     while let Some(datagram) = link.next_outgoing() {

@@ -10,6 +10,8 @@ use net_transport::{quic, Link};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
+const IDLE: Duration = Duration::from_secs(15);
+
 struct Path {
     conn: quinn::Connection,
     ticket: Bytes,
@@ -77,7 +79,7 @@ async fn packet_that_overtakes_the_ticket_does_not_close_the_path() {
     let reply = ann.call(json!({"t": "create", "name": "room"})).await;
     joined(&reply);
     let path = connect(&reply).await;
-    let mut link = Link::new(Instant::now());
+    let mut link = Link::new(Instant::now(), IDLE);
 
     path.conn
         .send_datagram(packet(&mut link, b"early"))
@@ -96,7 +98,7 @@ async fn ticket_repeated_after_the_path_is_open_is_ignored() {
     let reply = ann.call(json!({"t": "create", "name": "room"})).await;
     joined(&reply);
     let path = connect(&reply).await;
-    let mut link = Link::new(Instant::now());
+    let mut link = Link::new(Instant::now(), IDLE);
 
     path.conn.send_datagram(path.ticket.clone()).expect("send");
     assert!(path.opened(&mut link).await, "the path did not open");
@@ -138,14 +140,14 @@ async fn ticket_of_a_replaced_session_does_not_open_a_path() {
         .send_datagram(stale.ticket.clone())
         .expect("send");
     assert!(
-        !stale.opened(&mut Link::new(Instant::now())).await,
+        !stale.opened(&mut Link::new(Instant::now(), IDLE)).await,
         "the replaced session got the data path"
     );
 
     let path = connect(&new_reply).await;
     path.conn.send_datagram(path.ticket.clone()).expect("send");
     assert!(
-        path.opened(&mut Link::new(Instant::now())).await,
+        path.opened(&mut Link::new(Instant::now(), IDLE)).await,
         "the path did not open"
     );
 }
@@ -170,7 +172,7 @@ async fn events_fall_back_to_the_control_channel_when_webtransport_ends() {
         .await
         .expect("webtransport session");
     conn.send_datagram(ticket).expect("send");
-    let mut link = Link::new(Instant::now());
+    let mut link = Link::new(Instant::now(), IDLE);
     let opened = async {
         loop {
             let datagram = conn.receive_datagram().await.expect("the path closed");
@@ -204,6 +206,48 @@ async fn events_fall_back_to_the_control_channel_when_webtransport_ends() {
 }
 
 #[tokio::test]
+async fn events_fall_back_to_the_control_channel_when_a_tunnel_stops_acknowledging() {
+    let node = Node::start_with(&[("NET__TRANSPORT__IDLE_TIMEOUT_MS", "1000")]).await;
+    let project = node.project("datapath").await;
+    let mut ann = project.player("ann").await;
+    let reply = ann.call(json!({"t": "create", "name": "room"})).await;
+    joined(&reply);
+    let ticket = base64::engine::general_purpose::STANDARD
+        .decode(reply["data"]["ticket"].as_str().expect("ticket"))
+        .expect("base64");
+    // ann opens the tunnel and acknowledges nothing the node sends through it
+    ann.send_binary(ticket).await;
+    let mut bob = project.player("bob").await;
+    joined(&bob.call(json!({"t": "join", "name": "room"})).await);
+    let event = json!({"t": "event", "code": 1, "data": "AQI=", "target": {"kind": "others"}});
+
+    bob.send(event.clone()).await;
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+        let message = ann.poll(Duration::from_millis(100)).await;
+        assert!(
+            message.is_none_or(|message| message["t"] != "event"),
+            "the event left the tunnel while the tunnel was alive"
+        );
+    }
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    bob.send(event).await;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut event = None;
+    while event.is_none() && Instant::now() < deadline {
+        event = ann
+            .poll(Duration::from_millis(200))
+            .await
+            .filter(|message| message["t"] == "event");
+    }
+    assert!(
+        event.is_some(),
+        "ann got no event after her tunnel was given up"
+    );
+}
+
+#[tokio::test]
 async fn unsequenced_event_goes_sequenced_to_a_path_whose_client_did_not_announce_it() {
     use net_client::{Client, Options};
     use net_rooms::event::{CacheOp, EventTarget};
@@ -220,7 +264,7 @@ async fn unsequenced_event_goes_sequenced_to_a_path_whose_client_did_not_announc
     let reply = old.call(json!({"t": "join", "name": "room"})).await;
     joined(&reply);
     let path = connect(&reply).await;
-    let mut link = Link::new(Instant::now());
+    let mut link = Link::new(Instant::now(), IDLE);
     path.conn.send_datagram(path.ticket.clone()).expect("send");
     assert!(path.opened(&mut link).await, "the path did not open");
 

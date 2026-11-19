@@ -13,9 +13,13 @@ export interface Received {
   payload: Uint8Array;
 }
 const WINDOW = 32;
-const MAX_RETRIES = 10;
-const MIN_RTO = 50;
-const MAX_RTO = 2000;
+/** Idle timeout of the data path, in milliseconds, and of the link on it. */
+export const IDLE_TIMEOUT = 15000;
+/** Bytes of reliable messages a link holds while they wait for the window. A sender that outruns
+ *  its peer by more has lost it: the link ends instead of queueing without bound. */
+export const RELIABLE_BACKLOG_BYTES = 1024 * 1024;
+const MIN_RTO = 60;
+const MAX_RTO = 1500;
 /** Packet kind of fragment packets (their own reliable stream); channels use their own value. */
 export const KIND_FRAGMENT = 3;
 const FRAG_HDR = 5;
@@ -59,28 +63,26 @@ class ReliableTx {
     seq: number;
     payload: Uint8Array;
     sentAt: number;
-    retries: number;
+    firstSent: number;
+    resent: boolean;
   }[] = [];
   pending: Uint8Array[] = [];
-  rtt = 100;
-  rttVar = 50;
-  rto() {
-    return Math.min(MAX_RTO, Math.max(MIN_RTO, this.rtt + 4 * this.rttVar));
-  }
-  onAck(ack: number, bits: number, now: number) {
+  pendingBytes = 0;
+  /** Drops what `ack` and `bits` acknowledge; returns the round trips of the packets sent once. */
+  onAck(ack: number, bits: number, now: number): number[] {
+    const samples: number[] = [];
     this.inFlight = this.inFlight.filter((packet) => {
       let acked = packet.seq === ack;
       if (!acked && seqNewer(ack, packet.seq)) {
         const distance = (ack - packet.seq) & 0xffff;
         acked = distance <= 32 && ((bits >>> (distance - 1)) & 1) === 1;
       }
-      if (acked && packet.retries === 0) {
-        const elapsed = now - packet.sentAt;
-        this.rttVar = 0.75 * this.rttVar + 0.25 * Math.abs(elapsed - this.rtt);
-        this.rtt = 0.875 * this.rtt + 0.125 * elapsed;
+      if (acked && !packet.resent) {
+        samples.push(now - packet.sentAt);
       }
       return !acked;
     });
+    return samples;
   }
 }
 class ReliableRx {
@@ -151,8 +153,46 @@ export class Link {
     }
   >();
   private out: Uint8Array[] = [];
+  private srtt: number | null = null;
+  private rttVar = 0;
+  private dead = false;
   tick = 0;
   stats = { sent: 0, recv: 0, retransmits: 0, dropped: 0 };
+
+  /** `idle` is the idle timeout of what carries the datagrams: a link whose oldest reliable
+   *  packet has gone that long without an acknowledgement is dead. */
+  constructor(private idle = IDLE_TIMEOUT) {}
+
+  private rto() {
+    return this.srtt === null
+      ? 250
+      : Math.min(MAX_RTO, Math.max(MIN_RTO, this.srtt + 4 * this.rttVar));
+  }
+
+  get isDead() {
+    return this.dead;
+  }
+  /** Bytes of reliable messages waiting for the window. */
+  backlog() {
+    let bytes = 0;
+    for (const stream of this.streams.values()) {
+      bytes += stream.tx.pendingBytes;
+    }
+    return bytes;
+  }
+  /** Ends the link: nothing more is sent or queued, and what was queued is dropped. */
+  close() {
+    this.dead = true;
+    for (const stream of this.streams.values()) {
+      stream.tx.inFlight = [];
+      stream.tx.pending = [];
+      stream.tx.pendingBytes = 0;
+    }
+    for (const batch of this.batches.values()) {
+      batch.take();
+    }
+    this.out = [];
+  }
 
   private header(
     kind: number,
@@ -178,9 +218,22 @@ export class Link {
     this.stats.sent++;
   }
 
-  send(channel: Channel, msg: Uint8Array) {
+  /** Queues a message. Throws on a dead link, and ends the link when the message would not fit
+   *  in `RELIABLE_BACKLOG_BYTES`. */
+  send(channel: Channel, msg: Uint8Array, now = performance.now()) {
+    if (this.dead) {
+      throw new Error("peer stopped acknowledging; link dead");
+    }
     if (msg.length > MAX_MESSAGE) {
       throw new Error("message too large (max 64 KiB)");
+    }
+    const queued =
+      msg.length > MAX_UNFRAGMENTED ||
+      channel === Channel.Reliable ||
+      channel === Channel.ReliableUnordered;
+    if (queued && this.backlog() + msg.length > RELIABLE_BACKLOG_BYTES) {
+      this.close();
+      throw new Error("reliable messages outran the peer; link dead");
     }
     if (msg.length > MAX_UNFRAGMENTED) {
       const count = Math.ceil(msg.length / FRAG_PAYLOAD);
@@ -201,9 +254,9 @@ export class Link {
         packet[3] = i;
         packet[4] = count;
         packet.set(chunk, FRAG_HDR);
-        this.streams.get(KIND_FRAGMENT)!.tx.pending.push(packet);
+        this.queue(this.streams.get(KIND_FRAGMENT)!, packet);
       }
-      this.pump(performance.now());
+      this.pump(now);
       return;
     }
     const batch = this.batches.get(channel);
@@ -214,8 +267,12 @@ export class Link {
       batch.add(msg);
       return;
     }
-    this.streams.get(channel)!.tx.pending.push(msg);
-    this.pump(performance.now());
+    this.queue(this.streams.get(channel)!, msg);
+    this.pump(now);
+  }
+  private queue(stream: Stream, packet: Uint8Array) {
+    stream.tx.pending.push(packet);
+    stream.tx.pendingBytes += packet.length;
   }
   flushBatch() {
     for (const [channel, batch] of this.batches) {
@@ -237,24 +294,41 @@ export class Link {
           WINDOW
       ) {
         const payload = stream.tx.pending.shift()!;
+        stream.tx.pendingBytes -= payload.length;
         const seq = stream.tx.seq;
         stream.tx.seq = (stream.tx.seq + 1) & 0xffff;
-        stream.tx.inFlight.push({ seq, payload, sentAt: now, retries: 0 });
+        stream.tx.inFlight.push({
+          seq,
+          payload,
+          sentAt: now,
+          firstSent: now,
+          resent: false,
+        });
         this.push(this.header(stream.kind, seq), payload);
       }
     }
   }
   /** Timer: retransmits and flushes the batch. Returns false when the link is dead. */
   poll(now = performance.now()): boolean {
+    if (this.dead) {
+      return false;
+    }
     this.flushBatch();
+    let waitingSince = Infinity;
     for (const stream of this.streams.values()) {
-      const rto = stream.tx.rto();
+      if (stream.tx.inFlight.length) {
+        waitingSince = Math.min(waitingSince, stream.tx.inFlight[0].firstSent);
+      }
+    }
+    if (now - waitingSince >= this.idle) {
+      this.close();
+      return false;
+    }
+    const rto = this.rto();
+    for (const stream of this.streams.values()) {
       for (const packet of stream.tx.inFlight) {
         if (now - packet.sentAt >= rto) {
-          if (packet.retries >= MAX_RETRIES) {
-            return false;
-          }
-          packet.retries++;
+          packet.resent = true;
           packet.sentAt = now;
           this.stats.retransmits++;
           this.push(this.header(stream.kind, packet.seq), packet.payload);
@@ -374,7 +448,16 @@ export class Link {
       return out;
     }
     if (header.hasAck) {
-      stream.tx.onAck(header.ack, header.ackBits, now);
+      for (const sample of stream.tx.onAck(header.ack, header.ackBits, now)) {
+        if (this.srtt === null) {
+          this.srtt = sample;
+          this.rttVar = sample / 2;
+        } else {
+          this.rttVar =
+            0.75 * this.rttVar + 0.25 * Math.abs(this.srtt - sample);
+          this.srtt = 0.875 * this.srtt + 0.125 * sample;
+        }
+      }
       this.pump(now);
     }
     if (!header.ackOnly) {

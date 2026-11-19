@@ -15,10 +15,16 @@ namespace Aurix.Net.Managed
 
     public sealed class Link
     {
-        const int Window = 32,
-            MaxRetries = 10;
-        const double MinRto = 50,
-            MaxRto = 2000;
+        /// <summary>Idle timeout of the data path, in milliseconds, and of the link on it.</summary>
+        public const double IdleTimeout = 15000;
+
+        /// <summary>Bytes of reliable messages a link holds while they wait for the window. A sender
+        /// that outruns its peer by more has lost it: the link ends instead of queueing without bound.</summary>
+        public const int ReliableBacklogBytes = 1024 * 1024;
+
+        const int Window = 32;
+        const double MinRto = 60,
+            MaxRto = 1500;
         const int FragHdr = 5,
             FragPayload = Packet.MaxUnfragmented - FragHdr,
             MaxMessage = 64 * 1024;
@@ -28,7 +34,8 @@ namespace Aurix.Net.Managed
             public ushort Seq;
             public byte[] Payload;
             public double SentAt;
-            public int Retries;
+            public double FirstSent;
+            public bool Resent;
         }
 
         sealed class Stream
@@ -38,17 +45,16 @@ namespace Aurix.Net.Managed
             public ushort TxSeq;
             public List<InFlight> InFlight = new List<InFlight>();
             public Queue<byte[]> Pending = new Queue<byte[]>();
-            public double Rtt = 100,
-                RttVar = 50;
+            public int PendingBytes;
             public bool HasAck;
             public ushort RxAck;
             public uint RxAckBits;
             public ushort Next;
             public Dictionary<ushort, byte[]> Buffer = new Dictionary<ushort, byte[]>();
 
-            public double Rto() => Math.Min(MaxRto, Math.Max(MinRto, Rtt + 4 * RttVar));
-
-            public void OnAck(ushort ack, uint bits, double now)
+            /// <summary>Drops what <paramref name="ack"/> and <paramref name="bits"/> acknowledge;
+            /// adds the round trips of the packets sent once to <paramref name="samples"/>.</summary>
+            public void OnAck(ushort ack, uint bits, double now, List<double> samples)
             {
                 InFlight.RemoveAll(packet =>
                 {
@@ -58,11 +64,9 @@ namespace Aurix.Net.Managed
                         int distance = (ushort)(ack - packet.Seq);
                         acked = distance <= 32 && ((bits >> (distance - 1)) & 1) == 1;
                     }
-                    if (acked && packet.Retries == 0)
+                    if (acked && !packet.Resent)
                     {
-                        double elapsed = now - packet.SentAt;
-                        RttVar = 0.75 * RttVar + 0.25 * Math.Abs(elapsed - Rtt);
-                        Rtt = 0.875 * Rtt + 0.125 * elapsed;
+                        samples.Add(now - packet.SentAt);
                     }
                     return acked;
                 });
@@ -164,14 +168,21 @@ namespace Aurix.Net.Managed
         ushort _fragId;
         readonly Dictionary<ushort, Partial> _partial = new Dictionary<ushort, Partial>();
         readonly Queue<byte[]> _out = new Queue<byte[]>();
+        readonly double _idle;
+        readonly List<double> _samples = new List<double>();
+        double _srtt = double.NaN,
+            _rttVar;
         public ushort Tick;
         public long Sent,
             Recv,
             Retransmits,
             Dropped;
 
-        public Link()
+        /// <summary><paramref name="idle"/> is the idle timeout of what carries the datagrams: a link
+        /// whose oldest reliable packet has gone that long without an acknowledgement is dead.</summary>
+        public Link(double idle = IdleTimeout)
         {
+            _idle = idle;
             _streams[1] = new Stream { Kind = 1, Ordered = true };
             _streams[2] = new Stream { Kind = 2, Ordered = false };
             _streams[Packet.KindFragment] = new Stream
@@ -185,6 +196,40 @@ namespace Aurix.Net.Managed
             System.Diagnostics.Stopwatch.GetTimestamp()
             * 1000.0
             / System.Diagnostics.Stopwatch.Frequency;
+
+        double Rto() =>
+            double.IsNaN(_srtt) ? 250 : Math.Min(MaxRto, Math.Max(MinRto, _srtt + 4 * _rttVar));
+
+        public bool IsDead { get; private set; }
+
+        /// <summary>Bytes of reliable messages waiting for the window.</summary>
+        public int Backlog()
+        {
+            int bytes = 0;
+            foreach (var stream in _streams.Values)
+            {
+                bytes += stream.PendingBytes;
+            }
+
+            return bytes;
+        }
+
+        /// <summary>Ends the link: nothing more is sent or queued, and what was queued is dropped.</summary>
+        public void Close()
+        {
+            IsDead = true;
+            foreach (var stream in _streams.Values)
+            {
+                stream.InFlight.Clear();
+                stream.Pending.Clear();
+                stream.PendingBytes = 0;
+            }
+            foreach (var batch in _batches.Values)
+            {
+                batch.Take();
+            }
+            _out.Clear();
+        }
 
         Packet.Header Header(byte kind, ushort seq, bool ackOnly = false, bool batch = false)
         {
@@ -209,11 +254,30 @@ namespace Aurix.Net.Managed
             Sent++;
         }
 
-        public void Send(Channel channel, byte[] msg)
+        public void Send(Channel channel, byte[] msg) => Send(channel, msg, Now());
+
+        /// <summary>Queues a message. Throws on a dead link, and ends the link when the message
+        /// would not fit in <see cref="ReliableBacklogBytes"/>.</summary>
+        public void Send(Channel channel, byte[] msg, double now)
         {
+            if (IsDead)
+            {
+                throw new InvalidOperationException("peer stopped acknowledging; link dead");
+            }
+
             if (msg.Length > MaxMessage)
             {
                 throw new ArgumentException("message too large (max 64 KiB)");
+            }
+
+            bool queued =
+                msg.Length > Packet.MaxUnfragmented
+                || channel == Channel.Reliable
+                || channel == Channel.ReliableUnordered;
+            if (queued && Backlog() + msg.Length > ReliableBacklogBytes)
+            {
+                Close();
+                throw new InvalidOperationException("reliable messages outran the peer; link dead");
             }
 
             if (msg.Length > Packet.MaxUnfragmented)
@@ -236,9 +300,9 @@ namespace Aurix.Net.Managed
                     payload[3] = (byte)i;
                     payload[4] = (byte)count;
                     Array.Copy(msg, off, payload, FragHdr, len);
-                    _streams[Packet.KindFragment].Pending.Enqueue(payload);
+                    Queue(_streams[Packet.KindFragment], payload);
                 }
-                Pump(Now());
+                Pump(now);
                 return;
             }
             if (_batches.TryGetValue((byte)channel, out var batch))
@@ -251,8 +315,14 @@ namespace Aurix.Net.Managed
                 batch.Add(msg);
                 return;
             }
-            _streams[(byte)channel].Pending.Enqueue(msg);
-            Pump(Now());
+            Queue(_streams[(byte)channel], msg);
+            Pump(now);
+        }
+
+        static void Queue(Stream stream, byte[] packet)
+        {
+            stream.Pending.Enqueue(packet);
+            stream.PendingBytes += packet.Length;
         }
 
         public void FlushBatch()
@@ -281,6 +351,7 @@ namespace Aurix.Net.Managed
                 )
                 {
                     var payload = stream.Pending.Dequeue();
+                    stream.PendingBytes -= payload.Length;
                     ushort seq = stream.TxSeq++;
                     stream.InFlight.Add(
                         new InFlight
@@ -288,7 +359,7 @@ namespace Aurix.Net.Managed
                             Seq = seq,
                             Payload = payload,
                             SentAt = now,
-                            Retries = 0,
+                            FirstSent = now,
                         }
                     );
                     Push(Header(stream.Kind, seq), payload);
@@ -297,23 +368,38 @@ namespace Aurix.Net.Managed
         }
 
         /// <summary>Timer (call every few ms): retransmits and flushes the batch. False when the link is dead.</summary>
-        public bool Poll()
+        public bool Poll() => Poll(Now());
+
+        public bool Poll(double now)
         {
-            double now = Now();
+            if (IsDead)
+            {
+                return false;
+            }
+
             FlushBatch();
+            double waitingSince = double.PositiveInfinity;
             foreach (var stream in _streams.Values)
             {
-                double rto = stream.Rto();
+                if (stream.InFlight.Count > 0)
+                {
+                    waitingSince = Math.Min(waitingSince, stream.InFlight[0].FirstSent);
+                }
+            }
+            if (now - waitingSince >= _idle)
+            {
+                Close();
+                return false;
+            }
+
+            double rto = Rto();
+            foreach (var stream in _streams.Values)
+            {
                 foreach (var packet in stream.InFlight)
                 {
                     if (now - packet.SentAt >= rto)
                     {
-                        if (packet.Retries >= MaxRetries)
-                        {
-                            return false;
-                        }
-
-                        packet.Retries++;
+                        packet.Resent = true;
                         packet.SentAt = now;
                         Retransmits++;
                         Push(Header(stream.Kind, packet.Seq), packet.Payload);
@@ -425,7 +511,9 @@ namespace Aurix.Net.Managed
             return true;
         }
 
-        public List<Received> Receive(byte[] data)
+        public List<Received> Receive(byte[] data) => Receive(data, Now());
+
+        public List<Received> Receive(byte[] data, double now)
         {
             var outp = new List<Received>();
             if (!Packet.Decode(data, out var header, out var payload))
@@ -433,7 +521,6 @@ namespace Aurix.Net.Managed
                 return outp;
             }
 
-            double now = Now();
             Recv++;
             if (_batches.ContainsKey(header.Kind))
             {
@@ -502,7 +589,21 @@ namespace Aurix.Net.Managed
 
             if (header.HasAck)
             {
-                stream.OnAck(header.Ack, header.AckBits, now);
+                _samples.Clear();
+                stream.OnAck(header.Ack, header.AckBits, now, _samples);
+                foreach (double sample in _samples)
+                {
+                    if (double.IsNaN(_srtt))
+                    {
+                        _srtt = sample;
+                        _rttVar = sample / 2;
+                    }
+                    else
+                    {
+                        _rttVar = 0.75 * _rttVar + 0.25 * Math.Abs(_srtt - sample);
+                        _srtt = 0.875 * _srtt + 0.125 * sample;
+                    }
+                }
                 Pump(now);
             }
             if (!header.AckOnly)

@@ -133,6 +133,8 @@ impl DataPath {
     }
 }
 
+/// Idle timeout of the data connection, and of the link on it.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 const PING_EVERY: Duration = Duration::from_secs(1);
 const TICKET_RESEND: Duration = Duration::from_millis(100);
 
@@ -506,7 +508,7 @@ impl Client {
         let ticket = base64::engine::general_purpose::STANDARD
             .decode(&ep.ticket)
             .map_err(|error| ClientError::Data(error.to_string()))?;
-        let link = Mutex::new(Link::new(Instant::now()));
+        let link = Mutex::new(Link::new(Instant::now(), IDLE_TIMEOUT));
         let dp: Arc<DataPath> = if self.opts.tunnel {
             let (ws_tx, mut ws_rx) = mpsc::channel::<Message>(1024);
             let ctl = self.ctl.clone();
@@ -531,7 +533,7 @@ impl Client {
                 .map_err(|_| ClientError::Disconnected)?;
             dp
         } else {
-            let transport = quic::transport_config(Duration::from_secs(15), Duration::from_secs(5));
+            let transport = quic::transport_config(IDLE_TIMEOUT, Duration::from_secs(5));
             let endpoint =
                 quic::client_endpoint("0.0.0.0:0".parse().unwrap(), &ep.cert_sha256, transport)
                     .map_err(|error| ClientError::Data(error.to_string()))?;

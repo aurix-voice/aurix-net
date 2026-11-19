@@ -76,9 +76,12 @@ async fn handle(st: Shared, incoming: quinn::Incoming) -> anyhow::Result<()> {
         conn.close(3u32.into(), b"not joined");
         anyhow::bail!("actor not joined");
     };
-    let ds = st
-        .host
-        .data_session(project, DataSink::Quic(conn.clone()), st.metrics.clone());
+    let ds = st.host.data_session(
+        project,
+        DataSink::Quic(conn.clone()),
+        st.metrics.clone(),
+        Duration::from_millis(st.cfg.transport.idle_timeout_ms),
+    );
     let ds = attach_data(&hosted, ticket.actor, ds);
     spawn_ticker(&st, ds.clone());
     loop {
@@ -171,6 +174,7 @@ async fn handle_wt(
         project,
         DataSink::WebTransport(conn.clone()),
         st.metrics.clone(),
+        Duration::from_millis(st.cfg.transport.idle_timeout_ms),
     );
     let ds = attach_data(&hosted, ticket.actor, ds);
     spawn_ticker(&st, ds.clone());

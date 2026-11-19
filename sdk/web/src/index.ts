@@ -8,7 +8,7 @@ import {
   type EventFrame,
 } from "./event.js";
 export { Channel } from "./packet.js";
-export { Link } from "./link.js";
+export { Link, IDLE_TIMEOUT, RELIABLE_BACKLOG_BYTES } from "./link.js";
 export { encodeEvent, decodeEvent } from "./event.js";
 export type { Target, EventFrame } from "./event.js";
 export * from "./sync.js";
@@ -620,7 +620,8 @@ export class Client {
 
   /** Queue a data message; unreliable ones leave on flush()/timer. A node that does not know the
    *  unsequenced channel gets its messages on the sequenced one. Throws outside a room and once
-   *  the connection is lost. */
+   *  the connection is lost. It is lost when the node acknowledges nothing for `IDLE_TIMEOUT`
+   *  and when more than `RELIABLE_BACKLOG_BYTES` of reliable messages wait for it. */
   sendData(channel: Channel, payload: Uint8Array) {
     if (!this.path || this.isLost) {
       throw new Error("disconnected");
@@ -631,7 +632,14 @@ export class Client {
     ) {
       channel = Channel.Unreliable;
     }
-    this.link.send(channel, payload);
+    try {
+      this.link.send(channel, payload);
+    } catch (error) {
+      if (this.link.isDead) {
+        this.lost("link dead");
+      }
+      throw error;
+    }
     if (channel === Channel.Reliable) {
       this.flushLink();
     }

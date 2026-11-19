@@ -7,7 +7,7 @@ use net_transport::packet::Header;
 use net_transport::TicketSigner;
 use proptest::collection::vec;
 use proptest::prelude::*;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 fn datagram() -> impl Strategy<Value = Vec<u8>> {
     vec(any::<u8>(), 0..=96)
@@ -31,7 +31,7 @@ proptest! {
     #[test]
     fn link_and_reassembler_survive_a_garbage_burst(burst in vec(datagram(), 0..200)) {
         let now = Instant::now();
-        let mut link = Link::new(now);
+        let mut link = Link::new(now, Duration::from_secs(15));
         let mut reassembler = Reassembler::default();
         for datagram in burst {
             let _ = reassembler.accept(Bytes::from(datagram.clone()), now);

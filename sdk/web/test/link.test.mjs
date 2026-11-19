@@ -1,7 +1,7 @@
 // Offline checks for the transport link: `node --test test/`.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Link } from "../dist/link.js";
+import { IDLE_TIMEOUT, Link, RELIABLE_BACKLOG_BYTES } from "../dist/link.js";
 import { Channel } from "../dist/packet.js";
 
 test("a lost packet in a burst longer than the ack window is still retransmitted and acked", () => {
@@ -58,4 +58,71 @@ test("a message too large for one datagram keeps the unsequenced channel", () =>
   assert.equal(got.length, 1);
   assert.equal(got[0].channel, Channel.UnreliableUnsequenced);
   assert.deepEqual(got[0].payload, message);
+});
+
+test("a link dies when its oldest reliable packet goes unacknowledged for the idle timeout", () => {
+  const near = new Link();
+  assert.ok(near.poll(4 * IDLE_TIMEOUT), "nothing waits for the peer");
+  const start = 4 * IDLE_TIMEOUT;
+  near.send(Channel.Reliable, Uint8Array.of(1), start);
+  assert.ok(near.poll(start + IDLE_TIMEOUT - 1));
+  assert.equal(near.poll(start + IDLE_TIMEOUT), false);
+  assert.ok(near.isDead);
+});
+
+test("a link dies when a packet stays unacknowledged while the peer talks", () => {
+  const near = new Link(), far = new Link();
+  near.send(Channel.Reliable, Uint8Array.of(1), 0);
+  let now = 0;
+  for (;;) {
+    // the reliable packet never arrives; the peer keeps sending
+    near.drain();
+    far.send(Channel.Unreliable, Uint8Array.of(2), now);
+    far.poll(now);
+    for (const datagram of far.drain()) near.receive(datagram, now);
+    if (!near.poll(now)) break;
+    now += 100;
+  }
+  assert.equal(now, IDLE_TIMEOUT);
+  assert.ok(near.isDead);
+});
+
+test("a packet is repeated 250 ms after it left while the round trip is unknown", () => {
+  const near = new Link();
+  near.send(Channel.Reliable, Uint8Array.of(1), 0);
+  assert.equal(near.drain().length, 1);
+  near.poll(249);
+  assert.equal(near.drain().length, 0);
+  near.poll(250);
+  assert.equal(near.drain().length, 1);
+  assert.equal(near.stats.retransmits, 1);
+});
+
+test("a sender that outruns its peer loses the link", () => {
+  const near = new Link();
+  const message = new Uint8Array(60000);
+  let accepted = 0;
+  assert.throws(() => {
+    for (;;) { near.send(Channel.Reliable, message, 0); accepted++; }
+  }, /outran the peer/);
+  // the window takes 32 fragments of the first message; sixteen more fill the megabyte
+  assert.equal(accepted, 17);
+  assert.ok(RELIABLE_BACKLOG_BYTES < 18 * message.length);
+  assert.ok(near.isDead);
+  assert.equal(near.backlog(), 0);
+  assert.equal(near.nextOutgoing(), undefined);
+});
+
+test("a dead link refuses to send and keeps nothing", () => {
+  const near = new Link();
+  for (let i = 0; i < 100; i++) near.send(Channel.Reliable, Uint8Array.of(1), 0);
+  assert.equal(near.poll(IDLE_TIMEOUT), false);
+  assert.equal(near.backlog(), 0);
+  assert.equal(near.nextOutgoing(), undefined);
+  for (const channel of [Channel.Reliable, Channel.Unreliable]) {
+    assert.throws(() => near.send(channel, Uint8Array.of(1), IDLE_TIMEOUT), /link dead/);
+  }
+  near.flushBatch();
+  assert.equal(near.nextOutgoing(), undefined);
+  assert.equal(near.poll(2 * IDLE_TIMEOUT), false);
 });

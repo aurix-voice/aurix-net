@@ -448,6 +448,79 @@ public class ManagedCoreTests
         Assert.That(datagrams.Select(d => d.Take(4).ToArray()), Is.EqualTo(new[] { new byte[] { 1, 0x20, 0, 0 }, new byte[] { 1, 0x24, 0, 0 } }));
     }
 
+    [Test]
+    public void ALinkDiesWhenItsOldestReliablePacketGoesUnacknowledgedForTheIdleTimeout()
+    {
+        var near = new Link();
+        Assert.That(near.Poll(4 * Link.IdleTimeout), Is.True, "nothing waits for the peer");
+        double start = 4 * Link.IdleTimeout;
+        near.Send(Channel.Reliable, new byte[] { 1 }, start);
+        Assert.That(near.Poll(start + Link.IdleTimeout - 1), Is.True);
+        Assert.That(near.Poll(start + Link.IdleTimeout), Is.False);
+        Assert.That(near.IsDead, Is.True);
+    }
+
+    [Test]
+    public void ALinkDiesWhenAPacketStaysUnacknowledgedWhileThePeerTalks()
+    {
+        var near = new Link(); var far = new Link();
+        near.Send(Channel.Reliable, new byte[] { 1 }, 0);
+        double now = 0;
+        for (; ; )
+        {
+            // the reliable packet never arrives; the peer keeps sending
+            while (near.TryDequeueOutgoing(out _)) { }
+            far.Send(Channel.Unreliable, new byte[] { 2 }, now);
+            far.Poll(now);
+            while (far.TryDequeueOutgoing(out var datagram)) near.Receive(datagram, now);
+            if (!near.Poll(now)) break;
+            now += 100;
+        }
+        Assert.That(now, Is.EqualTo(Link.IdleTimeout));
+        Assert.That(near.IsDead, Is.True);
+    }
+
+    [Test]
+    public void APacketIsRepeated250MsAfterItLeftWhileTheRoundTripIsUnknown()
+    {
+        var near = new Link();
+        near.Send(Channel.Reliable, new byte[] { 1 }, 0);
+        Assert.That(near.TryDequeueOutgoing(out _), Is.True);
+        near.Poll(249);
+        Assert.That(near.TryDequeueOutgoing(out _), Is.False);
+        near.Poll(250);
+        Assert.That(near.TryDequeueOutgoing(out _), Is.True);
+        Assert.That(near.Retransmits, Is.EqualTo(1));
+    }
+
+    [Test]
+    public void ASenderThatOutrunsItsPeerLosesTheLink()
+    {
+        var near = new Link(); var message = new byte[60000]; int accepted = 0;
+        var refused = Assert.Throws<InvalidOperationException>(() => { for (; ; ) { near.Send(Channel.Reliable, message, 0); accepted++; } });
+        Assert.That(refused.Message, Does.Contain("outran the peer"));
+        // the window takes 32 fragments of the first message; sixteen more fill the megabyte
+        Assert.That(accepted, Is.EqualTo(17));
+        Assert.That(near.IsDead, Is.True);
+        Assert.That(near.Backlog(), Is.EqualTo(0));
+        Assert.That(near.TryDequeueOutgoing(out _), Is.False);
+    }
+
+    [Test]
+    public void ADeadLinkRefusesToSendAndKeepsNothing()
+    {
+        var near = new Link();
+        for (int i = 0; i < 100; i++) near.Send(Channel.Reliable, new byte[] { 1 }, 0);
+        Assert.That(near.Poll(Link.IdleTimeout), Is.False);
+        Assert.That(near.Backlog(), Is.EqualTo(0));
+        Assert.That(near.TryDequeueOutgoing(out _), Is.False);
+        foreach (var channel in new[] { Channel.Reliable, Channel.Unreliable })
+            Assert.That(Assert.Throws<InvalidOperationException>(() => near.Send(channel, new byte[] { 1 }, Link.IdleTimeout)).Message, Does.Contain("link dead"));
+        near.FlushBatch();
+        Assert.That(near.TryDequeueOutgoing(out _), Is.False);
+        Assert.That(near.Poll(2 * Link.IdleTimeout), Is.False);
+    }
+
     // One packet of a 60 KB message is lost: the retransmit must still be acked and the message arrive.
     [Test]
     public void LinkTests()

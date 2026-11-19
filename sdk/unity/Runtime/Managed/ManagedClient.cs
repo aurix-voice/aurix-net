@@ -374,7 +374,19 @@ namespace Aurix.Net.Managed
                 channel = Channel.Unreliable;
             }
 
-            _link.Send(channel, payload);
+            try
+            {
+                _link.Send(channel, payload);
+            }
+            catch (InvalidOperationException error)
+            {
+                if (!_lost)
+                {
+                    _inbox.Enqueue(new Closed { Reason = "link dead", Control = false });
+                }
+
+                throw new NetException(error.Message);
+            }
             if (channel == Channel.Reliable || channel == Channel.ReliableUnordered)
             {
                 FlushLink();

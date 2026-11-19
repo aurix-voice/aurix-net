@@ -295,6 +295,10 @@ impl Ws {
         client
     }
 
+    pub async fn send_binary(&mut self, frame: Vec<u8>) {
+        self.ws.send(Message::binary(frame)).await.expect("ws send");
+    }
+
     pub async fn send(&mut self, msg: Value) {
         self.ws
             .send(Message::text(msg.to_string()))

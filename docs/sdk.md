@@ -18,6 +18,10 @@ sync/lockstep frames), `closed`. Grants always come from the developer's backend
 Outside a room and after `closed` a send fails with `disconnected` and nothing is queued: an
 exception in Web, C# and C++, a non-zero result in C, `false` in Godot.
 
+The data path is lost (`closed` with `link dead`) when a reliable message has gone 15 s without
+the node's acknowledgement, and when more than 1 MiB of them wait for the node: the send that
+meets the limit fails ([modes.md](modes.md)).
+
 `sendEvent` chooses between reliable and unreliable; `sendEventOn` takes the channel, which is how an
 event goes on the unsequenced one (docs/modes.md):
 

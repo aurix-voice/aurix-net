@@ -16,6 +16,8 @@ use net_wire::Schema;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
+const IDLE: Duration = Duration::from_secs(15);
+
 /// One input frame (`0x10`) holding a single input for `tick`.
 fn input_frame(tick: u32) -> Bytes {
     let mut frame = BytesMut::new();
@@ -644,7 +646,7 @@ async fn client_whose_data_path_opens_late_gets_the_whole_world() {
         ..Default::default()
     };
     let mut world = Frame::new(Schema::parse(POSE_SCHEMA).expect("schema"), config, 0);
-    let mut link = Link::new(Instant::now());
+    let mut link = Link::new(Instant::now(), IDLE);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     while world.entities().count() == 0 {
         let datagram = tokio::time::timeout_at(deadline, conn.read_datagram())

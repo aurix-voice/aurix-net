@@ -6,7 +6,7 @@ use crate::channel::{ReliableRx, ReliableTx, SequencedRx};
 use crate::fragment::{Fragmenter, Reassembler};
 use crate::packet::{Header, Kind, PacketError};
 use bytes::{Buf, Bytes, BytesMut};
-use net_common::limits::{HEADER_LEN, MAX_UNFRAGMENTED};
+use net_common::limits::{HEADER_LEN, MAX_UNFRAGMENTED, RELIABLE_BACKLOG_BYTES};
 use net_common::Channel;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -37,6 +37,8 @@ pub enum LinkError {
     TooLarge,
     #[error("peer stopped acknowledging; link dead")]
     Dead,
+    #[error("reliable messages outran the peer; link dead")]
+    Backlog,
 }
 
 const MIN_RTO: Duration = Duration::from_millis(60);
@@ -66,6 +68,8 @@ pub struct Link {
     stats: LinkStats,
     srtt: Option<Duration>,
     rttvar: Duration,
+    /// The carrier's idle timeout.
+    idle: Duration,
     /// Local tick stamped into outgoing headers.
     pub tick: u16,
     ack_dirty: bool,
@@ -75,7 +79,9 @@ pub struct Link {
 }
 
 impl Link {
-    pub fn new(now: Instant) -> Self {
+    /// `idle` is the idle timeout of what carries the datagrams: a link with a reliable packet
+    /// that stays unacknowledged that long is dead.
+    pub fn new(now: Instant, idle: Duration) -> Self {
         Self {
             seq_tx: 0,
             seq_rx: SequencedRx::default(),
@@ -96,6 +102,7 @@ impl Link {
             stats: LinkStats::default(),
             srtt: None,
             rttvar: Duration::ZERO,
+            idle,
             tick: 0,
             ack_dirty: false,
             last_ack_sent: now,
@@ -113,6 +120,30 @@ impl Link {
             None => Duration::from_millis(250),
             Some(srtt) => (srtt + 4 * self.rttvar).clamp(MIN_RTO, MAX_RTO),
         }
+    }
+
+    /// Bytes of reliable messages waiting for the window.
+    pub fn backlog(&self) -> usize {
+        self.ordered_tx.pending_bytes()
+            + self.unordered_tx.pending_bytes()
+            + self.frag_tx.pending_bytes()
+    }
+
+    /// Ends the link: nothing more is sent or queued, and what was queued is dropped.
+    pub fn close(&mut self) {
+        self.dead = true;
+        for tx in [
+            &mut self.ordered_tx,
+            &mut self.unordered_tx,
+            &mut self.frag_tx,
+        ] {
+            tx.clear();
+        }
+        self.out = VecDeque::new();
+        self.batch.clear();
+        self.batch_n = 0;
+        self.loose.clear();
+        self.loose_n = 0;
     }
 
     pub fn last_recv(&self) -> Instant {
@@ -164,6 +195,18 @@ impl Link {
 
     /// Queues an application message on `channel`.
     pub fn send(&mut self, channel: Channel, msg: Bytes, now: Instant) -> Result<(), LinkError> {
+        if self.dead {
+            return Err(LinkError::Dead);
+        }
+        let queued = msg.len() > MAX_UNFRAGMENTED
+            || matches!(
+                channel,
+                Channel::ReliableOrdered | Channel::ReliableUnordered
+            );
+        if queued && self.backlog() + msg.len() > RELIABLE_BACKLOG_BYTES {
+            self.close();
+            return Err(LinkError::Backlog);
+        }
         if msg.len() > MAX_UNFRAGMENTED {
             let parts = self
                 .fragmenter
@@ -348,10 +391,13 @@ impl Link {
 
     /// Drives retransmits and delayed acks. Call every few milliseconds or after I/O.
     pub fn poll(&mut self, now: Instant) -> Result<(), LinkError> {
+        if self.dead {
+            return Err(LinkError::Dead);
+        }
         self.flush_batch();
         let rto = self.rto();
-        let mut dead = false;
-        let mut retrans: Vec<(Kind, u16, Bytes)> = Vec::new();
+        let mut waiting_since: Option<Instant> = None;
+        let mut send: Vec<(Kind, u16, Bytes)> = Vec::new();
         for (kind, tx) in [
             (
                 Kind::Channel(Channel::ReliableOrdered),
@@ -363,21 +409,25 @@ impl Link {
             ),
             (Kind::Fragment, &mut self.frag_tx),
         ] {
-            match tx.poll(now, rto) {
-                Ok(pk) => {
-                    for (seq, payload) in pk {
-                        self.stats.retransmits += 1;
-                        retrans.push((kind, seq, payload));
-                    }
-                }
-                Err(_) => dead = true,
-            }
+            let mut packets = tx.repeat(now, rto);
+            self.stats.retransmits += packets.len() as u64;
+            packets.extend(tx.drain_window(now));
+            send.extend(
+                packets
+                    .into_iter()
+                    .map(|(seq, payload)| (kind, seq, payload)),
+            );
+            waiting_since = match (waiting_since, tx.waiting_since()) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
         }
-        if dead {
-            self.dead = true;
+        let unacknowledged = waiting_since.map(|since| now.duration_since(since));
+        if unacknowledged.is_some_and(|waited| waited >= self.idle) {
+            self.close();
             return Err(LinkError::Dead);
         }
-        for (kind, seq, payload) in retrans {
+        for (kind, seq, payload) in send {
             let header = self.header(kind, seq, false);
             self.push_datagram(header, &payload);
         }
@@ -439,6 +489,8 @@ impl Link {
 mod tests {
     use super::*;
 
+    const IDLE: Duration = Duration::from_secs(15);
+
     /// Delivers a's outgoing datagrams to b, dropping roughly `drop_pct` percent with a
     /// deterministic LCG so the test is reproducible.
     fn pump(
@@ -462,8 +514,8 @@ mod tests {
     #[test]
     fn reliable_ordered_survives_loss() {
         let t0 = Instant::now();
-        let mut near = Link::new(t0);
-        let mut far = Link::new(t0);
+        let mut near = Link::new(t0, IDLE);
+        let mut far = Link::new(t0, IDLE);
         for i in 0..100u32 {
             near.send(
                 Channel::ReliableOrdered,
@@ -497,8 +549,8 @@ mod tests {
     #[test]
     fn large_message_is_fragmented_and_rebuilt() {
         let t0 = Instant::now();
-        let mut near = Link::new(t0);
-        let mut far = Link::new(t0);
+        let mut near = Link::new(t0, IDLE);
+        let mut far = Link::new(t0, IDLE);
         let msg = Bytes::from(vec![7u8; 20_000]);
         near.send(Channel::ReliableUnordered, msg.clone(), t0)
             .unwrap();
@@ -512,8 +564,8 @@ mod tests {
     #[test]
     fn unsequenced_delivers_what_arrives_in_any_order() {
         let t0 = Instant::now();
-        let mut near = Link::new(t0);
-        let mut far = Link::new(t0);
+        let mut near = Link::new(t0, IDLE);
+        let mut far = Link::new(t0, IDLE);
         for msg in [&b"1"[..], b"2", b"3"] {
             near.send(Channel::UnreliableUnsequenced, Bytes::from_static(msg), t0)
                 .unwrap();
@@ -536,8 +588,8 @@ mod tests {
     #[test]
     fn sequenced_drops_reordered_old() {
         let t0 = Instant::now();
-        let mut near = Link::new(t0);
-        let mut far = Link::new(t0);
+        let mut near = Link::new(t0, IDLE);
+        let mut far = Link::new(t0, IDLE);
         near.send(Channel::UnreliableSequenced, Bytes::from_static(b"1"), t0)
             .unwrap();
         near.flush_batch();
@@ -554,8 +606,8 @@ mod tests {
     #[test]
     fn unreliable_messages_coalesce() {
         let t0 = Instant::now();
-        let mut near = Link::new(t0);
-        let mut far = Link::new(t0);
+        let mut near = Link::new(t0, IDLE);
+        let mut far = Link::new(t0, IDLE);
         for i in 0..20u8 {
             near.send(Channel::UnreliableSequenced, Bytes::from(vec![i; 40]), t0)
                 .unwrap();
@@ -582,7 +634,7 @@ mod tests {
     #[test]
     fn link_dies_without_acks() {
         let t0 = Instant::now();
-        let mut near = Link::new(t0);
+        let mut near = Link::new(t0, IDLE);
         near.send(Channel::ReliableOrdered, Bytes::from_static(b"x"), t0)
             .unwrap();
         let mut now = t0;
@@ -596,5 +648,126 @@ mod tests {
             }
         }
         assert!(dead);
+    }
+
+    /// What `link` puts on the wire now, as (reliable ordered seq, is an acknowledgement).
+    fn sent(link: &mut Link) -> Vec<(u16, bool)> {
+        std::iter::from_fn(|| link.next_outgoing())
+            .map(|datagram| {
+                let (header, _) = Header::decode(datagram).expect("header");
+                (header.seq, header.ack_only)
+            })
+            .collect()
+    }
+
+    /// Sends `count` ordered messages from `near` and delivers all but `lost` to `far`.
+    fn send_losing(near: &mut Link, far: &mut Link, count: u8, lost: &[u16], now: Instant) {
+        for index in 0..count {
+            near.send(Channel::ReliableOrdered, Bytes::from(vec![index]), now)
+                .unwrap();
+        }
+        while let Some(datagram) = near.next_outgoing() {
+            let (header, _) = Header::decode(datagram.clone()).expect("header");
+            if !lost.contains(&header.seq) {
+                far.receive(datagram, now);
+            }
+        }
+    }
+
+    /// Carries the acknowledgements of `far` to `near` at `now`.
+    fn acknowledge(far: &mut Link, near: &mut Link, now: Instant) {
+        far.poll(now).unwrap();
+        while let Some(datagram) = far.next_outgoing() {
+            near.receive(datagram, now);
+        }
+        near.poll(now).unwrap();
+    }
+
+    #[test]
+    fn first_sends_from_the_queue_are_not_counted_as_repeats() {
+        let t0 = Instant::now();
+        let (mut near, mut far) = (Link::new(t0, IDLE), Link::new(t0, IDLE));
+        send_losing(&mut near, &mut far, 40, &[], t0);
+        acknowledge(&mut far, &mut near, t0 + Duration::from_millis(30));
+        assert_eq!(sent(&mut near).len(), 8);
+        assert_eq!(near.stats().retransmits, 0);
+    }
+
+    #[test]
+    fn link_dies_when_nothing_is_heard_for_the_idle_timeout() {
+        let t0 = Instant::now();
+        let mut near = Link::new(t0, IDLE);
+        near.poll(t0 + 4 * IDLE)
+            .expect("nothing waits for the peer");
+        let start = t0 + 4 * IDLE;
+        near.send(Channel::ReliableOrdered, Bytes::from_static(b"x"), start)
+            .unwrap();
+        near.poll(start + IDLE - Duration::from_millis(1)).unwrap();
+        assert!(matches!(near.poll(start + IDLE), Err(LinkError::Dead)));
+        assert!(near.is_dead());
+    }
+
+    #[test]
+    fn link_dies_when_a_packet_stays_unacknowledged_while_the_peer_talks() {
+        let t0 = Instant::now();
+        let (mut near, mut far) = (Link::new(t0, IDLE), Link::new(t0, IDLE));
+        near.send(Channel::ReliableOrdered, Bytes::from_static(b"x"), t0)
+            .unwrap();
+        let mut now = t0;
+        let died = loop {
+            // the reliable packet never arrives; the peer keeps sending
+            while near.next_outgoing().is_some() {}
+            far.send(Channel::UnreliableSequenced, Bytes::from_static(b"y"), now)
+                .unwrap();
+            far.poll(now).unwrap();
+            while let Some(datagram) = far.next_outgoing() {
+                near.receive(datagram, now);
+            }
+            if near.poll(now).is_err() {
+                break now;
+            }
+            now += Duration::from_millis(100);
+        };
+        assert_eq!(died, t0 + IDLE);
+        assert!(near.is_dead());
+    }
+
+    #[test]
+    fn sender_that_outruns_its_peer_loses_the_link() {
+        let t0 = Instant::now();
+        let mut near = Link::new(t0, IDLE);
+        let message = Bytes::from(vec![0u8; 60_000]);
+        let mut accepted = 0;
+        let refused = loop {
+            match near.send(Channel::ReliableOrdered, message.clone(), t0) {
+                Ok(()) => accepted += 1,
+                Err(error) => break error,
+            }
+        };
+        assert!(matches!(refused, LinkError::Backlog));
+        // the window takes 32 fragments of the first message; sixteen more fill the megabyte
+        assert_eq!(accepted, 17);
+        assert!(near.is_dead());
+        assert_eq!(near.backlog(), 0);
+        assert!(near.next_outgoing().is_none());
+    }
+
+    #[test]
+    fn dead_link_refuses_to_send_and_keeps_nothing() {
+        let t0 = Instant::now();
+        let mut near = Link::new(t0, IDLE);
+        for _ in 0..100 {
+            near.send(Channel::ReliableOrdered, Bytes::from_static(b"x"), t0)
+                .unwrap();
+        }
+        assert!(near.poll(t0 + IDLE).is_err());
+        assert_eq!(near.ordered_tx.in_flight() + near.ordered_tx.pending(), 0);
+        assert!(near.next_outgoing().is_none());
+        for channel in [Channel::ReliableOrdered, Channel::UnreliableSequenced] {
+            let refused = near.send(channel, Bytes::from_static(b"x"), t0 + IDLE);
+            assert!(matches!(refused, Err(LinkError::Dead)));
+        }
+        assert_eq!(near.ordered_tx.pending(), 0);
+        assert!(near.poll(t0 + 2 * IDLE).is_err());
     }
 }

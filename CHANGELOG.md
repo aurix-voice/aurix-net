@@ -97,6 +97,19 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Data path: a player who stopped acknowledging over the WebSocket tunnel kept its link for
+  good, and the node queued every reliable message for it: 100 events a second of 60 000 bytes
+  grew the node by about 1 MB a second. Over QUIC and WebTransport a link was given up after 20
+  repeats, 1.2 to 30 s depending on the round trip. A link now ends the same way on all three:
+  when a reliable message has stayed unacknowledged for the idle timeout of the transport
+  (`transport.idle_timeout_ms`, 15 s), whatever else arrives from the other side. Its queue is
+  freed and events reach the player on the control channel.
+- Data path: `Link::send` took messages on a dead link, and the reliable queue of a link had no
+  limit: 200 000 sends on a dead link were all accepted and kept. A dead link now refuses
+  `send` (`LinkError::Dead`) and holds nothing. A link holds at most 1 MiB of reliable messages
+  that wait for the window (`RELIABLE_BACKLOG_BYTES`); a sender that outruns its peer by more
+  loses the link with `LinkError::Backlog`. `Link::new` takes the idle timeout of its carrier.
+  `LinkStats::retransmits` counted first sends that had waited for the window as repeats.
 - Rooms: closing a room whose node did not answer was reported as done (`204` on
   `DELETE /v1/rooms/:id`, a `room.closed` webhook, `closed_rooms` of a deleted project) while
   the room went on, and a room of a deleted project stayed for good, out of the operator's
@@ -171,6 +184,15 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   next at once got no `left`, and a notice, a player joining or a change of props sent during
   the join was lost. They are handed to the game after the call, in the order they came, before
   the room's cached events. Web and the managed C# client were not affected.
+- Web and C# SDKs: their link gave the node up after 10 repeats of one packet, 3.3 s on a path
+  with no round-trip sample yet, went on taking messages once it was dead and queued reliable
+  messages without limit. It follows the rule of the node and the Rust client: lost when its
+  oldest reliable packet has gone 15 s without an acknowledgement (`IDLE_TIMEOUT`,
+  `Link.IdleTimeout`), and when more than 1 MiB of reliable messages wait for the window
+  (`RELIABLE_BACKLOG_BYTES`, `Link.ReliableBacklogBytes`). The send that meets the limit fails
+  with the reason and the game gets `closed` (`link dead`). The repeat timer is the core's too:
+  one round-trip estimate for the link, 250 ms before the first sample, 60 to 1500 ms after; it
+  was one per stream, 300 ms and 50 to 2000 ms.
 - Unity SDK (native client): `Client.JoinOrCreate` had no `lobbyProps`, so a room it created
   published no props, and neither a room list nor a random join with an `expr` found it. It
   takes them as the managed client does.

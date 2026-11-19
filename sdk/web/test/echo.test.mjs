@@ -108,7 +108,7 @@ test("a lost connection is reported once, also when the handler closes the clien
     await a.joinOrCreate(`web-lost-${process.pid}`, "relay", 4);
     link.mute();
     a.sendEvent(1, new Uint8Array(8), "others", true);
-    for (let i = 0; i < 400 && !reasons.length; i++) await new Promise((resolve) => setTimeout(resolve, 25));
+    for (let i = 0; i < 800 && !reasons.length; i++) await new Promise((resolve) => setTimeout(resolve, 25));
     await new Promise((resolve) => setTimeout(resolve, 300));
     assert.deepEqual(reasons, ["link dead"]);
   } finally {

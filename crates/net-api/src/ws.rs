@@ -1262,6 +1262,10 @@ impl Session {
     }
 
     fn on_binary(&mut self, frame: Bytes) -> Result<()> {
+        // A tunnel whose link died is gone; the next frame has to be a ticket for a new one.
+        if self.data.as_ref().is_some_and(|ds| ds.lost()) {
+            self.data = None;
+        }
         match &self.data {
             None => {
                 let kind = self
@@ -1280,6 +1284,7 @@ impl Session {
                     project,
                     DataSink::Ws(self.bin.clone()),
                     self.st.metrics.clone(),
+                    Duration::from_millis(self.st.cfg.transport.idle_timeout_ms),
                 );
                 let ds = attach_data(&joined.hosted, joined.actor, ds);
                 spawn_ticker(&self.st, ds.clone());

@@ -7,7 +7,7 @@ use net_client::net_common::{ActorId, Channel, RoomMode};
 use net_client::protocol::{ClientMsg, DataEndpoint, ServerMsg};
 use net_client::{Client, ClientError, Event, EventTarget, Options};
 use net_transport::Link;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -62,7 +62,7 @@ async fn node(left: Option<ServerMsg>) -> String {
                 }
                 Message::Binary(_) => {
                     let now = Instant::now();
-                    let mut link = Link::new(now);
+                    let mut link = Link::new(now, Duration::from_secs(15));
                     link.send(Channel::ReliableOrdered, Bytes::new(), now)
                         .unwrap();
                     while let Some(datagram) = link.next_outgoing() {

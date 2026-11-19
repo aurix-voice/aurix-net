@@ -15,6 +15,9 @@ use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// Idle timeout of the data connection, and of the link on it.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 use tokio_tungstenite::tungstenite::Message;
 
 #[derive(Parser, Clone)]
@@ -431,7 +434,7 @@ async fn player(
     drop(permit);
 
     let ticket = base64::engine::general_purpose::STANDARD.decode(&data.ticket)?;
-    let link = Arc::new(Mutex::new(Link::new(Instant::now())));
+    let link = Arc::new(Mutex::new(Link::new(Instant::now(), IDLE_TIMEOUT)));
 
     enum Sink {
         Quic(quinn::Connection),
@@ -452,7 +455,7 @@ async fn player(
         conn.send_datagram(ticket)?;
         Arc::new(Sink::Wt(conn))
     } else {
-        let transport = quic::transport_config(Duration::from_secs(15), Duration::from_secs(5));
+        let transport = quic::transport_config(IDLE_TIMEOUT, Duration::from_secs(5));
         let ep = quic::client_endpoint("0.0.0.0:0".parse()?, &data.cert_sha256, transport)?;
         let addr = tokio::net::lookup_host((data.host.as_str(), data.port))
             .await?
