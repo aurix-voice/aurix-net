@@ -598,3 +598,69 @@ async fn player_under_unreliable_events_he_does_not_read_is_still_told_of_the_ro
     idler.send(json!({"t": "ping", "ts": 1})).await;
     idler.until("pong").await;
 }
+
+#[tokio::test]
+async fn control_message_over_the_limit_closes_with_the_limit_in_the_reason() {
+    use futures::{SinkExt, StreamExt};
+    use net_common::limits::{MAX_CONTROL_MESSAGE, MAX_CONTROL_MESSAGE_BEFORE_AUTH};
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let node = Node::start().await;
+    let project = node.project("too-large").await;
+    let url = node.http.replacen("http", "ws", 1) + "/ws";
+    let create = |size: usize| {
+        let empty = json!({"t": "create", "name": "big", "props": {"blob": ""}}).to_string();
+        let blob = "x".repeat(size - empty.len());
+        let create = json!({"t": "create", "name": "big", "props": {"blob": blob}}).to_string();
+        assert_eq!(create.len(), size);
+        Message::text(create)
+    };
+    // A message after `auth` or in its place: the last answer of the node, or the code and
+    // reason it closed with.
+    let outcome = |message: Message, authed: bool| {
+        let (url, project) = (url.clone(), &project);
+        async move {
+            let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+                .await
+                .expect("connects");
+            if authed {
+                let grant = project.grant(&format!("player-{}", message.len())).await;
+                let auth = json!({"t": "auth", "grant": grant}).to_string();
+                ws.send(Message::text(auth)).await.expect("auth");
+            }
+            ws.send(message).await.expect("message");
+            let mut last = String::new();
+            loop {
+                match tokio::time::timeout(Duration::from_secs(1), ws.next()).await {
+                    Ok(Some(Ok(Message::Text(text)))) => last = text.to_string(),
+                    Ok(Some(Ok(Message::Close(Some(frame))))) => {
+                        return Err((frame.code, frame.reason.to_string()))
+                    }
+                    Ok(Some(Ok(_))) => {}
+                    Ok(Some(Err(e))) => panic!("{e}"),
+                    Ok(None) => panic!("closed without a reason"),
+                    Err(_) => return Ok(last),
+                }
+            }
+        }
+    };
+
+    let read = outcome(create(MAX_CONTROL_MESSAGE), true)
+        .await
+        .expect("stays open");
+    assert!(read.contains("props too large"), "{read}");
+    let closed = Err((
+        CloseCode::Size,
+        "message too large: at most 69632 bytes".to_string(),
+    ));
+    assert_eq!(outcome(create(MAX_CONTROL_MESSAGE + 1), true).await, closed);
+    assert_eq!(outcome(create(100_000), true).await, closed);
+    let closed = Err((
+        CloseCode::Size,
+        "message too large: at most 8192 bytes".to_string(),
+    ));
+    let over = MAX_CONTROL_MESSAGE_BEFORE_AUTH + 1;
+    assert_eq!(outcome(create(over), false).await, closed);
+    assert_eq!(outcome(Message::binary(vec![0; over]), false).await, closed);
+}

@@ -12,6 +12,7 @@ use base64::Engine;
 use bytes::Bytes;
 use futures::{stream, SinkExt, StreamExt};
 use net_auth::Grant;
+use net_common::limits::{MAX_CONTROL_MESSAGE, MAX_CONTROL_MESSAGE_BEFORE_AUTH};
 use net_common::{ActorId, NetError, ProjectId, Result, RoomId, RoomMode, SessionId};
 use net_control::redis_store::LiveRoom;
 use net_db::queries;
@@ -24,7 +25,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 /// How far a lockstep catch-up may fill a player's link; the rest stays for live frames.
@@ -39,8 +40,6 @@ const LOSSY_QUEUE: usize = 512;
 const OVERRUN: &str = "control queue overflow";
 /// How long the close of such a session waits for a client that may not be reading.
 const OVERRUN_CLOSE_WAIT: Duration = Duration::from_secs(1);
-/// Largest text frame accepted before `auth` succeeded (a grant is ~1 KB).
-const PRE_AUTH_MAX_TEXT: usize = 8 * 1024;
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
 pub async fn ws_handler(
@@ -67,7 +66,7 @@ pub async fn ws_handler(
             .into_response();
     };
     // A handshake that fails drops this closure, and the slot with it.
-    ws.max_message_size(net_common::limits::MAX_MESSAGE + 4096)
+    ws.max_message_size(MAX_CONTROL_MESSAGE)
         .on_upgrade(move |socket| async move {
             let _slot = slot;
             run(socket, st, ip).await;
@@ -113,6 +112,7 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
     let (bin_tx, mut bin_rx) = mpsc::channel::<Bytes>(2048);
     let ctl = Control::new(ctl_tx, lossy_tx);
     let overrun = ctl.clone();
+    let (close_tx, close_rx) = oneshot::channel::<CloseFrame>();
     let writer = tokio::spawn(async move {
         // Each queue that has something gets its turn, so no one of them holds up the rest.
         let text =
@@ -146,6 +146,10 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
                 }));
                 let _ = tokio::time::timeout(OVERRUN_CLOSE_WAIT, sink.send(close)).await;
             }
+            Ok(frame) = close_rx => {
+                let close = Message::Close(Some(frame));
+                let _ = tokio::time::timeout(OVERRUN_CLOSE_WAIT, sink.send(close)).await;
+            }
         }
     });
 
@@ -173,6 +177,7 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
     });
 
     let mut overrun = false;
+    let mut too_large = None;
     loop {
         let limit = if sess.grant.is_some() {
             IDLE_TIMEOUT
@@ -190,14 +195,24 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
         let msg = match next {
             Err(_) => break,
             Ok(None) => break,
-            Ok(Some(Err(_))) => break,
-            Ok(Some(Ok(m))) => m,
-        };
-        match msg {
-            Message::Text(text) if sess.grant.is_none() && text.len() > PRE_AUTH_MAX_TEXT => {
-                sess.error(NetError::Invalid("message too large before auth".into()));
+            Ok(Some(Err(e))) => {
+                if over_capacity(&e) {
+                    too_large = Some(MAX_CONTROL_MESSAGE);
+                }
                 break;
             }
+            Ok(Some(Ok(m))) => m,
+        };
+        let size = match &msg {
+            Message::Text(text) => text.len(),
+            Message::Binary(frame) => frame.len(),
+            _ => 0,
+        };
+        if sess.grant.is_none() && size > MAX_CONTROL_MESSAGE_BEFORE_AUTH {
+            too_large = Some(MAX_CONTROL_MESSAGE_BEFORE_AUTH);
+            break;
+        }
+        match msg {
             Message::Text(text) => match serde_json::from_str::<ClientMsg>(&text) {
                 Ok(msg) => {
                     let auth = matches!(msg, ClientMsg::Auth { .. });
@@ -225,10 +240,29 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
         }
     }
     sess.cleanup().await;
-    if !overrun {
+    if let Some(limit) = too_large {
+        st.metrics
+            .errors
+            .with_label_values(&["invalid_request"])
+            .inc();
+        let _ = close_tx.send(CloseFrame {
+            code: close_code::SIZE,
+            reason: format!("message too large: at most {limit} bytes").into(),
+        });
+        let _ = writer.await;
+    } else if !overrun {
         writer.abort();
     }
     st.metrics.control_sessions.dec();
+}
+
+/// The socket refused to read a message for its size.
+fn over_capacity(e: &axum::Error) -> bool {
+    let source = std::error::Error::source(e);
+    matches!(
+        source.and_then(|e| e.downcast_ref()),
+        Some(tungstenite::Error::Capacity(_))
+    )
 }
 
 impl Session {

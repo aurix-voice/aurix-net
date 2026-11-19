@@ -8,6 +8,11 @@ pub const MAX_DATAGRAM: usize = 1100;
 pub const HEADER_LEN: usize = 12;
 /// Largest message a channel accepts; larger ones are fragmented.
 pub const MAX_MESSAGE: usize = 64 * 1024;
+/// Largest control message a node reads, text or binary: a data message in the WebSocket
+/// tunnel and its framing fit. A larger one closes the connection.
+pub const MAX_CONTROL_MESSAGE: usize = MAX_MESSAGE + 4096;
+/// Largest control message a node reads before `auth`, text or binary.
+pub const MAX_CONTROL_MESSAGE_BEFORE_AUTH: usize = 8 * 1024;
 /// Largest message that fits one datagram without fragmentation.
 pub const MAX_UNFRAGMENTED: usize = MAX_DATAGRAM - HEADER_LEN;
 /// Reliable window: unacked packets in flight per channel. Must not exceed the 32-bit ack

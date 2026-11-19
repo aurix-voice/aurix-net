@@ -363,10 +363,10 @@ CLI: `aurix-net modules | module-put <name> <file> | module-delete <name>`.
 | Failed `auth` per IP | 20/min | `rate_limited`, connection closed |
 | Room name | 1..=64 chars, no control characters | `invalid_request` |
 | `lobby_props` per room | ≤32 keys, each 1..=64 chars | `invalid_request` |
-| Control message (post-auth) | 68 KiB; 8 KiB before `auth` | connection closed |
+| Control message, text or binary | 69 632 bytes; 8 192 bytes before `auth` | closed with code 1009, the limit in the reason (`message too large: at most 69632 bytes`) |
 | Write calls per API key (rooms, tickets, keys, webhooks, modules) | 20/s | 429 `rate_limited` |
 | Grants per API key (`POST /v1/grants`) | 500/s | 429 `rate_limited` |
-| Pre-auth control message | 8 KiB, 10 s to authenticate | connection closed |
+| Time to authenticate | 10 s | connection closed |
 | Request body | 64 KiB (module upload 8 MiB) | 413 |
 
 `GET /healthz` answers 503 `{"ok":false,"draining":true}` while the node shuts down; players

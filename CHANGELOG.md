@@ -298,6 +298,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   held no hash from before the move. A node keeps the whole journal of a room and its hashes
   in Redis, not the last ten seconds, and the node that takes the room over has them. The
   checkpoint of a room is deleted with the room; it used to stay ten minutes after the close.
+- A control message over 69 632 bytes, or over 8 192 bytes before `auth`, made the node drop
+  the connection with no close frame, and the error it queued before `auth` was lost with it.
+  The node closes with code 1009 and the limit in the reason, and the limit before `auth`
+  holds for a binary message too. The limits are `MAX_CONTROL_MESSAGE` and
+  `MAX_CONTROL_MESSAGE_BEFORE_AUTH` in `net-common`.
 - A player could hear of a room before its own `joined`: the node let the room go before it
   queued the answer, and what the room sent its players in between (`player_joined` of someone
   who joined at the same moment, `room_props`, `master_changed`, an event) came first. The

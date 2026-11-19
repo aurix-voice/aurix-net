@@ -49,6 +49,7 @@ quinn = { workspace = true }
 redis = { workspace = true }
 prometheus = { workspace = true }
 futures-util = "0.3"
+tungstenite = "0.29"
 anyhow = { workspace = true }
 
 [dev-dependencies]
