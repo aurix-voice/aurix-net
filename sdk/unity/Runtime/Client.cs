@@ -115,6 +115,11 @@ namespace Aurix.Net
         public event Action OnDataReady;
         public event Action<string> OnClosed;
 
+        /// <summary>The reliable events the node had not acknowledged when the room was lost, in the order they
+        /// were sent. Comes before OnClosed and before the left of a room the node took the client out of; a
+        /// client that leaves gets none. The room may have got any of them.</summary>
+        public event Action<IReadOnlyList<Managed.UndeliveredEvent>> OnUndelivered;
+
         public static string Version => Native.Utf8(Native.aurix_net_version());
 
         /// <summary>Backend/tooling only; never ship an API key in a game build.</summary>
@@ -389,6 +394,9 @@ namespace Aurix.Net
                         case Native.EventClosed:
                             OnClosed?.Invoke(Native.Utf8(ev.json));
                             break;
+                        case Native.EventUndelivered:
+                            OnUndelivered?.Invoke(Undelivered(ref ev));
+                            break;
                     }
                 }
                 finally
@@ -397,6 +405,43 @@ namespace Aurix.Net
                 }
             }
             return count;
+        }
+
+        static List<Managed.UndeliveredEvent> Undelivered(ref Native.Event ev)
+        {
+            int count = (int)Native.aurix_net_undelivered_count(ref ev);
+            var events = new List<Managed.UndeliveredEvent>(count);
+            for (int i = 0; i < count; i++)
+            {
+                Native.aurix_net_undelivered_get(ref ev, (UIntPtr)i, out var sent);
+                var payload = new byte[(int)sent.len];
+                Marshal.Copy(sent.data, payload, 0, payload.Length);
+                ushort[] actors = null;
+                if (sent.target == (int)Target.Actors)
+                {
+                    actors = new ushort[(int)sent.nActors];
+                    Native.aurix_net_undelivered_actors(
+                        ref ev,
+                        (UIntPtr)i,
+                        actors,
+                        (UIntPtr)actors.Length
+                    );
+                }
+
+                events.Add(
+                    new Managed.UndeliveredEvent
+                    {
+                        Code = sent.code,
+                        Payload = payload,
+                        Target = (Target)sent.target,
+                        Actors = actors,
+                        Group = sent.group < 0 ? null : (ushort?)sent.group,
+                        Cache = (Managed.CacheOp)sent.cache,
+                    }
+                );
+            }
+
+            return events;
         }
 
         public void Leave()

@@ -77,6 +77,16 @@ struct EventFrame {
     }
 };
 
+/// A reliable event the node did not acknowledge, as sendEventEx was given it.
+struct UndeliveredEvent {
+    uint8_t code = 0;
+    std::vector<uint8_t> payload;
+    Target target = Target::Others;
+    std::vector<uint16_t> actors;
+    int group = -1;
+    int cache = 0;
+};
+
 class Client {
 public:
     std::function<void(const std::string& json)> onControl;
@@ -98,6 +108,10 @@ public:
     std::function<void(Channel, uint16_t tick, const uint8_t*, size_t)> onData;
     std::function<void()> onDataReady;
     std::function<void(const std::string& reason)> onClosed;
+    /// The reliable events the node had not acknowledged when the room was lost, in the order
+    /// they were sent. Comes before onClosed and before the `left` of a room the node took the
+    /// client out of. The room may have got any of them.
+    std::function<void(const std::vector<UndeliveredEvent>&)> onUndelivered;
 
     Client() = default;
     Client(const Client&) = delete;
@@ -109,6 +123,7 @@ public:
           onData(std::move(other.onData)),
           onDataReady(std::move(other.onDataReady)),
           onClosed(std::move(other.onClosed)),
+          onUndelivered(std::move(other.onUndelivered)),
           handle_(other.handle_),
           actor_(other.actor_) {
         other.handle_ = nullptr;
@@ -377,6 +392,24 @@ public:
                 case AURIX_NET_EVENT_CLOSED:
                     if (onClosed) {
                         onClosed(ev.json ? ev.json : "");
+                    }
+                    break;
+                case AURIX_NET_EVENT_UNDELIVERED:
+                    if (onUndelivered) {
+                        std::vector<UndeliveredEvent> events(aurix_net_undelivered_count(&ev));
+                        for (size_t i = 0; i < events.size(); i++) {
+                            AurixNetUndelivered sent;
+                            aurix_net_undelivered_get(&ev, i, &sent);
+                            events[i].code = sent.code;
+                            events[i].payload.assign(sent.data, sent.data + sent.len);
+                            events[i].target = (Target)sent.target;
+                            events[i].actors.resize(sent.n_actors);
+                            aurix_net_undelivered_actors(&ev, i, events[i].actors.data(),
+                                                         sent.n_actors);
+                            events[i].group = sent.group;
+                            events[i].cache = sent.cache;
+                        }
+                        onUndelivered(events);
                     }
                     break;
                 default:

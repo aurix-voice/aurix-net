@@ -16,6 +16,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FAurixNetEvent, uint8, Code, int3
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixNetNotice, const FString&, Text);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixNetError, const FString&, Code, const FString&, Message);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixNetClosed, const FString&, Reason);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixNetUndelivered, const TArray<FAurixNetUndeliveredEvent>&, Events);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixNetLeft, const FString&, Reason, const FString&, RoomId);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAurixNetHostMigration, EAurixNetMigration, Phase, bool, bNewHost);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAurixNetRoomsListed, const TArray<FAurixNetRoomSummary>&, Rooms);
@@ -181,6 +182,8 @@ public:
 	/** The cell says we are out of room RoomId: Reason is "left", "kicked" or the reason a kick gave, "room closed", "session_replaced", or "rehost" (the room moved to another node: connect again with the same grant and join it). */
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetLeft OnLeft;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetClosed OnClosed;
+	/** The reliable events the node had not acknowledged when the room was lost, in the order they were sent. Comes before OnClosed and before the OnLeft of a room the node took us out of; LeaveRoom and Disconnect give none. The room may have got any of them. */
+	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetUndelivered OnUndelivered;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetRoomsListed OnRoomsListed;
 
 	FAurixNetRawEvent OnRawEvent;

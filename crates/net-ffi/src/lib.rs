@@ -13,7 +13,7 @@ pub mod sync;
 
 use bytes::Bytes;
 use net_client::protocol::{ClientMsg, ServerMsg};
-use net_client::{CacheOp, Client, ClientError, Event, EventTarget, Options};
+use net_client::{CacheOp, Client, ClientError, Event, EventFrame, EventTarget, Options};
 use net_common::{ActorId, Channel};
 use parking_lot::Mutex;
 use std::cell::{Cell, RefCell};
@@ -133,6 +133,119 @@ pub const AURIX_NET_EVENT_DATA: i32 = 2;
 pub const AURIX_NET_EVENT_DATA_READY: i32 = 3;
 /// `json` holds the reason.
 pub const AURIX_NET_EVENT_CLOSED: i32 = 4;
+/// `data` holds the reliable events the node had not acknowledged when the room was lost;
+/// read them with `aurix_net_undelivered_count` and `aurix_net_undelivered_get`.
+pub const AURIX_NET_EVENT_UNDELIVERED: i32 = 5;
+
+/// One event of an `AURIX_NET_EVENT_UNDELIVERED`, as `aurix_net_send_event_ex` was given it.
+/// `data` is valid until the event is freed.
+#[repr(C)]
+pub struct AurixNetUndelivered {
+    pub code: u8,
+    pub target: i32,
+    pub n_actors: usize,
+    pub data: *const u8,
+    pub len: usize,
+    /// -1 when the event had no interest group.
+    pub group: i32,
+    pub cache: i32,
+}
+
+/// The frames of an `AURIX_NET_EVENT_UNDELIVERED`, each after its length.
+fn undelivered_frames(events: &[EventFrame]) -> Box<[u8]> {
+    let mut frames = Vec::new();
+    for event in events {
+        let frame = event.encode();
+        frames.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        frames.extend_from_slice(&frame);
+    }
+    frames.into_boxed_slice()
+}
+
+/// The frame at `index` of an `AURIX_NET_EVENT_UNDELIVERED`.
+unsafe fn undelivered_frame<'a>(ev: *const AurixNetEvent, index: usize) -> Option<&'a [u8]> {
+    let ev = ev.as_ref()?;
+    if ev.kind != AURIX_NET_EVENT_UNDELIVERED || ev.data.is_null() {
+        return None;
+    }
+    let mut rest = std::slice::from_raw_parts(ev.data, ev.data_len);
+    let mut frames = std::iter::from_fn(|| {
+        let (len, after) = rest.split_first_chunk::<4>()?;
+        let (frame, after) = after.split_at_checked(u32::from_le_bytes(*len) as usize)?;
+        rest = after;
+        Some(frame)
+    });
+    frames.nth(index)
+}
+
+/// How many events an `AURIX_NET_EVENT_UNDELIVERED` holds; 0 for any other event.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_undelivered_count(ev: *const AurixNetEvent) -> usize {
+    (0..)
+        .take_while(|&index| undelivered_frame(ev, index).is_some())
+        .count()
+}
+
+/// Fills `out` with the event at `index` of an `AURIX_NET_EVENT_UNDELIVERED`, in the order the
+/// events were sent. Returns 0, or -1 when there is no such event.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_undelivered_get(
+    ev: *const AurixNetEvent,
+    index: usize,
+    out: *mut AurixNetUndelivered,
+) -> i32 {
+    let (Some(frame), Some(out)) = (undelivered_frame(ev, index), out.as_mut()) else {
+        return -1;
+    };
+    let Ok(event) = EventFrame::decode(Bytes::copy_from_slice(frame)) else {
+        return -1;
+    };
+    let payload = &frame[frame.len() - event.payload.len()..];
+    let (target, n_actors) = match &event.target {
+        EventTarget::All => (0, 0),
+        EventTarget::Others => (1, 0),
+        EventTarget::Master => (2, 0),
+        EventTarget::Actors(actors) => (3, actors.len()),
+    };
+    *out = AurixNetUndelivered {
+        code: event.code,
+        target,
+        n_actors,
+        data: payload.as_ptr(),
+        len: payload.len(),
+        group: event.group.map_or(-1, i32::from),
+        cache: match event.cache {
+            CacheOp::None => 0,
+            CacheOp::Add => 1,
+            CacheOp::Remove => 2,
+        },
+    };
+    0
+}
+
+/// Copies the actors the event at `index` was sent to into `out`, at most `cap` of them.
+/// Returns how many it copied.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_undelivered_actors(
+    ev: *const AurixNetEvent,
+    index: usize,
+    out: *mut u16,
+    cap: usize,
+) -> usize {
+    let decoded = undelivered_frame(ev, index)
+        .and_then(|frame| EventFrame::decode(Bytes::copy_from_slice(frame)).ok());
+    let Some(EventTarget::Actors(actors)) = decoded.map(|event| event.target) else {
+        return 0;
+    };
+    if out.is_null() {
+        return 0;
+    }
+    let copied = actors.len().min(cap);
+    for (slot, actor) in actors.iter().take(copied).enumerate() {
+        out.add(slot).write_unaligned(actor.0);
+    }
+    copied
+}
 
 #[repr(C)]
 pub struct AurixNetEvent {
@@ -640,39 +753,42 @@ pub unsafe extern "C" fn aurix_net_poll(
         return 0;
     };
     *out = AurixNetEvent::empty();
-    loop {
-        let ev = client.inner.lock().try_next_event();
-        let Some(ev) = ev else { return 0 };
-        match ev {
-            // The C ABI has no event for these yet.
-            Event::Undelivered(_) => continue,
-            Event::Control(msg) => {
-                out.kind = AURIX_NET_EVENT_CONTROL;
-                out.json = json_c(&msg);
-            }
-            Event::Data {
-                channel,
-                tick,
-                payload,
-            } => {
-                out.kind = AURIX_NET_EVENT_DATA;
-                out.channel = channel as u8;
-                out.tick = tick;
-                let mut bytes = payload.to_vec().into_boxed_slice();
-                out.data_len = bytes.len();
-                out.data = bytes.as_mut_ptr();
-                std::mem::forget(bytes);
-            }
-            Event::DataReady => out.kind = AURIX_NET_EVENT_DATA_READY,
-            Event::Closed(reason) => {
-                out.kind = AURIX_NET_EVENT_CLOSED;
-                out.json = CString::new(reason)
-                    .map(CString::into_raw)
-                    .unwrap_or(std::ptr::null_mut());
-            }
+    let ev = client.inner.lock().try_next_event();
+    let Some(ev) = ev else { return 0 };
+    match ev {
+        Event::Undelivered(events) => {
+            out.kind = AURIX_NET_EVENT_UNDELIVERED;
+            let mut frames = undelivered_frames(&events);
+            out.data_len = frames.len();
+            out.data = frames.as_mut_ptr();
+            std::mem::forget(frames);
         }
-        return 1;
+        Event::Control(msg) => {
+            out.kind = AURIX_NET_EVENT_CONTROL;
+            out.json = json_c(&msg);
+        }
+        Event::Data {
+            channel,
+            tick,
+            payload,
+        } => {
+            out.kind = AURIX_NET_EVENT_DATA;
+            out.channel = channel as u8;
+            out.tick = tick;
+            let mut bytes = payload.to_vec().into_boxed_slice();
+            out.data_len = bytes.len();
+            out.data = bytes.as_mut_ptr();
+            std::mem::forget(bytes);
+        }
+        Event::DataReady => out.kind = AURIX_NET_EVENT_DATA_READY,
+        Event::Closed(reason) => {
+            out.kind = AURIX_NET_EVENT_CLOSED;
+            out.json = CString::new(reason)
+                .map(CString::into_raw)
+                .unwrap_or(std::ptr::null_mut());
+        }
     }
+    1
 }
 
 fn json_c(msg: &ServerMsg) -> *mut c_char {
@@ -1080,5 +1196,56 @@ mod tests {
     fn props_of_the_game_take_any_key() {
         let join = r#"{"t":"join_or_create","name":"lobby","props":{"colour":"red"},"player_props":{"hat":1}}"#;
         assert!(control_message(join).is_some());
+    }
+
+    #[test]
+    fn undelivered_events_are_read_back_as_they_were_sent() {
+        let event = |code, target, payload: &'static [u8]| EventFrame {
+            code,
+            target,
+            cache: CacheOp::None,
+            group: None,
+            from: ActorId(0),
+            payload: Bytes::from_static(payload),
+        };
+        let events = [
+            event(2, EventTarget::Actors(vec![ActorId(7), ActorId(9)]), b"two"),
+            EventFrame {
+                cache: CacheOp::Add,
+                group: Some(9),
+                ..event(5, EventTarget::Master, b"")
+            },
+        ];
+        let mut frames = undelivered_frames(&events);
+        let ev = AurixNetEvent {
+            kind: AURIX_NET_EVENT_UNDELIVERED,
+            data: frames.as_mut_ptr(),
+            data_len: frames.len(),
+            ..AurixNetEvent::empty()
+        };
+        let read = |index| unsafe {
+            let mut out = std::mem::zeroed::<AurixNetUndelivered>();
+            let mut actors = [0u16; 4];
+            let found = aurix_net_undelivered_get(&ev, index, &mut out);
+            let copied = aurix_net_undelivered_actors(&ev, index, actors.as_mut_ptr(), 4);
+            let payload = (found == 0).then(|| std::slice::from_raw_parts(out.data, out.len));
+            (
+                found,
+                (out.code, out.target, out.n_actors, out.group, out.cache),
+                actors[..copied].to_vec(),
+                payload,
+            )
+        };
+        assert_eq!(unsafe { aurix_net_undelivered_count(&ev) }, 2);
+        assert_eq!(
+            read(0),
+            (0, (2, 3, 2, -1, 0), vec![7, 9], Some(&b"two"[..]))
+        );
+        assert_eq!(read(1), (0, (5, 2, 0, 9, 1), vec![], Some(&b""[..])));
+        assert_eq!(read(2).0, -1);
+        assert_eq!(
+            unsafe { aurix_net_undelivered_count(&AurixNetEvent::empty()) },
+            0
+        );
     }
 }

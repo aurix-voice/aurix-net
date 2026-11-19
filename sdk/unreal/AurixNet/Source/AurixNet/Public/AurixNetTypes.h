@@ -79,6 +79,21 @@ struct AURIXNET_API FAurixNetPlayer
 	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") FString PropsJson;
 };
 
+/** A reliable event the node did not acknowledge, as SendEventEx was given it. */
+USTRUCT(BlueprintType)
+struct AURIXNET_API FAurixNetUndeliveredEvent
+{
+	GENERATED_BODY()
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") uint8 Code = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") TArray<uint8> Payload;
+	/** Not used when Actors names the receivers. */
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") EAurixNetTarget Target = EAurixNetTarget::Others;
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") TArray<int32> Actors;
+	/** 0 = none. */
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") int32 Group = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Aurix Net") EAurixNetCache Cache = EAurixNetCache::None;
+};
+
 USTRUCT(BlueprintType)
 struct AURIXNET_API FAurixNetRoomInfo
 {

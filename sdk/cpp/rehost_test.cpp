@@ -6,6 +6,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <set>
 #include <thread>
 #include <unistd.h>
 using namespace aurix::net;
@@ -28,8 +30,22 @@ int main(int argc, char** argv) {
         other.leave(); a.onData = nullptr;
     }
     bool rehost = false; a.onRehost = [&] { rehost = true; };
-    for (int i = 0; i < 6000 && !rehost; i++) { a.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+    // a reliable event the room did not get is handed back: none is lost without a word
+    Client listener; listener.connectAndJoin(A, Client::issueGrant(A, key, "cpp-rehost-l", "L"), "{\"t\":\"join\",\"name\":" + Client::quote(room) + "}");
+    std::set<uint32_t> got, handedBack; uint32_t sent = 0;
+    auto number = [](const uint8_t* bytes) { uint32_t n; std::memcpy(&n, bytes, 4); return n; };
+    listener.onData = [&](Channel, uint16_t, const uint8_t* d, size_t n) { EventFrame f; if (EventFrame::decode(d, n, f) && f.code == 3 && f.len == 4) got.insert(number(f.payload)); };
+    a.onUndelivered = [&](const std::vector<UndeliveredEvent>& events) { for (const auto& event : events) handedBack.insert(number(event.payload.data())); };
+    for (int i = 0; i < 6000 && !rehost; i++) {
+        if (i % 2 == 0) { a.sendEvent(3, (const uint8_t*)&sent, 4, Target::Others, true); a.flush(); sent++; }
+        a.poll(); listener.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     if (!rehost) { std::printf("CPP_REHOST_FAIL no rehost within 60 s\n"); return 1; }
+    for (int i = 0; i < 50; i++) { listener.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+    int neither = 0, both = 0;
+    for (uint32_t n = 0; n < sent; n++) { neither += !got.count(n) && !handedBack.count(n); both += got.count(n) && handedBack.count(n); }
+    std::printf("cpp: reliable events at rehost: sent %u, the room got %zu, handed back %zu, neither %d, both %d\n", sent, got.size(), handedBack.size(), neither, both);
+    if (neither) { std::printf("CPP_REHOST_FAIL a reliable event was lost without a word\n"); return 1; }
     if (a.actor() != -1 || !a.joinedJson().empty()) { std::printf("CPP_REHOST_FAIL still describes the room the node handed off\n"); return 1; }
     Client a2; a2.connect(B, grant);
     int again = a2.join(room);

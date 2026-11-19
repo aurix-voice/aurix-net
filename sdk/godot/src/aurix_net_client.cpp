@@ -45,6 +45,7 @@ void AurixNetClient::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("event", PropertyInfo(Variant::INT, "code"), PropertyInfo(Variant::INT, "from_actor"), PropertyInfo(Variant::PACKED_BYTE_ARRAY, "payload")));
 	ADD_SIGNAL(MethodInfo("data", PropertyInfo(Variant::INT, "channel"), PropertyInfo(Variant::INT, "tick"), PropertyInfo(Variant::PACKED_BYTE_ARRAY, "payload")));
 	ADD_SIGNAL(MethodInfo("closed", PropertyInfo(Variant::STRING, "reason")));
+	ADD_SIGNAL(MethodInfo("undelivered", PropertyInfo(Variant::ARRAY, "events")));
 	ADD_SIGNAL(MethodInfo("notice", PropertyInfo(Variant::STRING, "text"), PropertyInfo(Variant::STRING, "level")));
 	ADD_SIGNAL(MethodInfo("rehost"));
 	BIND_ENUM_CONSTANT(MODE_RELAY);
@@ -85,6 +86,29 @@ void AurixNetClient::hook() {
 	hooked_ = true;
 	client_.onControl = [this](const std::string &json) { emit_signal("control", String::utf8(json.c_str())); };
 	client_.onClosed = [this](const std::string &reason) { emit_signal("closed", String::utf8(reason.c_str())); };
+	client_.onUndelivered = [this](const std::vector<aurix::net::UndeliveredEvent> &events) {
+		Array list;
+		for (const aurix::net::UndeliveredEvent &event : events) {
+			PackedByteArray payload;
+			payload.resize(event.payload.size());
+			if (!event.payload.empty()) {
+				memcpy(payload.ptrw(), event.payload.data(), event.payload.size());
+			}
+			PackedInt32Array actors;
+			for (uint16_t actor : event.actors) {
+				actors.push_back(actor);
+			}
+			Dictionary sent;
+			sent["code"] = event.code;
+			sent["payload"] = payload;
+			sent["target"] = (int)event.target;
+			sent["actors"] = actors;
+			sent["group"] = event.group;
+			sent["cache"] = event.cache;
+			list.push_back(sent);
+		}
+		emit_signal("undelivered", list);
+	};
 	client_.onNotice = [this](const std::string &text, const std::string &level) { emit_signal("notice", String::utf8(text.c_str()), String::utf8(level.c_str())); };
 	client_.onRehost = [this]() { emit_signal("rehost"); };
 	client_.onData = [this](aurix::net::Channel ch, uint16_t tick, const uint8_t *data, size_t len) {

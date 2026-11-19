@@ -39,6 +39,10 @@ namespace Aurix.Net.Unity
 
         public event Action OnJoined;
         public event Action<string> OnClosed;
+
+        /// <summary>The reliable events the node had not acknowledged when the room was lost, in the order they
+        /// were sent; comes before OnClosed and before a rehost. The room may have got any of them.</summary>
+        public event Action<IReadOnlyList<UndeliveredEvent>> OnUndelivered;
         public event Action<EventFrame> OnEvent;
         public event Action<string> OnControl;
         public event Action<NetView> OnSpawned,
@@ -139,6 +143,7 @@ namespace Aurix.Net.Unity
                 IsJoined = false;
                 OnClosed?.Invoke(result);
             };
+            Client.OnUndelivered += events => OnUndelivered?.Invoke(events);
             Client.OnRehost += () => _ = RejoinAsync();
         }
 
@@ -171,6 +176,7 @@ namespace Aurix.Net.Unity
                     IsJoined = false;
                     OnClosed?.Invoke(result);
                 };
+                client.OnUndelivered += events => OnUndelivered?.Invoke(events);
                 client.OnRehost += () => _ = RejoinAsync();
                 Mode = Enum.TryParse<RoomMode>(client.RoomMode, true, out var mode) ? mode : Mode;
                 AfterJoin();

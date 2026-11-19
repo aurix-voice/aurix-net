@@ -27,7 +27,8 @@ Redis). Build once: `cargo build --release`. Create a project and key with the o
 | C ABI, aurix-sim | `crates/net-ffi/ctest/sim.c` against `libaurix_net.so` (offline) | six golden hashes equal to Rust/wasm32, 2D/3D rest + sphere cast |
 
 The SDK checks skip their live part without `NET_API_KEY`, and the parts that go through a proxy
-(`NET_SLOW_HTTP`, `NET_LOSSY_HTTP`, `NET_PLAIN_HTTP`, `NET_CUT_HTTP`, see `sdk/cpp/README.md`)
+(`NET_SLOW_HTTP`, `NET_LOSSY_HTTP`, `NET_PLAIN_HTTP`, `NET_CUT_HTTP`, `NET_BREAK_HTTP`, see
+`sdk/cpp/README.md`)
 without its variable. With `NET_LIVE_REQUIRED` set a part that cannot run fails the check
 instead; CI sets it.
 

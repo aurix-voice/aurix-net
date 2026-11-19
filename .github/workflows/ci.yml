@@ -187,6 +187,7 @@ jobs:
       NET_LOSSY_HTTP: http://127.0.0.1:8198
       NET_PLAIN_HTTP: http://127.0.0.1:8199
       NET_CUT_HTTP: http://127.0.0.1:8202
+      NET_BREAK_HTTP: http://127.0.0.1:8203
       NET_LIVE_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v7
@@ -221,6 +222,7 @@ jobs:
           nohup node test/slow-link.mjs 0 8198 10 70 > /tmp/lossy-link.log 2>&1 &
           nohup node test/slow-link.mjs 0 8199 plain > /tmp/plain-link.log 2>&1 &
           nohup node test/slow-link.mjs 0 8202 cut auth > /tmp/cut-link.log 2>&1 &
+          nohup node test/slow-link.mjs 100 8203 cut stats > /tmp/break-link.log 2>&1 &
       - name: Web SDK
         working-directory: sdk/web
         run: npm test
@@ -233,6 +235,8 @@ jobs:
           dotnet run -c Release --project "sdk/unity/BuildCheck~/managed-live/managed-live.csproj"
           dotnet run -c Release --project "sdk/unity/BuildCheck~/framework-check/framework-check.csproj"
           dotnet run -c Release --project "sdk/unity/BuildCheck~/transports-check/transports-check.csproj"
+      - name: Rust client
+        run: cargo run --release -p net-client --example relay_echo
       - name: C++ and C SDK
         run: |
           for t in echo_test sync_test lockstep_test; do

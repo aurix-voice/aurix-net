@@ -14,7 +14,8 @@ enum {
     AURIX_NET_EVENT_CONTROL = 1,    /* json = server control message */
     AURIX_NET_EVENT_DATA = 2,       /* data/data_len on channel */
     AURIX_NET_EVENT_DATA_READY = 3,
-    AURIX_NET_EVENT_CLOSED = 4      /* json = reason */
+    AURIX_NET_EVENT_CLOSED = 4,     /* json = reason */
+    AURIX_NET_EVENT_UNDELIVERED = 5 /* the reliable events the node had not acknowledged when the room was lost */
 };
 
 /* AURIX_NET_CH_UNRELIABLE drops a message that arrives after a newer one; AURIX_NET_CH_UNRELIABLE_UNSEQUENCED
@@ -97,6 +98,22 @@ int32_t aurix_net_send_event_on(AurixNetClient *client, uint8_t channel, uint8_t
 void aurix_net_flush(AurixNetClient *client);
 int32_t aurix_net_poll(AurixNetClient *client, AurixNetEvent *out);          /* 1 = event filled */
 void aurix_net_event_free(AurixNetEvent *ev);
+/* AURIX_NET_EVENT_UNDELIVERED comes once, before the AURIX_NET_EVENT_CLOSED of a lost connection and before the `left` of
+ * a room the node took the client out of; a client that leaves gets none. Its events are in the order they were sent,
+ * each as aurix_net_send_event_ex was given it: group is -1 for none, data is valid until aurix_net_event_free. The room
+ * may have got any of them. */
+typedef struct AurixNetUndelivered {
+    uint8_t code;
+    int32_t target;
+    size_t n_actors;
+    const uint8_t *data;
+    size_t len;
+    int32_t group;
+    int32_t cache;
+} AurixNetUndelivered;
+size_t aurix_net_undelivered_count(const AurixNetEvent *ev);
+int32_t aurix_net_undelivered_get(const AurixNetEvent *ev, size_t index, AurixNetUndelivered *out); /* 0, or -1 when there is no such event */
+size_t aurix_net_undelivered_actors(const AurixNetEvent *ev, size_t index, uint16_t *out, size_t cap); /* copies at most cap actors; returns how many */
 int32_t aurix_net_leave(AurixNetClient *client);
 void aurix_net_destroy(AurixNetClient *client);
 

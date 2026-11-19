@@ -579,6 +579,27 @@ void UAurixNetSubsystem::Tick(float)
 		case AURIX_NET_EVENT_CONTROL:
 			if (Ev.json) HandleControl(UTF8_TO_TCHAR(Ev.json));
 			break;
+		case AURIX_NET_EVENT_UNDELIVERED:
+		{
+			TArray<FAurixNetUndeliveredEvent> Events;
+			Events.SetNum((int32)aurix_net_undelivered_count(&Ev));
+			for (int32 I = 0; I < Events.Num(); ++I)
+			{
+				AurixNetUndelivered Sent;
+				aurix_net_undelivered_get(&Ev, I, &Sent);
+				TArray<uint16> ActorIds;
+				ActorIds.SetNumUninitialized((int32)Sent.n_actors);
+				aurix_net_undelivered_actors(&Ev, I, ActorIds.GetData(), ActorIds.Num());
+				Events[I].Code = Sent.code;
+				Events[I].Payload.Append(Sent.data, (int32)Sent.len);
+				if (Sent.target != AURIX_NET_TARGET_ACTORS) Events[I].Target = static_cast<EAurixNetTarget>(Sent.target);
+				for (const uint16 Actor : ActorIds) Events[I].Actors.Add(Actor);
+				Events[I].Group = FMath::Max(Sent.group, 0);
+				Events[I].Cache = static_cast<EAurixNetCache>(Sent.cache);
+			}
+			OnUndelivered.Broadcast(Events);
+			break;
+		}
 		case AURIX_NET_EVENT_CLOSED:
 		{
 			const FString Reason = Ev.json ? UTF8_TO_TCHAR(Ev.json) : TEXT("closed");

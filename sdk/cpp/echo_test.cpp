@@ -92,5 +92,36 @@ int main() {
         std::printf("cpp slow link: skipped (NET_SLOW_HTTP not set)\n");
         rejoined = !std::getenv("NET_LIVE_REQUIRED");
     }
-    a.leave(); return (hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && refused && matched && shaped && rejoined) ? 0 : 1;
+    // over a link that takes 100 ms each way and closes on `stats` (NET_BREAK_HTTP, see README): the
+    // reliable events the node did not acknowledge come before the room is lost, and not to a client that leaves
+    bool handedBack = true;
+    if (const char* broken = std::getenv("NET_BREAK_HTTP")) {
+        for (std::string how : {"kick", "cut", "leave"}) {
+            Client master, c; master.connect(http, Client::issueGrant(http, key, "cpp-m-" + how, "M")); c.connect(broken, Client::issueGrant(http, key, "cpp-u-" + how, "U"), true);
+            int first = 0; std::string told;
+            master.onData = [&](Channel, uint16_t, const uint8_t* d, size_t n) { EventFrame f; if (EventFrame::decode(d, n, f) && f.code == 1) first++; };
+            c.onUndelivered = [&](const std::vector<UndeliveredEvent>& events) { for (const auto& e : events) told += std::to_string(e.code) + ":" + std::to_string(e.payload.size()) + ":" + std::to_string((int)e.target) + ":" + std::to_string(e.actors.size()) + ":" + std::to_string(e.group) + ":" + std::to_string(e.cache) + " "; told += "| "; };
+            c.onControl = [&](const std::string& json) { if (Client::jsonStr(json, "t") == "left") told += "left " + Client::jsonStr(json, "reason") + " | "; };
+            c.onClosed = [&](const std::string&) { told += "closed | "; };
+            master.joinOrCreate(room + "-" + how, Mode::Relay, 4); int actor = c.join(room + "-" + how);
+            const uint8_t one = 1; c.sendEvent(1, &one, 1, Target::Others, true);
+            for (int s = 0; s < 300 && !first; s++) { c.flush(); c.poll(); master.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+            for (int s = 0; s < 40; s++) { c.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+            std::vector<uint8_t> big(3000, 7);
+            c.sendEventEx(2, &one, 1, Target::Actors, true, {7, 9}, -1, 0); c.sendEvent(3, &one, 1);
+            c.sendEventEx(5, big.data(), big.size(), Target::Master, true, {}, -1, 1); c.sendEventEx(6, &one, 1, Target::All, true, {}, 9, 0); c.flush();
+            if (how == "kick") master.sendControl("{\"t\":\"kick\",\"actor\":" + std::to_string(actor) + "}");
+            else if (how == "cut") c.sendControl("{\"t\":\"stats\"}");
+            else c.leave();
+            for (int s = 0; s < 100; s++) { try { c.poll(); } catch (const Error&) {} master.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+            const std::string events = "2:1:3:2:-1:0 5:3000:2:0:-1:1 6:1:0:0:9:0 | ";
+            std::string want = how == "kick" ? events + "left kicked | " : how == "cut" ? events + "closed | " : "left left | ";
+            std::printf("cpp undelivered events, %s: [%s] -> %s\n", how.c_str(), told.c_str(), told == want ? "ok" : "FAIL");
+            handedBack = handedBack && told == want;
+        }
+    } else {
+        std::printf("cpp broken link: skipped (NET_BREAK_HTTP not set)\n");
+        handedBack = !std::getenv("NET_LIVE_REQUIRED");
+    }
+    a.leave(); return (hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && refused && matched && shaped && rejoined && handedBack) ? 0 : 1;
 }

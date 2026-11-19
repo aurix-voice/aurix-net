@@ -39,6 +39,13 @@ It also connects through a control channel that closes on `auth` when `NET_CUT_H
 the proxy started with `cut auth`: `node sdk/web/test/slow-link.mjs 0 8202 cut auth`, then
 `NET_CUT_HTTP=http://127.0.0.1:8202`.
 
+`echo_test`, `ctest/echo.c`, the Rust example `relay_echo`, the Godot check and the native client in
+the managed C# check also lose a room with reliable events the node did not acknowledge when
+`NET_BREAK_HTTP` points at the proxy started with a delay and `cut stats`:
+`node sdk/web/test/slow-link.mjs 100 8203 cut stats`, then `NET_BREAK_HTTP=http://127.0.0.1:8203`.
+The events take 100 ms to reach the node, so a kick, the proxy closing the connection on `stats`
+or the client's own leave gets there first.
+
 `rehost_test.cpp` and the plain C `ctest/rehost.c` need two nodes and are built and run by
 `scripts/sdk-rehost-test.sh`: the node hands the room over, the client forgets it and joins it again
 through the other node.

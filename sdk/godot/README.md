@@ -27,7 +27,8 @@ lockstep room; the `event` signal stays quiet in both).
 `GRANT_A=... GRANT_B=... GRANT_C=... GRANT_D=... godot --headless --path check~` (grants from
 `POST /v1/grants`; without them only the offline part runs; with `NET_SLOW_HTTP`, `GRANT_E` and
 `GRANT_F` it also leaves a room and joins another one over a slow link, see `sdk/cpp/README.md`; with
-two nodes (`scripts/two-nodes.sh`), `NET_REHOST_HTTP` for the second one, `GRANT_G`, `GRANT_H` and
+`NET_BREAK_HTTP`, `GRANT_I` and `GRANT_J` it also loses a room with reliable events the node did not
+acknowledge and expects them in `undelivered`; with two nodes (`scripts/two-nodes.sh`), `NET_REHOST_HTTP` for the second one, `GRANT_G`, `GRANT_H` and
 `NET_REHOST_ROOM` it asks the second node for a room on the first, then waits for the first node to
 stop and joins the room again through the second). Godot discovers `.gdextension` files when the
 project is opened in the editor; headless, `check~/.godot/extension_list.cfg` lists it by hand.

@@ -1,11 +1,12 @@
 //! Two clients join one relay room; A sends an event, B receives it. Then A leaves and the node
-//! kicks B: neither describes the room afterwards.
+//! kicks B: neither describes the room afterwards. With `NET_BREAK_HTTP` (see `sdk/cpp/README.md`)
+//! a client then loses its room with reliable events the node did not acknowledge.
 //! `NET_API_KEY=an_... cargo run -p net-client --example relay_echo`
 
 use bytes::Bytes;
 use net_client::protocol::{ClientMsg, ServerMsg};
-use net_client::{issue_grant, Client, Event, EventFrame, EventTarget, Options};
-use net_common::RoomMode;
+use net_client::{issue_grant, CacheOp, Client, Event, EventFrame, EventTarget, Options};
+use net_common::{ActorId, Channel, RoomMode};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -105,5 +106,97 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     assert!(bob.joined.is_none(), "bob still describes the room");
+
+    // over a link that takes 100 ms each way and closes on `stats`: the reliable events the node
+    // did not acknowledge come before the room is lost, and not to a client that leaves
+    let Ok(broken) = std::env::var("NET_BREAK_HTTP") else {
+        println!("broken link: skipped (NET_BREAK_HTTP not set)");
+        return Ok(());
+    };
+    for how in ["kick", "cut", "leave"] {
+        let room = format!("{room}-{how}");
+        let master_grant = issue_grant(&http, &key, "master", "Master").await?;
+        let sender_grant = issue_grant(&http, &key, "sender", "Sender").await?;
+        let mut master = Client::connect(&http, &master_grant, Options::default()).await?;
+        let mut sender = Client::connect(
+            &broken,
+            &sender_grant,
+            Options {
+                tunnel: true,
+                ..Default::default()
+            },
+        )
+        .await?;
+        master.join(join(&room)).await?;
+        let actor = sender
+            .join(ClientMsg::Join {
+                name: room,
+                player_props: Default::default(),
+                rejoin_actor: None,
+                schema_hash: None,
+                spectator: false,
+                id: None,
+            })
+            .await?
+            .actor;
+        sender.send_event(1, EventTarget::Others, Bytes::from_static(b"1"), true)?;
+        sender.flush();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        while let Ok(Some(ev)) = tokio::time::timeout_at(deadline, master.next_event()).await {
+            if matches!(ev, Event::Data { .. }) {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+        let to_actors = EventTarget::Actors(vec![ActorId(7), ActorId(9)]);
+        sender.send_event(2, to_actors, Bytes::from_static(b"2"), true)?;
+        sender.send_event(3, EventTarget::Others, Bytes::from_static(b"3"), false)?;
+        let big = Bytes::from(vec![0; 3000]);
+        sender.send_event_ex(5, EventTarget::Master, big, true, None, CacheOp::Add)?;
+        sender.send_event_on(
+            Channel::ReliableUnordered,
+            6,
+            EventTarget::All,
+            Bytes::from_static(b"6"),
+            Some(9),
+            CacheOp::None,
+        )?;
+        sender.flush();
+        match how {
+            "kick" => {
+                let reason = String::new();
+                master.send(ClientMsg::Kick { actor, reason }).await?
+            }
+            "cut" => sender.send(ClientMsg::Stats { id: None }).await?,
+            _ => sender.leave().await?,
+        }
+
+        let mut told = Vec::new();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+        while let Ok(Some(ev)) = tokio::time::timeout_at(deadline, sender.next_event()).await {
+            match ev {
+                Event::Undelivered(events) => told.push(
+                    events
+                        .iter()
+                        .map(|event| format!("{}:{}", event.code, event.payload.len()))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                ),
+                Event::Control(ServerMsg::Left { reason, .. }) => {
+                    told.push(format!("left {reason}"))
+                }
+                Event::Closed(_) => told.push("closed".to_string()),
+                _ => {}
+            }
+        }
+        println!("undelivered events, {how}: {told:?}");
+        let want: &[&str] = match how {
+            "kick" => &["2:1 5:3000 6:1", "left kicked"],
+            "cut" => &["2:1 5:3000 6:1", "closed"],
+            _ => &["left left"],
+        };
+        assert_eq!(told, want, "undelivered events, {how}");
+    }
     Ok(())
 }

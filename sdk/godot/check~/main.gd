@@ -221,6 +221,7 @@ func _lockstep_step() -> void:
 	if not ok: fail("lockstep"); return
 	if not await _replaced(): fail("replaced: the client still describes the room"); return
 	if not await _slow_link(): fail("slow link"); return
+	if not await _broken_link(): fail("broken link"); return
 	if await _rehost(): print("GODOT OK"); get_tree().quit(0)
 	else: fail("rehost")
 
@@ -260,6 +261,44 @@ func _slow_link() -> bool:
 		while Time.get_ticks_msec() < until and next[0] < 5: await get_tree().process_frame
 	print("godot slow link: joined=%s errors after leave=%d reliable events in the next room=%d/5" % [joined, errors[0], next[0]])
 	return joined and errors[0] == 0 and next[0] == 5
+
+# Over a link that takes 100 ms each way and closes on `stats` (NET_BREAK_HTTP with GRANT_I and GRANT_J, see README):
+# the reliable events the node did not acknowledge come before the room is lost, and not to a client that leaves.
+func _broken_link() -> bool:
+	var broken := OS.get_environment("NET_BREAK_HTTP")
+	if broken == "":
+		print("godot broken link: skipped (NET_BREAK_HTTP not set)"); return not required
+	var events := ["2:1:1", "5:3000:2", "6:1:0"]
+	var want := {"kick": [events, "left kicked"], "cut": [events, "closed"], "leave": ["left left"]}
+	for how in want:
+		var master := AurixNetClient.new(); var c := AurixNetClient.new(); add_child(master); add_child(c)
+		if not master.connect_to(net_http, OS.get_environment("GRANT_I")) or not c.connect_to(broken, OS.get_environment("GRANT_J"), true): return false
+		var first := [0]; var told := []
+		master.event.connect(func(code, _from, _payload): if code == 1: first[0] += 1)
+		c.undelivered.connect(func(sent): told.append(sent.map(func(e): return "%d:%d:%d" % [e.code, e.payload.size(), e.target])))
+		c.control.connect(func(json): if json.contains('"t":"left"'): told.append("left " + JSON.parse_string(json).reason))
+		c.closed.connect(func(_reason): told.append("closed"))
+		var room := "godot-broken-%s-%d" % [how, OS.get_process_id()]
+		if master.join_or_create(room, AurixNetClient.MODE_RELAY, 4) < 0: return false
+		var actor := c.join(room)
+		if actor < 0: return false
+		c.send_event(1, PackedByteArray([1]), AurixNetClient.TARGET_OTHERS, true); c.flush()
+		var until := Time.get_ticks_msec() + 3000
+		while Time.get_ticks_msec() < until and first[0] == 0: await get_tree().process_frame
+		await get_tree().create_timer(0.4).timeout
+		var big := PackedByteArray(); big.resize(3000)
+		c.send_event(2, PackedByteArray([1]), AurixNetClient.TARGET_OTHERS, true); c.send_event(3, PackedByteArray([1]))
+		c.send_event(5, big, AurixNetClient.TARGET_MASTER, true)
+		c.send_event_on(AurixNetClient.CHANNEL_RELIABLE_UNORDERED, 6, PackedByteArray([1]), AurixNetClient.TARGET_ALL); c.flush()
+		match how:
+			"kick": master.send_control(JSON.stringify({"t": "kick", "actor": actor}))
+			"cut": c.send_control(JSON.stringify({"t": "stats"}))
+			"leave": c.leave()
+		await get_tree().create_timer(1.0).timeout
+		print("godot undelivered events, %s: %s" % [how, told])
+		master.queue_free(); c.queue_free()
+		if told != want[how]: return false
+	return true
 
 # Two nodes (NET_REHOST_HTTP is the second one, GRANT_G and GRANT_H, see README): the first node shuts down and hands the room over.
 func _rehost() -> bool:

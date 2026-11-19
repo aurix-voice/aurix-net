@@ -695,6 +695,45 @@ class P
                 sender.Dispose();
             }
         }
+        // the native client does the same over a link that takes 100 ms each way and closes on
+        // `stats` (NET_BREAK_HTTP, see README)
+        var broken = Environment.GetEnvironmentVariable("NET_BREAK_HTTP");
+        if (broken == null) undeliveredOk &= Skip("native undelivered events: skipped (NET_BREAK_HTTP not set)");
+        else
+        {
+            try
+            {
+                foreach (string how in new[] { "kick", "cut", "leave" })
+                {
+                    using var master = Client.Connect("http://127.0.0.1:8090", await Grant(h, key, "cs-native-m-" + how));
+                    using var sender = Client.Connect(broken, await Grant(h, key, "cs-native-u-" + how), tunnel: true);
+                    int acknowledged = 0; var told = new List<string>();
+                    master.OnData += (channel, tick, bytes) => { if (Event.TryDecode(bytes, out var frame) && frame.Code == 1) acknowledged++; };
+                    sender.OnUndelivered += events => told.Add(string.Join(" ", events.Select(sent =>
+                        $"{sent.Code}:{sent.Payload.Length}:{sent.Target}:{(sent.Actors == null ? "" : string.Join("+", sent.Actors))}:{sent.Group}:{sent.Cache}")));
+                    sender.OnControl += json => { if (ManagedClientTestHooks.Str(json, "t") == "left") told.Add("left " + ManagedClientTestHooks.Str(json, "reason")); };
+                    sender.OnClosed += reason => told.Add("closed");
+                    master.JoinOrCreate("cs-native-undelivered-" + how + "-" + Environment.ProcessId, RoomMode.Relay, 4);
+                    int actor = sender.Join("cs-native-undelivered-" + how + "-" + Environment.ProcessId);
+                    sender.SendEvent(1, new byte[] { 1 }, Target.Others, reliable: true); sender.Flush();
+                    for (int i = 0; i < 300 && acknowledged == 0; i++) { sender.Poll(); master.Poll(); await Task.Delay(10); }
+                    for (int i = 0; i < 40; i++) { sender.Poll(); await Task.Delay(10); }
+                    sender.SendEvent(2, new byte[] { 2 }, Target.Actors, reliable: true, actors: new ushort[] { 7, 9 });
+                    sender.SendEvent(3, new byte[] { 3 }, Target.Others, reliable: false);
+                    sender.SendEvent(5, new byte[3000], Target.Master, reliable: true);
+                    sender.SendEventOn(Channel.ReliableUnordered, 6, new byte[] { 6 }, Target.All);
+                    sender.Flush();
+                    if (how == "kick") master.SendControl("{\"t\":\"kick\",\"actor\":" + actor + "}");
+                    if (how == "cut") sender.SendControl("{\"t\":\"stats\"}");
+                    if (how == "leave") sender.Leave();
+                    for (int i = 0; i < 100; i++) { try { sender.Poll(); } catch (NetException) { } master.Poll(); await Task.Delay(10); }
+                    const string events = "2:1:Actors:7+9::None 5:3000:Master:::None 6:1:All:::None";
+                    Console.WriteLine($"native undelivered events, {how}: [{string.Join(" | ", told)}]");
+                    undeliveredOk &= told.SequenceEqual(how == "kick" ? new[] { events, "left kicked" } : how == "cut" ? new[] { events, "closed" } : new[] { "left left" });
+                }
+            }
+            catch (DllNotFoundException) { undeliveredOk &= Skip("native undelivered events: skipped (libaurix_net is not on the library path)"); }
+        }
         // a game thread that is blocked for a while (a scene load) keeps its link: the client
         // reads, acknowledges and resends without it
         bool busyOk;

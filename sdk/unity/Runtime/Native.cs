@@ -27,7 +27,20 @@ namespace Aurix.Net
             EventControl = 1,
             EventData = 2,
             EventDataReady = 3,
-            EventClosed = 4;
+            EventClosed = 4,
+            EventUndelivered = 5;
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct Undelivered
+        {
+            public byte code;
+            public int target;
+            public UIntPtr nActors;
+            public IntPtr data;
+            public UIntPtr len;
+            public int group;
+            public int cache;
+        }
 
         [DllImport(Lib)]
         public static extern IntPtr aurix_net_version();
@@ -106,6 +119,24 @@ namespace Aurix.Net
 
         [DllImport(Lib)]
         public static extern void aurix_net_event_free(ref Event ev);
+
+        [DllImport(Lib)]
+        public static extern UIntPtr aurix_net_undelivered_count(ref Event ev);
+
+        [DllImport(Lib)]
+        public static extern int aurix_net_undelivered_get(
+            ref Event ev,
+            UIntPtr index,
+            out Undelivered sent
+        );
+
+        [DllImport(Lib)]
+        public static extern UIntPtr aurix_net_undelivered_actors(
+            ref Event ev,
+            UIntPtr index,
+            [Out] ushort[] actors,
+            UIntPtr cap
+        );
 
         [DllImport(Lib)]
         public static extern int aurix_net_leave(IntPtr handle);

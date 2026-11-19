@@ -8,6 +8,13 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 ## [Unreleased]
 
 ### Added
+- Every client: the reliable events the node had not acknowledged when the game lost its room.
+  They were dropped without a word: a reliable message is resent on the connection it was sent
+  on and on no other, so an event sent just before the link died, the socket closed or the node
+  took the client out of its room (a kick, a closed room, a replaced session, `rehost`) could be
+  lost, and the game could not tell which. The game gets them once, in the order they were sent,
+  before the `closed` or the `left`: `undelivered` in Web and Godot, `OnUndelivered` in C# and
+  Unreal, `onUndelivered` in C++, `Event::Undelivered` in Rust, the poll event
 - Data path: channel 4, unreliable and unsequenced. It delivers every datagram that arrives,
   in the order it arrives, where channel 0 drops one that comes after a later one: under a
   delay of 100±30 ms with no loss about half of the unreliable relay events were dropped
