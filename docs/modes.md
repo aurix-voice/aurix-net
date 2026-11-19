@@ -240,9 +240,10 @@ the built-in arena.
 
 Create with `mode: "lockstep"` and `tick_hz`. The server is the clock: every tick it bundles
 the inputs it received for that tick and sends the bundle (plus the two previous ones) to
-every actor. Clients simulate with `net-rollback`: predict missing inputs with the actor's
-last one, rewind and resimulate when a late input differs, hash the state every N ticks and
-report it (`Hash` frame). The server compares hashes per tick; a minority is reported to
+every actor. Clients simulate with the rollback of their SDK (`net_client::rollback` in the
+Rust core): predict missing inputs with the actor's last one, rewind and resimulate when a
+late input differs, hash the state every N ticks and report it (`Hash` frame).
+The server compares hashes per tick; a minority is reported to
 everyone as `desync`. When the players are split evenly (two players that disagree), nobody
 is in a minority: the hash of the master stands in, the players who differ from it are
 reported with their `strikes` unchanged and restored from the master, and the tick has no

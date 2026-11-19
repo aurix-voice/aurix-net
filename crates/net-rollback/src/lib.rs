@@ -27,8 +27,7 @@ pub struct Replay {
     /// Confirmed inputs per tick from `from_tick`; a missing actor keeps its previous input.
     pub inputs: Vec<TickInputs>,
     pub hash_every: u32,
-    /// Hashes to verify against. A node numbers the state after tick T as T; [`replay`]
-    /// numbers it T + 1.
+    /// Hashes to verify against: of the state after tick T under T, as [`replay`] returns them.
     pub hashes: Vec<(u32, u64)>,
 }
 
@@ -255,13 +254,12 @@ impl<S: Clone + Hashable> Rollback<S> {
         }
         self.states.push_back(state);
         self.trim();
-        let now = self.current_tick();
-        if now.0.is_multiple_of(self.cfg.hash_every)
-            && self.confirmed_tick().is_some_and(|c| c.0 + 1 >= now.0)
+        if cur.is_multiple_of(self.cfg.hash_every)
+            && self.confirmed_tick().is_some_and(|c| c.0 >= cur)
         {
-            self.hashes.push((now.0, self.state().state_hash()));
+            self.hashes.push((cur, self.state().state_hash()));
         }
-        Ok(now)
+        Ok(self.current_tick())
     }
 
     /// Drops confirmed history older than the window.
@@ -278,6 +276,8 @@ impl<S: Clone + Hashable> Rollback<S> {
         }
     }
 
+    /// The hash of the state after each tick that is a multiple of `hash_every` and had all
+    /// its inputs when it was simulated, under that tick, the way a node numbers them.
     pub fn hashes(&self) -> &[(u32, u64)] {
         &self.hashes
     }
@@ -287,7 +287,8 @@ impl<S: Clone + Hashable> Rollback<S> {
     }
 }
 
-/// Replays a journal from scratch and returns the final state and hash checkpoints.
+/// Replays a journal from scratch and returns the final state and the hash of the state after
+/// every tick that is a multiple of `hash_every`, under that tick, the way a node numbers them.
 pub fn replay<S, F>(initial: S, replay: &Replay, mut step: F) -> (S, Vec<(u32, u64)>)
 where
     S: Clone + Hashable,
@@ -296,7 +297,7 @@ where
     let mut state = initial;
     let mut last: TickInputs = TickInputs::new();
     let mut hashes = Vec::new();
-    for (t, inputs) in replay.inputs.iter().enumerate() {
+    for (tick, inputs) in (replay.from_tick..).zip(&replay.inputs) {
         for (actor, data) in inputs {
             last.insert(*actor, data.clone());
         }
@@ -304,10 +305,9 @@ where
         for actor in &replay.actors {
             full.insert(*actor, last.get(actor).cloned().unwrap_or_default());
         }
-        step(&mut state, &full, Tick(t as u32));
-        let now = t as u32 + 1;
-        if now.is_multiple_of(replay.hash_every) {
-            hashes.push((now, state.state_hash()));
+        step(&mut state, &full, Tick(tick));
+        if tick.is_multiple_of(replay.hash_every) {
+            hashes.push((tick, state.state_hash()));
         }
     }
     (state, hashes)
@@ -596,12 +596,12 @@ mod tests {
         let rep = journal.into_replay(1, "h".into(), 60, vec![A, B], 5);
         let (replayed, hashes) = replay(world(), &rep, step);
         assert_eq!(replayed, live);
-        assert_eq!(hashes.last().unwrap().1, live.state_hash());
-        let live_hashes = rb.hashes();
-        for (tick, hash) in live_hashes {
-            if let Some((_, rh)) = hashes.iter().find(|(rt, _)| rt == tick) {
-                assert_eq!(hash, rh, "tick {tick}");
-            }
+        let ticks = |hashes: &[(u32, u64)]| -> Vec<u32> { hashes.iter().map(|h| h.0).collect() };
+        assert_eq!(ticks(&hashes), [0, 5, 10, 15, 20, 25, 30, 35]);
+        // A tick is hashed when its inputs were all there in time: every tenth one here.
+        assert_eq!(ticks(rb.hashes()), [0, 10, 20, 30]);
+        for hash in rb.hashes() {
+            assert!(hashes.contains(hash), "{hash:?}");
         }
         assert!(rb.rollbacks > 0);
     }

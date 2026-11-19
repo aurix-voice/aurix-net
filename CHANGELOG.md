@@ -291,6 +291,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   held no hash from before the move. A node keeps the whole journal of a room and its hashes
   in Redis, not the last ten seconds, and the node that takes the room over has them. The
   checkpoint of a room is deleted with the room; it used to stay ten minutes after the close.
+- `net-rollback`: `replay()` and `Rollback::hashes()` gave the hash of the state after tick T
+  under T + 1, and a node keeps it under T. No hash `replay()` returned for a replay from a
+  node was the one the replay held, and a client that reported the hashes of `Rollback` to a
+  room with a referee was called desynced at each of them. Both number the hashes the way a
+  node does, `replay()` from the first tick of the replay.
 - Lockstep: two players that reported different hashes for a tick were both a minority of
   one, and the node named one of them at random: the master as often as the other, with a
   strike each time, so a master could end up `untrusted` and be sent its own state to restore

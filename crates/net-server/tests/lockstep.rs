@@ -323,6 +323,143 @@ async fn two_players_that_disagree_are_settled_by_the_master_without_a_strike() 
     assert_eq!(restores, [0, ticks.len()]);
 }
 
+/// The state of a room with a referee, as the bytes of its frame.
+#[derive(Clone)]
+struct Snapshot(Vec<u8>);
+
+impl net_rollback::Hashable for Snapshot {
+    fn state_hash(&self) -> u64 {
+        net_rollback::hash_bytes(&self.0)
+    }
+}
+
+#[tokio::test]
+async fn rollback_and_replay_number_hashes_the_way_the_referee_does() {
+    use net_common::types::Tick;
+    use net_rollback::{Rollback, RollbackConfig, TickInputs};
+
+    let node = Node::start().await;
+    let project = node.project("numbering").await;
+    let upload = reqwest::Client::new()
+        .put(format!("{}/v1/modules/idle", project.api.http))
+        .bearer_auth(&project.api.token)
+        .body(IDLE_MODULE)
+        .send()
+        .await
+        .expect("upload");
+    assert!(upload.status().is_success(), "upload: {}", upload.status());
+    let message =
+        |msg: Value| -> ClientMsg { serde_json::from_value(msg).expect("client message") };
+    let props = json!({"tick_hz": 60, "logic": "idle"});
+    let create = json!({"t": "create", "name": "arena", "mode": "lockstep", "props": props});
+    let join = json!({"t": "join", "name": "arena"});
+    let mut clients = Vec::new();
+    for (player, msg) in [("ann", create), ("bob", join.clone())] {
+        let opts = Options {
+            tunnel: true,
+            ..Default::default()
+        };
+        let mut client = Client::connect(&node.http, &project.grant(player).await, opts)
+            .await
+            .expect("connects");
+        client.join(message(msg)).await.expect("joins");
+        clients.push(client);
+    }
+    // The seed is in `joined`, which `net-client` does not hand out.
+    let mut eve = project.player("eve").await;
+    eve.send(join).await;
+    let seed = eve.until("joined").await["seed"].as_u64().expect("seed");
+
+    let referee = || {
+        let engine = GameEngine::new();
+        let (_, module) = engine.load(IDLE_MODULE.as_bytes()).expect("module");
+        let logic = engine.instantiate(&module, seed).expect("instance");
+        let config = FrameConfig {
+            tick_hz: 60,
+            ..Default::default()
+        };
+        let schema = Schema::parse(ARENA_SCHEMA).expect("schema");
+        let mut sim = ServerSim::new(Frame::new(schema, config, seed), Box::new(logic));
+        let start = Snapshot(sim.frame.snapshot());
+        let step = move |state: &mut Snapshot, inputs: &TickInputs, _: Tick| {
+            sim.frame.restore(&state.0).expect("restores");
+            sim.step(inputs);
+            state.0 = sim.frame.snapshot();
+        };
+        (start, step)
+    };
+
+    // Each player steps the ticks it is sent and reports the hashes its rollback has for them.
+    let actors = vec![ActorId(1), ActorId(2)];
+    let mut players = Vec::new();
+    for client in clients {
+        let (start, step) = referee();
+        let rollback = Rollback::new(RollbackConfig::default(), actors.clone(), start);
+        players.push((
+            client,
+            LockstepClient::new(),
+            rollback,
+            step,
+            TickInputs::new(),
+        ));
+    }
+    let mut reported = 0;
+    for round in 0..150u32 {
+        for (i, (client, bundles, rollback, step, last)) in players.iter_mut().enumerate() {
+            while let Some(event) = client.try_next_event() {
+                let payload = match event {
+                    Event::Data { payload, .. } => payload,
+                    Event::Control(ServerMsg::Desync { tick, actor, .. }) => {
+                        panic!(
+                            "the node called honest player {} desynced at tick {tick}",
+                            actor.0
+                        )
+                    }
+                    _ => continue,
+                };
+                for event in bundles.receive(&payload).unwrap_or_default() {
+                    let LsEvent::Tick { tick, inputs } = event else {
+                        continue;
+                    };
+                    for (actor, input) in inputs {
+                        last.insert(ActorId(actor), input.to_vec());
+                    }
+                    for actor in &actors {
+                        let input = last.get(actor).cloned().unwrap_or_default();
+                        rollback
+                            .add_input(*actor, Tick(tick), input, step)
+                            .expect("input");
+                    }
+                    rollback.advance(step).expect("tick");
+                    for (tick, hash) in rollback.take_hashes() {
+                        client
+                            .send_data(Channel::UnreliableSequenced, hash_frame(tick, hash))
+                            .expect("hash");
+                        reported += 1;
+                    }
+                }
+            }
+            let input = (round as u8).wrapping_mul(3 + i as u8);
+            let at = rollback.current_tick().0 + 4;
+            client
+                .send_data(Channel::UnreliableSequenced, input_frame(at, &[input]))
+                .expect("input");
+            client.flush();
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(reported > 20, "{reported} hashes reported");
+
+    let (_, rooms) = project.api.get("/v1/rooms").await;
+    let room = rooms["rooms"][0]["room"].as_str().expect("room");
+    let (_, body) = project.api.get(&format!("/v1/rooms/{room}/replay")).await;
+    let replay: net_rollback::Replay = serde_json::from_value(body).expect("replay");
+    assert!(replay.hashes.len() > 10, "{:?}", replay.hashes);
+    let (start, step) = referee();
+    let (_, hashes) = net_rollback::replay(start, &replay, step);
+    assert_eq!(hashes, replay.hashes);
+}
+
 const IDLE_MODULE: &str = "(module (memory (export \"memory\") 1) \
     (func (export \"aurix_init\") (param i64)) (func (export \"aurix_step\")))";
 
