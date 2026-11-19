@@ -100,9 +100,10 @@ with the route or the message type and the project.
 ## WebSocket control channel `/ws`
 
 JSON messages, `"t"` is the type (snake_case). Client → server: `auth{grant, supports?}`,
-`create{...}`, `join{name, player_props, rejoin_actor?, schema_hash?, spectator?}`,
-`join_or_create{name, mode, max_players, visible, open, props, lobby_props, region, player_props}`,
-`join_random{...}`, `leave`, `set_room_props{props, expected?, visible?, open?}`,
+`create{name?, mode, max_players, visible, open, props, lobby_props, region, player_props, reserved}`,
+`join{name, player_props, rejoin_actor?, schema_hash?, spectator?}`,
+`join_or_create{name, mode, max_players, visible, open, props, lobby_props, region, player_props, reserved}`,
+`join_random{filter, player_props, expr?, match_type?}`, `leave`, `set_room_props{props, expected?, visible?, open?}`,
 `set_player_props{props, expected?}`, `event{code, data(base64), target, channel, cache, group}` (`target` is `{"kind": "all" | "others" | "master"}` or `{"kind": "actors", "actors": [..]}`, default others; `channel` is `unreliable_sequenced`, `reliable_ordered` (default), `reliable_unordered` or `unreliable_unsequenced`),
 `set_groups{join, leave}`, `cache_slice{op, index?}` (relay event-cache slices), `set_view{viewpoints, interest}` (sync AOI: extra viewpoints, forced entities),
 `set_master{actor}`, `kick{actor, reason}`, `lobby{subscribe}`,
@@ -157,6 +158,12 @@ What a side can do beyond the base protocol it lists by name in `supports` of it
 message: the node in `hello`, the client in `auth`. A side uses a capability only with a peer
 that listed it and ignores the names it does not know; a message without `supports` lists
 none. Every later addition to the protocol is announced this way.
+
+A control message with a field the node does not know is refused with `invalid_request`
+that names the field, in the message itself and in `target` of `event`; the node does not
+pass over what it cannot act on. `props`, `player_props`, `filter`, `expected` and `body`
+are the game's own and take any key. A client passes over a field it does not know in a
+message of the node.
 
 | Name | The side |
 |---|---|

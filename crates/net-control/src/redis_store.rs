@@ -490,4 +490,12 @@ mod live_room_tests {
         assert!(room.held_for.is_empty());
         assert!(room.is_listed_for("anyone"));
     }
+
+    #[test]
+    fn record_of_a_newer_node_is_read_past_its_new_fields() {
+        let record = r#"{"room":"01a1f3bd-3dd9-709b-9189-6479ce3b7b20","node":"n",
+            "name":"arena","mode":"relay","players":1,"max_players":2,"open":true,
+            "visible":true,"props":{},"added_later":1}"#;
+        assert!(serde_json::from_str::<LiveRoom>(record).is_ok());
+    }
 }

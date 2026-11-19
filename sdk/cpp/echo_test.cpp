@@ -43,8 +43,12 @@ int main() {
     try { d.join(room + "-missing"); } catch (const Error& error) { missing = error.code; }
     d.joinOrCreate(room + "-one", Mode::Relay, 1);
     try { e.join(room + "-one"); } catch (const Error& error) { full = error.code; }
-    std::printf("cpp refused joins: missing room code=%d, full room code=%d\n", missing, full);
-    bool refused = missing == AURIX_NET_ERR_NOT_FOUND && full == AURIX_NET_ERR_ROOM_FULL;
+    // a message with a field the node does not know is refused before it is sent, and the field is named
+    int unknown = 0; std::string named;
+    try { e.sendControl("{\"t\":\"set_groups\",\"join\":[1],\"colour\":\"red\"}"); } catch (const Error& error) { unknown = error.code; named = error.what(); }
+    std::printf("cpp refused joins: missing room code=%d, full room code=%d; unknown field code=%d (%s)\n", missing, full, unknown, named.c_str());
+    bool refused = missing == AURIX_NET_ERR_NOT_FOUND && full == AURIX_NET_ERR_ROOM_FULL
+        && unknown == AURIX_NET_ERR_INVALID_REQUEST && named.find("unknown field `colour`") != std::string::npos;
     // a random join finds a room by the props it publishes, and a seat held for a player is kept for it
     Client h; h.connect(http, Client::issueGrant(http, key, "cpp-h", "H"));
     h.joinOrCreate(room + "-open", Mode::Relay, 4, "{\"map\":" + Client::quote(room) + "}", {"map"});

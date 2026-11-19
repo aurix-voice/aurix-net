@@ -299,6 +299,20 @@ test("a node that does not list the unsequenced channel gets its events on the s
   assert.deepEqual(channels, Array(10).fill(Channel.Unreliable));
 });
 
+test("a message with a field the node does not know is refused, and the field is named", { skip: !key }, async (t) => {
+  const a = await Client.connect(http, await grant("web-field-a"));
+  t.after(() => a.close());
+  const room = `web-field-${process.pid}`;
+  await assert.rejects(a.join({ t: "join_or_create", name: room, colour: "red" }), (error) => {
+    assert.equal(error.code, "invalid_request");
+    assert.match(error.message, /unknown field `colour`/);
+    return true;
+  });
+  // what the game calls its own takes any key
+  const joined = await a.join({ t: "join_or_create", name: room, props: { colour: "red" }, player_props: { hat: 1 } });
+  assert.equal(joined.props.colour, "red");
+});
+
 test("two lookups in flight: each call gets its own answer or refusal", { skip: !key }, async () => {
   const a = await Client.connect(http, await grant("web-ids-a"));
   const b = await Client.connect(http, await grant("web-ids-b"));

@@ -424,3 +424,29 @@ async fn handshake_cut_short_gives_its_connection_back_to_the_address() {
     let connected = tokio_tungstenite::connect_async(&url).await;
     assert!(connected.is_ok(), "{:?}", connected.err());
 }
+
+#[tokio::test]
+async fn control_message_with_an_unknown_field_is_refused_by_its_name() {
+    let node = Node::start().await;
+    let project = node.project("unknown-field").await;
+    let mut ann = project.player("ann").await;
+
+    let reply = ann
+        .call(json!({"t": "create", "name": "arena", "colour": "red"}))
+        .await;
+    refused(&reply, "invalid_request");
+    let message = reply["message"].as_str().expect("message");
+    assert!(message.contains("unknown field `colour`"), "{reply}");
+
+    // Props are the game's own and take any key.
+    let create = json!({"t": "create", "name": "arena", "props": {"colour": "red"}});
+    joined(&ann.call(create).await);
+
+    let target = json!({"kind": "actors", "actors": [1], "colour": "red"});
+    let reply = ann
+        .call(json!({"t": "event", "code": 1, "data": "", "target": target}))
+        .await;
+    refused(&reply, "invalid_request");
+    let message = reply["message"].as_str().expect("message");
+    assert!(message.contains("colour"), "{reply}");
+}

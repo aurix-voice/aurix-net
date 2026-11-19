@@ -52,7 +52,8 @@ enum {
   AURIX_NET_ERR_FORBIDDEN = 101,
   AURIX_NET_ERR_NOT_FOUND = 102,      /* join: no such room */
   AURIX_NET_ERR_CONFLICT = 103,
-  AURIX_NET_ERR_INVALID_REQUEST = 104,
+  AURIX_NET_ERR_INVALID_REQUEST = 104, /* also a control message the library does not send: JSON the node could
+                                          not read, or with a field the node does not know, which the text names */
   AURIX_NET_ERR_ROOM_FULL = 105,
   AURIX_NET_ERR_ROOM_CLOSED = 106,
   AURIX_NET_ERR_SCHEMA_MISMATCH = 107,

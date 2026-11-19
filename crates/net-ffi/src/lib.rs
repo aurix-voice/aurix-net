@@ -104,6 +104,22 @@ unsafe fn cstr<'a>(pointer: *const c_char) -> Option<&'a str> {
     CStr::from_ptr(pointer).to_str().ok()
 }
 
+/// The control message a game wrote as JSON. One the node could not read is refused here with
+/// the node's code, `invalid_request`, and what is wrong with it: a field the node does not
+/// know is named.
+fn control_message(json: &str) -> Option<ClientMsg> {
+    match serde_json::from_str(json) {
+        Ok(msg) => Some(msg),
+        Err(error) => {
+            set_error(
+                ErrorCode::InvalidRequest,
+                format_args!("bad message: {error}"),
+            );
+            None
+        }
+    }
+}
+
 pub struct AurixNetClient {
     inner: Mutex<Client>,
 }
@@ -277,12 +293,8 @@ pub unsafe extern "C" fn aurix_net_connect_and_join(
         set_error(ErrorCode::InvalidArgument, "null or non-utf8 argument");
         return std::ptr::null_mut();
     };
-    let msg: ClientMsg = match serde_json::from_str(json) {
-        Ok(msg) => msg,
-        Err(error) => {
-            set_error(ErrorCode::InvalidArgument, error);
-            return std::ptr::null_mut();
-        }
+    let Some(msg) = control_message(json) else {
+        return std::ptr::null_mut();
     };
     let opts = Options {
         tunnel: tunnel != 0,
@@ -313,12 +325,8 @@ pub unsafe extern "C" fn aurix_net_send_control(
     let (Some(client), Some(json)) = (client.as_ref(), cstr(json)) else {
         return -1;
     };
-    let msg: ClientMsg = match serde_json::from_str(json) {
-        Ok(msg) => msg,
-        Err(error) => {
-            set_error(ErrorCode::InvalidArgument, error);
-            return -1;
-        }
+    let Some(msg) = control_message(json) else {
+        return -1;
     };
     match rt().block_on(client.inner.lock().send(msg)) {
         Ok(()) => 0,
@@ -336,12 +344,8 @@ pub unsafe extern "C" fn aurix_net_join(client: *mut AurixNetClient, json: *cons
     let (Some(client), Some(json)) = (client.as_ref(), cstr(json)) else {
         return -1;
     };
-    let msg: ClientMsg = match serde_json::from_str(json) {
-        Ok(msg) => msg,
-        Err(error) => {
-            set_error(ErrorCode::InvalidArgument, error);
-            return -1;
-        }
+    let Some(msg) = control_message(json) else {
+        return -1;
     };
     let mut inner = client.inner.lock();
     match rt().block_on(inner.join(msg)) {
@@ -1027,4 +1031,40 @@ pub unsafe extern "C" fn aurix_net_lockstep_fnv1a(data: *const u8, len: usize) -
         return LockstepClient::fnv1a(&[]);
     }
     LockstepClient::fnv1a(std::slice::from_raw_parts(data, len))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn last_error() -> (i32, String) {
+        let text = unsafe { CStr::from_ptr(aurix_net_last_error()) };
+        (
+            aurix_net_last_error_code(),
+            text.to_str().unwrap().to_owned(),
+        )
+    }
+
+    #[test]
+    fn an_unknown_field_is_refused_with_the_code_of_the_node_and_named() {
+        assert!(control_message(r#"{"t":"join","name":"lobby","mode":"relay"}"#).is_none());
+        let (code, text) = last_error();
+        assert_eq!(code, ErrorCode::InvalidRequest as i32);
+        assert!(
+            text.starts_with("bad message: unknown field `mode`"),
+            "{text}"
+        );
+
+        let target = r#"{"t":"event","code":1,"data":"","target":{"kind":"all","colour":"red"}}"#;
+        assert!(control_message(target).is_none());
+        let (code, text) = last_error();
+        assert_eq!(code, ErrorCode::InvalidRequest as i32);
+        assert!(text.contains("colour"), "{text}");
+    }
+
+    #[test]
+    fn props_of_the_game_take_any_key() {
+        let join = r#"{"t":"join_or_create","name":"lobby","props":{"colour":"red"},"player_props":{"hat":1}}"#;
+        assert!(control_message(join).is_some());
+    }
 }

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 pub const UNSEQUENCED: &str = "unsequenced";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "t", rename_all = "snake_case")]
+#[serde(tag = "t", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClientMsg {
     /// First message: the join grant issued by the developer's backend.
     Auth {
@@ -423,6 +423,19 @@ pub enum ServerMsg {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_field_is_refused_from_a_client_and_passed_over_from_the_node() {
+        let err =
+            serde_json::from_str::<ClientMsg>(r#"{"t":"join","name":"lobby","mode":"relay"}"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("unknown field `mode`"), "{err}");
+
+        let msg: ServerMsg =
+            serde_json::from_str(r#"{"t":"error","code":"not_found","message":"","since":2}"#)
+                .unwrap();
+        assert!(matches!(msg, ServerMsg::Error { .. }));
+    }
 
     #[test]
     fn client_json_shapes() {

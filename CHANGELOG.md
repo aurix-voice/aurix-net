@@ -108,6 +108,14 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   predicts had no tick to give `LockstepRollback.LocalInput`.
 - Unity SDK: the package names Unity 2022.3 as the oldest editor it works in; it named 2021.3,
   in which it was never built. It builds, weaves and makes a player in 2022.3.62f3.
+- Protocol: a control message with a field the node does not know is refused with
+  `invalid_request` that names the field. The node used to pass such a field over, so a
+  misspelt or unsupported option was lost without a word. A change of behaviour: a client
+  that sends a field outside the documented ones gets a refusal where it got an answer.
+- SDKs: the C library, and with it C++, Godot, Unreal and the native C# client, refuses a
+  control message with a field the node does not know before it is sent, with the node's code:
+  `AURIX_NET_ERR_INVALID_REQUEST`, and the text names the field. It reported
+  `AURIX_NET_ERR_INVALID_ARGUMENT` for a message it could not read.
 - Lockstep: the journal keeps the inputs of a tick packed in one buffer: 72 bytes a tick
   instead of 408 for two players with 8-byte inputs, 216 instead of 600 for eight with 16-byte
   ones.

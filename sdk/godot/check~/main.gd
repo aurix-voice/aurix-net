@@ -67,6 +67,8 @@ func _ready() -> void:
 	# a seat held for a player on its way is not given to another
 	if a.join_or_create(room + "-held", AurixNetClient.MODE_RELAY, 2, "", PackedStringArray(), PackedStringArray(["godot-awaited"])) < 0: fail("a join: " + a.get_last_error()); return
 	if b.join(room + "-held") >= 0 or b.get_last_error_code() != AurixNetClient.ERROR_ROOM_FULL: fail("b took a held seat: " + b.get_last_error()); return
+	# a message with a field the node does not know is refused before it is sent, and the field is named
+	if b.send_control(JSON.stringify({"t": "set_groups", "join": [1], "colour": "red"})) or b.get_last_error_code() != AurixNetClient.ERROR_INVALID_REQUEST or not b.get_last_error().contains("unknown field `colour`"): fail("b sent a field the node does not know: " + b.get_last_error()); return
 	a.leave()
 	# a hidden room is not offered to a random join and is entered by its name
 	if a.join_or_create(room + "-hidden", AurixNetClient.MODE_RELAY, 4, JSON.stringify({"map": room + "-hidden"}), PackedStringArray(["map"]), PackedStringArray(), false) < 0: fail("a hidden room: " + a.get_last_error()); return

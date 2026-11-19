@@ -510,6 +510,11 @@ class P
             bool managedClosed = false; managed.OnClosed += _ => managedClosed = true;
             Action viaManaged = () => managed.SendEvent(1, one, Target.Others, reliable: true);
             string outside = Refusal(viaManaged);
+            // a message with a field the node does not know is refused, and the field is named: by the node
+            // to the managed client, by the native core before it is sent
+            string unknown = "joined";
+            try { await managed.JoinRawAsync("{\"t\":\"join_or_create\",\"name\":\"" + room + "-field\",\"colour\":\"red\"}"); } catch (NetException error) { unknown = error.Message; }
+            if (!unknown.StartsWith("invalid_request") || !unknown.Contains("unknown field `colour`")) throw new Exception("unknown field: the managed client got: " + unknown);
             await managed.JoinOrCreateAsync(room + "-lost", "relay", 4);
             string inside = Refusal(viaManaged);
             Client core = null; bool coreClosed = false, coreOut = false; Action viaCore = null;
@@ -521,6 +526,8 @@ class P
                 core.OnControl += json => coreOut |= ManagedClientTestHooks.Str(json, "t") == "left";
                 viaCore = () => core.SendEvent(1, one, Target.Others, reliable: true);
                 coreOutside = Refusal(viaCore);
+                unknown = Refusal(() => core.SendControl("{\"t\":\"set_groups\",\"join\":[1],\"colour\":\"red\"}"));
+                if (!unknown.StartsWith("bad message: unknown field `colour`")) throw new Exception("unknown field: the native client got: " + unknown);
                 core.Join(room + "-lost");
                 // the native client describes the room as the node did at the join: its size and who was in it, itself too
                 if (ManagedClientTestHooks.Num(core.JoinedJson, "max_players") != 4 || !core.JoinedJson.Contains("\"player_id\":\"cs-lost-m\"") || !core.JoinedJson.Contains("\"player_id\":\"cs-lost-c\"")) throw new Exception("joined: the native client does not describe the room: " + core.JoinedJson);

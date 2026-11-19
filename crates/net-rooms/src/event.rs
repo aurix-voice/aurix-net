@@ -14,7 +14,12 @@ use net_common::ActorId;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind", content = "actors")]
+#[serde(
+    rename_all = "snake_case",
+    tag = "kind",
+    content = "actors",
+    deny_unknown_fields
+)]
 pub enum EventTarget {
     /// Everyone including the sender.
     All,

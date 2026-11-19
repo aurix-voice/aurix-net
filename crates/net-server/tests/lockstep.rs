@@ -13,7 +13,7 @@ use net_game::GameEngine;
 use net_rooms::protocol::{ClientMsg, ServerMsg};
 use net_sim::{Frame, FrameConfig};
 use net_wire::Schema;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -183,14 +183,13 @@ fn drain(client: &mut Client) -> (Vec<ServerMsg>, Vec<Bytes>) {
 async fn desynced_client_is_sent_a_restore_frame_and_stays_trusted() {
     let node = Node::start().await;
     let project = node.project("restore").await;
-    let message = |t: &str| -> ClientMsg {
-        serde_json::from_value(
-            json!({"t": t, "name": "arena", "mode": "lockstep", "props": {"tick_hz": 60}}),
-        )
-        .expect("client message")
-    };
+    let message =
+        |msg: Value| -> ClientMsg { serde_json::from_value(msg).expect("client message") };
+    let create = json!({"t": "create", "name": "arena", "mode": "lockstep",
+        "props": {"tick_hz": 60}});
+    let join = json!({"t": "join", "name": "arena"});
     let mut clients = Vec::new();
-    for (player, t) in [("ann", "create"), ("bob", "join"), ("carol", "join")] {
+    for (player, msg) in [("ann", &create), ("bob", &join), ("carol", &join)] {
         let opts = Options {
             tunnel: true,
             ..Default::default()
@@ -198,7 +197,7 @@ async fn desynced_client_is_sent_a_restore_frame_and_stays_trusted() {
         let mut client = Client::connect(&node.http, &project.grant(player).await, opts)
             .await
             .expect("connects");
-        client.join(message(t)).await.expect("joins");
+        client.join(message(msg.clone())).await.expect("joins");
         clients.push(client);
     }
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -404,11 +403,11 @@ async fn room_seed_is_a_number_every_json_reader_keeps() {
     let node = Node::start().await;
     let project = node.project("seed").await;
     let mut seeds = Vec::new();
-    for (player, t) in [("ann", "create"), ("bob", "join")] {
+    let create = json!({"t": "create", "name": "arena", "mode": "lockstep"});
+    let join = json!({"t": "join", "name": "arena"});
+    for (player, msg) in [("ann", create), ("bob", join)] {
         let mut player = project.player(player).await;
-        player
-            .send(json!({"t": t, "name": "arena", "mode": "lockstep"}))
-            .await;
+        player.send(msg).await;
         seeds.push(player.until("joined").await["seed"].clone());
     }
     let seed = seeds[0].as_u64().expect("seed");

@@ -2746,6 +2746,17 @@ pub async fn reaper(st: Shared) {
 }
 
 #[cfg(test)]
+mod checkpoint_tests {
+    use super::RoomCheckpoint;
+
+    #[test]
+    fn checkpoint_of_a_newer_node_is_read_past_its_new_fields() {
+        let body = br#"{"players":[],"master":null,"added_later":1}"#;
+        assert!(serde_json::from_slice::<RoomCheckpoint>(body).is_ok());
+    }
+}
+
+#[cfg(test)]
 mod replay_fit_tests {
     use super::fit_replay;
 

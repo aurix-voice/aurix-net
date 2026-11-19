@@ -108,6 +108,15 @@ session, both fan out across the fleet):
   adds, changes or removes one room. The SDKs keep no list of their own. In Unreal
   `SubscribeLobby` does this, `OnRoomsListed` gets each whole list and `OnLobbyUpdate` each change.
 
+- A control message the game writes itself may carry only the fields docs/api.md names for it:
+  one with any other field is refused with `invalid_request`, and the refusal names the field.
+  Web and the managed C# client hear it from the node (the call fails, or an `error` control
+  message comes for a message that has no answer). C, C++, Godot, Unreal and the native C#
+  client hear it from the library, which does not send such a message:
+  `AURIX_NET_ERR_INVALID_REQUEST`, `Error::code`, `get_last_error_code()`,
+  `EAurixNetError::InvalidRequest`, a `NetException`. `props`, `player_props`, `filter`,
+  `expected` and `body` are the game's own and take any key.
+
 A room's lobby is its room prop `lobby` (always visible in listings); rooms without one form the default
 lobby `""`. See docs/modes.md.
 
