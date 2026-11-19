@@ -41,18 +41,23 @@ pub async fn ws_handler(
     if st.is_draining() {
         return (axum::http::StatusCode::SERVICE_UNAVAILABLE, "node draining").into_response();
     }
-    if st.guards.ws_connects.check_key(&ip).is_err() || !st.guards.acquire_session(ip) {
+    let slot = match st.guards.ws_connects.check_key(&ip) {
+        Ok(()) => st.guards.acquire_session(ip),
+        Err(_) => None,
+    };
+    let Some(slot) = slot else {
         st.metrics.errors.with_label_values(&["rate_limited"]).inc();
         return (
             axum::http::StatusCode::TOO_MANY_REQUESTS,
             "too many connections",
         )
             .into_response();
-    }
+    };
+    // A handshake that fails drops this closure, and the slot with it.
     ws.max_message_size(net_common::limits::MAX_MESSAGE + 4096)
         .on_upgrade(move |socket| async move {
-            run(socket, st.clone(), ip).await;
-            st.guards.release_session(ip);
+            let _slot = slot;
+            run(socket, st, ip).await;
         })
 }
 

@@ -94,6 +94,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 ### Fixed
 - Unreal SDK: `SendEventEx` sent an event for `EAurixNetChannel::ReliableUnordered` on the
   reliable ordered channel. It goes on the channel it is given.
+- Node: a WebSocket handshake cut off before the node answered kept its place in the count of
+  connections from that address (`limits.max_sessions_per_ip`) until the node restarted. Enough
+  of them, and nobody behind that address could connect: `429 too many connections`. The place
+  is now given back however the connection ends.
 - Web and Unity SDKs: of two `rooms`, `findFriends` or `lobbyStats` calls in flight at once the
   second got the answer to the first, and in Unity the node's refusal of one call failed every
   call in flight. Each call goes out under an id of its own now and takes the answer or the

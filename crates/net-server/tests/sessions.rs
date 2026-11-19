@@ -1,5 +1,6 @@
 //! Who may enter a room, and what happens to a control session when its player is kicked, the
-//! room is closed or an offline slot expires. Each test runs against a real node.
+//! room is closed, an offline slot expires or its handshake is cut short. Each test runs against
+//! a real node.
 
 mod common;
 
@@ -394,4 +395,32 @@ async fn full_room_refusal_names_the_room_size() {
     let reply = bob.call(json!({"t": "join", "name": "duel"})).await;
     refused(&reply, "room_full");
     assert_eq!(reply["message"], "room is full (max_players is 1)");
+}
+
+#[tokio::test]
+async fn handshake_cut_short_gives_its_connection_back_to_the_address() {
+    use tokio::io::AsyncWriteExt;
+
+    let node = Node::start_with(&[("NET__LIMITS__MAX_SESSIONS_PER_IP", "2")]).await;
+    let address = node.http.trim_start_matches("http://");
+    let request = format!(
+        "GET /ws HTTP/1.1\r\nHost: {address}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\
+         Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+    );
+    for _ in 0..4 {
+        let mut tcp = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("connect");
+        tcp.write_all(request.as_bytes()).await.expect("request");
+        // Closed with a reset, so the node has nowhere to write its answer.
+        socket2::SockRef::from(&tcp)
+            .set_linger(Some(Duration::ZERO))
+            .expect("linger");
+        drop(tcp);
+    }
+    tokio::time::sleep(QUIET).await;
+
+    let url = node.http.replacen("http", "ws", 1) + "/ws";
+    let connected = tokio_tungstenite::connect_async(&url).await;
+    assert!(connected.is_ok(), "{:?}", connected.err());
 }

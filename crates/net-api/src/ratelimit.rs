@@ -12,6 +12,7 @@ use net_common::config::LimitsConfig;
 use net_common::ipnet::{net_contains, parse_net, IpNet};
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU32;
+use std::sync::Arc;
 
 pub type Limiter<K> = DefaultKeyedRateLimiter<K>;
 
@@ -34,9 +35,27 @@ pub struct Guards {
     pub auth_fail: Limiter<IpAddr>,
     pub key_writes: Limiter<uuid::Uuid>,
     pub key_grants: Limiter<uuid::Uuid>,
-    sessions: DashMap<IpAddr, u32>,
+    sessions: Arc<DashMap<IpAddr, u32>>,
     max_sessions_per_ip: u32,
     pub trusted_proxies: Vec<IpNet>,
+}
+
+/// A control session or data connection counted against its address until this is dropped.
+pub struct SessionSlot {
+    sessions: Arc<DashMap<IpAddr, u32>>,
+    ip: IpAddr,
+}
+
+impl Drop for SessionSlot {
+    fn drop(&mut self) {
+        if let Some(mut open) = self.sessions.get_mut(&self.ip) {
+            *open = open.saturating_sub(1);
+            if *open == 0 {
+                drop(open);
+                self.sessions.remove_if(&self.ip, |_, n| *n == 0);
+            }
+        }
+    }
 }
 
 impl Guards {
@@ -47,30 +66,23 @@ impl Guards {
             auth_fail: RateLimiter::keyed(per_minute(limits.auth_failures_per_min_per_ip)),
             key_writes: RateLimiter::keyed(per_second(limits.writes_per_sec_per_key)),
             key_grants: RateLimiter::keyed(per_second(limits.grants_per_sec_per_key)),
-            sessions: DashMap::new(),
+            sessions: Arc::default(),
             max_sessions_per_ip: limits.max_sessions_per_ip.max(1),
             trusted_proxies: trusted.iter().filter_map(|p| parse_net(p)).collect(),
         }
     }
 
-    /// Counts a control session or data connection from `ip`; false when the IP is at cap.
-    pub fn acquire_session(&self, ip: IpAddr) -> bool {
+    /// Counts a control session or data connection from `ip`; `None` when the IP is at cap.
+    pub fn acquire_session(&self, ip: IpAddr) -> Option<SessionSlot> {
         let mut open = self.sessions.entry(ip).or_insert(0);
         if *open >= self.max_sessions_per_ip {
-            return false;
+            return None;
         }
         *open += 1;
-        true
-    }
-
-    pub fn release_session(&self, ip: IpAddr) {
-        if let Some(mut open) = self.sessions.get_mut(&ip) {
-            *open = open.saturating_sub(1);
-            if *open == 0 {
-                drop(open);
-                self.sessions.remove_if(&ip, |_, n| *n == 0);
-            }
-        }
+        Some(SessionSlot {
+            sessions: self.sessions.clone(),
+            ip,
+        })
     }
 
     pub fn sweep(&self) {
@@ -181,10 +193,9 @@ mod tests {
             "8.8.8.8".parse::<IpAddr>().unwrap()
         );
         let ip: IpAddr = "1.1.1.1".parse().unwrap();
-        assert!(
-            guards.acquire_session(ip) && guards.acquire_session(ip) && !guards.acquire_session(ip)
-        );
-        guards.release_session(ip);
-        assert!(guards.acquire_session(ip));
+        let (first, second) = (guards.acquire_session(ip), guards.acquire_session(ip));
+        assert!(first.is_some() && second.is_some() && guards.acquire_session(ip).is_none());
+        drop(first);
+        assert!(guards.acquire_session(ip).is_some());
     }
 }

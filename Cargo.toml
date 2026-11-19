@@ -78,6 +78,7 @@ csv = "1"
 ipnet = "2"
 prometheus = { version = "0.14", default-features = false, features = ["process"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+socket2 = "0.6"
 blake3 = "1"
 wtransport = { version = "0.7", default-features = false, features = ["quinn", "ring"] }
 wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime", "wat", "std", "parallel-compilation"] }

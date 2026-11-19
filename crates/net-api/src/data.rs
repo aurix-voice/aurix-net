@@ -39,17 +39,17 @@ pub async fn run_quic(st: Shared, endpoint: quinn::Endpoint) {
             continue;
         }
         let ip = incoming.remote_address().ip();
-        if !st.guards.acquire_session(ip) {
+        let Some(slot) = st.guards.acquire_session(ip) else {
             st.metrics.errors.with_label_values(&["rate_limited"]).inc();
             incoming.refuse();
             continue;
-        }
+        };
         let st = st.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle(st.clone(), incoming).await {
+            let _slot = slot;
+            if let Err(e) = handle(st, incoming).await {
                 tracing::debug!(error = %e, "quic connection ended");
             }
-            st.guards.release_session(ip);
         });
     }
 }
@@ -128,16 +128,16 @@ pub async fn run_webtransport(
     loop {
         let incoming = endpoint.accept().await;
         let ip = incoming.remote_address().ip();
-        if !st.guards.acquire_session(ip) {
+        let Some(slot) = st.guards.acquire_session(ip) else {
             st.metrics.errors.with_label_values(&["rate_limited"]).inc();
             continue;
-        }
+        };
         let st = st.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_wt(st.clone(), incoming).await {
+            let _slot = slot;
+            if let Err(e) = handle_wt(st, incoming).await {
                 tracing::debug!(error = %e, "webtransport session ended");
             }
-            st.guards.release_session(ip);
         });
     }
 }

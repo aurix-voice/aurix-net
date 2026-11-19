@@ -2282,6 +2282,7 @@ dependencies = [
  "reqwest",
  "rustls",
  "serde_json",
+ "socket2",
  "sqlx",
  "tokio",
  "tokio-tungstenite",
