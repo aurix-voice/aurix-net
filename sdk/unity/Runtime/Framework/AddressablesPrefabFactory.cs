@@ -18,40 +18,107 @@ namespace Aurix.Net.Unity.Framework
     {
         public List<AssetReferenceGameObject> prefabs = new List<AssetReferenceGameObject>();
         readonly Dictionary<int, GameObject> _loaded = new Dictionary<int, GameObject>();
-        readonly Dictionary<int, AsyncOperationHandle<GameObject>> _handles = new Dictionary<int, AsyncOperationHandle<GameObject>>();
-        readonly Dictionary<int, List<Action<GameObject>>> _waiting = new Dictionary<int, List<Action<GameObject>>>();
+        readonly Dictionary<int, AsyncOperationHandle<GameObject>> _handles =
+            new Dictionary<int, AsyncOperationHandle<GameObject>>();
+        readonly Dictionary<int, List<Action<GameObject>>> _waiting =
+            new Dictionary<int, List<Action<GameObject>>>();
 
         /// <summary>Preload a prefab (e.g. during a loading screen) so later spawns are synchronous.</summary>
         public void Preload(int prefabId) => Load(prefabId, null);
 
-        public NetworkIdentity Instantiate(NetworkManager m, int prefabId)
+        public NetworkIdentity Instantiate(NetworkManager manager, int prefabId)
         {
-            if (!_loaded.TryGetValue(prefabId, out var prefab)) throw new NetException($"prefab {prefabId} is not loaded yet; use InstantiateAsync");
+            if (!_loaded.TryGetValue(prefabId, out var prefab))
+            {
+                throw new NetException(
+                    $"prefab {prefabId} is not loaded yet; use InstantiateAsync"
+                );
+            }
+
             return Make(prefab, prefabId);
         }
 
-        public void InstantiateAsync(NetworkManager m, int prefabId, Action<NetworkIdentity> ready)
+        public void InstantiateAsync(
+            NetworkManager manager,
+            int prefabId,
+            Action<NetworkIdentity> ready
+        )
         {
-            if (_loaded.TryGetValue(prefabId, out var prefab)) { ready(Make(prefab, prefabId)); return; }
+            if (_loaded.TryGetValue(prefabId, out var prefab))
+            {
+                ready(Make(prefab, prefabId));
+                return;
+            }
             Load(prefabId, go => ready(go != null ? Make(go, prefabId) : null));
         }
 
-        public void Destroy(NetworkIdentity id) { if (id != null) UnityEngine.Object.Destroy(id.gameObject); }
+        public void Destroy(NetworkIdentity id)
+        {
+            if (id != null)
+            {
+                UnityEngine.Object.Destroy(id.gameObject);
+            }
+        }
 
         /// <summary>Release every loaded prefab (call when leaving the game).</summary>
-        public void ReleaseAll() { foreach (var h in _handles.Values) if (h.IsValid()) Addressables.Release(h); _handles.Clear(); _loaded.Clear(); }
+        public void ReleaseAll()
+        {
+            foreach (var handle in _handles.Values)
+            {
+                if (handle.IsValid())
+                {
+                    Addressables.Release(handle);
+                }
+            }
+
+            _handles.Clear();
+            _loaded.Clear();
+        }
 
         void Load(int prefabId, Action<GameObject> done)
         {
-            if (prefabId < 0 || prefabId >= prefabs.Count || prefabs[prefabId] == null) { Debug.LogError($"AddressablesPrefabFactory: unknown prefab id {prefabId}"); done?.Invoke(null); return; }
-            if (_waiting.TryGetValue(prefabId, out var list)) { if (done != null) list.Add(done); return; }
-            list = new List<Action<GameObject>>(); if (done != null) list.Add(done); _waiting[prefabId] = list;
-            var h = prefabs[prefabId].LoadAssetAsync<GameObject>(); _handles[prefabId] = h;
-            h.Completed += op =>
+            if (prefabId < 0 || prefabId >= prefabs.Count || prefabs[prefabId] == null)
+            {
+                Debug.LogError($"AddressablesPrefabFactory: unknown prefab id {prefabId}");
+                done?.Invoke(null);
+                return;
+            }
+            if (_waiting.TryGetValue(prefabId, out var list))
+            {
+                if (done != null)
+                {
+                    list.Add(done);
+                }
+
+                return;
+            }
+            list = new List<Action<GameObject>>();
+            if (done != null)
+            {
+                list.Add(done);
+            }
+
+            _waiting[prefabId] = list;
+            var handle = prefabs[prefabId].LoadAssetAsync<GameObject>();
+            _handles[prefabId] = handle;
+            handle.Completed += op =>
             {
                 _waiting.Remove(prefabId);
-                if (op.Status == AsyncOperationStatus.Succeeded) _loaded[prefabId] = op.Result; else Debug.LogError($"AddressablesPrefabFactory: failed to load prefab {prefabId}: {op.OperationException?.Message}");
-                foreach (var cb in list) cb(op.Status == AsyncOperationStatus.Succeeded ? op.Result : null);
+                if (op.Status == AsyncOperationStatus.Succeeded)
+                {
+                    _loaded[prefabId] = op.Result;
+                }
+                else
+                {
+                    Debug.LogError(
+                        $"AddressablesPrefabFactory: failed to load prefab {prefabId}: {op.OperationException?.Message}"
+                    );
+                }
+
+                foreach (var cb in list)
+                {
+                    cb(op.Status == AsyncOperationStatus.Succeeded ? op.Result : null);
+                }
             };
         }
 
@@ -59,7 +126,11 @@ namespace Aurix.Net.Unity.Framework
         {
             var go = UnityEngine.Object.Instantiate(prefab);
             var id = go.GetComponent<NetworkIdentity>();
-            if (id == null) throw new NetException(prefab.name + " has no NetworkIdentity");
+            if (id == null)
+            {
+                throw new NetException(prefab.name + " has no NetworkIdentity");
+            }
+
             return id;
         }
     }

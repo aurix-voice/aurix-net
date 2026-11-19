@@ -47,8 +47,8 @@ pub struct EffectiveLimits {
 }
 
 impl ProjectLimits {
-    pub fn from_json(v: &serde_json::Value) -> Self {
-        serde_json::from_value(v.clone()).unwrap_or_default()
+    pub fn from_json(json: &serde_json::Value) -> Self {
+        serde_json::from_value(json.clone()).unwrap_or_default()
     }
 
     pub fn effective(&self, node: &LimitsConfig) -> EffectiveLimits {
@@ -101,12 +101,12 @@ mod tests {
             writes_per_sec_per_key: 20,
             grants_per_sec_per_key: 500,
         };
-        let p = ProjectLimits::from_json(
+        let limits = ProjectLimits::from_json(
             &serde_json::json!({"max_players_per_room": 1000, "max_rooms": 5}),
         );
-        let e = p.effective(&node);
-        assert_eq!(e.max_players_per_room, 128);
-        assert_eq!(e.max_rooms, 5);
-        assert_eq!(e.max_events_per_sec_per_room, 500);
+        let effective = limits.effective(&node);
+        assert_eq!(effective.max_players_per_room, 128);
+        assert_eq!(effective.max_rooms, 5);
+        assert_eq!(effective.max_events_per_sec_per_room, 500);
     }
 }

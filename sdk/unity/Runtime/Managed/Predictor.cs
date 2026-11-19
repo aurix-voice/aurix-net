@@ -10,7 +10,12 @@ namespace Aurix.Net.Managed
 {
     public sealed class Predictor<TState>
     {
-        struct Frame { public uint Tick; public byte[] Input; public TState After; }
+        struct Frame
+        {
+            public uint Tick;
+            public byte[] Input;
+            public TState After;
+        }
 
         readonly Func<TState, byte[], TState> _step;
         readonly Func<TState, TState, bool> _diverged;
@@ -20,12 +25,16 @@ namespace Aurix.Net.Managed
 
         /// <summary>State after the newest local input (what to render for the local player).</summary>
         public TState Predicted { get; private set; }
+
         /// <summary>Last server tick that was reconciled.</summary>
         public uint ConfirmedTick { get; private set; }
+
         /// <summary>How many inputs are in flight (sent, not yet confirmed by a server state).</summary>
         public int Pending => _pending.Count;
+
         /// <summary>Corrections applied so far (server state differed from the prediction).</summary>
         public long Mispredictions { get; private set; }
+
         /// <summary>Fires after a correction with the state the client had predicted for that tick and the
         /// authoritative one; use it to smooth the visual snap (error offset decayed over a few frames).</summary>
         public event Action<TState, TState> OnCorrected;
@@ -36,17 +45,37 @@ namespace Aurix.Net.Managed
         /// enough to replay (null = always replay; cheap for small states).</param>
         /// <param name="capacity">Max inputs kept in flight; older ones are dropped (the server is that far
         /// behind, prediction is meaningless anyway).</param>
-        public Predictor(TState initial, Func<TState, byte[], TState> step, Func<TState, TState, bool> diverged = null, int capacity = 128)
+        public Predictor(
+            TState initial,
+            Func<TState, byte[], TState> step,
+            Func<TState, TState, bool> diverged = null,
+            int capacity = 128
+        )
         {
-            Predicted = initial; _confirmed = initial; _step = step ?? throw new ArgumentNullException(nameof(step)); _diverged = diverged; _capacity = Math.Max(1, capacity);
+            Predicted = initial;
+            _confirmed = initial;
+            _step = step ?? throw new ArgumentNullException(nameof(step));
+            _diverged = diverged;
+            _capacity = Math.Max(1, capacity);
         }
 
         /// <summary>Applies a local input for <paramref name="tick"/> (the tick you sent it with) and remembers it.</summary>
         public TState Record(uint tick, byte[] input)
         {
             Predicted = _step(Predicted, input);
-            _pending.Add(new Frame { Tick = tick, Input = input, After = Predicted });
-            while (_pending.Count > _capacity) _pending.RemoveAt(0);
+            _pending.Add(
+                new Frame
+                {
+                    Tick = tick,
+                    Input = input,
+                    After = Predicted,
+                }
+            );
+            while (_pending.Count > _capacity)
+            {
+                _pending.RemoveAt(0);
+            }
+
             return Predicted;
         }
 
@@ -55,24 +84,50 @@ namespace Aurix.Net.Managed
         /// pending inputs were replayed on top of the server state.</summary>
         public bool Reconcile(uint tick, TState authoritative)
         {
-            if (tick < ConfirmedTick) return false; // stale (reordered) state
+            if (tick < ConfirmedTick)
+            {
+                return false; // stale (reordered) state
+            }
+
             ConfirmedTick = tick;
             int confirmed = 0;
-            while (confirmed < _pending.Count && _pending[confirmed].Tick <= tick) confirmed++;
+            while (confirmed < _pending.Count && _pending[confirmed].Tick <= tick)
+            {
+                confirmed++;
+            }
+
             TState predictedThen = confirmed > 0 ? _pending[confirmed - 1].After : _confirmed;
             _pending.RemoveRange(0, confirmed);
             _confirmed = authoritative;
-            bool wrong = _diverged != null ? _diverged(authoritative, predictedThen) : !Equals(authoritative, predictedThen);
-            if (!wrong) return false;
-            var s = authoritative;
-            for (int i = 0; i < _pending.Count; i++) { s = _step(s, _pending[i].Input); var f = _pending[i]; f.After = s; _pending[i] = f; }
-            Predicted = s;
+            bool wrong =
+                _diverged != null
+                    ? _diverged(authoritative, predictedThen)
+                    : !Equals(authoritative, predictedThen);
+            if (!wrong)
+            {
+                return false;
+            }
+
+            var state = authoritative;
+            for (int i = 0; i < _pending.Count; i++)
+            {
+                state = _step(state, _pending[i].Input);
+                var frame = _pending[i];
+                frame.After = state;
+                _pending[i] = frame;
+            }
+            Predicted = state;
             Mispredictions++;
             OnCorrected?.Invoke(predictedThen, authoritative);
             return true;
         }
 
         /// <summary>Forget everything (teleport, respawn, rehost).</summary>
-        public void Reset(TState state) { _pending.Clear(); Predicted = state; _confirmed = state; }
+        public void Reset(TState state)
+        {
+            _pending.Clear();
+            Predicted = state;
+            _confirmed = state;
+        }
     }
 }

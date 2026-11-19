@@ -135,8 +135,8 @@ pub fn pick_room<'a>(rooms: &[&'a LiveRoom], match_type: Option<&str>) -> Option
             .min_by_key(|r| (r.players, r.name.clone()))
             .copied(),
         "random" => {
-            let n = rooms.len();
-            (n > 0).then(|| rooms[(now_ms() as usize) % n])
+            let room_count = rooms.len();
+            (room_count > 0).then(|| rooms[(now_ms() as usize) % room_count])
         }
         _ => rooms
             .iter()
@@ -157,24 +157,24 @@ pub fn fill_existing(
     let mut order: Vec<usize> = (0..tickets.len()).collect();
     order.sort_by_key(|i| (tickets[*i].created_ms, tickets[*i].id));
     for i in order {
-        let t = &tickets[i];
-        if !t.searching() || !t.req.fill_existing {
+        let ticket = &tickets[i];
+        if !ticket.searching() || !ticket.req.fill_existing {
             continue;
         }
-        let Some(live) = rooms.get(&t.project) else {
+        let Some(live) = rooms.get(&ticket.project) else {
             continue;
         };
-        let filter = t
+        let filter = ticket
             .req
             .filter
             .as_deref()
             .and_then(|f| crate::mmfilter::Filter::parse(f).ok());
-        let mode = t.req.mode.as_str();
+        let mode = ticket.req.mode.as_str();
         let candidates: Vec<&LiveRoom> = live
             .iter()
             .filter(|r| {
                 let extra = taken
-                    .get(&(t.project, r.name.clone()))
+                    .get(&(ticket.project, r.name.clone()))
                     .copied()
                     .unwrap_or(0);
                 r.open
@@ -186,20 +186,20 @@ pub fn fill_existing(
                         .is_none_or(|f| r.props.as_object().is_some_and(|p| f.matches(p)))
             })
             .collect();
-        let Some(room) = pick_room(&candidates, t.req.match_type.as_deref()) else {
+        let Some(room) = pick_room(&candidates, ticket.req.match_type.as_deref()) else {
             continue;
         };
         let (name, max_players) = (room.name.clone(), room.max_players);
-        *taken.entry((t.project, name.clone())).or_default() += 1;
-        let t = &mut tickets[i];
-        t.state = TicketState::Matched {
+        *taken.entry((ticket.project, name.clone())).or_default() += 1;
+        let ticket = &mut tickets[i];
+        ticket.state = TicketState::Matched {
             room: name,
-            mode: t.req.mode,
+            mode: ticket.req.mode,
             max_players,
-            players: vec![t.req.player_id.clone()],
+            players: vec![ticket.req.player_id.clone()],
             bots: 0,
         };
-        changed.push(t.id);
+        changed.push(ticket.id);
     }
     changed
 }
@@ -210,18 +210,21 @@ pub fn fill_existing(
 /// names started.
 pub fn match_tickets(tickets: &mut [Ticket], now_ms: u64) -> (Vec<Uuid>, Vec<String>) {
     let mut groups: HashMap<(ProjectId, String), Vec<usize>> = HashMap::new();
-    for (i, t) in tickets.iter().enumerate() {
-        if t.searching() {
-            groups.entry((t.project, t.bucket())).or_default().push(i);
+    for (i, ticket) in tickets.iter().enumerate() {
+        if ticket.searching() {
+            groups
+                .entry((ticket.project, ticket.bucket()))
+                .or_default()
+                .push(i);
         }
     }
     let mut changed = Vec::new();
     let mut rooms = Vec::new();
     for (_, mut idx) in groups {
         idx.sort_by_key(|i| (tickets[*i].created_ms, tickets[*i].id));
-        let n = idx.len();
+        let waiting = idx.len();
         for i in &idx {
-            let new = TicketState::Searching { waiting: n };
+            let new = TicketState::Searching { waiting };
             if tickets[*i].state != new {
                 tickets[*i].state = new;
                 changed.push(tickets[*i].id);
@@ -256,13 +259,13 @@ pub fn match_tickets(tickets: &mut [Ticket], now_ms: u64) -> (Vec<Uuid>, Vec<Str
         // mutually compatible with every member. A group fills a room when it reaches `max`, or
         // when its seed has waited its `max_wait_secs` and the group is large enough for every
         // member's `min_players`; members who want more players than there are stay in the queue.
-        let mut taken = vec![false; n];
-        for seed in 0..n {
+        let mut taken = vec![false; waiting];
+        for seed in 0..waiting {
             if taken[seed] {
                 continue;
             }
             let mut group = vec![seed];
-            for cand in (seed + 1..n).filter(|c| !taken[*c]) {
+            for cand in (seed + 1..waiting).filter(|c| !taken[*c]) {
                 if group.len() >= max {
                     break;
                 }
@@ -297,18 +300,18 @@ pub fn match_tickets(tickets: &mut [Ticket], now_ms: u64) -> (Vec<Uuid>, Vec<Str
             } else {
                 0
             };
-            for g in &group {
-                taken[*g] = true;
-                let t = &mut tickets[idx[*g]];
-                t.state = TicketState::Matched {
+            for member in &group {
+                taken[*member] = true;
+                let ticket = &mut tickets[idx[*member]];
+                ticket.state = TicketState::Matched {
                     room: room.clone(),
-                    mode: t.req.mode,
-                    max_players: t.req.max_players,
+                    mode: ticket.req.mode,
+                    max_players: ticket.req.max_players,
                     players: players.clone(),
                     bots,
                 };
-                if !changed.contains(&t.id) {
-                    changed.push(t.id);
+                if !changed.contains(&ticket.id) {
+                    changed.push(ticket.id);
                 }
             }
             rooms.push(room);
@@ -358,22 +361,24 @@ fn rerr(e: redis::RedisError) -> NetError {
 pub struct Matchmaker;
 
 impl Matchmaker {
-    async fn put(&self, redis: &RedisStore, t: &Ticket) -> Result<()> {
-        let mut c = redis.raw();
-        let body = serde_json::to_vec(t).map_err(|e| NetError::Internal(e.to_string()))?;
-        let ttl = if t.searching() {
+    async fn put(&self, redis: &RedisStore, ticket: &Ticket) -> Result<()> {
+        let mut conn = redis.raw();
+        let body = serde_json::to_vec(ticket).map_err(|e| NetError::Internal(e.to_string()))?;
+        let ttl = if ticket.searching() {
             SEARCH_TTL_SECS
         } else {
             RESULT_TTL_SECS
         };
-        let mut p = redis::pipe();
-        p.atomic().set_ex(ticket_key(t.id), body, ttl).ignore();
-        if t.searching() {
-            p.sadd(SEARCHING_SET, t.id.to_string()).ignore();
+        let mut pipe = redis::pipe();
+        pipe.atomic()
+            .set_ex(ticket_key(ticket.id), body, ttl)
+            .ignore();
+        if ticket.searching() {
+            pipe.sadd(SEARCHING_SET, ticket.id.to_string()).ignore();
         } else {
-            p.srem(SEARCHING_SET, t.id.to_string()).ignore();
+            pipe.srem(SEARCHING_SET, ticket.id.to_string()).ignore();
         }
-        p.query_async::<()>(&mut c).await.map_err(rerr)
+        pipe.query_async::<()>(&mut conn).await.map_err(rerr)
     }
 
     /// Writes `tickets` over their stored copies if every one of them is still searching there,
@@ -381,51 +386,51 @@ impl Matchmaker {
     /// they change it; this is what keeps the later of the two from undoing the earlier.
     async fn replace_searching(&self, redis: &RedisStore, tickets: &[&Ticket]) -> Result<bool> {
         let mut call = REPLACE_SEARCHING.key(SEARCHING_SET);
-        for t in tickets {
-            let body = serde_json::to_vec(t).map_err(|e| NetError::Internal(e.to_string()))?;
-            let ttl = if t.searching() {
+        for ticket in tickets {
+            let body = serde_json::to_vec(ticket).map_err(|e| NetError::Internal(e.to_string()))?;
+            let ttl = if ticket.searching() {
                 SEARCH_TTL_SECS
             } else {
                 RESULT_TTL_SECS
             };
-            call.key(ticket_key(t.id))
-                .arg(t.id.to_string())
+            call.key(ticket_key(ticket.id))
+                .arg(ticket.id.to_string())
                 .arg(body)
                 .arg(ttl)
-                .arg(u8::from(t.searching()));
+                .arg(u8::from(ticket.searching()));
         }
-        let mut c = redis.raw();
-        call.invoke_async(&mut c).await.map_err(rerr)
+        let mut conn = redis.raw();
+        call.invoke_async(&mut conn).await.map_err(rerr)
     }
 
     async fn load_many(&self, redis: &RedisStore, ids: &[String]) -> Result<Vec<Ticket>> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let mut c = redis.raw();
+        let mut conn = redis.raw();
         let keys: Vec<String> = ids
             .iter()
             .filter_map(|s| s.parse::<Uuid>().ok())
             .map(ticket_key)
             .collect();
-        let bodies: Vec<Option<Vec<u8>>> = c.mget(&keys).await.map_err(rerr)?;
+        let bodies: Vec<Option<Vec<u8>>> = conn.mget(&keys).await.map_err(rerr)?;
         let mut out = Vec::with_capacity(bodies.len());
         let mut stale = Vec::new();
-        for (id, b) in ids.iter().zip(bodies) {
-            match b.and_then(|b| serde_json::from_slice::<Ticket>(&b).ok()) {
-                Some(t) => out.push(t),
+        for (id, body) in ids.iter().zip(bodies) {
+            match body.and_then(|b| serde_json::from_slice::<Ticket>(&b).ok()) {
+                Some(ticket) => out.push(ticket),
                 None => stale.push(id.clone()),
             }
         }
         if !stale.is_empty() {
-            let _: () = c.srem(SEARCHING_SET, stale).await.map_err(rerr)?;
+            let _: () = conn.srem(SEARCHING_SET, stale).await.map_err(rerr)?;
         }
         Ok(out)
     }
 
     async fn searching_ids(&self, redis: &RedisStore) -> Result<Vec<String>> {
-        let mut c = redis.raw();
-        c.smembers(SEARCHING_SET).await.map_err(rerr)
+        let mut conn = redis.raw();
+        conn.smembers(SEARCHING_SET).await.map_err(rerr)
     }
 
     /// Files a ticket; a player's earlier searching ticket in the same project is cancelled.
@@ -435,8 +440,8 @@ impl Matchmaker {
         project: ProjectId,
         req: TicketReq,
     ) -> Result<Ticket> {
-        if let Some(f) = req.filter.as_deref() {
-            crate::mmfilter::Filter::parse(f)
+        if let Some(filter) = req.filter.as_deref() {
+            crate::mmfilter::Filter::parse(filter)
                 .map_err(|e| NetError::Invalid(format!("filter: {e}")))?;
         }
         if serde_json::to_vec(&req.attrs)
@@ -447,10 +452,13 @@ impl Matchmaker {
             return Err(NetError::Invalid("attrs larger than 1 KiB".into()));
         }
         let ids = self.searching_ids(redis).await?;
-        for mut t in self.load_many(redis, &ids).await? {
-            if t.project == project && t.req.player_id == req.player_id && t.searching() {
-                t.state = TicketState::Cancelled;
-                self.replace_searching(redis, &[&t]).await?;
+        for mut ticket in self.load_many(redis, &ids).await? {
+            if ticket.project == project
+                && ticket.req.player_id == req.player_id
+                && ticket.searching()
+            {
+                ticket.state = TicketState::Cancelled;
+                self.replace_searching(redis, &[&ticket]).await?;
             }
         }
         let ticket = Ticket {
@@ -470,8 +478,8 @@ impl Matchmaker {
         project: ProjectId,
         id: Uuid,
     ) -> Result<Option<Ticket>> {
-        let mut c = redis.raw();
-        let body: Option<Vec<u8>> = c.get(ticket_key(id)).await.map_err(rerr)?;
+        let mut conn = redis.raw();
+        let body: Option<Vec<u8>> = conn.get(ticket_key(id)).await.map_err(rerr)?;
         Ok(body
             .and_then(|b| serde_json::from_slice::<Ticket>(&b).ok())
             .filter(|t| t.project == project))
@@ -479,9 +487,9 @@ impl Matchmaker {
 
     pub async fn cancel(&self, redis: &RedisStore, project: ProjectId, id: Uuid) -> Result<bool> {
         match self.get(redis, project, id).await? {
-            Some(mut t) if t.searching() => {
-                t.state = TicketState::Cancelled;
-                self.replace_searching(redis, &[&t]).await
+            Some(mut ticket) if ticket.searching() => {
+                ticket.state = TicketState::Cancelled;
+                self.replace_searching(redis, &[&ticket]).await
             }
             _ => Ok(false),
         }
@@ -490,19 +498,19 @@ impl Matchmaker {
     /// One matching cycle; only the node holding the leader lock does work. Returns the matches
     /// formed (empty when not leader or nothing matched) so the caller can notify webhooks.
     pub async fn run_cycle(&self, redis: &RedisStore, node: &str) -> Result<Vec<MatchFound>> {
-        let mut c = redis.raw();
+        let mut conn = redis.raw();
         let got: Option<String> = redis::cmd("SET")
             .arg(LEADER_KEY)
             .arg(node)
             .arg("NX")
             .arg("PX")
             .arg(LEADER_TTL_MS)
-            .query_async(&mut c)
+            .query_async(&mut conn)
             .await
             .map_err(rerr)?;
         if got.is_none() {
             // Somebody else leads; a dead leader's lock expires within LEADER_TTL_MS.
-            let leader: Option<String> = c.get(LEADER_KEY).await.map_err(rerr)?;
+            let leader: Option<String> = conn.get(LEADER_KEY).await.map_err(rerr)?;
             if leader.as_deref() != Some(node) {
                 return Ok(Vec::new());
             }
@@ -512,13 +520,13 @@ impl Matchmaker {
         let now = now_ms();
         tickets.retain(|t| t.searching() && t.age_secs(now) < SEARCH_TTL_SECS);
         let mut live: HashMap<ProjectId, Vec<LiveRoom>> = HashMap::new();
-        for p in tickets
+        for ticket in tickets
             .iter()
             .filter(|t| t.req.fill_existing)
             .map(|t| t.project)
             .collect::<std::collections::HashSet<_>>()
         {
-            live.insert(p, redis.list_rooms(p).await.unwrap_or_default());
+            live.insert(ticket, redis.list_rooms(ticket).await.unwrap_or_default());
         }
         let seated = fill_existing(&mut tickets, &live);
         let (grouped, _rooms) = match_tickets(&mut tickets, now);
@@ -526,16 +534,18 @@ impl Matchmaker {
         // at all; a ticket seated into a running room or still waiting is written on its own.
         let mut writes: Vec<Vec<&Ticket>> = Vec::new();
         let mut rooms: HashMap<(ProjectId, &str), usize> = HashMap::new();
-        for t in &tickets {
-            match &t.state {
-                TicketState::Matched { room, .. } if grouped.contains(&t.id) => {
-                    let i = *rooms.entry((t.project, room)).or_insert_with(|| {
+        for ticket in &tickets {
+            match &ticket.state {
+                TicketState::Matched { room, .. } if grouped.contains(&ticket.id) => {
+                    let slot = *rooms.entry((ticket.project, room)).or_insert_with(|| {
                         writes.push(Vec::new());
                         writes.len() - 1
                     });
-                    writes[i].push(t);
+                    writes[slot].push(ticket);
                 }
-                _ if seated.contains(&t.id) || grouped.contains(&t.id) => writes.push(vec![t]),
+                _ if seated.contains(&ticket.id) || grouped.contains(&ticket.id) => {
+                    writes.push(vec![ticket])
+                }
                 _ => {}
             }
         }
@@ -544,36 +554,36 @@ impl Matchmaker {
             if !self.replace_searching(redis, &group).await? {
                 continue;
             }
-            for t in group {
+            for ticket in group {
                 let TicketState::Matched {
                     room,
                     mode,
                     players,
                     bots,
                     ..
-                } = &t.state
+                } = &ticket.state
                 else {
                     continue;
                 };
                 match found
                     .iter_mut()
-                    .find(|m| m.project == t.project && m.room == *room)
+                    .find(|m| m.project == ticket.project && m.room == *room)
                 {
-                    Some(m) => {
-                        m.tickets.push(t.id);
+                    Some(started) => {
+                        started.tickets.push(ticket.id);
                         // Tickets seated into a running room each list only their own player.
                         for player in players {
-                            if !m.players.contains(player) {
-                                m.players.push(player.clone());
+                            if !started.players.contains(player) {
+                                started.players.push(player.clone());
                             }
                         }
                     }
                     None => found.push(MatchFound {
-                        project: t.project,
+                        project: ticket.project,
                         room: room.clone(),
                         mode: *mode,
                         players: players.clone(),
-                        tickets: vec![t.id],
+                        tickets: vec![ticket.id],
                         bots: *bots,
                     }),
                 }
@@ -581,18 +591,18 @@ impl Matchmaker {
         }
         let hour = now / 3_600_000;
         let mut per_project: std::collections::HashMap<ProjectId, i64> = Default::default();
-        for m in &found {
-            *per_project.entry(m.project).or_default() += 1;
+        for started in &found {
+            *per_project.entry(started.project).or_default() += 1;
         }
-        for (project, n) in per_project {
+        for (project, count) in per_project {
             let key = stats_key(project, hour);
-            let mut p = redis::pipe();
-            p.atomic()
-                .incr(&key, n)
+            let mut pipe = redis::pipe();
+            pipe.atomic()
+                .incr(&key, count)
                 .ignore()
                 .expire(&key, 26 * 3600)
                 .ignore();
-            p.query_async::<()>(&mut c).await.map_err(rerr)?;
+            pipe.query_async::<()>(&mut conn).await.map_err(rerr)?;
         }
         Ok(found)
     }
@@ -623,16 +633,16 @@ impl Matchmaker {
     ) -> Result<(i64, i64)> {
         let hour = now_ms() / 3_600_000;
         let keys: Vec<String> = (0..24).map(|i| stats_key(project, hour - i)).collect();
-        let mut c = redis.raw();
-        let vals: Vec<Option<i64>> = c.mget(&keys).await.map_err(rerr)?;
+        let mut conn = redis.raw();
+        let vals: Vec<Option<i64>> = conn.mget(&keys).await.map_err(rerr)?;
         let last_hour = vals.first().copied().flatten().unwrap_or(0);
         let day: i64 = vals.iter().map(|v| v.unwrap_or(0)).sum();
         Ok((last_hour, day))
     }
 
     pub async fn searching(&self, redis: &RedisStore) -> Result<usize> {
-        let mut c = redis.raw();
-        c.scard(SEARCHING_SET).await.map_err(rerr)
+        let mut conn = redis.raw();
+        conn.scard(SEARCHING_SET).await.map_err(rerr)
     }
 }
 
@@ -642,29 +652,29 @@ mod tests {
 
     #[test]
     fn bot_backfill_reports_empty_seats_only_when_everyone_agreed() {
-        let p = ProjectId::new();
+        let project = ProjectId::new();
         let with_bots = |id: &str| {
-            let mut r = req(id, 4, 2, 15, serde_json::json!({}));
-            r.bots = true;
-            r
+            let mut request = req(id, 4, 2, 15, serde_json::json!({}));
+            request.bots = true;
+            request
         };
         let mut ts = vec![
-            ticket(p, with_bots("a"), 1000),
-            ticket(p, with_bots("b"), 1100),
+            ticket(project, with_bots("a"), 1000),
+            ticket(project, with_bots("b"), 1100),
         ];
         // before max_wait nothing starts; after it the pair starts with 2 bot seats
         assert!(match_tickets(&mut ts, 5_000).1.is_empty());
         let (_, rooms) = match_tickets(&mut ts, 20_000);
         assert_eq!(rooms.len(), 1);
-        for t in &ts {
+        for ticket in &ts {
             assert!(
-                matches!(&t.state, TicketState::Matched { bots: 2, players, .. } if players.len() == 2)
+                matches!(&ticket.state, TicketState::Matched { bots: 2, players, .. } if players.len() == 2)
             );
         }
         // one member without `bots`: the group starts short-handed, no bot seats
         let mut ts = vec![
-            ticket(p, with_bots("c"), 1000),
-            ticket(p, req("d", 4, 2, 15, serde_json::json!({})), 1100),
+            ticket(project, with_bots("c"), 1000),
+            ticket(project, req("d", 4, 2, 15, serde_json::json!({})), 1100),
         ];
         match_tickets(&mut ts, 20_000);
         assert!(matches!(&ts[0].state, TicketState::Matched { bots: 0, .. }));
@@ -672,7 +682,7 @@ mod tests {
         let mut ts: Vec<Ticket> = ["e", "f", "g", "h"]
             .iter()
             .enumerate()
-            .map(|(i, id)| ticket(p, with_bots(id), 1000 + i as u64))
+            .map(|(i, id)| ticket(project, with_bots(id), 1000 + i as u64))
             .collect();
         match_tickets(&mut ts, 1_500);
         assert!(matches!(&ts[3].state, TicketState::Matched { bots: 0, .. }));
@@ -695,18 +705,18 @@ mod tests {
         }
     }
 
-    fn ticket(project: ProjectId, r: TicketReq, created_ms: u64) -> Ticket {
+    fn ticket(project: ProjectId, request: TicketReq, created_ms: u64) -> Ticket {
         Ticket {
             id: Uuid::now_v7(),
             project,
-            req: r,
+            req: request,
             created_ms,
             state: TicketState::Searching { waiting: 1 },
         }
     }
 
-    fn room_of(t: &Ticket) -> Option<&str> {
-        match &t.state {
+    fn room_of(ticket: &Ticket) -> Option<&str> {
+        match &ticket.state {
             TicketState::Matched { room, .. } => Some(room),
             _ => None,
         }
@@ -736,24 +746,24 @@ mod tests {
                 room("full", 4, "dust"),
             ],
         );
-        let t = |p: &str, mt: Option<&str>| {
-            let mut r = req(p, 4, 2, 15, serde_json::json!({}));
-            r.fill_existing = true;
-            r.filter = Some("map = 'dust'".into());
-            r.match_type = mt.map(str::to_string);
+        let make = |p: &str, mt: Option<&str>| {
+            let mut request = req(p, 4, 2, 15, serde_json::json!({}));
+            request.fill_existing = true;
+            request.filter = Some("map = 'dust'".into());
+            request.match_type = mt.map(str::to_string);
             Ticket {
                 id: Uuid::now_v7(),
                 project,
-                req: r,
+                req: request,
                 created_ms: 0,
                 state: TicketState::Searching { waiting: 0 },
             }
         };
         let mut tickets = vec![
-            t("p1", None),
-            t("p2", None),
-            t("p3", Some("serial")),
-            t("p4", Some("serial")),
+            make("p1", None),
+            make("p2", None),
+            make("p3", Some("serial")),
+            make("p4", Some("serial")),
         ];
         let changed = fill_existing(&mut tickets, &rooms);
         assert_eq!(changed.len(), 4);
@@ -765,7 +775,7 @@ mod tests {
         assert_eq!(room_of(1), "b"); // "a" is now full after p1's seat
         assert_eq!(room_of(2), "b"); // emptiest dust room
         assert_eq!(room_of(3), "b");
-        let mut none = vec![t("p5", None)];
+        let mut none = vec![make("p5", None)];
         none[0].req.filter = Some("map = 'office'".into());
         assert!(fill_existing(&mut none, &rooms).is_empty());
         assert!(none[0].searching());
@@ -773,26 +783,26 @@ mod tests {
 
     #[test]
     fn filters_split_a_bucket_by_attrs() {
-        let t = |p: &str, rank: i64, filter: &str| {
-            let mut r = req(p, 2, 2, 15, serde_json::json!({}));
-            r.attrs = serde_json::json!({"rank": rank})
+        let make = |p: &str, rank: i64, filter: &str| {
+            let mut request = req(p, 2, 2, 15, serde_json::json!({}));
+            request.attrs = serde_json::json!({"rank": rank})
                 .as_object()
                 .cloned()
                 .unwrap();
-            r.filter = Some(filter.to_string());
+            request.filter = Some(filter.to_string());
             Ticket {
                 id: Uuid::now_v7(),
                 project: ProjectId::from_uuid(Uuid::nil()),
-                req: r,
+                req: request,
                 created_ms: 0,
                 state: TicketState::Searching { waiting: 0 },
             }
         };
         let mut tickets = vec![
-            t("low", 5, "rank < 10"),
-            t("high", 50, "rank >= 40"),
-            t("low2", 7, "rank < 10"),
-            t("high2", 45, "rank >= 40"),
+            make("low", 5, "rank < 10"),
+            make("high", 50, "rank >= 40"),
+            make("low2", 7, "rank < 10"),
+            make("high2", 45, "rank >= 40"),
         ];
         let (_, rooms) = match_tickets(&mut tickets, 1000);
         assert_eq!(rooms.len(), 2);
@@ -805,23 +815,26 @@ mod tests {
         assert_eq!(room_of("high"), room_of("high2"));
         assert_ne!(room_of("low"), room_of("high"));
         // one-sided rejection keeps them apart even though the other side would accept
-        let mut odd = vec![t("picky", 30, "rank > 100"), t("open", 30, "rank > 0")];
+        let mut odd = vec![
+            make("picky", 30, "rank > 100"),
+            make("open", 30, "rank > 0"),
+        ];
         let (_, rooms) = match_tickets(&mut odd, 1000);
         assert!(rooms.is_empty());
     }
 
     #[test]
     fn short_group_respects_each_ticket_minimum_and_wait() {
-        let p = ProjectId::new();
+        let project = ProjectId::new();
         let none = || serde_json::json!({});
         // "a" accepts two players after 1 s, "b" wants four: nobody starts with two.
         let mut ts = vec![
-            ticket(p, req("a", 4, 2, 1, none()), 0),
-            ticket(p, req("b", 4, 4, 60, none()), 100),
+            ticket(project, req("a", 4, 2, 1, none()), 0),
+            ticket(project, req("b", 4, 4, 60, none()), 100),
         ];
         assert!(match_tickets(&mut ts, 3_000).1.is_empty());
         // "c" also accepts two: "a" and "c" start, "b" keeps waiting.
-        ts.push(ticket(p, req("c", 4, 2, 60, none()), 200));
+        ts.push(ticket(project, req("c", 4, 2, 60, none()), 200));
         assert_eq!(match_tickets(&mut ts, 3_000).1.len(), 1);
         assert_eq!(room_of(&ts[0]), room_of(&ts[2]));
         assert!(room_of(&ts[0]).is_some());
@@ -829,12 +842,12 @@ mod tests {
 
         // The wait is the seed's own: "y" and "z" start after their 1 s, although the older
         // "x", whose filter keeps it apart, asked to wait a minute.
-        let mut x = req("x", 4, 2, 60, none());
-        x.filter = Some("rank >= 50".into());
+        let mut lone = req("x", 4, 2, 60, none());
+        lone.filter = Some("rank >= 50".into());
         let mut ts = vec![
-            ticket(p, x, 0),
-            ticket(p, req("y", 4, 2, 1, none()), 100),
-            ticket(p, req("z", 4, 2, 1, none()), 200),
+            ticket(project, lone, 0),
+            ticket(project, req("y", 4, 2, 1, none()), 100),
+            ticket(project, req("z", 4, 2, 1, none()), 200),
         ];
         assert_eq!(match_tickets(&mut ts, 3_000).1.len(), 1);
         assert_eq!(room_of(&ts[1]), room_of(&ts[2]));
@@ -843,18 +856,26 @@ mod tests {
 
     #[test]
     fn fills_groups_and_times_out() {
-        let p = ProjectId::new();
-        let q = ProjectId::new();
+        let project = ProjectId::new();
+        let other = ProjectId::new();
         let mut ts = vec![
-            ticket(p, req("a", 2, 2, 15, serde_json::json!({})), 1000),
-            ticket(p, req("b", 2, 2, 15, serde_json::json!({})), 1100),
-            ticket(p, req("c", 2, 2, 15, serde_json::json!({})), 1200),
+            ticket(project, req("a", 2, 2, 15, serde_json::json!({})), 1000),
+            ticket(project, req("b", 2, 2, 15, serde_json::json!({})), 1100),
+            ticket(project, req("c", 2, 2, 15, serde_json::json!({})), 1200),
             // different props = different bucket
-            ticket(p, req("d", 2, 2, 15, serde_json::json!({"map": "x"})), 1000),
+            ticket(
+                project,
+                req("d", 2, 2, 15, serde_json::json!({"map": "x"})),
+                1000,
+            ),
             // other project never mixes
-            ticket(q, req("e", 2, 2, 15, serde_json::json!({})), 1000),
+            ticket(other, req("e", 2, 2, 15, serde_json::json!({})), 1000),
             // solo with min 1 and zero wait starts immediately
-            ticket(q, req("f", 4, 1, 0, serde_json::json!({"solo": 1})), 1000),
+            ticket(
+                other,
+                req("f", 4, 1, 0, serde_json::json!({"solo": 1})),
+                1000,
+            ),
         ];
         let (changed, rooms) = match_tickets(&mut ts, 2000);
         assert_eq!(rooms.len(), 2);
@@ -870,17 +891,21 @@ mod tests {
         let (_, rooms) = match_tickets(&mut ts, 1000 + 20_000);
         assert!(rooms.is_empty());
         // c + e are different projects; add g to p: min reached and wait passed -> start.
-        ts.push(ticket(p, req("g", 2, 2, 15, serde_json::json!({})), 30_000));
+        ts.push(ticket(
+            project,
+            req("g", 2, 2, 15, serde_json::json!({})),
+            30_000,
+        ));
         let (_, rooms) = match_tickets(&mut ts, 31_000);
         assert_eq!(rooms.len(), 1);
         assert_eq!(room_of(&ts[2]), room_of(&ts[6]));
 
         // Timeout with min < max: 3 of max 4 start after the oldest waited long enough.
-        let r = ProjectId::new();
+        let project = ProjectId::new();
         let mut ts = vec![
-            ticket(r, req("x", 4, 2, 5, serde_json::json!({})), 0),
-            ticket(r, req("y", 4, 2, 5, serde_json::json!({})), 100),
-            ticket(r, req("z", 4, 2, 5, serde_json::json!({})), 200),
+            ticket(project, req("x", 4, 2, 5, serde_json::json!({})), 0),
+            ticket(project, req("y", 4, 2, 5, serde_json::json!({})), 100),
+            ticket(project, req("z", 4, 2, 5, serde_json::json!({})), 200),
         ];
         assert!(match_tickets(&mut ts, 4_000).1.is_empty());
         assert_eq!(match_tickets(&mut ts, 5_000).1.len(), 1);

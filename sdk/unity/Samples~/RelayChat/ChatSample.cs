@@ -6,13 +6,29 @@ using UnityEngine;
 
 public sealed class ChatSample : MonoBehaviour
 {
-    public NetRunner Runner; public string Room = "chat-1";
-    string _input = ""; readonly StringBuilder _log = new StringBuilder();
+    public NetRunner Runner;
+    public string Room = "chat-1";
+    string _input = "";
+    readonly StringBuilder _log = new StringBuilder();
 
     async void Start()
     {
-        Runner.OnEvent += f => { if (f.Code == 1) _log.AppendLine($"[{f.From}] {Encoding.UTF8.GetString(f.Payload.Array, f.Payload.Offset, f.Payload.Count)}"); };
-        Runner.OnControl += j => { if (j.Contains("player_joined") || j.Contains("player_left")) _log.AppendLine(j); };
+        Runner.OnEvent += frame =>
+        {
+            if (frame.Code == 1)
+            {
+                _log.AppendLine(
+                    $"[{frame.From}] {Encoding.UTF8.GetString(frame.Payload.Array, frame.Payload.Offset, frame.Payload.Count)}"
+                );
+            }
+        };
+        Runner.OnControl += json =>
+        {
+            if (json.Contains("player_joined") || json.Contains("player_left"))
+            {
+                _log.AppendLine(json);
+            }
+        };
         await Runner.ConnectWithDevGrantAsync();
         await Runner.JoinOrCreateAsync(Room, RoomMode.Relay, 16);
         _log.AppendLine("joined as actor " + Runner.Actor);
@@ -26,8 +42,10 @@ public sealed class ChatSample : MonoBehaviour
         _input = GUILayout.TextField(_input);
         if (GUILayout.Button("Send", GUILayout.Width(60)) && Runner.IsJoined && _input.Length > 0)
         {
-            Runner.SendEvent(1, Encoding.UTF8.GetBytes(_input), Target.All, reliable: true); _input = "";
+            Runner.SendEvent(1, Encoding.UTF8.GetBytes(_input), Target.All, reliable: true);
+            _input = "";
         }
-        GUILayout.EndHorizontal(); GUILayout.EndArea();
+        GUILayout.EndHorizontal();
+        GUILayout.EndArea();
     }
 }

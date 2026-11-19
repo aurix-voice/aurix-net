@@ -18,27 +18,72 @@ namespace Aurix.Net.CodeGen
 
         public override ILPostProcessor GetInstance() => this;
 
-        public override bool WillProcess(ICompiledAssembly a) =>
-            a.Name == Runtime || a.References.Any(r => Path.GetFileNameWithoutExtension(r) == Runtime);
+        public override bool WillProcess(ICompiledAssembly assembly) =>
+            assembly.Name == Runtime
+            || assembly.References.Any(reference =>
+                Path.GetFileNameWithoutExtension(reference) == Runtime
+            );
 
-        public override ILPostProcessResult Process(ICompiledAssembly a)
+        public override ILPostProcessResult Process(ICompiledAssembly assembly)
         {
-            if (!WillProcess(a)) return null;
+            if (!WillProcess(assembly))
+            {
+                return null;
+            }
+
             var diagnostics = new System.Collections.Generic.List<DiagnosticMessage>();
             var resolver = new DefaultAssemblyResolver();
-            foreach (var dir in a.References.Select(Path.GetDirectoryName).Distinct()) resolver.AddSearchDirectory(dir);
+            foreach (var dir in assembly.References.Select(Path.GetDirectoryName).Distinct())
+            {
+                resolver.AddSearchDirectory(dir);
+            }
+
             var rp = new ReaderParameters
             {
-                AssemblyResolver = resolver, ReadingMode = ReadingMode.Immediate, ReadWrite = false, InMemory = true,
-                SymbolStream = new MemoryStream(a.InMemoryAssembly.PdbData), SymbolReaderProvider = new PortablePdbReaderProvider(), ReadSymbols = true
+                AssemblyResolver = resolver,
+                ReadingMode = ReadingMode.Immediate,
+                ReadWrite = false,
+                InMemory = true,
+                SymbolStream = new MemoryStream(assembly.InMemoryAssembly.PdbData),
+                SymbolReaderProvider = new PortablePdbReaderProvider(),
+                ReadSymbols = true,
             };
-            using var asm = AssemblyDefinition.ReadAssembly(new MemoryStream(a.InMemoryAssembly.PeData), rp);
+            using var asm = AssemblyDefinition.ReadAssembly(
+                new MemoryStream(assembly.InMemoryAssembly.PeData),
+                rp
+            );
             var res = Weaver.RpcWeaver.Process(asm.MainModule);
-            foreach (var d in res.Diagnostics) diagnostics.Add(new DiagnosticMessage { DiagnosticType = DiagnosticType.Warning, MessageData = "Aurix.Net weaver: " + d });
-            if (!res.Changed) return new ILPostProcessResult(a.InMemoryAssembly, diagnostics);
-            var pe = new MemoryStream(); var pdb = new MemoryStream();
-            asm.Write(pe, new WriterParameters { SymbolWriterProvider = new PortablePdbWriterProvider(), SymbolStream = pdb, WriteSymbols = true });
-            return new ILPostProcessResult(new InMemoryAssembly(pe.ToArray(), pdb.ToArray()), diagnostics);
+            foreach (var diagnostic in res.Diagnostics)
+            {
+                diagnostics.Add(
+                    new DiagnosticMessage
+                    {
+                        DiagnosticType = DiagnosticType.Warning,
+                        MessageData = "Aurix.Net weaver: " + diagnostic,
+                    }
+                );
+            }
+
+            if (!res.Changed)
+            {
+                return new ILPostProcessResult(assembly.InMemoryAssembly, diagnostics);
+            }
+
+            var pe = new MemoryStream();
+            var pdb = new MemoryStream();
+            asm.Write(
+                pe,
+                new WriterParameters
+                {
+                    SymbolWriterProvider = new PortablePdbWriterProvider(),
+                    SymbolStream = pdb,
+                    WriteSymbols = true,
+                }
+            );
+            return new ILPostProcessResult(
+                new InMemoryAssembly(pe.ToArray(), pdb.ToArray()),
+                diagnostics
+            );
         }
     }
 }

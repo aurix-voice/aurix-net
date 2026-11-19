@@ -33,54 +33,60 @@ pub async fn run_quic(st: Shared, endpoint: quinn::Endpoint) {
 async fn handle(st: Shared, incoming: quinn::Incoming) -> anyhow::Result<()> {
     let conn = incoming.await?;
     let first = tokio::time::timeout(Duration::from_secs(5), conn.read_datagram()).await??;
-    let Some(t) = st.tickets.verify(&first) else {
+    let Some(ticket) = st.tickets.verify(&first) else {
         conn.close(1u32.into(), b"bad ticket");
         anyhow::bail!("bad ticket");
     };
-    let Some(h) = st.host.get(t.room) else {
+    let Some(hosted) = st.host.get(ticket.room) else {
         conn.close(2u32.into(), b"no room");
         anyhow::bail!("no such room");
     };
     {
-        let g = h.lock();
-        if !g.sessions.contains_key(&t.actor) {
-            drop(g);
+        let room = hosted.lock();
+        if !room.sessions.contains_key(&ticket.actor) {
+            drop(room);
             conn.close(3u32.into(), b"not joined");
             anyhow::bail!("actor not joined");
         }
     }
     let ds = DataSession::new(DataSink::Quic(conn.clone()), st.metrics.clone());
-    let ds = attach_data(&h, t.actor, ds);
+    let ds = attach_data(&hosted, ticket.actor, ds);
     spawn_ticker(&st, ds.clone());
     loop {
-        let d = match conn.read_datagram().await {
-            Ok(d) => d,
+        let datagram = match conn.read_datagram().await {
+            Ok(received) => received,
             Err(_) => break,
         };
-        for m in ds.receive(d) {
-            if m.payload.is_empty() {
+        for message in ds.receive(datagram) {
+            if message.payload.is_empty() {
                 continue;
             }
-            let mut g = h.lock();
+            let mut room = hosted.lock();
             // A newer connection (reconnect or another session of the player) owns the slot.
-            if !g
+            if !room
                 .sessions
-                .get(&t.actor)
+                .get(&ticket.actor)
                 .and_then(|a| a.data.as_ref())
                 .is_some_and(|d| Arc::ptr_eq(d, &ds))
             {
                 return Ok(());
             }
-            if let Err(e) = handle_data_frame(&mut g, t.actor, m.channel, m.payload, &st.metrics) {
+            if let Err(e) = handle_data_frame(
+                &mut room,
+                ticket.actor,
+                message.channel,
+                message.payload,
+                &st.metrics,
+            ) {
                 st.metrics.errors.with_label_values(&[e.code()]).inc();
             }
         }
     }
     // Detach only if we are still the active data session.
-    let mut g = h.lock();
-    if let Some(a) = g.sessions.get_mut(&t.actor) {
-        if a.data.as_ref().is_some_and(|d| Arc::ptr_eq(d, &ds)) {
-            a.data = None;
+    let mut room = hosted.lock();
+    if let Some(session) = room.sessions.get_mut(&ticket.actor) {
+        if session.data.as_ref().is_some_and(|d| Arc::ptr_eq(d, &ds)) {
+            session.data = None;
         }
     }
     Ok(())
@@ -116,41 +122,47 @@ async fn handle_wt(
     let request = incoming.await?;
     let conn = request.accept().await?;
     let first = tokio::time::timeout(Duration::from_secs(5), conn.receive_datagram()).await??;
-    let Some(t) = st.tickets.verify(&first.payload()) else {
+    let Some(ticket) = st.tickets.verify(&first.payload()) else {
         conn.close(1u32.into(), b"bad ticket");
         anyhow::bail!("bad ticket");
     };
-    let Some(h) = st.host.get(t.room) else {
+    let Some(hosted) = st.host.get(ticket.room) else {
         conn.close(2u32.into(), b"no room");
         anyhow::bail!("no such room");
     };
-    if !h.lock().sessions.contains_key(&t.actor) {
+    if !hosted.lock().sessions.contains_key(&ticket.actor) {
         conn.close(3u32.into(), b"not joined");
         anyhow::bail!("actor not joined");
     }
     let ds = DataSession::new(DataSink::WebTransport(conn.clone()), st.metrics.clone());
-    let ds = attach_data(&h, t.actor, ds);
+    let ds = attach_data(&hosted, ticket.actor, ds);
     spawn_ticker(&st, ds.clone());
     loop {
-        let d = match conn.receive_datagram().await {
-            Ok(d) => d.payload(),
+        let datagram = match conn.receive_datagram().await {
+            Ok(received) => received.payload(),
             Err(_) => break,
         };
-        for m in ds.receive(d) {
-            if m.payload.is_empty() {
+        for message in ds.receive(datagram) {
+            if message.payload.is_empty() {
                 continue;
             }
-            let mut g = h.lock();
+            let mut room = hosted.lock();
             // A newer connection (reconnect or another session of the player) owns the slot.
-            if !g
+            if !room
                 .sessions
-                .get(&t.actor)
+                .get(&ticket.actor)
                 .and_then(|a| a.data.as_ref())
                 .is_some_and(|d| Arc::ptr_eq(d, &ds))
             {
                 return Ok(());
             }
-            if let Err(e) = handle_data_frame(&mut g, t.actor, m.channel, m.payload, &st.metrics) {
+            if let Err(e) = handle_data_frame(
+                &mut room,
+                ticket.actor,
+                message.channel,
+                message.payload,
+                &st.metrics,
+            ) {
                 tracing::debug!(error = %e, "bad data frame (webtransport)");
             }
         }

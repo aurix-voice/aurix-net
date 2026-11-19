@@ -28,15 +28,15 @@ pub struct Metrics {
 impl Metrics {
     pub fn new() -> Self {
         let registry = Registry::new();
-        let g = |n: &str, h: &str| {
-            let g = IntGauge::new(n, h).unwrap();
-            registry.register(Box::new(g.clone())).unwrap();
-            g
+        let gauge = |n: &str, h: &str| {
+            let metric = IntGauge::new(n, h).unwrap();
+            registry.register(Box::new(metric.clone())).unwrap();
+            metric
         };
-        let c = |n: &str, h: &str| {
-            let c = IntCounter::new(n, h).unwrap();
-            registry.register(Box::new(c.clone())).unwrap();
-            c
+        let counter = |n: &str, h: &str| {
+            let metric = IntCounter::new(n, h).unwrap();
+            registry.register(Box::new(metric.clone())).unwrap();
+            metric
         };
         let events = IntCounterVec::new(
             Opts::new("net_events_total", "relayed events by channel"),
@@ -57,35 +57,35 @@ impl Metrics {
         )
         .unwrap();
         registry.register(Box::new(sync_tick.clone())).unwrap();
-        let sync_lost_deltas = c(
+        let sync_lost_deltas = counter(
             "net_sync_lost_deltas_total",
             "sync deltas clients reported lost (re-sent in full)",
         );
-        let sync_inputs_rate_limited = c(
+        let sync_inputs_rate_limited = counter(
             "net_sync_inputs_rate_limited_total",
             "input frames dropped: client sent faster than tick rate + 10%",
         );
-        let sync_invalid_inputs = c(
+        let sync_invalid_inputs = counter(
             "net_sync_invalid_inputs_total",
             "input frames dropped as malformed or too far ahead of the room tick",
         );
-        let sync_resyncs = c(
+        let sync_resyncs = counter(
             "net_sync_resyncs_total",
             "clients that asked for a full snapshot (baselines dropped)",
         );
-        let sync_aoi_starved = c(
+        let sync_aoi_starved = counter(
             "net_sync_aoi_starved_total",
             "client-ticks where the byte budget deferred relevant entities",
         );
-        let tick_overruns = c(
+        let tick_overruns = counter(
             "net_tick_overruns_total",
             "sync/lockstep ticks that took longer than the tick period",
         );
-        let lockstep_desyncs = c(
+        let lockstep_desyncs = counter(
             "net_lockstep_desyncs_total",
             "lockstep hash reports that disagreed with the majority",
         );
-        let rooms_adopted = c(
+        let rooms_adopted = counter(
             "net_rooms_adopted_total",
             "rooms this node took over from a dead node (failover)",
         );
@@ -99,13 +99,13 @@ impl Metrics {
             rooms_adopted,
             sync_inputs_rate_limited,
             sync_invalid_inputs,
-            rooms: g("net_rooms", "open rooms on this node"),
-            players: g("net_players", "online players on this node"),
-            control_sessions: g("net_control_sessions", "open control websockets"),
-            datagrams_in: c("net_datagrams_in_total", "datagrams received"),
-            datagrams_out: c("net_datagrams_out_total", "datagrams sent"),
-            bytes_in: c("net_bytes_in_total", "data-path bytes received"),
-            bytes_out: c("net_bytes_out_total", "data-path bytes sent"),
+            rooms: gauge("net_rooms", "open rooms on this node"),
+            players: gauge("net_players", "online players on this node"),
+            control_sessions: gauge("net_control_sessions", "open control websockets"),
+            datagrams_in: counter("net_datagrams_in_total", "datagrams received"),
+            datagrams_out: counter("net_datagrams_out_total", "datagrams sent"),
+            bytes_in: counter("net_bytes_in_total", "data-path bytes received"),
+            bytes_out: counter("net_bytes_out_total", "data-path bytes sent"),
             events,
             errors,
             registry,

@@ -71,12 +71,12 @@ pub struct ArenaLogic {
 
 impl GameLogic for ArenaLogic {
     fn on_join(&mut self, frame: &mut Frame, actor: ActorId) -> Option<EntityId> {
-        let e = frame.spawn(Some(actor)).ok()?;
+        let entity = frame.spawn(Some(actor)).ok()?;
         let x = (actor.0 % 16) as f32 * 4.0 - 32.0;
         let z = (actor.0 / 16) as f32 * 4.0 - 32.0;
         frame
             .set(
-                e,
+                entity,
                 "Transform",
                 ComponentValue {
                     fields: vec![Value::Vec3([x, 0.0, z]), Value::Vec3([0.0; 3])],
@@ -85,38 +85,38 @@ impl GameLogic for ArenaLogic {
             .ok()?;
         frame
             .set(
-                e,
+                entity,
                 "Avatar",
                 ComponentValue {
                     fields: vec![Value::UInt(actor.0 as u64), Value::UInt(100)],
                 },
             )
             .ok()?;
-        Some(e)
+        Some(entity)
     }
 
     fn on_leave(&mut self, frame: &mut Frame, _actor: ActorId, avatar: Option<EntityId>) {
-        if let Some(e) = avatar {
-            let _ = frame.despawn(e);
+        if let Some(entity) = avatar {
+            let _ = frame.despawn(entity);
         }
     }
 
     fn step(&mut self, frame: &mut Frame, inputs: &[(ActorId, Option<EntityId>, Vec<u8>, bool)]) {
         let dt = frame.dt();
         for (_, avatar, data, _) in inputs {
-            let Some(e) = avatar else { continue };
+            let Some(entity) = avatar else { continue };
             let (mx, mz) = if data.len() >= 2 {
                 (data[0] as i8 as f32 / 127.0, data[1] as i8 as f32 / 127.0)
             } else {
                 (0.0, 0.0)
             };
-            if let Some(t) = frame.get_mut(*e, "Transform") {
+            if let Some(transform) = frame.get_mut(*entity, "Transform") {
                 let vel = [mx * self.speed, 0.0, mz * self.speed];
-                if let Value::Vec3(p) = &mut t.fields[0] {
-                    p[0] = (p[0] + vel[0] * dt).clamp(-512.0, 512.0);
-                    p[2] = (p[2] + vel[2] * dt).clamp(-512.0, 512.0);
+                if let Value::Vec3(position) = &mut transform.fields[0] {
+                    position[0] = (position[0] + vel[0] * dt).clamp(-512.0, 512.0);
+                    position[2] = (position[2] + vel[2] * dt).clamp(-512.0, 512.0);
                 }
-                t.fields[1] = Value::Vec3(vel);
+                transform.fields[1] = Value::Vec3(vel);
             }
         }
     }
@@ -125,11 +125,11 @@ impl GameLogic for ArenaLogic {
         frame
             .entities()
             .filter_map(|e| {
-                let p = net_sim::vec3_of(e.components.get(&0)?, 0)?;
+                let position = net_sim::vec3_of(e.components.get(&0)?, 0)?;
                 Some((
                     e.id,
                     Hitbox {
-                        center: [p[0], p[1] + 1.0, p[2]],
+                        center: [position[0], position[1] + 1.0, position[2]],
                         half: [0.5, 1.0, 0.5],
                     },
                 ))
@@ -183,8 +183,8 @@ pub enum OwnerPolicy {
 }
 
 impl OwnerPolicy {
-    pub fn from_u8(v: u8) -> Option<Self> {
-        Some(match v {
+    pub fn from_u8(byte: u8) -> Option<Self> {
+        Some(match byte {
             0 => Self::DestroyOnLeave,
             1 => Self::ToMaster,
             2 => Self::Orphan,
@@ -198,24 +198,24 @@ fn owns(frame: &mut Frame, id: EntityId, actor: ActorId) -> bool {
     frame.entity_mut(id).is_some_and(|e| e.owner == Some(actor))
 }
 
-/// `u8 n, n × (cid, encode_full)` applied to `e`; false on a malformed list.
-fn read_writes(frame: &mut Frame, e: EntityId, r: &mut BitReader) -> bool {
+/// `u8 n, n × (cid, encode_full)` applied to `entity`; false on a malformed list.
+fn read_writes(frame: &mut Frame, entity: EntityId, reader: &mut BitReader) -> bool {
     let cid_bits = frame.schema.component_id_bits();
-    let Ok(n) = r.read_bits(8) else {
+    let Ok(count) = reader.read_bits(8) else {
         return false;
     };
-    for _ in 0..n {
-        let Ok(cid) = r.read_bits(cid_bits) else {
+    for _ in 0..count {
+        let Ok(cid) = reader.read_bits(cid_bits) else {
             return false;
         };
-        let Some(c) = frame.schema.by_id(cid as u16).cloned() else {
+        let Some(component) = frame.schema.by_id(cid as u16).cloned() else {
             return false;
         };
-        let Ok(v) = ComponentValue::decode_full(&c, r) else {
+        let Ok(value) = ComponentValue::decode_full(&component, reader) else {
             return false;
         };
-        if let Some(ent) = frame.entity_mut(e) {
-            ent.components.insert(c.id, v);
+        if let Some(ent) = frame.entity_mut(entity) {
+            ent.components.insert(component.id, value);
         }
     }
     true
@@ -237,23 +237,23 @@ impl GameLogic for OwnerLogic {
             .filter_map(|e| e.owner)
             .filter(|a| *a != actor)
             .min_by_key(|a| a.0);
-        for e in owned {
-            match self.policies.get(&e).copied().unwrap_or_default() {
+        for entity in owned {
+            match self.policies.get(&entity).copied().unwrap_or_default() {
                 OwnerPolicy::DestroyOnLeave => {
-                    let _ = frame.despawn(e);
-                    self.policies.remove(&e);
+                    let _ = frame.despawn(entity);
+                    self.policies.remove(&entity);
                 }
                 OwnerPolicy::ToMaster => {
-                    if let Some(ent) = frame.entity_mut(e) {
+                    if let Some(ent) = frame.entity_mut(entity) {
                         ent.owner = master;
                     }
                     if master.is_none() {
-                        let _ = frame.despawn(e);
-                        self.policies.remove(&e);
+                        let _ = frame.despawn(entity);
+                        self.policies.remove(&entity);
                     }
                 }
                 OwnerPolicy::Orphan | OwnerPolicy::Dynamic => {
-                    if let Some(ent) = frame.entity_mut(e) {
+                    if let Some(ent) = frame.entity_mut(entity) {
                         ent.owner = None;
                     }
                 }
@@ -265,28 +265,28 @@ impl GameLogic for OwnerLogic {
             if !*fresh {
                 continue;
             }
-            let mut r = BitReader::new(data);
+            let mut reader = BitReader::new(data);
             if data.first() != Some(&OPS_MARKER) {
-                if let Some(e) = avatar {
-                    read_writes(frame, *e, &mut r);
+                if let Some(entity) = avatar {
+                    read_writes(frame, *entity, &mut reader);
                 }
                 continue;
             }
-            let _ = r.read_bits(8);
-            let Ok(n_ops) = r.read_bits(8) else {
+            let _ = reader.read_bits(8);
+            let Ok(n_ops) = reader.read_bits(8) else {
                 continue;
             };
             for _ in 0..n_ops {
-                let Ok(op) = r.read_bits(8) else {
+                let Ok(op) = reader.read_bits(8) else {
                     break;
                 };
                 let ok = match op as u8 {
                     OP_WRITE => {
-                        let Ok(id) = r.read_bits(48) else {
+                        let Ok(id) = reader.read_bits(48) else {
                             break;
                         };
                         let id = EntityId::from_u64(id);
-                        owns(frame, id, *actor) && read_writes(frame, id, &mut r)
+                        owns(frame, id, *actor) && read_writes(frame, id, &mut reader)
                     }
                     OP_SPAWN => {
                         let owned = frame.entities().filter(|e| e.owner == Some(*actor)).count();
@@ -294,12 +294,12 @@ impl GameLogic for OwnerLogic {
                             break;
                         }
                         match frame.spawn(Some(*actor)) {
-                            Ok(id) => read_writes(frame, id, &mut r),
+                            Ok(id) => read_writes(frame, id, &mut reader),
                             Err(_) => break,
                         }
                     }
                     OP_DESPAWN => {
-                        let Ok(id) = r.read_bits(48) else {
+                        let Ok(id) = reader.read_bits(48) else {
                             break;
                         };
                         let id = EntityId::from_u64(id);
@@ -312,7 +312,7 @@ impl GameLogic for OwnerLogic {
                         ok
                     }
                     OP_SET_POLICY => {
-                        let (Ok(id), Ok(p)) = (r.read_bits(48), r.read_bits(8)) else {
+                        let (Ok(id), Ok(p)) = (reader.read_bits(48), reader.read_bits(8)) else {
                             break;
                         };
                         let id = EntityId::from_u64(id);
@@ -325,7 +325,7 @@ impl GameLogic for OwnerLogic {
                         }
                     }
                     OP_REQUEST => {
-                        let Ok(id) = r.read_bits(48) else {
+                        let Ok(id) = reader.read_bits(48) else {
                             break;
                         };
                         let id = EntityId::from_u64(id);
@@ -343,7 +343,7 @@ impl GameLogic for OwnerLogic {
                         }
                     }
                     OP_RELEASE => {
-                        let Ok(id) = r.read_bits(48) else {
+                        let Ok(id) = reader.read_bits(48) else {
                             break;
                         };
                         let id = EntityId::from_u64(id);
@@ -363,14 +363,14 @@ impl GameLogic for OwnerLogic {
                         }
                     }
                     OP_TRANSFER => {
-                        let (Ok(id), Ok(to)) = (r.read_bits(48), r.read_bits(16)) else {
+                        let (Ok(id), Ok(to)) = (reader.read_bits(48), reader.read_bits(16)) else {
                             break;
                         };
                         let (id, to) = (EntityId::from_u64(id), ActorId(to as _));
                         let joined = frame.entities().any(|e| e.owner == Some(to));
                         if owns(frame, id, *actor) && joined {
-                            if let Some(e) = frame.entity_mut(id) {
-                                e.owner = Some(to);
+                            if let Some(entity) = frame.entity_mut(id) {
+                                entity.owner = Some(to);
                             }
                             true
                         } else {
@@ -429,20 +429,20 @@ impl SyncRoom {
         props: &serde_json::Map<String, serde_json::Value>,
     ) -> ReplicationConfig {
         let mut cfg = ReplicationConfig::default();
-        if let Some(v) = props.get("budget_bytes").and_then(|v| v.as_u64()) {
-            cfg.budget_bytes = (v as usize).clamp(200, 60_000);
+        if let Some(bytes) = props.get("budget_bytes").and_then(|v| v.as_u64()) {
+            cfg.budget_bytes = (bytes as usize).clamp(200, 60_000);
         }
-        if let Some(v) = props.get("aoi_cell").and_then(|v| v.as_f64()) {
-            cfg.aoi_cell = v.max(0.0) as f32;
+        if let Some(cell) = props.get("aoi_cell").and_then(|v| v.as_f64()) {
+            cfg.aoi_cell = cell.max(0.0) as f32;
         }
-        if let Some(v) = props.get("aoi_radius").and_then(|v| v.as_u64()) {
-            cfg.aoi_radius = v.min(64) as u32;
+        if let Some(radius) = props.get("aoi_radius").and_then(|v| v.as_u64()) {
+            cfg.aoi_radius = radius.min(64) as u32;
         }
-        if let Some(v) = props.get("stale_after").and_then(|v| v.as_u64()) {
-            cfg.stale_after = v.clamp(1, 3600) as u32;
+        if let Some(ticks) = props.get("stale_after").and_then(|v| v.as_u64()) {
+            cfg.stale_after = ticks.clamp(1, 3600) as u32;
         }
-        if let Some(v) = props.get("position").and_then(|v| v.as_str()) {
-            cfg.position = v
+        if let Some(name) = props.get("position").and_then(|v| v.as_str()) {
+            cfg.position = name
                 .split_once('.')
                 .and_then(|(c, f)| f.parse().ok().map(|f| (c.to_string(), f)));
         }
@@ -534,13 +534,13 @@ impl SyncRoom {
             .find(|e| e.owner == Some(actor))
             .map(|e| e.id);
         let avatar = match existing {
-            Some(e) => Some(e),
+            Some(entity) => Some(entity),
             None => self.logic.on_join(&mut self.frame, actor),
         };
         self.avatars.insert(actor, avatar);
-        let mut v = ClientView::new(actor);
-        v.viewpoint = avatar;
-        self.views.insert(actor, v);
+        let mut view = ClientView::new(actor);
+        view.viewpoint = avatar;
+        self.views.insert(actor, view);
     }
 
     /// `set_view` control message: extra viewpoints (spectators get the first as their main
@@ -552,29 +552,29 @@ impl SyncRoom {
         viewpoints: &[u64],
         interest: &[u64],
     ) -> (usize, usize) {
-        let Some(v) = self.views.get_mut(&actor) else {
+        let Some(view) = self.views.get_mut(&actor) else {
             return (0, 0);
         };
         let live = |id: u64| {
-            let e = net_sim::EntityId::from_u64(id);
-            self.frame.entity(e).is_some().then_some(e)
+            let entity = net_sim::EntityId::from_u64(id);
+            self.frame.entity(entity).is_some().then_some(entity)
         };
         let mut vps: Vec<net_sim::EntityId> =
             viewpoints.iter().filter_map(|&id| live(id)).collect();
         vps.dedup();
-        if v.viewpoint.is_none() {
-            v.viewpoint = (!vps.is_empty()).then(|| vps.remove(0));
+        if view.viewpoint.is_none() {
+            view.viewpoint = (!vps.is_empty()).then(|| vps.remove(0));
         }
         vps.truncate(net_replication::MAX_VIEWPOINTS - 1);
-        v.extra_viewpoints = vps;
-        v.interest = interest
+        view.extra_viewpoints = vps;
+        view.interest = interest
             .iter()
             .take(MAX_INTEREST)
             .filter_map(|&id| live(id))
             .collect();
         (
-            v.extra_viewpoints.len() + v.viewpoint.is_some() as usize,
-            v.interest.len(),
+            view.extra_viewpoints.len() + view.viewpoint.is_some() as usize,
+            view.interest.len(),
         )
     }
 
@@ -610,14 +610,14 @@ impl SyncRoom {
                 }
                 *tokens -= 1.0;
                 let first = payload.get_u32();
-                let n = payload.get_u8() as usize;
+                let count = payload.get_u8() as usize;
                 if first.wrapping_sub(self.frame.tick.0) < 1 << 31
                     && first > self.frame.tick.0 + INPUT_MAX_AHEAD
                 {
                     self.invalid_inputs += 1;
                     return true;
                 }
-                for i in 0..n.min(INPUT_REDUNDANCY + 1) {
+                for i in 0..count.min(INPUT_REDUNDANCY + 1) {
                     if payload.is_empty() {
                         break;
                     }
@@ -636,8 +636,8 @@ impl SyncRoom {
             }
             KIND_RESYNC => {
                 self.resyncs += 1;
-                if let Some(v) = self.views.get_mut(&actor) {
-                    v.reset();
+                if let Some(view) = self.views.get_mut(&actor) {
+                    view.reset();
                 }
                 true
             }
@@ -648,8 +648,8 @@ impl SyncRoom {
                 }
                 let last = payload.get_u32();
                 let bits = payload.get_u32();
-                if let Some(v) = self.views.get_mut(&actor) {
-                    v.ack(last, bits);
+                if let Some(view) = self.views.get_mut(&actor) {
+                    view.ack(last, bits);
                 }
                 true
             }
@@ -659,35 +659,35 @@ impl SyncRoom {
 
     /// One simulation step. Returns the delta frame for each actor with a view.
     pub fn tick(&mut self) -> Vec<(ActorId, Bytes)> {
-        for t in self.input_tokens.values_mut() {
-            *t = (*t + 1.1).min(INPUT_BURST);
+        for bucket in self.input_tokens.values_mut() {
+            *bucket = (*bucket + 1.1).min(INPUT_BURST);
         }
         let actors: Vec<ActorId> = self.avatars.keys().copied().collect();
         let mut inputs = Vec::with_capacity(actors.len());
-        for a in &actors {
-            let (data, fresh) = self.frame.input_for(*a);
-            inputs.push((*a, self.avatars[a], data, fresh));
+        for actor in &actors {
+            let (data, fresh) = self.frame.input_for(*actor);
+            inputs.push((*actor, self.avatars[actor], data, fresh));
         }
         let logic = &mut self.logic;
         self.frame.advance(|f| logic.step(f, &inputs));
         let boxes = self.logic.hitboxes(&self.frame);
         self.history.record(self.frame.tick, boxes);
         let mut out = Vec::with_capacity(self.views.len());
-        for (a, v) in self.views.iter_mut() {
-            let d = self.rep.build(&self.frame, v);
-            let mut b = BytesMut::with_capacity(d.len() + 1);
-            b.put_u8(KIND_DELTA);
-            b.extend_from_slice(&d);
-            out.push((*a, b.freeze()));
+        for (actor, view) in self.views.iter_mut() {
+            let delta = self.rep.build(&self.frame, view);
+            let mut buf = BytesMut::with_capacity(delta.len() + 1);
+            buf.put_u8(KIND_DELTA);
+            buf.extend_from_slice(&delta);
+            out.push((*actor, buf.freeze()));
         }
         if self.replay_keep > 0 && self.frame.tick.0.is_multiple_of(self.replay_every) {
             // A fresh view has no baseline and no viewpoint: the delta is the whole world.
-            let mut v = ClientView::new(ActorId(0xFFFF));
-            let d = self.rep.build(&self.frame, &mut v);
-            let mut b = BytesMut::with_capacity(d.len() + 1);
-            b.put_u8(KIND_DELTA);
-            b.extend_from_slice(&d);
-            self.replay.push_back((self.frame.tick.0, b.freeze()));
+            let mut view = ClientView::new(ActorId(0xFFFF));
+            let delta = self.rep.build(&self.frame, &mut view);
+            let mut buf = BytesMut::with_capacity(delta.len() + 1);
+            buf.put_u8(KIND_DELTA);
+            buf.extend_from_slice(&delta);
+            self.replay.push_back((self.frame.tick.0, buf.freeze()));
             while self.replay.len() > self.replay_keep {
                 self.replay.pop_front();
             }
@@ -698,12 +698,12 @@ impl SyncRoom {
     /// Room props `replay_every` (ticks between snapshots, default hz/2) and `replay_secs`
     /// (window kept, default 30; 0 disables the ring).
     pub fn set_replay(&mut self, every: Option<u32>, secs: Option<u32>) {
-        if let Some(e) = every {
-            self.replay_every = e.max(1);
+        if let Some(ticks) = every {
+            self.replay_every = ticks.max(1);
         }
-        if let Some(s) = secs {
+        if let Some(seconds) = secs {
             self.replay_keep =
-                (s as usize * self.hz as usize / self.replay_every as usize).min(4096);
+                (seconds as usize * self.hz as usize / self.replay_every as usize).min(4096);
         }
         self.replay.truncate(self.replay_keep);
     }
@@ -784,24 +784,24 @@ impl SyncRoom {
 
     /// Encodes a client ack frame from `AckTracker::ack()`.
     pub fn encode_ack(last: u32, bits: u32) -> Bytes {
-        let mut b = BytesMut::with_capacity(9);
-        b.put_u8(KIND_ACK);
-        b.put_u32(last);
-        b.put_u32(bits);
-        b.freeze()
+        let mut buf = BytesMut::with_capacity(9);
+        buf.put_u8(KIND_ACK);
+        buf.put_u32(last);
+        buf.put_u32(bits);
+        buf.freeze()
     }
 
     /// Encodes a client input packet (used by SDK/loadtest): the last K inputs ending at `tick`.
     pub fn encode_input(first_tick: Tick, inputs: &[Vec<u8>]) -> Bytes {
-        let mut b = BytesMut::new();
-        b.put_u8(KIND_INPUT);
-        b.put_u32(first_tick.0);
-        b.put_u8(inputs.len().min(255) as u8);
-        for i in inputs.iter().take(255) {
-            b.put_u8(i.len().min(255) as u8);
-            b.extend_from_slice(&i[..i.len().min(255)]);
+        let mut buf = BytesMut::new();
+        buf.put_u8(KIND_INPUT);
+        buf.put_u32(first_tick.0);
+        buf.put_u8(inputs.len().min(255) as u8);
+        for input in inputs.iter().take(255) {
+            buf.put_u8(input.len().min(255) as u8);
+            buf.extend_from_slice(&input[..input.len().min(255)]);
         }
-        b.freeze()
+        buf.freeze()
     }
 }
 
@@ -812,12 +812,12 @@ mod tests {
     #[test]
     fn set_view_steers_viewpoints_and_interest() {
         let mut room = SyncRoom::new(None, 60, 7).unwrap();
-        let (a, b, spec) = (ActorId(1), ActorId(2), ActorId(3));
-        room.on_join(a);
-        room.on_join(b);
+        let (alice, bob, spec) = (ActorId(1), ActorId(2), ActorId(3));
+        room.on_join(alice);
+        room.on_join(bob);
         room.on_join_as(spec, true);
-        let av_a = room.avatars[&a].unwrap().to_u64();
-        let av_b = room.avatars[&b].unwrap().to_u64();
+        let av_a = room.avatars[&alice].unwrap().to_u64();
+        let av_b = room.avatars[&bob].unwrap().to_u64();
         // spectator: first viewpoint becomes the main one, unknown entities are ignored
         assert_eq!(
             room.set_view(spec, &[av_a, 0xdead_beef], &[av_b, 0xdead_beef]),
@@ -831,64 +831,64 @@ mod tests {
             .map(|i| if i % 2 == 0 { av_a } else { av_b })
             .collect();
         assert_eq!(
-            room.set_view(a, &many, &[]),
+            room.set_view(alice, &many, &[]),
             (net_replication::MAX_VIEWPOINTS, 0)
         );
         assert_eq!(
-            room.views[&a].viewpoint.map(|e| e.to_u64()),
-            Some(room.avatars[&a].unwrap().to_u64())
+            room.views[&alice].viewpoint.map(|e| e.to_u64()),
+            Some(room.avatars[&alice].unwrap().to_u64())
         );
         // clearing
-        assert_eq!(room.set_view(a, &[], &[]), (1, 0));
+        assert_eq!(room.set_view(alice, &[], &[]), (1, 0));
         assert_eq!(room.set_view(ActorId(99), &[av_a], &[]), (0, 0));
     }
 
     #[test]
     fn arena_moves_avatars_and_replicates() {
         let mut room = SyncRoom::new(None, 60, 7).unwrap();
-        let (a, b) = (ActorId(1), ActorId(2));
-        room.on_join(a);
-        room.on_join(b);
+        let (alice, bob) = (ActorId(1), ActorId(2));
+        room.on_join(alice);
+        room.on_join(bob);
         let mut client_a = Frame::new(room.frame.schema.clone(), FrameConfig::default(), 0);
         // actor a pushes right for 60 ticks, b idle
         for t in 0..60u32 {
             let inp = SyncRoom::encode_input(Tick(t), &[vec![127, 0, 0]]);
-            assert!(room.handle(a, inp));
+            assert!(room.handle(alice, inp));
             let out = room.tick();
             assert_eq!(out.len(), 2);
-            for (actor, d) in out {
-                if actor == a {
-                    assert_eq!(d[0], KIND_DELTA);
-                    Replicator::apply(&mut client_a, &d[1..]).unwrap();
+            for (actor, delta) in out {
+                if actor == alice {
+                    assert_eq!(delta[0], KIND_DELTA);
+                    Replicator::apply(&mut client_a, &delta[1..]).unwrap();
                 }
             }
         }
-        let ea = room.avatars[&a].unwrap();
-        let p = net_sim::vec3_of(room.frame.get(ea, "Transform").unwrap(), 0).unwrap();
-        assert!((p[0] - (-28.0 + 6.0)).abs() < 0.05, "{p:?}");
+        let ea = room.avatars[&alice].unwrap();
+        let position = net_sim::vec3_of(room.frame.get(ea, "Transform").unwrap(), 0).unwrap();
+        assert!((position[0] - (-28.0 + 6.0)).abs() < 0.05, "{position:?}");
         let pc = net_sim::vec3_of(client_a.get(ea, "Transform").unwrap(), 0).unwrap();
-        assert!((pc[0] - p[0]).abs() < 0.02);
+        assert!((pc[0] - position[0]).abs() < 0.02);
         assert_eq!(client_a.entity_count(), 2);
         assert_eq!(client_a.tick, room.frame.tick);
         // leave removes the avatar on the next delta
-        room.on_leave(b);
-        for (actor, d) in room.tick() {
-            if actor == a {
-                Replicator::apply(&mut client_a, &d[1..]).unwrap();
+        room.on_leave(bob);
+        for (actor, delta) in room.tick() {
+            if actor == alice {
+                Replicator::apply(&mut client_a, &delta[1..]).unwrap();
             }
         }
         assert_eq!(client_a.entity_count(), 1);
         // resync -> full snapshot again
-        room.handle(a, Bytes::from_static(&[KIND_RESYNC]));
+        room.handle(alice, Bytes::from_static(&[KIND_RESYNC]));
         let out = room.tick();
-        let full = &out.iter().find(|(x, _)| *x == a).unwrap().1;
+        let full = &out.iter().find(|(x, _)| *x == alice).unwrap().1;
         assert!(full.len() > 12);
         // lag comp sees the avatar where it was
         let hit = room
             .history
             .raycast_at(
                 Tick(30),
-                [p[0] - 20.0, 1.0, p[2]],
+                [position[0] - 20.0, 1.0, position[2]],
                 [1.0, 0.0, 0.0],
                 100.0,
                 None,
@@ -910,7 +910,7 @@ mod tests {
             room.tick();
         }
         let ea = room.avatars[&ActorId(1)].unwrap();
-        let p = net_sim::vec3_of(room.frame.get(ea, "Transform").unwrap(), 0).unwrap();
+        let position = net_sim::vec3_of(room.frame.get(ea, "Transform").unwrap(), 0).unwrap();
         let ck = room.checkpoint();
         let mut fresh = SyncRoom::new(None, 60, 0).unwrap();
         fresh.restore(&ck).unwrap();
@@ -918,7 +918,7 @@ mod tests {
         fresh.on_join(ActorId(1));
         assert_eq!(fresh.avatars[&ActorId(1)], Some(ea));
         let p2 = net_sim::vec3_of(fresh.frame.get(ea, "Transform").unwrap(), 0).unwrap();
-        assert!((p[0] - p2[0]).abs() < 0.02);
+        assert!((position[0] - p2[0]).abs() < 0.02);
         room.frame.raise(7, Some(ActorId(1)), vec![1, 2]);
         room.frame.raise(8, None, vec![]);
         let ev = room.take_events();
@@ -938,19 +938,19 @@ mod tests {
     fn owner_logic_applies_component_writes() {
         let src = "component Pose {\n x: f32 @range(-100, 100, 0.1)\n}";
         let mut room = SyncRoom::new(Some(src), 30, 1).unwrap();
-        let a = ActorId(5);
-        room.on_join(a);
-        let ea = room.avatars[&a].unwrap();
-        let c = room.frame.schema.component("Pose").unwrap().clone();
-        let mut w = net_wire::BitWriter::new();
-        w.write_bits(1, 8);
-        w.write_bits(c.id as u64, room.frame.schema.component_id_bits());
+        let alice = ActorId(5);
+        room.on_join(alice);
+        let ea = room.avatars[&alice].unwrap();
+        let pose = room.frame.schema.component("Pose").unwrap().clone();
+        let mut writer = net_wire::BitWriter::new();
+        writer.write_bits(1, 8);
+        writer.write_bits(pose.id as u64, room.frame.schema.component_id_bits());
         ComponentValue {
             fields: vec![Value::F32(42.0)],
         }
-        .encode_full(&c, &mut w)
+        .encode_full(&pose, &mut writer)
         .unwrap();
-        room.handle(a, SyncRoom::encode_input(Tick(0), &[w.finish()]));
+        room.handle(alice, SyncRoom::encode_input(Tick(0), &[writer.finish()]));
         room.tick();
         assert_eq!(
             room.frame.get(ea, "Pose"),
@@ -965,36 +965,36 @@ mod tests {
     fn ownership_policies_orphan_master_dynamic() {
         let src = "component Pose {\n x: f32 @range(-100, 100, 0.1)\n}";
         let mut room = SyncRoom::new(Some(src), 30, 1).unwrap();
-        let (a, b, c) = (ActorId(1), ActorId(2), ActorId(3));
-        room.on_join(a);
-        room.on_join(b);
-        room.on_join(c);
+        let (alice, bob, carol) = (ActorId(1), ActorId(2), ActorId(3));
+        room.on_join(alice);
+        room.on_join(bob);
+        room.on_join(carol);
         let send = |room: &mut SyncRoom, actor: ActorId, w: net_wire::BitWriter| {
-            let t = room.frame.tick;
-            room.handle(actor, SyncRoom::encode_input(t, &[w.finish()]));
+            let tick = room.frame.tick;
+            room.handle(actor, SyncRoom::encode_input(tick, &[w.finish()]));
             room.tick();
         };
         // (op, entity, trailing value and its bit width)
         type Op = (u8, Option<u64>, Option<(u64, u32)>);
         let ops = |items: &[Op]| {
-            let mut w = net_wire::BitWriter::new();
-            w.write_bits(OPS_MARKER as u64, 8);
-            w.write_bits(items.len() as u64, 8);
+            let mut writer = net_wire::BitWriter::new();
+            writer.write_bits(OPS_MARKER as u64, 8);
+            writer.write_bits(items.len() as u64, 8);
             for (op, entity, extra) in items {
-                w.write_bits(*op as u64, 8);
-                if let Some(e) = entity {
-                    w.write_bits(*e, 48);
+                writer.write_bits(*op as u64, 8);
+                if let Some(spawned) = entity {
+                    writer.write_bits(*spawned, 48);
                 }
                 if let Some((v, bits)) = extra {
-                    w.write_bits(*v, *bits);
+                    writer.write_bits(*v, *bits);
                 }
             }
-            w
+            writer
         };
         // a spawns three entities (no initial writes) and gives each a policy.
         send(
             &mut room,
-            a,
+            alice,
             ops(&[
                 (OP_SPAWN, None, Some((0, 8))),
                 (OP_SPAWN, None, Some((0, 8))),
@@ -1004,14 +1004,14 @@ mod tests {
         let spawned: Vec<EntityId> = room
             .frame
             .entities()
-            .filter(|e| e.owner == Some(a) && Some(e.id) != room.avatars[&a])
+            .filter(|e| e.owner == Some(alice) && Some(e.id) != room.avatars[&alice])
             .map(|e| e.id)
             .collect();
         assert_eq!(spawned.len(), 3);
         let (orphan, to_master, dynamic) = (spawned[0], spawned[1], spawned[2]);
         send(
             &mut room,
-            a,
+            alice,
             ops(&[
                 (
                     OP_SET_POLICY,
@@ -1033,28 +1033,28 @@ mod tests {
         // c takes the dynamic entity while a still owns it; the orphan one is refused (a owns it).
         send(
             &mut room,
-            c,
+            carol,
             ops(&[
                 (OP_REQUEST, Some(dynamic.to_u64()), None),
                 (OP_REQUEST, Some(orphan.to_u64()), None),
             ]),
         );
-        assert_eq!(room.frame.entity_mut(dynamic).unwrap().owner, Some(c));
-        assert_eq!(room.frame.entity_mut(orphan).unwrap().owner, Some(a));
+        assert_eq!(room.frame.entity_mut(dynamic).unwrap().owner, Some(carol));
+        assert_eq!(room.frame.entity_mut(orphan).unwrap().owner, Some(alice));
         // a leaves: orphan stays unowned, to_master goes to the oldest remaining player (b).
-        room.on_leave(a);
+        room.on_leave(alice);
         assert_eq!(room.frame.entity_mut(orphan).unwrap().owner, None);
-        assert_eq!(room.frame.entity_mut(to_master).unwrap().owner, Some(b));
+        assert_eq!(room.frame.entity_mut(to_master).unwrap().owner, Some(bob));
         // b requests the orphan and gets it, then releases it: unowned again, still alive.
         send(
             &mut room,
-            b,
+            bob,
             ops(&[(OP_REQUEST, Some(orphan.to_u64()), None)]),
         );
-        assert_eq!(room.frame.entity_mut(orphan).unwrap().owner, Some(b));
+        assert_eq!(room.frame.entity_mut(orphan).unwrap().owner, Some(bob));
         send(
             &mut room,
-            b,
+            bob,
             ops(&[(OP_RELEASE, Some(orphan.to_u64()), None)]),
         );
         assert_eq!(room.frame.entity_mut(orphan).unwrap().owner, None);
@@ -1064,96 +1064,103 @@ mod tests {
     fn owner_ops_spawn_write_transfer_despawn_and_leave() {
         let src = "component Pose {\n x: f32 @range(-100, 100, 0.1)\n}";
         let mut room = SyncRoom::new(Some(src), 30, 1).unwrap();
-        let (a, b) = (ActorId(1), ActorId(2));
-        room.on_join(a);
-        room.on_join(b);
-        let c = room.frame.schema.component("Pose").unwrap().clone();
+        let (alice, bob) = (ActorId(1), ActorId(2));
+        room.on_join(alice);
+        room.on_join(bob);
+        let pose_schema = room.frame.schema.component("Pose").unwrap().clone();
         let cb = room.frame.schema.component_id_bits();
         let pose = |x: f32| ComponentValue {
             fields: vec![Value::F32(x)],
         };
         let send = |room: &mut SyncRoom, actor: ActorId, w: net_wire::BitWriter| {
-            let t = room.frame.tick;
-            room.handle(actor, SyncRoom::encode_input(t, &[w.finish()]));
+            let tick = room.frame.tick;
+            room.handle(actor, SyncRoom::encode_input(tick, &[w.finish()]));
             room.tick();
         };
-        let mut w = net_wire::BitWriter::new();
-        w.write_bits(OPS_MARKER as u64, 8);
-        w.write_bits(1, 8);
-        w.write_bits(OP_SPAWN as u64, 8);
-        w.write_bits(1, 8);
-        w.write_bits(c.id as u64, cb);
-        pose(7.0).encode_full(&c, &mut w).unwrap();
-        send(&mut room, a, w);
+        let mut writer = net_wire::BitWriter::new();
+        writer.write_bits(OPS_MARKER as u64, 8);
+        writer.write_bits(1, 8);
+        writer.write_bits(OP_SPAWN as u64, 8);
+        writer.write_bits(1, 8);
+        writer.write_bits(pose_schema.id as u64, cb);
+        pose(7.0).encode_full(&pose_schema, &mut writer).unwrap();
+        send(&mut room, alice, writer);
         let spawned = room
             .frame
             .entities()
-            .find(|e| e.owner == Some(a) && Some(e.id) != room.avatars[&a])
+            .find(|e| e.owner == Some(alice) && Some(e.id) != room.avatars[&alice])
             .unwrap()
             .id;
         assert_eq!(room.frame.get(spawned, "Pose"), Some(&pose(7.0)));
 
         // b does not own it: the write is ignored
-        let mut w = net_wire::BitWriter::new();
-        w.write_bits(OPS_MARKER as u64, 8);
-        w.write_bits(1, 8);
-        w.write_bits(OP_WRITE as u64, 8);
-        w.write_bits(spawned.to_u64(), 48);
-        w.write_bits(1, 8);
-        w.write_bits(c.id as u64, cb);
-        pose(9.0).encode_full(&c, &mut w).unwrap();
-        send(&mut room, b, w);
+        let mut writer = net_wire::BitWriter::new();
+        writer.write_bits(OPS_MARKER as u64, 8);
+        writer.write_bits(1, 8);
+        writer.write_bits(OP_WRITE as u64, 8);
+        writer.write_bits(spawned.to_u64(), 48);
+        writer.write_bits(1, 8);
+        writer.write_bits(pose_schema.id as u64, cb);
+        pose(9.0).encode_full(&pose_schema, &mut writer).unwrap();
+        send(&mut room, bob, writer);
         assert_eq!(room.frame.get(spawned, "Pose"), Some(&pose(7.0)));
 
         // a hands it to b; b writes and despawns it
-        let mut w = net_wire::BitWriter::new();
-        w.write_bits(OPS_MARKER as u64, 8);
-        w.write_bits(1, 8);
-        w.write_bits(OP_TRANSFER as u64, 8);
-        w.write_bits(spawned.to_u64(), 48);
-        w.write_bits(2, 16);
-        send(&mut room, a, w);
-        assert_eq!(room.frame.entity_mut(spawned).unwrap().owner, Some(b));
-        let mut w = net_wire::BitWriter::new();
-        w.write_bits(OPS_MARKER as u64, 8);
-        w.write_bits(2, 8);
-        w.write_bits(OP_WRITE as u64, 8);
-        w.write_bits(spawned.to_u64(), 48);
-        w.write_bits(1, 8);
-        w.write_bits(c.id as u64, cb);
-        pose(9.0).encode_full(&c, &mut w).unwrap();
-        w.write_bits(OP_DESPAWN as u64, 8);
-        w.write_bits(spawned.to_u64(), 48);
-        send(&mut room, b, w);
+        let mut writer = net_wire::BitWriter::new();
+        writer.write_bits(OPS_MARKER as u64, 8);
+        writer.write_bits(1, 8);
+        writer.write_bits(OP_TRANSFER as u64, 8);
+        writer.write_bits(spawned.to_u64(), 48);
+        writer.write_bits(2, 16);
+        send(&mut room, alice, writer);
+        assert_eq!(room.frame.entity_mut(spawned).unwrap().owner, Some(bob));
+        let mut writer = net_wire::BitWriter::new();
+        writer.write_bits(OPS_MARKER as u64, 8);
+        writer.write_bits(2, 8);
+        writer.write_bits(OP_WRITE as u64, 8);
+        writer.write_bits(spawned.to_u64(), 48);
+        writer.write_bits(1, 8);
+        writer.write_bits(pose_schema.id as u64, cb);
+        pose(9.0).encode_full(&pose_schema, &mut writer).unwrap();
+        writer.write_bits(OP_DESPAWN as u64, 8);
+        writer.write_bits(spawned.to_u64(), 48);
+        send(&mut room, bob, writer);
         assert!(room.frame.entity_mut(spawned).is_none());
 
         // transfer to an actor that is not in the room is refused; avatars cannot be despawned
-        let av = room.avatars[&a].unwrap();
-        let mut w = net_wire::BitWriter::new();
-        w.write_bits(OPS_MARKER as u64, 8);
-        w.write_bits(2, 8);
-        w.write_bits(OP_TRANSFER as u64, 8);
-        w.write_bits(av.to_u64(), 48);
-        w.write_bits(77, 16);
-        w.write_bits(OP_DESPAWN as u64, 8);
-        w.write_bits(av.to_u64(), 48);
-        send(&mut room, a, w);
-        assert_eq!(room.frame.entity_mut(av).unwrap().owner, Some(a));
+        let av = room.avatars[&alice].unwrap();
+        let mut writer = net_wire::BitWriter::new();
+        writer.write_bits(OPS_MARKER as u64, 8);
+        writer.write_bits(2, 8);
+        writer.write_bits(OP_TRANSFER as u64, 8);
+        writer.write_bits(av.to_u64(), 48);
+        writer.write_bits(77, 16);
+        writer.write_bits(OP_DESPAWN as u64, 8);
+        writer.write_bits(av.to_u64(), 48);
+        send(&mut room, alice, writer);
+        assert_eq!(room.frame.entity_mut(av).unwrap().owner, Some(alice));
 
         // the cap holds and leaving despawns everything the actor owns
         for _ in 0..MAX_OWNED + 2 {
-            let mut w = net_wire::BitWriter::new();
-            w.write_bits(OPS_MARKER as u64, 8);
-            w.write_bits(1, 8);
-            w.write_bits(OP_SPAWN as u64, 8);
-            w.write_bits(0, 8);
-            send(&mut room, a, w);
+            let mut writer = net_wire::BitWriter::new();
+            writer.write_bits(OPS_MARKER as u64, 8);
+            writer.write_bits(1, 8);
+            writer.write_bits(OP_SPAWN as u64, 8);
+            writer.write_bits(0, 8);
+            send(&mut room, alice, writer);
         }
-        let owned = room.frame.entities().filter(|e| e.owner == Some(a)).count();
+        let owned = room
+            .frame
+            .entities()
+            .filter(|e| e.owner == Some(alice))
+            .count();
         assert_eq!(owned, MAX_OWNED);
-        room.on_leave(a);
+        room.on_leave(alice);
         assert_eq!(
-            room.frame.entities().filter(|e| e.owner == Some(a)).count(),
+            room.frame
+                .entities()
+                .filter(|e| e.owner == Some(alice))
+                .count(),
             0
         );
         assert_eq!(room.frame.entities().count(), 1);
@@ -1162,35 +1169,35 @@ mod tests {
     #[test]
     fn input_frames_are_rate_limited_per_actor() {
         let mut room = SyncRoom::new(None, 60, 1).unwrap();
-        let a = ActorId(1);
-        room.on_join(a);
+        let alice = ActorId(1);
+        room.on_join(alice);
         let frame = SyncRoom::encode_input(Tick(1), &[vec![1, 0, 0]]);
         for _ in 0..20 {
-            room.handle(a, frame.clone());
+            room.handle(alice, frame.clone());
         }
         assert_eq!(room.take_input_stats(), (20 - INPUT_BURST as u64, 0));
         let _ = room.tick();
-        assert!(room.handle(a, frame.clone()));
-        assert!(room.handle(a, frame.clone()));
+        assert!(room.handle(alice, frame.clone()));
+        assert!(room.handle(alice, frame.clone()));
         assert_eq!(room.take_input_stats(), (1, 0));
         let far = SyncRoom::encode_input(Tick(1000), &[vec![1, 0, 0]]);
         let _ = room.tick();
-        room.handle(a, far);
+        room.handle(alice, far);
         assert_eq!(room.take_input_stats(), (0, 1));
     }
 
     #[test]
     fn spectator_sees_everything_and_cannot_move() {
         let mut room = SyncRoom::new(None, 60, 3).unwrap();
-        let (a, w) = (ActorId(1), ActorId(9));
-        room.on_join(a);
-        room.on_join_as(w, true);
+        let (alice, watcher) = (ActorId(1), ActorId(9));
+        room.on_join(alice);
+        room.on_join_as(watcher, true);
         assert_eq!(room.avatars.len(), 1);
-        room.handle(w, SyncRoom::encode_input(Tick(0), &[vec![127, 0, 0]]));
+        room.handle(watcher, SyncRoom::encode_input(Tick(0), &[vec![127, 0, 0]]));
         let out = room.tick();
         let to_w = out
             .iter()
-            .find(|(x, _)| *x == w)
+            .find(|(x, _)| *x == watcher)
             .map(|(_, d)| d.len())
             .unwrap();
         assert!(to_w > 12, "spectator got a delta with the avatar");

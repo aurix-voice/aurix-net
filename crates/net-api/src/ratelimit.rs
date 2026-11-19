@@ -15,17 +15,17 @@ use std::num::NonZeroU32;
 
 pub type Limiter<K> = DefaultKeyedRateLimiter<K>;
 
-fn at_least_one(n: u32) -> NonZeroU32 {
-    NonZeroU32::new(n).unwrap_or(NonZeroU32::MIN)
+fn at_least_one(limit: u32) -> NonZeroU32 {
+    NonZeroU32::new(limit).unwrap_or(NonZeroU32::MIN)
 }
 
-/// `n` a second, in bursts of up to twice that.
-fn per_second(n: u32) -> Quota {
-    Quota::per_second(at_least_one(n)).allow_burst(at_least_one(n.saturating_mul(2)))
+/// `limit` a second, in bursts of up to twice that.
+fn per_second(limit: u32) -> Quota {
+    Quota::per_second(at_least_one(limit)).allow_burst(at_least_one(limit.saturating_mul(2)))
 }
 
-fn per_minute(n: u32) -> Quota {
-    Quota::per_minute(at_least_one(n))
+fn per_minute(limit: u32) -> Quota {
+    Quota::per_minute(at_least_one(limit))
 }
 
 pub struct Guards {
@@ -40,34 +40,34 @@ pub struct Guards {
 }
 
 impl Guards {
-    pub fn new(l: &LimitsConfig, trusted: &[String]) -> Self {
+    pub fn new(limits: &LimitsConfig, trusted: &[String]) -> Self {
         Self {
-            http: RateLimiter::keyed(per_second(l.http_rps_per_ip)),
-            ws_connects: RateLimiter::keyed(per_minute(l.ws_connects_per_min_per_ip)),
-            auth_fail: RateLimiter::keyed(per_minute(l.auth_failures_per_min_per_ip)),
-            key_writes: RateLimiter::keyed(per_second(l.writes_per_sec_per_key)),
-            key_grants: RateLimiter::keyed(per_second(l.grants_per_sec_per_key)),
+            http: RateLimiter::keyed(per_second(limits.http_rps_per_ip)),
+            ws_connects: RateLimiter::keyed(per_minute(limits.ws_connects_per_min_per_ip)),
+            auth_fail: RateLimiter::keyed(per_minute(limits.auth_failures_per_min_per_ip)),
+            key_writes: RateLimiter::keyed(per_second(limits.writes_per_sec_per_key)),
+            key_grants: RateLimiter::keyed(per_second(limits.grants_per_sec_per_key)),
             sessions: DashMap::new(),
-            max_sessions_per_ip: l.max_sessions_per_ip.max(1),
+            max_sessions_per_ip: limits.max_sessions_per_ip.max(1),
             trusted_proxies: trusted.iter().filter_map(|p| parse_net(p)).collect(),
         }
     }
 
     /// Counts a control session or data connection from `ip`; false when the IP is at cap.
     pub fn acquire_session(&self, ip: IpAddr) -> bool {
-        let mut e = self.sessions.entry(ip).or_insert(0);
-        if *e >= self.max_sessions_per_ip {
+        let mut open = self.sessions.entry(ip).or_insert(0);
+        if *open >= self.max_sessions_per_ip {
             return false;
         }
-        *e += 1;
+        *open += 1;
         true
     }
 
     pub fn release_session(&self, ip: IpAddr) {
-        if let Some(mut e) = self.sessions.get_mut(&ip) {
-            *e = e.saturating_sub(1);
-            if *e == 0 {
-                drop(e);
+        if let Some(mut open) = self.sessions.get_mut(&ip) {
+            *open = open.saturating_sub(1);
+            if *open == 0 {
+                drop(open);
                 self.sessions.remove_if(&ip, |_, n| *n == 0);
             }
         }
@@ -116,8 +116,8 @@ pub async fn http_guard(
         return (StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
     }
     req.extensions_mut().insert(ClientIp(ip));
-    if let Ok(v) = ip.to_string().parse() {
-        req.headers_mut().insert(CLIENT_IP_HEADER, v);
+    if let Ok(addr) = ip.to_string().parse() {
+        req.headers_mut().insert(CLIENT_IP_HEADER, addr);
     }
     let resp = next.run(req).await;
     // Failed REST auth (bad API key / operator token) shares the per-IP auth-failure budget
@@ -142,16 +142,16 @@ mod tests {
     use super::*;
     #[test]
     fn burst_is_twice_the_rate_per_second() {
-        let b: Limiter<u8> = RateLimiter::keyed(per_second(500));
-        assert!((0..1000).all(|_| b.check_key(&1).is_ok()));
-        assert!(b.check_key(&1).is_err());
-        assert!(b.check_key(&2).is_ok());
+        let limiter: Limiter<u8> = RateLimiter::keyed(per_second(500));
+        assert!((0..1000).all(|_| limiter.check_key(&1).is_ok()));
+        assert!(limiter.check_key(&1).is_err());
+        assert!(limiter.check_key(&2).is_ok());
         std::thread::sleep(std::time::Duration::from_millis(5));
-        assert!(b.check_key(&1).is_ok());
+        assert!(limiter.check_key(&1).is_ok());
     }
     #[test]
     fn xff_only_from_trusted_proxy() {
-        let l = LimitsConfig {
+        let limits = LimitsConfig {
             max_players_per_room: 8,
             max_rooms_per_node: 1,
             max_events_per_sec_per_room: 1,
@@ -167,20 +167,22 @@ mod tests {
             writes_per_sec_per_key: 1,
             grants_per_sec_per_key: 1,
         };
-        let g = Guards::new(&l, &["10.0.0.0/8".into()]);
-        let mut h = HeaderMap::new();
-        h.insert("x-forwarded-for", "203.0.113.9, 10.0.0.1".parse().unwrap());
+        let guards = Guards::new(&limits, &["10.0.0.0/8".into()]);
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "203.0.113.9, 10.0.0.1".parse().unwrap());
         assert_eq!(
-            g.client_ip("10.0.0.2".parse().unwrap(), &h),
+            guards.client_ip("10.0.0.2".parse().unwrap(), &headers),
             "203.0.113.9".parse::<IpAddr>().unwrap()
         );
         assert_eq!(
-            g.client_ip("8.8.8.8".parse().unwrap(), &h),
+            guards.client_ip("8.8.8.8".parse().unwrap(), &headers),
             "8.8.8.8".parse::<IpAddr>().unwrap()
         );
         let ip: IpAddr = "1.1.1.1".parse().unwrap();
-        assert!(g.acquire_session(ip) && g.acquire_session(ip) && !g.acquire_session(ip));
-        g.release_session(ip);
-        assert!(g.acquire_session(ip));
+        assert!(
+            guards.acquire_session(ip) && guards.acquire_session(ip) && !guards.acquire_session(ip)
+        );
+        guards.release_session(ip);
+        assert!(guards.acquire_session(ip));
     }
 }

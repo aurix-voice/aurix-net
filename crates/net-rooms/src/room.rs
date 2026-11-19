@@ -88,9 +88,9 @@ impl Player {
         self.events_in += 1;
         self.bytes_in += bytes as u64;
         self.last_event = Some(now);
-        let w = now.duration_since(self.win_start).as_secs_f32();
-        if w >= 1.0 {
-            self.eps = self.win_count as f32 / w;
+        let elapsed = now.duration_since(self.win_start).as_secs_f32();
+        if elapsed >= 1.0 {
+            self.eps = self.win_count as f32 / elapsed;
             self.win_start = now;
             self.win_count = 0;
         }
@@ -98,9 +98,9 @@ impl Player {
     }
 
     fn stats(&self, now: Instant) -> PlayerStats {
-        let w = now.duration_since(self.win_start).as_secs_f32();
+        let elapsed = now.duration_since(self.win_start).as_secs_f32();
         // A window older than 2 s without a refresh means the player went quiet.
-        let eps = if w > 2.0 { 0.0 } else { self.eps };
+        let eps = if elapsed > 2.0 { 0.0 } else { self.eps };
         PlayerStats {
             actor: self.actor,
             events: self.events_in,
@@ -221,8 +221,8 @@ impl Room {
     pub fn players(&self) -> impl Iterator<Item = &Player> {
         self.players.values()
     }
-    pub fn player(&self, a: ActorId) -> Option<&Player> {
-        self.players.get(&a)
+    pub fn player(&self, actor: ActorId) -> Option<&Player> {
+        self.players.get(&actor)
     }
     /// Actor of `player_id` if that player holds a slot in this room, online or not.
     pub fn actor_of(&self, player_id: &str) -> Option<ActorId> {
@@ -267,8 +267,8 @@ impl Room {
                 )
             })
             .collect();
-        let n = out.len();
-        (out, n)
+        let count = out.len();
+        (out, count)
     }
 
     pub fn summary(&self) -> RoomSummary {
@@ -323,19 +323,19 @@ impl Room {
         // Reconnect into the existing slot. If the player is still online from another
         // session, the new session takes the slot over (the caller tells the old one).
         if let Some(&a) = self.by_player.get(player_id) {
-            if let Some(p) = self.players.get_mut(&a) {
+            if let Some(player) = self.players.get_mut(&a) {
                 if rejoin.is_some_and(|r| r != a) {
                     return Err(RoomError::NoActor);
                 }
-                let was_online = p.online;
-                let spec = p.spectator;
-                p.online = true;
-                p.offline_since = None;
-                p.name = name.to_string();
+                let was_online = player.online;
+                let spec = player.spectator;
+                player.online = true;
+                player.offline_since = None;
+                player.name = name.to_string();
                 if !props.is_empty() {
-                    p.props = props;
+                    player.props = props;
                 }
-                let info = p.info();
+                let info = player.info();
                 self.empty_since = None;
                 if self.master.is_none() && !spec {
                     self.master = Some(a);
@@ -363,7 +363,7 @@ impl Room {
         }
         let actor = ActorId(self.next_actor);
         self.next_actor = self.next_actor.wrapping_add(1).max(1);
-        let p = Player {
+        let player = Player {
             actor,
             player_id: player_id.to_string(),
             name: name.to_string(),
@@ -382,8 +382,8 @@ impl Room {
             win_count: 0,
             eps: 0.0,
         };
-        let info = p.info();
-        self.players.insert(actor, p);
+        let info = player.info();
+        self.players.insert(actor, player);
         self.by_player.insert(player_id.to_string(), actor);
         self.empty_since = None;
         let mut out = Vec::new();
@@ -431,8 +431,8 @@ impl Room {
             self.by_player.insert(player_id, actor);
             self.next_actor = self.next_actor.max(actor.0.wrapping_add(1).max(1));
         }
-        if let Some(m) = master.filter(|m| self.players.contains_key(m)) {
-            self.master = Some(m);
+        if let Some(kept) = master.filter(|m| self.players.contains_key(m)) {
+            self.master = Some(kept);
         }
         self.empty_since = Some(now);
     }
@@ -451,9 +451,9 @@ impl Room {
             .collect()
     }
 
-    fn public_info(&self, p: &Player, viewer: ActorId) -> PlayerInfo {
-        let mut info = p.info();
-        if !self.cfg.publish_user_id && p.actor != viewer {
+    fn public_info(&self, player: &Player, viewer: ActorId) -> PlayerInfo {
+        let mut info = player.info();
+        if !self.cfg.publish_user_id && player.actor != viewer {
             info.player_id.clear();
         }
         info
@@ -472,8 +472,8 @@ impl Room {
     /// Counts a simulation input (sync/lockstep) that bypasses `raise_event`, so the live
     /// per-player figures cover every mode.
     pub fn count_input(&mut self, actor: ActorId, bytes: usize, now: Instant) {
-        if let Some(p) = self.players.get_mut(&actor) {
-            p.count_event(bytes, now);
+        if let Some(player) = self.players.get_mut(&actor) {
+            player.count_event(bytes, now);
         }
     }
 
@@ -491,9 +491,9 @@ impl Room {
     pub fn cache_slice_op(&mut self, op: CacheSliceOp) -> usize {
         match op {
             CacheSliceOp::Increase => self.cache_slice = self.cache_slice.wrapping_add(1),
-            CacheSliceOp::Set(i) => self.cache_slice = i,
-            CacheSliceOp::Purge(i) => self.cache.retain(|c| c.slice != i),
-            CacheSliceOp::PurgeUpTo(i) => self.cache.retain(|c| c.slice > i),
+            CacheSliceOp::Set(slice) => self.cache_slice = slice,
+            CacheSliceOp::Purge(slice) => self.cache.retain(|c| c.slice != slice),
+            CacheSliceOp::PurgeUpTo(slice) => self.cache.retain(|c| c.slice > slice),
         }
         self.cache.len()
     }
@@ -516,11 +516,11 @@ impl Room {
     pub fn leave(&mut self, actor: ActorId, offline: bool, now: Instant) -> Vec<Outgoing> {
         let mut out = Vec::new();
         if offline {
-            let Some(p) = self.players.get_mut(&actor) else {
+            let Some(player) = self.players.get_mut(&actor) else {
                 return out;
             };
-            p.online = false;
-            p.offline_since = Some(now);
+            player.online = false;
+            player.offline_since = Some(now);
             if !self.cfg.suppress_room_events {
                 out.extend(self.broadcast_except(
                     actor,
@@ -531,10 +531,10 @@ impl Room {
                 ));
             }
         } else {
-            let Some(p) = self.players.remove(&actor) else {
+            let Some(player) = self.players.remove(&actor) else {
                 return out;
             };
-            self.by_player.remove(&p.player_id);
+            self.by_player.remove(&player.player_id);
             if self.cfg.cleanup_cache_on_leave {
                 self.cache.retain(|c| c.from != actor);
             }
@@ -563,8 +563,8 @@ impl Room {
                         .map(|p| p.actor)
                         .min()
                 });
-            if let Some(m) = self.master {
-                out.extend(self.broadcast_all(ServerMsg::MasterChanged { actor: m }));
+            if let Some(master) = self.master {
+                out.extend(self.broadcast_all(ServerMsg::MasterChanged { actor: master }));
             }
         }
         if self.players.is_empty() {
@@ -586,8 +586,8 @@ impl Room {
             .map(|p| p.actor)
             .collect();
         let mut out = Vec::new();
-        for a in gone {
-            out.extend(self.leave(a, false, now));
+        for actor in gone {
+            out.extend(self.leave(actor, false, now));
         }
         out
     }
@@ -623,11 +623,11 @@ impl Room {
             return Err(RoomError::PropsTooLarge);
         }
         self.cfg.props = merged;
-        if let Some(v) = visible {
-            self.cfg.visible = v;
+        if let Some(shown) = visible {
+            self.cfg.visible = shown;
         }
-        if let Some(o) = open {
-            self.cfg.open = o;
+        if let Some(joinable) = open {
+            self.cfg.open = joinable;
         }
         let msg = ServerMsg::RoomProps {
             props: self.cfg.props.clone(),
@@ -648,21 +648,21 @@ impl Room {
         props: Map<String, Value>,
         expected: Option<&Map<String, Value>>,
     ) -> Result<Vec<Outgoing>, RoomError> {
-        let p = self.players.get_mut(&actor).ok_or(RoomError::NotMember)?;
+        let player = self.players.get_mut(&actor).ok_or(RoomError::NotMember)?;
         if let Some(exp) = expected {
             for (k, v) in exp {
-                if p.props.get(k).unwrap_or(&Value::Null) != v {
+                if player.props.get(k).unwrap_or(&Value::Null) != v {
                     return Err(RoomError::CasFailed);
                 }
             }
         }
-        let mut merged = p.props.clone();
+        let mut merged = player.props.clone();
         merge_props(&mut merged, props);
         if props_len(&merged) > self.cfg.max_player_props_bytes {
             return Err(RoomError::PropsTooLarge);
         }
-        p.props = merged;
-        let props = p.props.clone();
+        player.props = merged;
+        let props = player.props.clone();
         let msg = ServerMsg::PlayerProps { actor, props };
         Ok(if self.cfg.broadcast_props_to_all {
             self.broadcast_all(msg)
@@ -677,12 +677,12 @@ impl Room {
         join: &[u16],
         leave: &[u16],
     ) -> Result<(), RoomError> {
-        let p = self.players.get_mut(&actor).ok_or(RoomError::NotMember)?;
-        for g in leave {
-            p.groups.remove(g);
+        let player = self.players.get_mut(&actor).ok_or(RoomError::NotMember)?;
+        for group in leave {
+            player.groups.remove(group);
         }
-        for g in join {
-            p.groups.insert(*g);
+        for group in join {
+            player.groups.insert(*group);
         }
         Ok(())
     }
@@ -693,7 +693,7 @@ impl Room {
         }
         match self.players.get(&target) {
             None => return Err(RoomError::NoActor),
-            Some(p) if p.spectator => return Err(RoomError::SpectatorMaster),
+            Some(player) if player.spectator => return Err(RoomError::SpectatorMaster),
             Some(_) => {}
         }
         self.master = Some(target);
@@ -767,15 +767,15 @@ impl Room {
         }
         {
             let rate = self.cfg.max_events_per_sec_per_player as f64;
-            let p = self.players.get_mut(&from).unwrap();
-            let dt = now.duration_since(p.last_refill).as_secs_f64();
-            p.last_refill = now;
-            p.tokens = (p.tokens + dt * rate).min(2.0 * rate);
-            if p.tokens < 1.0 {
+            let sender = self.players.get_mut(&from).unwrap();
+            let dt = now.duration_since(sender.last_refill).as_secs_f64();
+            sender.last_refill = now;
+            sender.tokens = (sender.tokens + dt * rate).min(2.0 * rate);
+            if sender.tokens < 1.0 {
                 return Err(RoomError::PlayerEventRate);
             }
-            p.tokens -= 1.0;
-            p.count_event(frame.payload.len(), now);
+            sender.tokens -= 1.0;
+            sender.count_event(frame.payload.len(), now);
         }
         self.tokens -= 1.0;
         frame.from = from;
@@ -824,7 +824,10 @@ impl Room {
             .into_iter()
             .filter(|a| match group {
                 None => true,
-                Some(g) => self.players.get(a).is_some_and(|p| p.groups.contains(&g)),
+                Some(group) => self
+                    .players
+                    .get(a)
+                    .is_some_and(|p| p.groups.contains(&group)),
             })
             .map(|a| Outgoing::Data(a, channel, frame.clone()))
             .collect();
@@ -859,8 +862,10 @@ pub fn merge_props(into: &mut Map<String, Value>, from: Map<String, Value>) {
     }
 }
 
-pub fn props_len(p: &Map<String, Value>) -> usize {
-    serde_json::to_vec(p).map(|v| v.len()).unwrap_or(usize::MAX)
+pub fn props_len(props: &Map<String, Value>) -> usize {
+    serde_json::to_vec(props)
+        .map(|v| v.len())
+        .unwrap_or(usize::MAX)
 }
 
 #[cfg(test)]
@@ -910,273 +915,295 @@ mod tests {
 
     #[test]
     fn join_full_master_rotation() {
-        let t = Instant::now();
-        let mut r = Room::new(cfg(), t);
-        let (a, out) = r.join("p1", "A", Map::new(), None, false, t).unwrap();
+        let now = Instant::now();
+        let mut room = Room::new(cfg(), now);
+        let (alice, out) = room.join("p1", "A", Map::new(), None, false, now).unwrap();
         assert!(out.is_empty());
-        assert_eq!(r.master(), Some(a));
-        let (b, out) = r.join("p2", "B", Map::new(), None, false, t).unwrap();
+        assert_eq!(room.master(), Some(alice));
+        let (bob, out) = room.join("p2", "B", Map::new(), None, false, now).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(
-            r.join("p3", "C", Map::new(), None, false, t).unwrap_err(),
+            room.join("p3", "C", Map::new(), None, false, now)
+                .unwrap_err(),
             RoomError::Full
         );
         // same player again: takes over the slot silently
-        let (b2, out) = r.join("p2", "B", Map::new(), None, false, t).unwrap();
-        assert_eq!((b2, out.len()), (b, 0));
-        let out = r.leave(a, false, t);
-        assert!(out.contains(&Outgoing::Control(b, ServerMsg::MasterChanged { actor: b })));
-        assert_eq!(r.master(), Some(b));
+        let (b2, out) = room.join("p2", "B", Map::new(), None, false, now).unwrap();
+        assert_eq!((b2, out.len()), (bob, 0));
+        let out = room.leave(alice, false, now);
+        assert!(out.contains(&Outgoing::Control(
+            bob,
+            ServerMsg::MasterChanged { actor: bob }
+        )));
+        assert_eq!(room.master(), Some(bob));
     }
 
     #[test]
     fn offline_rejoin_keeps_actor_then_expires() {
-        let t = Instant::now();
-        let mut r = Room::new(cfg(), t);
-        let (a, _) = r.join("p1", "A", Map::new(), None, false, t).unwrap();
-        r.leave(a, true, t);
-        assert_eq!(r.online_count(), 0);
-        let (a2, _) = r
+        let now = Instant::now();
+        let mut room = Room::new(cfg(), now);
+        let (alice, _) = room.join("p1", "A", Map::new(), None, false, now).unwrap();
+        room.leave(alice, true, now);
+        assert_eq!(room.online_count(), 0);
+        let (a2, _) = room
             .join(
                 "p1",
                 "A",
                 Map::new(),
                 None,
                 false,
-                t + Duration::from_secs(1),
+                now + Duration::from_secs(1),
             )
             .unwrap();
-        assert_eq!(a, a2);
-        r.leave(a, true, t);
-        assert_eq!(r.actor_of("p1"), Some(a));
-        assert_eq!(r.online_actor("p1"), None);
-        assert!(r.expire(t + Duration::from_secs(5)).is_empty());
-        r.expire(t + Duration::from_secs(11));
-        assert!(r.is_empty());
-        assert_eq!(r.actor_of("p1"), None);
-        assert!(r.should_close(t + Duration::from_secs(17)));
+        assert_eq!(alice, a2);
+        room.leave(alice, true, now);
+        assert_eq!(room.actor_of("p1"), Some(alice));
+        assert_eq!(room.online_actor("p1"), None);
+        assert!(room.expire(now + Duration::from_secs(5)).is_empty());
+        room.expire(now + Duration::from_secs(11));
+        assert!(room.is_empty());
+        assert_eq!(room.actor_of("p1"), None);
+        assert!(room.should_close(now + Duration::from_secs(17)));
     }
 
     #[test]
     fn events_targets_groups_cache_rate() {
-        let t = Instant::now();
-        let mut c = cfg();
-        c.max_players = 3;
-        let mut r = Room::new(c, t);
-        let (a, _) = r.join("p1", "A", Map::new(), None, false, t).unwrap();
-        let (b, _) = r.join("p2", "B", Map::new(), None, false, t).unwrap();
-        let (cc, _) = r.join("p3", "C", Map::new(), None, false, t).unwrap();
-        let out = r
+        let now = Instant::now();
+        let mut config = cfg();
+        config.max_players = 3;
+        let mut room = Room::new(config, now);
+        let (alice, _) = room.join("p1", "A", Map::new(), None, false, now).unwrap();
+        let (bob, _) = room.join("p2", "B", Map::new(), None, false, now).unwrap();
+        let (cc, _) = room.join("p3", "C", Map::new(), None, false, now).unwrap();
+        let out = room
             .raise_event(
-                a,
+                alice,
                 ev(1, EventTarget::Others, CacheOp::Add),
                 Channel::ReliableOrdered,
-                t,
+                now,
             )
             .unwrap();
         assert_eq!(out.len(), 2);
         assert!(
-            matches!(&out[0], Outgoing::Data(x, Channel::ReliableOrdered, f) if *x == b && f.from == a)
+            matches!(&out[0], Outgoing::Data(to, Channel::ReliableOrdered, frame) if *to == bob && frame.from == alice)
         );
-        let out = r
+        let out = room
             .raise_event(
-                b,
+                bob,
                 ev(2, EventTarget::Master, CacheOp::None),
                 Channel::UnreliableSequenced,
-                t,
+                now,
             )
             .unwrap();
         assert_eq!(out.len(), 1);
-        assert!(matches!(&out[0], Outgoing::Data(x, _, _) if *x == a));
-        r.set_groups(cc, &[7], &[]).unwrap();
-        let mut g = ev(3, EventTarget::All, CacheOp::None);
-        g.group = Some(7);
-        let out = r.raise_event(a, g, Channel::ReliableOrdered, t).unwrap();
+        assert!(matches!(&out[0], Outgoing::Data(to, _, _) if *to == alice));
+        room.set_groups(cc, &[7], &[]).unwrap();
+        let mut grouped = ev(3, EventTarget::All, CacheOp::None);
+        grouped.group = Some(7);
+        let out = room
+            .raise_event(alice, grouped, Channel::ReliableOrdered, now)
+            .unwrap();
         assert_eq!(out.len(), 1);
-        assert!(matches!(&out[0], Outgoing::Data(x, _, _) if *x == cc));
+        assert!(matches!(&out[0], Outgoing::Data(to, _, _) if *to == cc));
         // cache: Add kept, Remove drops, bounded at 2
-        r.raise_event(
-            a,
+        room.raise_event(
+            alice,
             ev(4, EventTarget::All, CacheOp::Add),
             Channel::ReliableOrdered,
-            t,
+            now,
         )
         .unwrap();
-        assert_eq!(r.cached_for_join().len(), 2);
+        assert_eq!(room.cached_for_join().len(), 2);
         assert_eq!(
-            r.raise_event(
-                a,
+            room.raise_event(
+                alice,
                 ev(5, EventTarget::All, CacheOp::None),
                 Channel::ReliableOrdered,
-                t
+                now
             )
             .unwrap_err(),
             RoomError::EventRate
         );
-        let t2 = t + Duration::from_secs(1);
-        r.raise_event(
-            a,
+        let t2 = now + Duration::from_secs(1);
+        room.raise_event(
+            alice,
             ev(1, EventTarget::All, CacheOp::Remove),
             Channel::ReliableOrdered,
             t2,
         )
         .unwrap();
-        assert_eq!(r.cached_for_join().len(), 1);
-        assert_eq!(r.cached_for_join()[0].0, 4);
-        r.leave(a, false, t2);
-        assert!(r.cached_for_join().is_empty());
+        assert_eq!(room.cached_for_join().len(), 1);
+        assert_eq!(room.cached_for_join()[0].0, 4);
+        room.leave(alice, false, t2);
+        assert!(room.cached_for_join().is_empty());
     }
 
     #[test]
     fn props_cas_and_size() {
-        let t = Instant::now();
-        let mut r = Room::new(cfg(), t);
-        let (a, _) = r.join("p1", "A", Map::new(), None, false, t).unwrap();
-        let mut p = Map::new();
-        p.insert("map".into(), Value::from("dust"));
-        r.set_room_props(a, p.clone(), None, None, None).unwrap();
-        assert_eq!(r.summary().props.get("map"), Some(&Value::from("dust")));
+        let now = Instant::now();
+        let mut room = Room::new(cfg(), now);
+        let (alice, _) = room.join("p1", "A", Map::new(), None, false, now).unwrap();
+        let mut props = Map::new();
+        props.insert("map".into(), Value::from("dust"));
+        room.set_room_props(alice, props.clone(), None, None, None)
+            .unwrap();
+        assert_eq!(room.summary().props.get("map"), Some(&Value::from("dust")));
         let mut exp = Map::new();
         exp.insert("map".into(), Value::from("other"));
         assert_eq!(
-            r.set_room_props(a, p.clone(), Some(&exp), None, None)
+            room.set_room_props(alice, props.clone(), Some(&exp), None, None)
                 .unwrap_err(),
             RoomError::CasFailed
         );
         let mut big = Map::new();
         big.insert("x".into(), Value::from("y".repeat(300)));
         assert_eq!(
-            r.set_player_props(a, big, None).unwrap_err(),
+            room.set_player_props(alice, big, None).unwrap_err(),
             RoomError::PropsTooLarge
         );
         let mut del = Map::new();
         del.insert("map".into(), Value::Null);
-        r.set_room_props(a, del, None, Some(false), None).unwrap();
-        assert!(r.cfg.props.is_empty());
-        assert!(!r.is_listed());
+        room.set_room_props(alice, del, None, Some(false), None)
+            .unwrap();
+        assert!(room.cfg.props.is_empty());
+        assert!(!room.is_listed());
     }
 
     #[test]
     fn spectators_do_not_take_slots_or_master_and_cannot_send() {
-        let t = Instant::now();
-        let mut r = Room::new(cfg(), t);
-        let (s, _) = r.join("watch", "W", Map::new(), None, true, t).unwrap();
-        assert_eq!(r.master(), None);
-        let (a, _) = r.join("p1", "A", Map::new(), None, false, t).unwrap();
-        let (_b, _) = r.join("p2", "B", Map::new(), None, false, t).unwrap();
-        assert_eq!(r.master(), Some(a));
+        let now = Instant::now();
+        let mut room = Room::new(cfg(), now);
+        let (watcher, _) = room
+            .join("watch", "W", Map::new(), None, true, now)
+            .unwrap();
+        assert_eq!(room.master(), None);
+        let (alice, _) = room.join("p1", "A", Map::new(), None, false, now).unwrap();
+        let (_b, _) = room.join("p2", "B", Map::new(), None, false, now).unwrap();
+        assert_eq!(room.master(), Some(alice));
         assert_eq!(
-            r.join("p3", "C", Map::new(), None, false, t).unwrap_err(),
+            room.join("p3", "C", Map::new(), None, false, now)
+                .unwrap_err(),
             RoomError::Full
         );
-        assert!(r.join("watch2", "W2", Map::new(), None, true, t).is_ok());
-        assert_eq!(r.player_count(), 2);
+        assert!(room
+            .join("watch2", "W2", Map::new(), None, true, now)
+            .is_ok());
+        assert_eq!(room.player_count(), 2);
         assert_eq!(
-            r.raise_event(
-                s,
+            room.raise_event(
+                watcher,
                 ev(1, EventTarget::All, CacheOp::None),
                 Channel::ReliableOrdered,
-                t
+                now
             )
             .unwrap_err(),
             RoomError::Spectator
         );
-        assert_eq!(r.set_master(a, s).unwrap_err(), RoomError::SpectatorMaster);
-        assert_eq!(r.master(), Some(a));
-        r.leave(a, false, t);
-        assert_ne!(r.master(), Some(s));
+        assert_eq!(
+            room.set_master(alice, watcher).unwrap_err(),
+            RoomError::SpectatorMaster
+        );
+        assert_eq!(room.master(), Some(alice));
+        room.leave(alice, false, now);
+        assert_ne!(room.master(), Some(watcher));
     }
 
     #[test]
     fn reserved_slots_hold_seats_for_the_party() {
-        let mut c = cfg();
-        c.max_players = 2;
-        c.reserved = vec!["p2".into()];
+        let mut config = cfg();
+        config.max_players = 2;
+        config.reserved = vec!["p2".into()];
         let t0 = Instant::now();
-        c.reserved_until = Some(t0 + Duration::from_secs(60));
-        let mut r = Room::new(c, t0);
-        r.join("p1", "p1", Map::new(), None, false, t0).unwrap();
+        config.reserved_until = Some(t0 + Duration::from_secs(60));
+        let mut room = Room::new(config, t0);
+        room.join("p1", "p1", Map::new(), None, false, t0).unwrap();
         // the only free seat is held for p2
         assert!(matches!(
-            r.join("stranger", "s", Map::new(), None, false, t0),
+            room.join("stranger", "s", Map::new(), None, false, t0),
             Err(RoomError::Full)
         ));
-        assert_eq!(r.pending_reserved(t0), 1);
-        r.join("p2", "p2", Map::new(), None, false, t0).unwrap();
-        assert_eq!(r.pending_reserved(t0), 0);
+        assert_eq!(room.pending_reserved(t0), 1);
+        room.join("p2", "p2", Map::new(), None, false, t0).unwrap();
+        assert_eq!(room.pending_reserved(t0), 0);
         // hold lapsed: a stranger may take an unclaimed reserved seat
-        let mut c = cfg();
-        c.max_players = 2;
-        c.reserved = vec!["late".into()];
-        c.reserved_until = Some(t0 + Duration::from_secs(60));
-        let mut r = Room::new(c, t0);
-        r.join("p1", "p1", Map::new(), None, false, t0).unwrap();
+        let mut config = cfg();
+        config.max_players = 2;
+        config.reserved = vec!["late".into()];
+        config.reserved_until = Some(t0 + Duration::from_secs(60));
+        let mut room = Room::new(config, t0);
+        room.join("p1", "p1", Map::new(), None, false, t0).unwrap();
         let later = t0 + Duration::from_secs(61);
-        r.join("stranger", "s", Map::new(), None, false, later)
+        room.join("stranger", "s", Map::new(), None, false, later)
             .unwrap();
     }
 
     #[test]
     fn cache_slices_group_and_purge_cached_events() {
-        let mut c = cfg();
-        c.max_cached_events = 8;
-        let t = Instant::now();
-        let mut r = Room::new(c, t);
-        let (a, _) = r.join("a", "a", Map::new(), None, false, t).unwrap();
+        let mut config = cfg();
+        config.max_cached_events = 8;
+        let now = Instant::now();
+        let mut room = Room::new(config, now);
+        let (alice, _) = room.join("a", "a", Map::new(), None, false, now).unwrap();
         let add = |r: &mut Room, code: u8| {
             r.raise_event(
-                a,
+                alice,
                 ev(code, EventTarget::All, CacheOp::Add),
                 Channel::ReliableOrdered,
-                t,
+                now,
             )
             .unwrap();
         };
-        add(&mut r, 1);
-        assert_eq!(r.cache_slice_op(CacheSliceOp::Increase), 1);
-        assert_eq!(r.cache_slice(), 1);
-        add(&mut r, 2);
-        add(&mut r, 3);
-        r.cache_slice_op(CacheSliceOp::Set(5));
-        add(&mut r, 4);
+        add(&mut room, 1);
+        assert_eq!(room.cache_slice_op(CacheSliceOp::Increase), 1);
+        assert_eq!(room.cache_slice(), 1);
+        add(&mut room, 2);
+        add(&mut room, 3);
+        room.cache_slice_op(CacheSliceOp::Set(5));
+        add(&mut room, 4);
         let codes = |r: &Room| r.cached_for_join().iter().map(|c| c.0).collect::<Vec<_>>();
-        assert_eq!(codes(&r), vec![1, 2, 3, 4]);
-        assert_eq!(r.cache_slice_op(CacheSliceOp::Purge(1)), 2);
-        assert_eq!(codes(&r), vec![1, 4]);
-        assert_eq!(r.cache_slice_op(CacheSliceOp::PurgeUpTo(4)), 1);
-        assert_eq!(codes(&r), vec![4]);
-        assert_eq!(r.cache_slice_op(CacheSliceOp::Purge(9)), 1);
+        assert_eq!(codes(&room), vec![1, 2, 3, 4]);
+        assert_eq!(room.cache_slice_op(CacheSliceOp::Purge(1)), 2);
+        assert_eq!(codes(&room), vec![1, 4]);
+        assert_eq!(room.cache_slice_op(CacheSliceOp::PurgeUpTo(4)), 1);
+        assert_eq!(codes(&room), vec![4]);
+        assert_eq!(room.cache_slice_op(CacheSliceOp::Purge(9)), 1);
     }
 
     #[test]
     fn room_flags_hide_ids_and_suppress_events() {
-        let mut c = cfg();
-        c.max_players = 3;
-        c.publish_user_id = false;
-        c.suppress_room_events = true;
-        c.suppress_player_info = true;
-        c.broadcast_props_to_all = false;
-        let t = Instant::now();
-        let mut r = Room::new(c, t);
-        let (a, _) = r
-            .join("alice", "Alice", Map::new(), None, false, t)
+        let mut config = cfg();
+        config.max_players = 3;
+        config.publish_user_id = false;
+        config.suppress_room_events = true;
+        config.suppress_player_info = true;
+        config.broadcast_props_to_all = false;
+        let now = Instant::now();
+        let mut room = Room::new(config, now);
+        let (alice, _) = room
+            .join("alice", "Alice", Map::new(), None, false, now)
             .unwrap();
-        let (b, out) = r.join("bob", "Bob", Map::new(), None, false, t).unwrap();
+        let (bob, out) = room
+            .join("bob", "Bob", Map::new(), None, false, now)
+            .unwrap();
         assert!(out.is_empty(), "suppress_room_events: no player_joined");
-        let roster = r.roster_for(b);
+        let roster = room.roster_for(bob);
         assert_eq!(roster.len(), 1, "suppress_player_info: only self");
         assert_eq!(roster[0].player_id, "bob");
-        let mut open = r.cfg.clone();
+        let mut open = room.cfg.clone();
         open.suppress_player_info = false;
-        r.cfg = open;
-        let ids: Vec<String> = r.roster_for(b).into_iter().map(|p| p.player_id).collect();
+        room.cfg = open;
+        let ids: Vec<String> = room
+            .roster_for(bob)
+            .into_iter()
+            .map(|p| p.player_id)
+            .collect();
         assert!(
             ids.contains(&"bob".to_string())
                 && ids.contains(&String::new())
                 && !ids.contains(&"alice".to_string())
         );
         assert_eq!(
-            r.player_infos()
+            room.player_infos()
                 .iter()
                 .filter(|p| p.player_id == "alice")
                 .count(),
@@ -1184,15 +1211,15 @@ mod tests {
             "operators see ids"
         );
         let to = |o: &Outgoing| match o {
-            Outgoing::Control(a, _) | Outgoing::Data(a, _, _) => *a,
+            Outgoing::Control(actor, _) | Outgoing::Data(actor, _, _) => *actor,
         };
-        let out = r.set_player_props(b, Map::new(), None).unwrap();
+        let out = room.set_player_props(bob, Map::new(), None).unwrap();
         assert!(
-            out.iter().all(|o| to(o) != b),
+            out.iter().all(|o| to(o) != bob),
             "setter excluded from props broadcast"
         );
-        assert!(out.iter().any(|o| to(o) == a));
-        let out = r.leave(b, false, t);
+        assert!(out.iter().any(|o| to(o) == alice));
+        let out = room.leave(bob, false, now);
         assert!(out
             .iter()
             .all(|o| !matches!(o, Outgoing::Control(_, ServerMsg::PlayerLeft { .. }))));
@@ -1201,22 +1228,22 @@ mod tests {
     #[test]
     fn cached_events_survive_a_leave_when_cleanup_is_off() {
         for (cleanup, left) in [(true, 0usize), (false, 1usize)] {
-            let mut c = cfg();
-            c.cleanup_cache_on_leave = cleanup;
-            let t = Instant::now();
-            let mut r = Room::new(c, t);
-            let (a, _) = r.join("a", "a", Map::new(), None, false, t).unwrap();
-            r.join("b", "b", Map::new(), None, false, t).unwrap();
-            r.raise_event(
-                a,
+            let mut config = cfg();
+            config.cleanup_cache_on_leave = cleanup;
+            let now = Instant::now();
+            let mut room = Room::new(config, now);
+            let (alice, _) = room.join("a", "a", Map::new(), None, false, now).unwrap();
+            room.join("b", "b", Map::new(), None, false, now).unwrap();
+            room.raise_event(
+                alice,
                 ev(4, EventTarget::All, CacheOp::Add),
                 Channel::ReliableOrdered,
-                t,
+                now,
             )
             .unwrap();
-            assert_eq!(r.cached_for_join().len(), 1);
-            r.leave(a, false, t);
-            assert_eq!(r.cached_for_join().len(), left, "cleanup={cleanup}");
+            assert_eq!(room.cached_for_join().len(), 1);
+            room.leave(alice, false, now);
+            assert_eq!(room.cached_for_join().len(), left, "cleanup={cleanup}");
         }
     }
 }

@@ -7,24 +7,45 @@ using UnityEngine;
 [SyncComponent("Player")]
 public sealed class PlayerController : SyncBehaviour
 {
-    [Sync("name")] public string PlayerName = "";
-    [Sync("hp")] public byte Hp = 100;
+    [Sync("name")]
+    public string PlayerName = "";
+
+    [Sync("hp")]
+    public byte Hp = 100;
     public float Speed = 5f;
 
     protected override void OnBound()
     {
-        if (IsMine) { PlayerName = "player-" + View.Runner.Actor; GetComponent<Renderer>().material.color = Color.green; }
+        if (IsMine)
+        {
+            PlayerName = "player-" + View.Runner.Actor;
+            GetComponent<Renderer>().material.color = Color.green;
+        }
     }
 
     void Update()
     {
-        if (!IsMine) return;
-        var d = new Vector3(Input.GetAxis("Horizontal"), 0, Input.GetAxis("Vertical"));
-        transform.position += d * Speed * Time.deltaTime;
-        if (Input.GetKeyDown(KeyCode.Space)) View.Rpc(nameof(Wave), transform.position);
+        if (!IsMine)
+        {
+            return;
+        }
+
+        var direction = new Vector3(Input.GetAxis("Horizontal"), 0, Input.GetAxis("Vertical"));
+        transform.position += direction * Speed * Time.deltaTime;
+        if (Input.GetKeyDown(KeyCode.Space))
+        {
+            View.Rpc(nameof(Wave), transform.position);
+        }
     }
 
-    [Rpc] void Wave(Vector3 at) { Debug.Log($"{PlayerName} waves at {at}"); }
+    [Rpc]
+    void Wave(Vector3 at)
+    {
+        Debug.Log($"{PlayerName} waves at {at}");
+    }
 
-    protected override void OnSynced(uint tick) { name = PlayerName + " hp " + Hp; }
+    protected override void OnSynced(uint tick)
+    {
+        name = PlayerName + " hp " + Hp;
+    }
 }

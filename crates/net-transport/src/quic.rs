@@ -83,19 +83,19 @@ pub fn transport_config(
     idle_timeout: Duration,
     keep_alive: Duration,
 ) -> Arc<quinn::TransportConfig> {
-    let mut t = quinn::TransportConfig::default();
-    t.max_concurrent_bidi_streams(0u32.into());
-    t.max_concurrent_uni_streams(0u32.into());
-    t.datagram_receive_buffer_size(Some(2 * 1024 * 1024));
-    t.datagram_send_buffer_size(2 * 1024 * 1024);
-    t.max_idle_timeout(Some(idle_timeout.try_into().unwrap_or_else(|_| {
+    let mut config = quinn::TransportConfig::default();
+    config.max_concurrent_bidi_streams(0u32.into());
+    config.max_concurrent_uni_streams(0u32.into());
+    config.datagram_receive_buffer_size(Some(2 * 1024 * 1024));
+    config.datagram_send_buffer_size(2 * 1024 * 1024);
+    config.max_idle_timeout(Some(idle_timeout.try_into().unwrap_or_else(|_| {
         Duration::from_secs(15)
             .try_into()
             .expect("15s fits IdleTimeout")
     })));
-    t.keep_alive_interval(Some(keep_alive));
-    t.initial_mtu(1200);
-    Arc::new(t)
+    config.keep_alive_interval(Some(keep_alive));
+    config.initial_mtu(1200);
+    Arc::new(config)
 }
 
 pub fn server_endpoint(
@@ -201,22 +201,26 @@ mod tests {
     async fn datagram_roundtrip_with_pinned_cert() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let id = server_identity(None, None, &["localhost".into()]).unwrap();
-        let t = transport_config(Duration::from_secs(5), Duration::from_secs(1));
-        let server = server_endpoint("127.0.0.1:0".parse().unwrap(), &id, t.clone()).unwrap();
+        let transport = transport_config(Duration::from_secs(5), Duration::from_secs(1));
+        let server =
+            server_endpoint("127.0.0.1:0".parse().unwrap(), &id, transport.clone()).unwrap();
         let addr = server.local_addr().unwrap();
         let fp = id.fingerprint_sha256.clone();
         let srv = tokio::spawn(async move {
             let conn = server.accept().await.unwrap().await.unwrap();
-            let d = conn.read_datagram().await.unwrap();
-            conn.send_datagram(Bytes::from(format!("echo:{}", String::from_utf8_lossy(&d))))
-                .unwrap();
+            let datagram = conn.read_datagram().await.unwrap();
+            conn.send_datagram(Bytes::from(format!(
+                "echo:{}",
+                String::from_utf8_lossy(&datagram)
+            )))
+            .unwrap();
             conn.read_datagram().await.ok();
         });
-        let client = client_endpoint("127.0.0.1:0".parse().unwrap(), &fp, t).unwrap();
+        let client = client_endpoint("127.0.0.1:0".parse().unwrap(), &fp, transport).unwrap();
         let conn = client.connect(addr, "localhost").unwrap().await.unwrap();
         conn.send_datagram(Bytes::from_static(b"hi")).unwrap();
-        let r = conn.read_datagram().await.unwrap();
-        assert_eq!(&r[..], b"echo:hi");
+        let reply = conn.read_datagram().await.unwrap();
+        assert_eq!(&reply[..], b"echo:hi");
         conn.close(0u32.into(), b"done");
         srv.abort();
     }
@@ -225,16 +229,18 @@ mod tests {
     async fn wrong_fingerprint_fails_handshake() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let id = server_identity(None, None, &["localhost".into()]).unwrap();
-        let t = transport_config(Duration::from_secs(5), Duration::from_secs(1));
-        let server = server_endpoint("127.0.0.1:0".parse().unwrap(), &id, t.clone()).unwrap();
+        let transport = transport_config(Duration::from_secs(5), Duration::from_secs(1));
+        let server =
+            server_endpoint("127.0.0.1:0".parse().unwrap(), &id, transport.clone()).unwrap();
         let addr = server.local_addr().unwrap();
         tokio::spawn(async move {
-            while let Some(c) = server.accept().await {
-                let _ = c.await;
+            while let Some(incoming) = server.accept().await {
+                let _ = incoming.await;
             }
         });
-        let client = client_endpoint("127.0.0.1:0".parse().unwrap(), &"00".repeat(32), t).unwrap();
-        let r = client.connect(addr, "localhost").unwrap().await;
-        assert!(r.is_err());
+        let client =
+            client_endpoint("127.0.0.1:0".parse().unwrap(), &"00".repeat(32), transport).unwrap();
+        let outcome = client.connect(addr, "localhost").unwrap().await;
+        assert!(outcome.is_err());
     }
 }

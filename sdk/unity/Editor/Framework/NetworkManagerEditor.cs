@@ -15,41 +15,85 @@ namespace Aurix.Net.Unity.Editor
         public override void OnInspectorGUI()
         {
             DrawDefaultInspector();
-            var m = (NetworkManager)target;
-            if (!Application.isPlaying) { EditorGUILayout.HelpBox("Enter play mode to start a host, server or client from here.", MessageType.None); return; }
+            var manager = (NetworkManager)target;
+            if (!Application.isPlaying)
+            {
+                EditorGUILayout.HelpBox(
+                    "Enter play mode to start a host, server or client from here.",
+                    MessageType.None
+                );
+                return;
+            }
 
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Runtime", EditorStyles.boldLabel);
-            string role = m.isHost ? "Host" : m.isServer ? "Server" : m.isClient ? "Client" : "Offline";
+            string role =
+                manager.isHost ? "Host"
+                : manager.isServer ? "Server"
+                : manager.isClient ? "Client"
+                : "Offline";
             EditorGUILayout.LabelField("Role", role);
-            EditorGUILayout.LabelField("Local player", m.localPlayer?.ToString() ?? "-");
-            EditorGUILayout.LabelField("Server player", m.serverPlayer?.ToString() ?? "-");
-            EditorGUILayout.LabelField("Tick / server tick", $"{m.tick} / {m.serverTick}");
-            EditorGUILayout.LabelField("Players", string.Join(", ", m.players.Select(p => p.ToString())));
+            EditorGUILayout.LabelField("Local player", manager.localPlayer?.ToString() ?? "-");
+            EditorGUILayout.LabelField("Server player", manager.serverPlayer?.ToString() ?? "-");
+            EditorGUILayout.LabelField(
+                "Tick / server tick",
+                $"{manager.tick} / {manager.serverTick}"
+            );
+            EditorGUILayout.LabelField(
+                "Players",
+                string.Join(", ", manager.players.Select(player => player.ToString()))
+            );
 
             using (new EditorGUILayout.HorizontalScope())
             {
-                using (new EditorGUI.DisabledScope(m.isServer || m.isClient))
+                using (new EditorGUI.DisabledScope(manager.isServer || manager.isClient))
                 {
-                    if (GUILayout.Button("Start Host")) m.StartHost();
-                    if (GUILayout.Button("Start Server")) m.StartServer();
-                    if (GUILayout.Button("Start Client")) m.StartClient();
+                    if (GUILayout.Button("Start Host"))
+                    {
+                        manager.StartHost();
+                    }
+
+                    if (GUILayout.Button("Start Server"))
+                    {
+                        manager.StartServer();
+                    }
+
+                    if (GUILayout.Button("Start Client"))
+                    {
+                        manager.StartClient();
+                    }
                 }
-                using (new EditorGUI.DisabledScope(!(m.isServer || m.isClient)))
-                    if (GUILayout.Button("Stop")) m.Stop();
+                using (new EditorGUI.DisabledScope(!(manager.isServer || manager.isClient)))
+                {
+                    if (GUILayout.Button("Stop"))
+                    {
+                        manager.Stop();
+                    }
+                }
             }
 
-            var ids = m.identities.ToList();
+            var ids = manager.identities.ToList();
             _objects = EditorGUILayout.Foldout(_objects, $"Objects ({ids.Count})", true);
             if (_objects)
-                foreach (var id in ids.OrderBy(i => i.objectId))
+            {
+                foreach (var id in ids.OrderBy(identity => identity.objectId))
                 {
                     using (new EditorGUILayout.HorizontalScope())
                     {
-                        EditorGUILayout.ObjectField(id, typeof(NetworkIdentity), true, GUILayout.MinWidth(120));
-                        EditorGUILayout.LabelField($"#{id.objectId}  owner {(id.owner?.ToString() ?? "server")}  observers {id.observers.Count}", GUILayout.MinWidth(200));
+                        EditorGUILayout.ObjectField(
+                            id,
+                            typeof(NetworkIdentity),
+                            true,
+                            GUILayout.MinWidth(120)
+                        );
+                        EditorGUILayout.LabelField(
+                            $"#{id.objectId}  owner {(id.owner?.ToString() ?? "server")}  observers {id.observers.Count}",
+                            GUILayout.MinWidth(200)
+                        );
                     }
                 }
+            }
+
             Repaint();
         }
     }

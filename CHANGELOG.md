@@ -18,6 +18,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - Limits: a rate limit of `0` (`http_rps_per_ip`, `ws_connects_per_min_per_ip`,
   `auth_failures_per_min_per_ip`, `writes_per_sec_per_key`, `grants_per_sec_per_key`) is refused
   at start. It used to start a node that refused every request of that kind.
+- Web SDK: `Client.on` is typed per event (`ClientEvents`), so a listener gets the right argument
+  types instead of `any`; control messages are `ControlMessage`, and `StateMachine.fromJSON` takes
+  `StateMachineJson`. The sources follow Prettier and typescript-eslint (`npm run lint`,
+  `npm run format:check`).
+- C++ and Godot SDK: notices and the rehost signal read control messages with the library's JSON
+  parser (new C ABI call `aurix_net_json_string`) instead of a hand-written string search.
 
 ### Fixed
 - Console: a chart covering one to two days labelled its time axis with the time alone, so the
@@ -28,6 +34,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   for a string, and the node sends an object.
 - Console: the matchmaking page filed every ticket for 8 players whatever size the form showed;
   it sent the size in a field the node does not read.
+- Unity SDK: a room named `actor` gave every player the actor id -2147483648, and a player whose
+  display name is `data` could not join and blocked the room for everyone after him. The managed
+  client searched the control message text for a field name and took the first match, even inside
+  a value. Control messages, the region list and the bot kit are now read with Newtonsoft.Json
+  through Unity's `com.unity.nuget.newtonsoft-json`; the bot kit used `System.Text.Json`, which
+  Unity does not ship. `BtNode.Parse` takes a `JToken`.
 - Unreal plugin: first build and run with an engine (UE 5.8.2, Linux). `RunUAT BuildPlugin` passes
   for the editor and the game (Development, Shipping), the packaged plugin loads, and a listen
   server with two clients goes through login, replication and host migration. Before this the

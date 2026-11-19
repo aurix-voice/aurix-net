@@ -50,8 +50,8 @@ fn lex(src: &str) -> Result<Vec<Tok>, String> {
     let cs: Vec<char> = src.chars().collect();
     let mut i = 0;
     while i < cs.len() {
-        let c = cs[i];
-        match c {
+        let ch = cs[i];
+        match ch {
             ' ' | '\t' | '\n' | '\r' => i += 1,
             '(' => {
                 out.push(Tok::LParen);
@@ -94,10 +94,10 @@ fn lex(src: &str) -> Result<Vec<Tok>, String> {
                 }
             }
             '\'' | '"' => {
-                let q = c;
+                let quote = ch;
                 i += 1;
                 let start = i;
-                while i < cs.len() && cs[i] != q {
+                while i < cs.len() && cs[i] != quote {
                     i += 1;
                 }
                 if i >= cs.len() {
@@ -112,9 +112,9 @@ fn lex(src: &str) -> Result<Vec<Tok>, String> {
                 while i < cs.len() && (cs[i].is_ascii_digit() || cs[i] == '.') {
                     i += 1;
                 }
-                let s: String = cs[start..i].iter().collect();
+                let word: String = cs[start..i].iter().collect();
                 out.push(Tok::Num(
-                    s.parse().map_err(|_| format!("bad number '{s}'"))?,
+                    word.parse().map_err(|_| format!("bad number '{word}'"))?,
                 ));
             }
             c if c.is_ascii_alphabetic() || c == '_' => {
@@ -124,14 +124,14 @@ fn lex(src: &str) -> Result<Vec<Tok>, String> {
                 {
                     i += 1;
                 }
-                let s: String = cs[start..i].iter().collect();
-                out.push(match s.to_ascii_uppercase().as_str() {
+                let word: String = cs[start..i].iter().collect();
+                out.push(match word.to_ascii_uppercase().as_str() {
                     "AND" => Tok::And,
                     "OR" => Tok::Or,
                     "NOT" => Tok::Not,
                     "TRUE" => Tok::Ident("true".into()),
                     "FALSE" => Tok::Ident("false".into()),
-                    _ => Tok::Ident(s),
+                    _ => Tok::Ident(word),
                 });
             }
             other => return Err(format!("unexpected character '{other}'")),
@@ -151,9 +151,9 @@ impl Parser {
         self.toks.get(self.pos)
     }
     fn next(&mut self) -> Option<Tok> {
-        let t = self.toks.get(self.pos).cloned();
+        let token = self.toks.get(self.pos).cloned();
         self.pos += 1;
-        t
+        token
     }
     fn or(&mut self) -> Result<Filter, String> {
         let mut left = self.and()?;
@@ -223,29 +223,29 @@ impl Filter {
             return Err(format!("filter longer than {MAX_LEN} chars"));
         }
         let toks = lex(src)?;
-        let mut p = Parser {
+        let mut parser = Parser {
             toks,
             pos: 0,
             terms: 0,
         };
-        let f = p.or()?;
-        if p.pos != p.toks.len() {
-            return Err(format!("unexpected token {:?}", p.toks[p.pos]));
+        let filter = parser.or()?;
+        if parser.pos != parser.toks.len() {
+            return Err(format!("unexpected token {:?}", parser.toks[parser.pos]));
         }
-        Ok(f)
+        Ok(filter)
     }
 
     /// A missing attribute fails every comparison (including `!=`), like SQL NULL.
     pub fn matches(&self, attrs: &Map<String, Value>) -> bool {
         match self {
-            Filter::And(a, b) => a.matches(attrs) && b.matches(attrs),
-            Filter::Or(a, b) => a.matches(attrs) || b.matches(attrs),
-            Filter::Not(a) => !a.matches(attrs),
+            Filter::And(left, right) => left.matches(attrs) && right.matches(attrs),
+            Filter::Or(left, right) => left.matches(attrs) || right.matches(attrs),
+            Filter::Not(inner) => !inner.matches(attrs),
             Filter::Cmp(key, op, lit) => {
-                let Some(v) = attrs.get(key) else {
+                let Some(actual) = attrs.get(key) else {
                     return false;
                 };
-                let ord = match (v, lit) {
+                let ord = match (actual, lit) {
                     (Value::Number(n), Lit::Num(l)) => n.as_f64().map(|n| n.total_cmp(l)),
                     (Value::String(s), Lit::Str(l)) => Some(s.as_str().cmp(l.as_str())),
                     (Value::Bool(b), Lit::Bool(l)) => Some(b.cmp(l)),
@@ -272,42 +272,42 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn attrs(v: Value) -> Map<String, Value> {
-        v.as_object().cloned().unwrap()
+    fn attrs(json: Value) -> Map<String, Value> {
+        json.as_object().cloned().unwrap()
     }
 
     #[test]
     fn ranges_strings_bools() {
-        let f =
+        let filter =
             Filter::parse("rank >= 10 AND rank <= 20 AND map = 'dust' AND ranked = true").unwrap();
-        assert!(f.matches(&attrs(json!({"rank": 15, "map": "dust", "ranked": true}))));
-        assert!(!f.matches(&attrs(json!({"rank": 25, "map": "dust", "ranked": true}))));
-        assert!(!f.matches(&attrs(json!({"rank": 15, "map": "nuke", "ranked": true}))));
-        assert!(!f.matches(&attrs(json!({"rank": 15, "map": "dust"}))));
+        assert!(filter.matches(&attrs(json!({"rank": 15, "map": "dust", "ranked": true}))));
+        assert!(!filter.matches(&attrs(json!({"rank": 25, "map": "dust", "ranked": true}))));
+        assert!(!filter.matches(&attrs(json!({"rank": 15, "map": "nuke", "ranked": true}))));
+        assert!(!filter.matches(&attrs(json!({"rank": 15, "map": "dust"}))));
     }
 
     #[test]
     fn precedence_parens_not() {
-        let f = Filter::parse("a = 1 OR b = 2 AND c = 3").unwrap();
-        assert!(f.matches(&attrs(json!({"a": 1}))));
-        assert!(!f.matches(&attrs(json!({"b": 2}))));
-        assert!(f.matches(&attrs(json!({"b": 2, "c": 3}))));
-        let g = Filter::parse("(a = 1 OR b = 2) AND NOT c <> 3").unwrap();
-        assert!(g.matches(&attrs(json!({"a": 1, "c": 3}))));
-        assert!(!g.matches(&attrs(json!({"a": 1, "c": 4}))));
+        let filter = Filter::parse("a = 1 OR b = 2 AND c = 3").unwrap();
+        assert!(filter.matches(&attrs(json!({"a": 1}))));
+        assert!(!filter.matches(&attrs(json!({"b": 2}))));
+        assert!(filter.matches(&attrs(json!({"b": 2, "c": 3}))));
+        let grouped = Filter::parse("(a = 1 OR b = 2) AND NOT c <> 3").unwrap();
+        assert!(grouped.matches(&attrs(json!({"a": 1, "c": 3}))));
+        assert!(!grouped.matches(&attrs(json!({"a": 1, "c": 4}))));
     }
 
     #[test]
     fn missing_attribute_never_matches() {
-        let f = Filter::parse("lang != 'en'").unwrap();
-        assert!(!f.matches(&attrs(json!({}))));
-        assert!(f.matches(&attrs(json!({"lang": "de"}))));
+        let filter = Filter::parse("lang != 'en'").unwrap();
+        assert!(!filter.matches(&attrs(json!({}))));
+        assert!(filter.matches(&attrs(json!({"lang": "de"}))));
     }
 
     #[test]
     fn type_mismatch_is_false() {
-        let f = Filter::parse("rank > 5").unwrap();
-        assert!(!f.matches(&attrs(json!({"rank": "high"}))));
+        let filter = Filter::parse("rank > 5").unwrap();
+        assert!(!filter.matches(&attrs(json!({"rank": "high"}))));
     }
 
     #[test]

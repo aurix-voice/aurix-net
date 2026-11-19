@@ -22,10 +22,10 @@ pub fn lobby_name(props: &serde_json::Map<String, serde_json::Value>) -> String 
 /// (rooms, players, per-lobby counts sorted by lobby name) over the given live rooms.
 pub fn lobby_stats(rooms: &[RoomSummary]) -> (u32, u32, Vec<LobbyStats>) {
     let mut by: BTreeMap<String, (u32, u32)> = BTreeMap::new();
-    for r in rooms {
-        let e = by.entry(lobby_name(&r.props)).or_default();
-        e.0 += 1;
-        e.1 += u32::from(r.players);
+    for room in rooms {
+        let lobby = by.entry(lobby_name(&room.props)).or_default();
+        lobby.0 += 1;
+        lobby.1 += u32::from(room.players);
     }
     let players = rooms.iter().map(|r| u32::from(r.players)).sum();
     let lobbies = by
@@ -83,11 +83,11 @@ pub fn merge_friends(
             )
         })
         .collect();
-    for f in parts {
-        if let Some(e) = map.get_mut(&f.player) {
-            e.online |= f.online;
-            if e.room.is_none() {
-                e.room = f.room;
+    for part in parts {
+        if let Some(friend) = map.get_mut(&part.player) {
+            friend.online |= part.online;
+            if friend.room.is_none() {
+                friend.room = part.room;
             }
         }
     }
@@ -116,16 +116,16 @@ pub async fn find_friends(st: &Shared, project: ProjectId, players: &[String]) -
             .map(|n| crate::rest::internal_get(st, &n.http_url, &path)),
     )
     .await;
-    for (n, r) in remote.iter().zip(results) {
-        match r {
-            Ok(v) => match serde_json::from_value::<Vec<FriendInfo>>(v["players"].clone()) {
+    for (peer, reply) in remote.iter().zip(results) {
+        match reply {
+            Ok(body) => match serde_json::from_value::<Vec<FriendInfo>>(body["players"].clone()) {
                 Ok(fs) => parts.extend(fs),
                 Err(e) => {
-                    tracing::warn!(node = %n.http_url, error = %e, "find_friends: bad answer")
+                    tracing::warn!(node = %peer.http_url, error = %e, "find_friends: bad answer")
                 }
             },
             Err(e) => {
-                tracing::warn!(node = %n.http_url, error = %e, "find_friends: node unreachable")
+                tracing::warn!(node = %peer.http_url, error = %e, "find_friends: node unreachable")
             }
         }
     }
@@ -140,8 +140,8 @@ mod tests {
 
     fn room(name: &str, players: u16, lobby: Option<&str>) -> RoomSummary {
         let mut props = serde_json::Map::new();
-        if let Some(l) = lobby {
-            props.insert("lobby".into(), json!(l));
+        if let Some(name) = lobby {
+            props.insert("lobby".into(), json!(name));
         }
         RoomSummary {
             id: name.into(),
@@ -162,8 +162,8 @@ mod tests {
             room("c", 5, Some("ranked")),
             room("d", 0, Some("casual")),
         ];
-        let (r, p, lobbies) = lobby_stats(&rooms);
-        assert_eq!((r, p), (4, 9));
+        let (room_count, player_count, lobbies) = lobby_stats(&rooms);
+        assert_eq!((room_count, player_count), (4, 9));
         assert_eq!(
             lobbies,
             vec![

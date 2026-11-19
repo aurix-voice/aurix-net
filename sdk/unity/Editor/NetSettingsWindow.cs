@@ -7,16 +7,31 @@ namespace Aurix.Net.Unity.Editor
 {
     public sealed class NetSettingsWindow : EditorWindow
     {
-        NetSettings _settings; UnityEditor.Editor _editor; string _status = "";
+        NetSettings _settings;
+        UnityEditor.Editor _editor;
+        string _status = "";
 
         [MenuItem("Window/Aurix Net")]
         public static void Open() => GetWindow<NetSettingsWindow>("Aurix Net");
 
-        void OnEnable() { _settings = Find(); if (_settings != null) _editor = UnityEditor.Editor.CreateEditor(_settings); }
+        void OnEnable()
+        {
+            _settings = Find();
+            if (_settings != null)
+            {
+                _editor = UnityEditor.Editor.CreateEditor(_settings);
+            }
+        }
 
         static NetSettings Find()
         {
-            foreach (var g in AssetDatabase.FindAssets("t:NetSettings")) return AssetDatabase.LoadAssetAtPath<NetSettings>(AssetDatabase.GUIDToAssetPath(g));
+            foreach (var guid in AssetDatabase.FindAssets("t:NetSettings"))
+            {
+                return AssetDatabase.LoadAssetAtPath<NetSettings>(
+                    AssetDatabase.GUIDToAssetPath(guid)
+                );
+            }
+
             return null;
         }
 
@@ -28,26 +43,49 @@ namespace Aurix.Net.Unity.Editor
                 if (GUILayout.Button("Create Assets/AurixNetSettings.asset"))
                 {
                     _settings = CreateInstance<NetSettings>();
-                    AssetDatabase.CreateAsset(_settings, "Assets/AurixNetSettings.asset"); AssetDatabase.SaveAssets();
+                    AssetDatabase.CreateAsset(_settings, "Assets/AurixNetSettings.asset");
+                    AssetDatabase.SaveAssets();
                     _editor = UnityEditor.Editor.CreateEditor(_settings);
                 }
                 return;
             }
             _editor.OnInspectorGUI();
             GUILayout.Space(8);
-            if (GUILayout.Button("Test connection")) _ = Test();
-            if (!string.IsNullOrEmpty(_status)) EditorGUILayout.HelpBox(_status, MessageType.None);
+            if (GUILayout.Button("Test connection"))
+            {
+                _ = Test();
+            }
+
+            if (!string.IsNullOrEmpty(_status))
+            {
+                EditorGUILayout.HelpBox(_status, MessageType.None);
+            }
+
             GUILayout.Space(8);
-            EditorGUILayout.HelpBox("Scene: add a NetRunner, assign this asset, set AutoJoinRoom. Prefab: NetView + NetTransform (+ your SyncBehaviours), add it to Prefabs. Production grants come from your backend (POST /v1/grants); DevApiKey is for the editor only.", MessageType.Info);
+            EditorGUILayout.HelpBox(
+                "Scene: add a NetRunner, assign this asset, set AutoJoinRoom. Prefab: NetView + NetTransform (+ your SyncBehaviours), add it to Prefabs. Production grants come from your backend (POST /v1/grants); DevApiKey is for the editor only.",
+                MessageType.Info
+            );
         }
 
         async System.Threading.Tasks.Task Test()
         {
             try
             {
-                using (var c = new HttpClient()) { var r = await c.GetAsync(_settings.ServerUrl.TrimEnd('/') + "/healthz"); _status = r.IsSuccessStatusCode ? "Node reachable: " + _settings.ServerUrl : "HTTP " + (int)r.StatusCode; }
+                using (var http = new HttpClient())
+                {
+                    var response = await http.GetAsync(
+                        _settings.ServerUrl.TrimEnd('/') + "/healthz"
+                    );
+                    _status = response.IsSuccessStatusCode
+                        ? "Node reachable: " + _settings.ServerUrl
+                        : "HTTP " + (int)response.StatusCode;
+                }
             }
-            catch (System.Exception e) { _status = "Unreachable: " + e.Message; }
+            catch (System.Exception error)
+            {
+                _status = "Unreachable: " + error.Message;
+            }
             Repaint();
         }
     }

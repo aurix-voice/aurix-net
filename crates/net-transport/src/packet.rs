@@ -30,15 +30,15 @@ pub enum Kind {
 impl Kind {
     fn to_u8(self) -> u8 {
         match self {
-            Kind::Channel(c) => c as u8,
+            Kind::Channel(channel) => channel as u8,
             Kind::Fragment => KIND_FRAGMENT,
         }
     }
-    fn from_u8(v: u8) -> Option<Self> {
-        if v == KIND_FRAGMENT {
+    fn from_u8(byte: u8) -> Option<Self> {
+        if byte == KIND_FRAGMENT {
             Some(Kind::Fragment)
         } else {
-            Channel::from_u8(v).map(Kind::Channel)
+            Channel::from_u8(byte).map(Kind::Channel)
         }
     }
 }
@@ -69,17 +69,17 @@ pub enum PacketError {
 impl Header {
     pub fn encode(&self, out: &mut BytesMut) {
         out.put_u8(PROTOCOL_VERSION);
-        let mut k = self.kind.to_u8();
+        let mut kind = self.kind.to_u8();
         if self.ack_only {
-            k |= FLAG_ACK_ONLY;
+            kind |= FLAG_ACK_ONLY;
         }
         if self.has_ack {
-            k |= FLAG_HAS_ACK;
+            kind |= FLAG_HAS_ACK;
         }
         if self.batch {
-            k |= FLAG_BATCH;
+            kind |= FLAG_BATCH;
         }
-        out.put_u8(k);
+        out.put_u8(kind);
         out.put_u16(self.seq);
         out.put_u16(self.ack);
         out.put_u32(self.ack_bits);
@@ -95,19 +95,19 @@ impl Header {
         if version != PROTOCOL_VERSION {
             return Err(PacketError::Version(version));
         }
-        let k = data.get_u8();
-        let kind = Kind::from_u8(k & 0x1f).ok_or(PacketError::Kind(k & 0x1f))?;
-        let h = Header {
+        let kind_byte = data.get_u8();
+        let kind = Kind::from_u8(kind_byte & 0x1f).ok_or(PacketError::Kind(kind_byte & 0x1f))?;
+        let header = Header {
             kind,
-            ack_only: k & FLAG_ACK_ONLY != 0,
-            has_ack: k & FLAG_HAS_ACK != 0,
-            batch: k & FLAG_BATCH != 0,
+            ack_only: kind_byte & FLAG_ACK_ONLY != 0,
+            has_ack: kind_byte & FLAG_HAS_ACK != 0,
+            batch: kind_byte & FLAG_BATCH != 0,
             seq: data.get_u16(),
             ack: data.get_u16(),
             ack_bits: data.get_u32(),
             tick: data.get_u16(),
         };
-        Ok((h, data))
+        Ok((header, data))
     }
 }
 
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let h = Header {
+        let header = Header {
             kind: Kind::Channel(Channel::ReliableOrdered),
             ack_only: false,
             has_ack: true,
@@ -133,13 +133,13 @@ mod tests {
             ack_bits: 0xdead_beef,
             tick: 777,
         };
-        let mut b = BytesMut::new();
-        h.encode(&mut b);
-        b.extend_from_slice(b"xyz");
-        assert_eq!(b.len(), HEADER_LEN + 3);
-        let (d, p) = Header::decode(b.freeze()).unwrap();
-        assert_eq!(d, h);
-        assert_eq!(&p[..], b"xyz");
+        let mut buf = BytesMut::new();
+        header.encode(&mut buf);
+        buf.extend_from_slice(b"xyz");
+        assert_eq!(buf.len(), HEADER_LEN + 3);
+        let (decoded, payload) = Header::decode(buf.freeze()).unwrap();
+        assert_eq!(decoded, header);
+        assert_eq!(&payload[..], b"xyz");
     }
 
     #[test]
@@ -152,10 +152,10 @@ mod tests {
 
     #[test]
     fn rejects_bad_version() {
-        let mut b = BytesMut::zeroed(HEADER_LEN);
-        b[0] = 9;
+        let mut buf = BytesMut::zeroed(HEADER_LEN);
+        buf[0] = 9;
         assert_eq!(
-            Header::decode(b.freeze()).unwrap_err(),
+            Header::decode(buf.freeze()).unwrap_err(),
             PacketError::Version(9)
         );
     }

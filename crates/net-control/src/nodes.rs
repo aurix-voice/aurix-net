@@ -23,18 +23,18 @@ pub struct NodeInfo {
 }
 
 impl From<NodeRow> for NodeInfo {
-    fn from(r: NodeRow) -> Self {
+    fn from(row: NodeRow) -> Self {
         Self {
-            id: NodeId::from_uuid(r.id),
-            region: RegionId::new(r.region),
-            public_host: r.public_host,
-            quic_port: r.quic_port as u16,
-            http_url: r.http_url,
-            cert_sha256: r.cert_sha256,
-            load_factor: r.load_factor,
-            draining: r.draining,
-            rooms: r.rooms.max(0) as u32,
-            players: r.players.max(0) as u32,
+            id: NodeId::from_uuid(row.id),
+            region: RegionId::new(row.region),
+            public_host: row.public_host,
+            quic_port: row.quic_port as u16,
+            http_url: row.http_url,
+            cert_sha256: row.cert_sha256,
+            load_factor: row.load_factor,
+            draining: row.draining,
+            rooms: row.rooms.max(0) as u32,
+            players: row.players.max(0) as u32,
         }
     }
 }
@@ -81,32 +81,33 @@ impl NodeRegistry {
 
     /// Regions that currently have at least one live, non-draining node.
     pub fn live_regions(&self) -> Vec<RegionId> {
-        let mut v: Vec<RegionId> = self
+        let mut regions: Vec<RegionId> = self
             .cache
             .read()
             .iter()
             .filter(|n| !n.draining)
             .map(|n| n.region.clone())
             .collect();
-        v.sort_by(|a, b| a.0.cmp(&b.0));
-        v.dedup();
-        v
+        regions.sort_by(|a, b| a.0.cmp(&b.0));
+        regions.dedup();
+        regions
     }
 
     /// Least loaded live node in `region`; `prefer` wins ties (keeps rooms local).
     pub fn pick(&self, region: &RegionId, prefer: Option<NodeId>) -> Result<NodeInfo> {
         let cache = self.cache.read();
         let mut best: Option<&NodeInfo> = None;
-        for n in cache.iter().filter(|n| &n.region == region && !n.draining) {
+        for node in cache.iter().filter(|n| &n.region == region && !n.draining) {
             best = match best {
-                None => Some(n),
-                Some(b) => {
-                    let better = n.load_factor < b.load_factor - 0.05
-                        || ((n.load_factor - b.load_factor).abs() <= 0.05 && Some(n.id) == prefer);
+                None => Some(node),
+                Some(chosen) => {
+                    let better = node.load_factor < chosen.load_factor - 0.05
+                        || ((node.load_factor - chosen.load_factor).abs() <= 0.05
+                            && Some(node.id) == prefer);
                     if better {
-                        Some(n)
+                        Some(node)
                     } else {
-                        Some(b)
+                        Some(chosen)
                     }
                 }
             };
@@ -183,24 +184,30 @@ mod tests {
 
     #[tokio::test]
     async fn picks_least_loaded_non_draining() {
-        let a = node("eu_central", 0.9, false);
-        let b = node("eu_central", 0.2, false);
-        let c = node("eu_central", 0.0, true);
-        let d = node("us_east", 0.0, false);
-        let r = registry(vec![a, b.clone(), c, d]);
-        assert_eq!(r.pick(&RegionId::new("eu_central"), None).unwrap().id, b.id);
-        assert!(r.pick(&RegionId::new("sa_east"), None).is_err());
-        assert_eq!(r.live_regions().len(), 2);
+        let busy = node("eu_central", 0.9, false);
+        let idle = node("eu_central", 0.2, false);
+        let draining = node("eu_central", 0.0, true);
+        let elsewhere = node("us_east", 0.0, false);
+        let fleet = registry(vec![busy, idle.clone(), draining, elsewhere]);
+        assert_eq!(
+            fleet.pick(&RegionId::new("eu_central"), None).unwrap().id,
+            idle.id
+        );
+        assert!(fleet.pick(&RegionId::new("sa_east"), None).is_err());
+        assert_eq!(fleet.live_regions().len(), 2);
     }
 
     #[tokio::test]
     async fn prefers_local_on_tie() {
-        let a = node("eu_central", 0.30, false);
-        let b = node("eu_central", 0.32, false);
-        let r = registry(vec![a, b.clone()]);
+        let lighter = node("eu_central", 0.30, false);
+        let heavier = node("eu_central", 0.32, false);
+        let fleet = registry(vec![lighter, heavier.clone()]);
         assert_eq!(
-            r.pick(&RegionId::new("eu_central"), Some(b.id)).unwrap().id,
-            b.id
+            fleet
+                .pick(&RegionId::new("eu_central"), Some(heavier.id))
+                .unwrap()
+                .id,
+            heavier.id
         );
     }
 }

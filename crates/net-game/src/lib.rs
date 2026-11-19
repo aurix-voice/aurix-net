@@ -99,8 +99,8 @@ impl GameEngine {
             return Err(GameError::TooLarge(bytes.len()));
         }
         let hash = Self::hash(bytes);
-        if let Some(m) = self.cache.lock().get(&hash) {
-            return Ok((hash, m.clone()));
+        if let Some(module) = self.cache.lock().get(&hash) {
+            return Ok((hash, module.clone()));
         }
         let module =
             Module::new(&self.engine, bytes).map_err(|e| GameError::Invalid(e.to_string()))?;
@@ -112,9 +112,9 @@ impl GameEngine {
         if !has("memory", &|t| matches!(t, ExternType::Memory(_))) {
             return Err(GameError::MissingExport("memory"));
         }
-        for f in ["aurix_init", "aurix_step"] {
-            if !has(f, &|t| matches!(t, ExternType::Func(_))) {
-                return Err(GameError::MissingExport(if f == "aurix_init" {
+        for export in ["aurix_init", "aurix_step"] {
+            if !has(export, &|t| matches!(t, ExternType::Func(_))) {
+                return Err(GameError::MissingExport(if export == "aurix_init" {
                     "aurix_init"
                 } else {
                     "aurix_step"
@@ -146,38 +146,43 @@ struct Host {
 // `&mut Frame` for the whole call.
 unsafe impl Send for Host {}
 
-fn frame<'a>(c: &mut Caller<'a, Host>) -> Option<&'a mut Frame> {
+fn frame<'a>(caller: &mut Caller<'a, Host>) -> Option<&'a mut Frame> {
     // SAFETY: see `Host::frame`; null outside of a call.
-    unsafe { c.data().frame.as_mut() }
+    unsafe { caller.data().frame.as_mut() }
 }
 
 /// Guest-visible handle: `EntityId::to_u64() + 1`, so 0 means "no entity".
-fn handle(e: EntityId) -> i64 {
-    (e.to_u64() + 1) as i64
+fn handle(entity: EntityId) -> i64 {
+    (entity.to_u64() + 1) as i64
 }
 
 fn ent(id: i64) -> EntityId {
     EntityId::from_u64((id as u64).wrapping_sub(1))
 }
 
-fn actor(a: i32) -> Option<ActorId> {
-    (a > 0 && a <= u16::MAX as i32).then_some(ActorId(a as u16))
+fn actor(index: i32) -> Option<ActorId> {
+    (index > 0 && index <= u16::MAX as i32).then_some(ActorId(index as u16))
 }
 
-fn memory(c: &mut Caller<'_, Host>) -> Option<Memory> {
-    c.get_export("memory").and_then(|e| e.into_memory())
+fn memory(caller: &mut Caller<'_, Host>) -> Option<Memory> {
+    caller.get_export("memory").and_then(|e| e.into_memory())
 }
 
-fn read_bytes(c: &mut Caller<'_, Host>, ptr: i32, len: i32) -> Option<Vec<u8>> {
-    let m = memory(c)?;
-    let (p, l) = (ptr as usize, len as usize);
-    m.data(c).get(p..p.checked_add(l)?).map(|s| s.to_vec())
+fn read_bytes(caller: &mut Caller<'_, Host>, ptr: i32, len: i32) -> Option<Vec<u8>> {
+    let memory = memory(caller)?;
+    let (start, size) = (ptr as usize, len as usize);
+    memory
+        .data(caller)
+        .get(start..start.checked_add(size)?)
+        .map(|s| s.to_vec())
 }
 
-fn write_bytes(c: &mut Caller<'_, Host>, ptr: i32, data: &[u8]) -> bool {
-    let Some(m) = memory(c) else { return false };
-    let p = ptr as usize;
-    match m.data_mut(c).get_mut(p..p + data.len()) {
+fn write_bytes(caller: &mut Caller<'_, Host>, ptr: i32, data: &[u8]) -> bool {
+    let Some(memory) = memory(caller) else {
+        return false;
+    };
+    let start = ptr as usize;
+    match memory.data_mut(caller).get_mut(start..start + data.len()) {
         Some(dst) => {
             dst.copy_from_slice(data);
             true
@@ -187,23 +192,25 @@ fn write_bytes(c: &mut Caller<'_, Host>, ptr: i32, data: &[u8]) -> bool {
 }
 
 /// Field access helpers shared by get_*/set_*.
-fn field_mut(f: &mut Frame, id: i64, comp: i32, field: i32) -> Option<&mut Value> {
-    let c = f.schema.by_id(u16::try_from(comp).ok()?)?.clone();
+fn field_mut(frame: &mut Frame, id: i64, comp: i32, field: i32) -> Option<&mut Value> {
+    let component = frame.schema.by_id(u16::try_from(comp).ok()?)?.clone();
     let fi = usize::try_from(field).ok()?;
-    if fi >= c.fields.len() {
+    if fi >= component.fields.len() {
         return None;
     }
-    if f.get(ent(id), &c.name).is_none() {
-        f.set(ent(id), &c.name, ComponentValue::zero(&c)).ok()?;
+    if frame.get(ent(id), &component.name).is_none() {
+        frame
+            .set(ent(id), &component.name, ComponentValue::zero(&component))
+            .ok()?;
     }
-    f.get_mut(ent(id), &c.name)?.fields.get_mut(fi)
+    frame.get_mut(ent(id), &component.name)?.fields.get_mut(fi)
 }
 
-fn field_ref(f: &Frame, id: i64, comp: i32, field: i32) -> Option<(&Value, &FieldType)> {
-    let c = f.schema.by_id(u16::try_from(comp).ok()?)?;
+fn field_ref(frame: &Frame, id: i64, comp: i32, field: i32) -> Option<(&Value, &FieldType)> {
+    let component = frame.schema.by_id(u16::try_from(comp).ok()?)?;
     let fi = usize::try_from(field).ok()?;
-    let v = f.get(ent(id), &c.name)?.fields.get(fi)?;
-    Some((v, &c.fields[fi].ty))
+    let value = frame.get(ent(id), &component.name)?.fields.get(fi)?;
+    Some((value, &component.fields[fi].ty))
 }
 
 pub struct WasmLogic {
@@ -266,90 +273,98 @@ impl WasmLogic {
         })
     }
 
-    fn link(l: &mut Linker<Host>) -> wasmtime::Result<()> {
-        l.func_wrap("aurix", "dt", |mut c: Caller<'_, Host>| -> f32 {
-            frame(&mut c).map(|f| f.dt()).unwrap_or(0.0)
+    fn link(linker: &mut Linker<Host>) -> wasmtime::Result<()> {
+        linker.func_wrap("aurix", "dt", |mut caller: Caller<'_, Host>| -> f32 {
+            frame(&mut caller).map(|f| f.dt()).unwrap_or(0.0)
         })?;
-        l.func_wrap("aurix", "tick", |mut c: Caller<'_, Host>| -> i64 {
-            frame(&mut c).map(|f| f.tick.0 as i64).unwrap_or(0)
+        linker.func_wrap("aurix", "tick", |mut caller: Caller<'_, Host>| -> i64 {
+            frame(&mut caller).map(|f| f.tick.0 as i64).unwrap_or(0)
         })?;
-        l.func_wrap("aurix", "rand", |mut c: Caller<'_, Host>| -> i32 {
-            frame(&mut c).map(|f| f.rand_u32() as i32).unwrap_or(0)
+        linker.func_wrap("aurix", "rand", |mut caller: Caller<'_, Host>| -> i32 {
+            frame(&mut caller).map(|f| f.rand_u32() as i32).unwrap_or(0)
         })?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "spawn",
-            |mut c: Caller<'_, Host>, owner: i32| -> i64 {
-                frame(&mut c)
+            |mut caller: Caller<'_, Host>, owner: i32| -> i64 {
+                frame(&mut caller)
                     .and_then(|f| f.spawn(actor(owner)).ok())
                     .map(handle)
                     .unwrap_or(0)
             },
         )?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "despawn",
-            |mut c: Caller<'_, Host>, id: i64| -> i32 {
-                frame(&mut c).is_some_and(|f| f.despawn(ent(id)).is_ok()) as i32
+            |mut caller: Caller<'_, Host>, id: i64| -> i32 {
+                frame(&mut caller).is_some_and(|f| f.despawn(ent(id)).is_ok()) as i32
             },
         )?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "entity_owner",
-            |mut c: Caller<'_, Host>, id: i64| -> i32 {
-                frame(&mut c)
+            |mut caller: Caller<'_, Host>, id: i64| -> i32 {
+                frame(&mut caller)
                     .and_then(|f| f.entity(ent(id)).and_then(|e| e.owner))
                     .map(|a| a.0 as i32)
                     .unwrap_or(0)
             },
         )?;
-        l.func_wrap("aurix", "entity_count", |mut c: Caller<'_, Host>| -> i32 {
-            let ids: Vec<EntityId> = frame(&mut c)
-                .map(|f| f.entities().map(|e| e.id).collect())
-                .unwrap_or_default();
-            let n = ids.len() as i32;
-            c.data_mut().entities = ids;
-            n
-        })?;
-        l.func_wrap("aurix", "entity_at", |c: Caller<'_, Host>, i: i32| -> i64 {
-            usize::try_from(i)
-                .ok()
-                .and_then(|i| c.data().entities.get(i))
-                .map(|e| handle(*e))
-                .unwrap_or(0)
-        })?;
-        l.func_wrap(
+        linker.func_wrap(
+            "aurix",
+            "entity_count",
+            |mut caller: Caller<'_, Host>| -> i32 {
+                let ids: Vec<EntityId> = frame(&mut caller)
+                    .map(|f| f.entities().map(|e| e.id).collect())
+                    .unwrap_or_default();
+                let count = ids.len() as i32;
+                caller.data_mut().entities = ids;
+                count
+            },
+        )?;
+        linker.func_wrap(
+            "aurix",
+            "entity_at",
+            |caller: Caller<'_, Host>, i: i32| -> i64 {
+                usize::try_from(i)
+                    .ok()
+                    .and_then(|i| caller.data().entities.get(i))
+                    .map(|e| handle(*e))
+                    .unwrap_or(0)
+            },
+        )?;
+        linker.func_wrap(
             "aurix",
             "component_id",
-            |mut c: Caller<'_, Host>, ptr: i32, len: i32| -> i32 {
-                let Some(name) = read_bytes(&mut c, ptr, len) else {
+            |mut caller: Caller<'_, Host>, ptr: i32, len: i32| -> i32 {
+                let Some(name) = read_bytes(&mut caller, ptr, len) else {
                     return -1;
                 };
                 let Ok(name) = std::str::from_utf8(&name) else {
                     return -1;
                 };
-                frame(&mut c)
+                frame(&mut caller)
                     .and_then(|f| f.schema.component(name))
                     .map(|cmp| cmp.id as i32)
                     .unwrap_or(-1)
             },
         )?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "has_component",
-            |mut c: Caller<'_, Host>, id: i64, comp: i32| -> i32 {
-                frame(&mut c).is_some_and(|f| {
+            |mut caller: Caller<'_, Host>, id: i64, comp: i32| -> i32 {
+                frame(&mut caller).is_some_and(|f| {
                     f.schema
                         .by_id(comp as u16)
                         .is_some_and(|cmp| f.get(ent(id), &cmp.name).is_some())
                 }) as i32
             },
         )?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "remove_component",
-            |mut c: Caller<'_, Host>, id: i64, comp: i32| -> i32 {
-                frame(&mut c).is_some_and(|f| {
+            |mut caller: Caller<'_, Host>, id: i64, comp: i32| -> i32 {
+                frame(&mut caller).is_some_and(|f| {
                     let Some(cmp) = f.schema.by_id(comp as u16).cloned() else {
                         return false;
                     };
@@ -357,11 +372,11 @@ impl WasmLogic {
                 }) as i32
             },
         )?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "get_f32",
-            |mut c: Caller<'_, Host>, id: i64, comp: i32, field: i32| -> f32 {
-                frame(&mut c)
+            |mut caller: Caller<'_, Host>, id: i64, comp: i32, field: i32| -> f32 {
+                frame(&mut caller)
                     .and_then(|f| field_ref(f, id, comp, field))
                     .map(|(v, _)| match v {
                         Value::F32(x) => *x,
@@ -373,11 +388,11 @@ impl WasmLogic {
                     .unwrap_or(0.0)
             },
         )?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "set_f32",
-            |mut c: Caller<'_, Host>, id: i64, comp: i32, field: i32, v: f32| -> i32 {
-                frame(&mut c).is_some_and(|f| {
+            |mut caller: Caller<'_, Host>, id: i64, comp: i32, field: i32, v: f32| -> i32 {
+                frame(&mut caller).is_some_and(|f| {
                     let Some(slot) = field_mut(f, id, comp, field) else {
                         return false;
                     };
@@ -392,11 +407,11 @@ impl WasmLogic {
                 }) as i32
             },
         )?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "get_i64",
-            |mut c: Caller<'_, Host>, id: i64, comp: i32, field: i32| -> i64 {
-                frame(&mut c)
+            |mut caller: Caller<'_, Host>, id: i64, comp: i32, field: i32| -> i64 {
+                frame(&mut caller)
                     .and_then(|f| field_ref(f, id, comp, field))
                     .map(|(v, _)| match v {
                         Value::Int(x) => *x,
@@ -408,11 +423,11 @@ impl WasmLogic {
                     .unwrap_or(0)
             },
         )?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "set_i64",
-            |mut c: Caller<'_, Host>, id: i64, comp: i32, field: i32, v: i64| -> i32 {
-                frame(&mut c).is_some_and(|f| {
+            |mut caller: Caller<'_, Host>, id: i64, comp: i32, field: i32, v: i64| -> i32 {
+                frame(&mut caller).is_some_and(|f| {
                     let Some(slot) = field_mut(f, id, comp, field) else {
                         return false;
                     };
@@ -427,11 +442,11 @@ impl WasmLogic {
                 }) as i32
             },
         )?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "get_vec3",
-            |mut c: Caller<'_, Host>, id: i64, comp: i32, field: i32, out: i32| -> i32 {
-                let v = frame(&mut c)
+            |mut caller: Caller<'_, Host>, id: i64, comp: i32, field: i32, out: i32| -> i32 {
+                let found = frame(&mut caller)
                     .and_then(|f| field_ref(f, id, comp, field))
                     .and_then(|(v, _)| match v {
                         Value::Vec3(a) => Some(*a),
@@ -439,18 +454,18 @@ impl WasmLogic {
                         Value::Quat(q) => Some([q[0], q[1], q[2]]),
                         _ => None,
                     });
-                let Some(v) = v else { return 0 };
+                let Some(vector) = found else { return 0 };
                 let mut buf = [0u8; 12];
-                for (i, x) in v.iter().enumerate() {
+                for (i, x) in vector.iter().enumerate() {
                     buf[i * 4..i * 4 + 4].copy_from_slice(&x.to_le_bytes());
                 }
-                write_bytes(&mut c, out, &buf) as i32
+                write_bytes(&mut caller, out, &buf) as i32
             },
         )?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "set_vec3",
-            |mut c: Caller<'_, Host>,
+            |mut caller: Caller<'_, Host>,
              id: i64,
              comp: i32,
              field: i32,
@@ -458,7 +473,7 @@ impl WasmLogic {
              y: f32,
              z: f32|
              -> i32 {
-                frame(&mut c).is_some_and(|f| {
+                frame(&mut caller).is_some_and(|f| {
                     let Some(slot) = field_mut(f, id, comp, field) else {
                         return false;
                     };
@@ -471,14 +486,20 @@ impl WasmLogic {
                 }) as i32
             },
         )?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "set_bytes",
-            |mut c: Caller<'_, Host>, id: i64, comp: i32, field: i32, ptr: i32, len: i32| -> i32 {
-                let Some(data) = read_bytes(&mut c, ptr, len) else {
+            |mut caller: Caller<'_, Host>,
+             id: i64,
+             comp: i32,
+             field: i32,
+             ptr: i32,
+             len: i32|
+             -> i32 {
+                let Some(data) = read_bytes(&mut caller, ptr, len) else {
                     return 0;
                 };
-                frame(&mut c).is_some_and(|f| {
+                frame(&mut caller).is_some_and(|f| {
                     let max = field_ref(f, id, comp, field)
                         .map(|(_, t)| match t {
                             FieldType::String { max } | FieldType::Bytes { max } => *max as usize,
@@ -500,25 +521,27 @@ impl WasmLogic {
                 }) as i32
             },
         )?;
-        l.func_wrap("aurix", "input_count", |c: Caller<'_, Host>| -> i32 {
-            c.data().inputs.len() as i32
+        linker.func_wrap("aurix", "input_count", |caller: Caller<'_, Host>| -> i32 {
+            caller.data().inputs.len() as i32
         })?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "input_actor",
-            |c: Caller<'_, Host>, i: i32| -> i32 {
-                c.data()
+            |caller: Caller<'_, Host>, i: i32| -> i32 {
+                caller
+                    .data()
                     .inputs
                     .get(i as usize)
                     .map(|x| x.0 .0 as i32)
                     .unwrap_or(0)
             },
         )?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "input_entity",
-            |c: Caller<'_, Host>, i: i32| -> i64 {
-                c.data()
+            |caller: Caller<'_, Host>, i: i32| -> i64 {
+                caller
+                    .data()
                     .inputs
                     .get(i as usize)
                     .and_then(|x| x.1)
@@ -526,44 +549,44 @@ impl WasmLogic {
                     .unwrap_or(0)
             },
         )?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "input_fresh",
-            |c: Caller<'_, Host>, i: i32| -> i32 {
-                c.data().inputs.get(i as usize).is_some_and(|x| x.3) as i32
+            |caller: Caller<'_, Host>, i: i32| -> i32 {
+                caller.data().inputs.get(i as usize).is_some_and(|x| x.3) as i32
             },
         )?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "input_read",
-            |mut c: Caller<'_, Host>, i: i32, ptr: i32, cap: i32| -> i32 {
-                let Some(data) = c.data().inputs.get(i as usize).map(|x| x.2.clone()) else {
+            |mut caller: Caller<'_, Host>, i: i32, ptr: i32, cap: i32| -> i32 {
+                let Some(data) = caller.data().inputs.get(i as usize).map(|x| x.2.clone()) else {
                     return 0;
                 };
-                let n = data.len().min(cap.max(0) as usize);
-                if write_bytes(&mut c, ptr, &data[..n]) {
-                    n as i32
+                let len = data.len().min(cap.max(0) as usize);
+                if write_bytes(&mut caller, ptr, &data[..len]) {
+                    len as i32
                 } else {
                     0
                 }
             },
         )?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "raise",
-            |mut c: Caller<'_, Host>, code: i32, target: i32, ptr: i32, len: i32| {
-                let Some(data) = read_bytes(&mut c, ptr, len.min(60_000)) else {
+            |mut caller: Caller<'_, Host>, code: i32, target: i32, ptr: i32, len: i32| {
+                let Some(data) = read_bytes(&mut caller, ptr, len.min(60_000)) else {
                     return;
                 };
-                if let Some(f) = frame(&mut c) {
-                    f.raise(code as u16, actor(target), data);
+                if let Some(frame) = frame(&mut caller) {
+                    frame.raise(code as u16, actor(target), data);
                 }
             },
         )?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "hitbox",
-            |mut c: Caller<'_, Host>,
+            |mut caller: Caller<'_, Host>,
              id: i64,
              cx: f32,
              cy: f32,
@@ -571,9 +594,9 @@ impl WasmLogic {
              hx: f32,
              hy: f32,
              hz: f32| {
-                let h = &mut c.data_mut().hitboxes;
-                if h.len() < 4096 {
-                    h.push((
+                let hitboxes = &mut caller.data_mut().hitboxes;
+                if hitboxes.len() < 4096 {
+                    hitboxes.push((
                         ent(id),
                         Hitbox {
                             center: [cx, cy, cz],
@@ -583,18 +606,18 @@ impl WasmLogic {
                 }
             },
         )?;
-        l.func_wrap(
+        linker.func_wrap(
             "aurix",
             "log",
-            |mut c: Caller<'_, Host>, level: i32, ptr: i32, len: i32| {
-                if c.data().log_budget == 0 {
+            |mut caller: Caller<'_, Host>, level: i32, ptr: i32, len: i32| {
+                if caller.data().log_budget == 0 {
                     return;
                 }
-                c.data_mut().log_budget -= 1;
-                let Some(b) = read_bytes(&mut c, ptr, len.min(1024)) else {
+                caller.data_mut().log_budget -= 1;
+                let Some(bytes) = read_bytes(&mut caller, ptr, len.min(1024)) else {
                     return;
                 };
-                let msg = String::from_utf8_lossy(&b);
+                let msg = String::from_utf8_lossy(&bytes);
                 match level {
                     0 => tracing::error!(target: "game", "{msg}"),
                     1 => tracing::warn!(target: "game", "{msg}"),
@@ -606,11 +629,11 @@ impl WasmLogic {
         Ok(())
     }
 
-    /// Runs `f` with the frame exposed to host functions and a fresh fuel budget.
+    /// Runs `body` with the frame exposed to host functions and a fresh fuel budget.
     fn call<R>(
         &mut self,
         frame: &mut Frame,
-        f: impl FnOnce(&mut Store<Host>) -> Result<R>,
+        body: impl FnOnce(&mut Store<Host>) -> Result<R>,
     ) -> Option<R> {
         if self.dead {
             return None;
@@ -618,10 +641,10 @@ impl WasmLogic {
         self.store.data_mut().frame = frame as *mut Frame;
         self.store.data_mut().log_budget = LOG_BUDGET_PER_TICK;
         let _ = self.store.set_fuel(FUEL_PER_CALL);
-        let r = f(&mut self.store);
+        let outcome = body(&mut self.store);
         self.store.data_mut().frame = std::ptr::null_mut();
-        match r {
-            Ok(v) => Some(v),
+        match outcome {
+            Ok(value) => Some(value),
             Err(e) => {
                 self.dead = true;
                 tracing::error!(target: "game", error = %e, "game module trapped; logic disabled for this room");
@@ -650,13 +673,13 @@ impl WasmLogic {
     pub fn on_leave(&mut self, frame: &mut Frame, actor: ActorId, avatar: Option<EntityId>) {
         self.ensure_init(frame);
         let Some(leave) = self.leave.clone() else {
-            if let Some(a) = avatar {
-                let _ = frame.despawn(a);
+            if let Some(entity) = avatar {
+                let _ = frame.despawn(entity);
             }
             return;
         };
-        let e = avatar.map(handle).unwrap_or(0);
-        self.call(frame, |s| leave.call(s, (actor.0 as i32, e)));
+        let entity = avatar.map(handle).unwrap_or(0);
+        self.call(frame, |s| leave.call(s, (actor.0 as i32, entity)));
     }
 
     pub fn step(&mut self, frame: &mut Frame, inputs: &[StepInput]) {
@@ -776,21 +799,24 @@ component Score {
         let (h2, _) = eng.load(GUEST.as_bytes()).unwrap();
         assert_eq!(hash, h2);
         let mut logic = eng.instantiate(&module, 42).unwrap();
-        let mut f = frame();
-        let a = ActorId(1);
-        let e = logic.on_join(&mut f, a).expect("avatar");
-        assert_eq!(f.entity(e).unwrap().owner, Some(a));
-        let sc = f.get(e, "Score").unwrap();
+        let mut frame = frame();
+        let actor = ActorId(1);
+        let avatar = logic.on_join(&mut frame, actor).expect("avatar");
+        assert_eq!(frame.entity(avatar).unwrap().owner, Some(actor));
+        let sc = frame.get(avatar, "Score").unwrap();
         assert_eq!(sc.fields[0], Value::UInt(3));
         assert_eq!(sc.fields[1], Value::String("bob".into()));
-        assert_eq!(f.get(e, "Transform").unwrap().fields[1], Value::F32(6.0));
+        assert_eq!(
+            frame.get(avatar, "Transform").unwrap().fields[1],
+            Value::F32(6.0)
+        );
 
         // 60 ticks of +100 move_x: x += 100 * 0.1 * dt each tick -> ~10.0
         for _ in 0..60 {
-            let inputs = vec![(a, Some(e), vec![100u8, 0, 0], true)];
-            f.advance(|fr| logic.step(fr, &inputs));
+            let inputs = vec![(actor, Some(avatar), vec![100u8, 0, 0], true)];
+            frame.advance(|fr| logic.step(fr, &inputs));
         }
-        let pos = match &f.get(e, "Transform").unwrap().fields[0] {
+        let pos = match &frame.get(avatar, "Transform").unwrap().fields[0] {
             Value::Vec3(v) => *v,
             _ => panic!(),
         };
@@ -798,14 +824,14 @@ component Score {
         assert_eq!(pos[1], 1.0);
         let hb = logic.hitboxes();
         assert_eq!(hb.len(), 1);
-        assert_eq!(hb[0].0, e);
-        let ev = f.drain_events();
+        assert_eq!(hb[0].0, avatar);
+        let ev = frame.drain_events();
         assert_eq!(ev.len(), 60);
-        assert_eq!((ev[0].code, ev[0].target), (7, Some(a)));
+        assert_eq!((ev[0].code, ev[0].target), (7, Some(actor)));
         assert!(!logic.dead);
 
-        logic.on_leave(&mut f, a, Some(e));
-        assert!(f.entity(e).is_none());
+        logic.on_leave(&mut frame, actor, Some(avatar));
+        assert!(frame.entity(avatar).is_none());
     }
 
     #[test]
@@ -820,15 +846,15 @@ component Score {
         ));
         // Infinite loop: fuel runs out, module is disabled, the frame survives.
         let spin = "(module (memory (export \"memory\") 1) (func (export \"aurix_init\") (param i64)) (func (export \"aurix_step\") (loop $l (br $l))))";
-        let (_, m) = eng.load(spin.as_bytes()).unwrap();
-        let mut logic = eng.instantiate(&m, 1).unwrap();
-        let mut f = frame();
-        let t = std::time::Instant::now();
-        f.advance(|fr| logic.step(fr, &[]));
+        let (_, module) = eng.load(spin.as_bytes()).unwrap();
+        let mut logic = eng.instantiate(&module, 1).unwrap();
+        let mut frame = frame();
+        let started = std::time::Instant::now();
+        frame.advance(|fr| logic.step(fr, &[]));
         assert!(logic.dead);
-        assert!(t.elapsed() < std::time::Duration::from_secs(5));
-        f.advance(|fr| logic.step(fr, &[]));
-        assert_eq!(f.tick.0, 2);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        frame.advance(|fr| logic.step(fr, &[]));
+        assert_eq!(frame.tick.0, 2);
     }
 
     #[test]
@@ -840,7 +866,7 @@ component Score {
         let mut logic = eng.instantiate(&module, 5).unwrap();
         let schema =
             "component Transform {\n    pos: vec3 @range(-4096, 4096, 0.01)\n    speed: f32\n}";
-        let mut f = Frame::new(
+        let mut frame = Frame::new(
             Schema::parse(schema).unwrap(),
             FrameConfig {
                 tick_hz: 60,
@@ -848,19 +874,19 @@ component Score {
             },
             1,
         );
-        let a = ActorId(3);
-        let e = logic.on_join(&mut f, a).expect("avatar");
-        let start = match &f.get(e, "Transform").unwrap().fields[0] {
+        let actor = ActorId(3);
+        let avatar = logic.on_join(&mut frame, actor).expect("avatar");
+        let start = match &frame.get(avatar, "Transform").unwrap().fields[0] {
             Value::Vec3(v) => *v,
             _ => panic!(),
         };
         assert_eq!(start, [-20.0, 0.0, -32.0]);
         for _ in 0..60 {
-            let inputs = vec![(a, Some(e), vec![127u8, 0, 0], true)];
-            f.advance(|fr| logic.step(fr, &inputs));
+            let inputs = vec![(actor, Some(avatar), vec![127u8, 0, 0], true)];
+            frame.advance(|fr| logic.step(fr, &inputs));
         }
         assert!(!logic.dead);
-        let pos = match &f.get(e, "Transform").unwrap().fields[0] {
+        let pos = match &frame.get(avatar, "Transform").unwrap().fields[0] {
             Value::Vec3(v) => *v,
             _ => panic!(),
         };

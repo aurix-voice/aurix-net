@@ -93,14 +93,14 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
         loop {
             tokio::select! {
                 m = ctl_rx.recv() => match m {
-                    Some(m) => {
-                        let txt = serde_json::to_string(&m).unwrap_or_default();
+                    Some(msg) => {
+                        let txt = serde_json::to_string(&msg).unwrap_or_default();
                         if sink.send(Message::Text(txt.into())).await.is_err() { break; }
                     }
                     None => break,
                 },
                 b = bin_rx.recv() => match b {
-                    Some(b) => if sink.send(Message::Binary(b)).await.is_err() { break; },
+                    Some(frame) => if sink.send(Message::Binary(frame)).await.is_err() { break; },
                     None => break,
                 },
             }
@@ -142,13 +142,13 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
             Ok(Some(Ok(m))) => m,
         };
         match msg {
-            Message::Text(t) if sess.grant.is_none() && t.len() > PRE_AUTH_MAX_TEXT => {
+            Message::Text(text) if sess.grant.is_none() && text.len() > PRE_AUTH_MAX_TEXT => {
                 sess.error(NetError::Invalid("message too large before auth".into()));
                 break;
             }
-            Message::Text(t) => match serde_json::from_str::<ClientMsg>(&t) {
-                Ok(m) => {
-                    if let Err(e) = sess.handle(m).await {
+            Message::Text(text) => match serde_json::from_str::<ClientMsg>(&text) {
+                Ok(msg) => {
+                    if let Err(e) = sess.handle(msg).await {
                         let fatal = matches!(e, NetError::RateLimited);
                         sess.error(e);
                         if fatal {
@@ -158,8 +158,8 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
                 }
                 Err(e) => sess.error(NetError::Invalid(format!("bad message: {e}"))),
             },
-            Message::Binary(b) => {
-                if let Err(e) = sess.on_binary(b) {
+            Message::Binary(frame) => {
+                if let Err(e) = sess.on_binary(frame) {
                     sess.error(e);
                 }
             }
@@ -194,8 +194,11 @@ impl Session {
     }
 
     /// False once another session of the same player took over this room slot.
-    fn owns_slot(&self, h: &HostedRoom, actor: ActorId) -> bool {
-        h.sessions.get(&actor).is_some_and(|a| a.session == self.id)
+    fn owns_slot(&self, hosted: &HostedRoom, actor: ActorId) -> bool {
+        hosted
+            .sessions
+            .get(&actor)
+            .is_some_and(|a| a.session == self.id)
     }
 
     fn replaced(&mut self) -> NetError {
@@ -205,12 +208,12 @@ impl Session {
     }
 
     async fn handle(&mut self, msg: ClientMsg) -> Result<()> {
-        if let Some(r) = &self.room {
-            let mine = self.owns_slot(&r.hosted.lock(), r.actor);
+        if let Some(joined) = &self.room {
+            let mine = self.owns_slot(&joined.hosted.lock(), joined.actor);
             if !mine {
                 // The slot is gone (taken over, kicked, room closed). Only a message meant for
                 // that room is refused; the session is free to create or join another one.
-                let e = self.replaced();
+                let error = self.replaced();
                 if matches!(
                     msg,
                     ClientMsg::SetRoomProps { .. }
@@ -222,14 +225,14 @@ impl Session {
                         | ClientMsg::SetMaster { .. }
                         | ClientMsg::Kick { .. }
                 ) {
-                    return Err(e);
+                    return Err(error);
                 }
             }
         }
         match msg {
             ClientMsg::Auth { grant } => {
-                let g = match self.st.grants.verify(&grant) {
-                    Ok(g) => g,
+                let checked = match self.st.grants.verify(&grant) {
+                    Ok(verified) => verified,
                     Err(e) => {
                         return Err(if self.st.guards.auth_fail.check_key(&self.ip).is_ok() {
                             e
@@ -239,29 +242,31 @@ impl Session {
                     }
                 };
                 let _ = self.ctl.try_send(ServerMsg::Authed {
-                    player_id: g.player_id.clone(),
-                    name: g.name.clone(),
+                    player_id: checked.player_id.clone(),
+                    name: checked.name.clone(),
                 });
                 if let Some(old) = &self.grant {
                     self.st.host.presence_leave(old.project, &old.player_id);
                 }
-                self.st.host.presence_enter(g.project, &g.player_id);
-                self.grant = Some(g);
+                self.st
+                    .host
+                    .presence_enter(checked.project, &checked.player_id);
+                self.grant = Some(checked);
                 Ok(())
             }
             ClientMsg::GetRooms { expr, limit } => {
-                let g = self.grant()?.clone();
+                let grant = self.grant()?.clone();
                 let filter = match expr.as_deref().map(str::trim) {
                     None | Some("") => None,
-                    Some(e) => Some(
-                        crate::mmfilter::Filter::parse(e)
+                    Some(expected) => Some(
+                        crate::mmfilter::Filter::parse(expected)
                             .map_err(|e| NetError::Invalid(format!("expr: {e}")))?,
                     ),
                 };
                 self.lookup_budget()?;
                 let limit = usize::from(limit.unwrap_or(100).clamp(1, 500));
                 let rooms = self
-                    .lobby_rooms(g.project)
+                    .lobby_rooms(grant.project)
                     .await
                     .into_iter()
                     .filter(|r| filter.as_ref().is_none_or(|f| f.matches(&r.props)))
@@ -271,7 +276,7 @@ impl Session {
                 Ok(())
             }
             ClientMsg::Rpc { id, name, body } => {
-                let g = self.grant()?.clone();
+                let grant = self.grant()?.clone();
                 let name_ok = !name.is_empty()
                     && name.len() <= 64
                     && name
@@ -291,14 +296,14 @@ impl Session {
                 let room = self.room.as_ref().map(|r| (r.id.to_string(), r.actor));
                 let payload = serde_json::json!({
                     "name": name,
-                    "player_id": g.player_id,
+                    "player_id": grant.player_id,
                     "actor": room.as_ref().map(|r| r.1),
                     "room": room.as_ref().map(|r| r.0.clone()),
                     "body": body,
                 });
                 let (hooks, ctl) = (self.st.webhooks.clone(), self.ctl.clone());
                 tokio::spawn(async move {
-                    let out = hooks.rpc(g.project, payload).await;
+                    let out = hooks.rpc(grant.project, payload).await;
                     let _ = ctl.try_send(ServerMsg::RpcResult {
                         id,
                         ok: out.ok,
@@ -328,13 +333,13 @@ impl Session {
                 player_props,
                 reserved,
             } => {
-                let g = self.grant()?.clone();
+                let grant = self.grant()?.clone();
                 self.ensure_not_in_room()?;
                 let name = name.unwrap_or_else(short_id);
-                self.check_room_scope(&g, &name)?;
-                let h = self
+                self.check_room_scope(&grant, &name)?;
+                let handle = self
                     .create_room(
-                        &g,
+                        &grant,
                         name,
                         mode,
                         max_players,
@@ -346,7 +351,7 @@ impl Session {
                         reserved,
                     )
                     .await?;
-                self.join_hosted(h, player_props, None, false).await
+                self.join_hosted(handle, player_props, None, false).await
             }
             ClientMsg::Join {
                 name,
@@ -355,13 +360,13 @@ impl Session {
                 schema_hash,
                 spectator,
             } => {
-                let g = self.grant()?.clone();
+                let grant = self.grant()?.clone();
                 self.ensure_not_in_room()?;
-                self.check_room_scope(&g, &name)?;
-                let h = {
+                self.check_room_scope(&grant, &name)?;
+                let handle = {
                     let mut attempt = 0;
                     loop {
-                        match self.find_room(g.project, &name).await {
+                        match self.find_room(grant.project, &name).await {
                             Err(NetError::Conflict(ref m))
                                 if m == "room_pending" && attempt < 200 =>
                             {
@@ -372,18 +377,18 @@ impl Session {
                         }
                     }
                 };
-                if let Some(c) = schema_hash.as_deref() {
-                    let hr = h.lock();
+                if let Some(hash) = schema_hash.as_deref() {
+                    let hr = handle.lock();
                     if let Some(sy) = hr.sync.as_ref() {
-                        if sy.schema_hash != c {
+                        if sy.schema_hash != hash {
                             return Err(NetError::SchemaMismatch {
-                                client: c.to_string(),
+                                client: hash.to_string(),
                                 server: sy.schema_hash.clone(),
                             });
                         }
                     }
                 }
-                self.join_hosted(h, player_props, rejoin_actor, spectator)
+                self.join_hosted(handle, player_props, rejoin_actor, spectator)
                     .await
             }
             ClientMsg::JoinOrCreate {
@@ -396,22 +401,22 @@ impl Session {
                 player_props,
                 reserved,
             } => {
-                let g = self.grant()?.clone();
+                let grant = self.grant()?.clone();
                 self.ensure_not_in_room()?;
-                self.check_room_scope(&g, &name)?;
+                self.check_room_scope(&grant, &name)?;
                 // Several players may race to create the same room; whoever loses the DB
                 // uniqueness race joins the winner's room.
                 let mut attempt = 0;
-                let h = loop {
-                    match self.find_room(g.project, &name).await {
-                        Ok(h) => {
-                            let existing = h.lock().room.cfg.mode;
+                let handle = loop {
+                    match self.find_room(grant.project, &name).await {
+                        Ok(found) => {
+                            let existing = found.lock().room.cfg.mode;
                             if existing != mode {
                                 return Err(NetError::Conflict(format!(
                                     "room exists in {existing:?} mode, requested {mode:?}"
                                 )));
                             }
-                            break h;
+                            break found;
                         }
                         Err(NetError::NotFound(_)) => {}
                         Err(NetError::Conflict(ref m)) if m == "room_pending" && attempt < 200 => {
@@ -423,7 +428,7 @@ impl Session {
                     }
                     match self
                         .create_room(
-                            &g,
+                            &grant,
                             name.clone(),
                             mode,
                             max_players,
@@ -436,7 +441,7 @@ impl Session {
                         )
                         .await
                     {
-                        Ok(h) => break h,
+                        Ok(created) => break created,
                         Err(NetError::Conflict(_)) if attempt < 30 => {
                             attempt += 1;
                             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -444,7 +449,7 @@ impl Session {
                         Err(e) => return Err(e),
                     }
                 };
-                self.join_hosted(h, player_props, None, false).await
+                self.join_hosted(handle, player_props, None, false).await
             }
             ClientMsg::JoinRandom {
                 filter,
@@ -452,11 +457,11 @@ impl Session {
                 match_type,
                 player_props,
             } => {
-                let g = self.grant()?.clone();
+                let grant = self.grant()?.clone();
                 self.ensure_not_in_room()?;
                 let expr = match expr.as_deref() {
-                    Some(e) => Some(
-                        crate::mmfilter::Filter::parse(e)
+                    Some(expected) => Some(
+                        crate::mmfilter::Filter::parse(expected)
                             .map_err(|e| NetError::Invalid(format!("expr: {e}")))?,
                     ),
                     None => None,
@@ -466,24 +471,27 @@ impl Session {
                         && expr.as_ref().is_none_or(|f| f.matches(lobby))
                 };
                 // A grant limited to one room may only land in that room.
-                let in_scope = |name: &str| g.room.as_deref().is_none_or(|r| r == name);
+                let in_scope = |name: &str| grant.room.as_deref().is_none_or(|r| r == name);
                 // Local rooms first (no redirect), then the region-wide list from Redis.
                 let mut local: Vec<net_control::LiveRoom> = Vec::new();
-                for h in self.st.host.all() {
-                    let r = h.lock();
-                    if r.project != g.project || !r.room.is_listed() || !in_scope(&r.room.cfg.name)
+                for handle in self.st.host.all() {
+                    let hosted = handle.lock();
+                    if hosted.project != grant.project
+                        || !hosted.room.is_listed()
+                        || !in_scope(&hosted.room.cfg.name)
                     {
                         continue;
                     }
-                    let lobby: Map<String, Value> = r.room.summary().props.into_iter().collect();
-                    if accepts(&r.room.cfg.props, &lobby) {
+                    let lobby: Map<String, Value> =
+                        hosted.room.summary().props.into_iter().collect();
+                    if accepts(&hosted.room.cfg.props, &lobby) {
                         local.push(net_control::LiveRoom {
-                            room: r.room.id(),
+                            room: hosted.room.id(),
                             node: self.st.node_id.to_string(),
-                            name: r.room.cfg.name.clone(),
-                            mode: r.room.cfg.mode.to_string(),
-                            players: r.room.players().count() as u16,
-                            max_players: r.room.cfg.max_players,
+                            name: hosted.room.cfg.name.clone(),
+                            mode: hosted.room.cfg.mode.to_string(),
+                            players: hosted.room.players().count() as u16,
+                            max_players: hosted.room.cfg.max_players,
                             open: true,
                             visible: true,
                             props: Value::Object(lobby),
@@ -492,18 +500,18 @@ impl Session {
                 }
                 let refs: Vec<&net_control::LiveRoom> = local.iter().collect();
                 if let Some(pick) = crate::matchmaking::pick_room(&refs, match_type.as_deref()) {
-                    let h = self
+                    let handle = self
                         .st
                         .host
-                        .by_name(g.project, &pick.name)
+                        .by_name(grant.project, &pick.name)
                         .ok_or_else(|| NetError::NotFound("no matching room".into()))?;
-                    return self.join_hosted(h, player_props, None, false).await;
+                    return self.join_hosted(handle, player_props, None, false).await;
                 }
                 let me = self.st.node_id.to_string();
                 let remote: Vec<net_control::LiveRoom> = self
                     .st
                     .redis
-                    .list_rooms(g.project)
+                    .list_rooms(grant.project)
                     .await
                     .unwrap_or_default()
                     .into_iter()
@@ -543,26 +551,26 @@ impl Session {
                 visible,
                 open,
             } => {
-                let r = self.in_room()?;
+                let joined = self.in_room()?;
                 {
-                    let mut h = r.hosted.lock();
-                    let out = h
+                    let mut hosted = joined.hosted.lock();
+                    let out = hosted
                         .room
-                        .set_room_props(r.actor, props, expected.as_ref(), visible, open)
+                        .set_room_props(joined.actor, props, expected.as_ref(), visible, open)
                         .map_err(room_err)?;
-                    dispatch(&h, out, &self.st.metrics);
+                    dispatch(&hosted, out, &self.st.metrics);
                 }
                 self.publish_current().await;
                 Ok(())
             }
             ClientMsg::SetPlayerProps { props, expected } => {
-                let r = self.in_room()?;
-                let mut h = r.hosted.lock();
-                let out = h
+                let joined = self.in_room()?;
+                let mut hosted = joined.hosted.lock();
+                let out = hosted
                     .room
-                    .set_player_props(r.actor, props, expected.as_ref())
+                    .set_player_props(joined.actor, props, expected.as_ref())
                     .map_err(room_err)?;
-                dispatch(&h, out, &self.st.metrics);
+                dispatch(&hosted, out, &self.st.metrics);
                 Ok(())
             }
             ClientMsg::Event {
@@ -573,7 +581,7 @@ impl Session {
                 cache,
                 group,
             } => {
-                let r = self.in_room()?;
+                let joined = self.in_room()?;
                 let payload = B64
                     .decode(data)
                     .map_err(|_| NetError::Invalid("event data is not base64".into()))?;
@@ -582,27 +590,28 @@ impl Session {
                     target,
                     cache,
                     group,
-                    from: r.actor,
+                    from: joined.actor,
                     payload: Bytes::from(payload),
                 };
-                let mut h = r.hosted.lock();
-                let out = h
+                let mut hosted = joined.hosted.lock();
+                let out = hosted
                     .room
-                    .raise_event(r.actor, frame, channel, Instant::now())
+                    .raise_event(joined.actor, frame, channel, Instant::now())
                     .map_err(room_err)?;
-                dispatch(&h, out, &self.st.metrics);
+                dispatch(&hosted, out, &self.st.metrics);
                 Ok(())
             }
             ClientMsg::SetGroups { join, leave } => {
-                let r = self.in_room()?;
-                r.hosted
+                let joined = self.in_room()?;
+                joined
+                    .hosted
                     .lock()
                     .room
-                    .set_groups(r.actor, &join, &leave)
+                    .set_groups(joined.actor, &join, &leave)
                     .map_err(room_err)
             }
             ClientMsg::CacheSlice { op, index } => {
-                let r = self.in_room()?;
+                let joined = self.in_room()?;
                 let need = |i: Option<u16>| {
                     i.ok_or_else(|| NetError::Invalid("cache_slice: index required".into()))
                 };
@@ -617,49 +626,52 @@ impl Session {
                         ))
                     }
                 };
-                r.hosted.lock().room.cache_slice_op(op);
+                joined.hosted.lock().room.cache_slice_op(op);
                 Ok(())
             }
             ClientMsg::SetView {
                 viewpoints,
                 interest,
             } => {
-                let r = self.in_room()?;
-                let mut h = r.hosted.lock();
-                match h.sync.as_mut() {
+                let joined = self.in_room()?;
+                let mut hosted = joined.hosted.lock();
+                match hosted.sync.as_mut() {
                     Some(sy) => {
-                        sy.set_view(r.actor, &viewpoints, &interest);
+                        sy.set_view(joined.actor, &viewpoints, &interest);
                         Ok(())
                     }
                     None => Err(NetError::Invalid("set_view: sync rooms only".into())),
                 }
             }
             ClientMsg::SetMaster { actor } => {
-                let r = self.in_room()?;
-                let mut h = r.hosted.lock();
-                let out = h.room.set_master(r.actor, actor).map_err(room_err)?;
-                dispatch(&h, out, &self.st.metrics);
+                let joined = self.in_room()?;
+                let mut hosted = joined.hosted.lock();
+                let out = hosted
+                    .room
+                    .set_master(joined.actor, actor)
+                    .map_err(room_err)?;
+                dispatch(&hosted, out, &self.st.metrics);
                 Ok(())
             }
             ClientMsg::Kick { actor, reason } => {
-                let r = self.in_room()?;
+                let joined = self.in_room()?;
                 {
-                    let mut h = r.hosted.lock();
-                    let out = h
+                    let mut hosted = joined.hosted.lock();
+                    let out = hosted
                         .room
-                        .kick(r.actor, actor, &reason, Instant::now())
+                        .kick(joined.actor, actor, &reason, Instant::now())
                         .map_err(room_err)?;
-                    dispatch(&h, out, &self.st.metrics);
-                    h.sessions.remove(&actor);
+                    dispatch(&hosted, out, &self.st.metrics);
+                    hosted.sessions.remove(&actor);
                     self.st.webhooks.emit(
-                        h.project,
+                        hosted.project,
                         "player.left",
-                        serde_json::json!({"room": h.room.id().to_string(), "actor": actor.0, "kicked": true}),
+                        serde_json::json!({"room": hosted.room.id().to_string(), "actor": actor.0, "kicked": true}),
                     );
-                    if let Some(sy) = h.sync.as_mut() {
+                    if let Some(sy) = hosted.sync.as_mut() {
                         sy.on_leave(actor);
                     }
-                    if let Some(ls) = h.lockstep.as_mut() {
+                    if let Some(ls) = hosted.lockstep.as_mut() {
                         ls.on_leave(actor);
                     }
                 }
@@ -667,11 +679,11 @@ impl Session {
                 Ok(())
             }
             ClientMsg::Stats => {
-                let g = self.grant()?.clone();
+                let grant = self.grant()?.clone();
                 self.lookup_budget()?;
-                let rooms: Vec<RoomSummary> = match self.st.redis.list_rooms(g.project).await {
+                let rooms: Vec<RoomSummary> = match self.st.redis.list_rooms(grant.project).await {
                     Ok(live) => live.into_iter().map(live_to_summary).collect(),
-                    Err(_) => self.st.host.listed(g.project),
+                    Err(_) => self.st.host.listed(grant.project),
                 };
                 let (rooms, players, lobbies) = crate::presence::lobby_stats(&rooms);
                 let _ = self.ctl.try_send(ServerMsg::Stats {
@@ -682,7 +694,7 @@ impl Session {
                 Ok(())
             }
             ClientMsg::FindFriends { players } => {
-                let g = self.grant()?.clone();
+                let grant = self.grant()?.clone();
                 if players.len() > crate::presence::MAX_FRIENDS {
                     return Err(NetError::Invalid(format!(
                         "find_friends: at most {} players",
@@ -693,19 +705,22 @@ impl Session {
                     return Err(NetError::Invalid("find_friends: invalid player id".into()));
                 }
                 self.lookup_budget()?;
-                let friends = crate::presence::find_friends(&self.st, g.project, &players).await;
+                let friends =
+                    crate::presence::find_friends(&self.st, grant.project, &players).await;
                 let _ = self.ctl.try_send(ServerMsg::Friends { friends });
                 Ok(())
             }
             ClientMsg::Lobby { subscribe } => {
-                let g = self.grant()?.clone();
+                let grant = self.grant()?.clone();
                 if subscribe {
-                    self.st.host.subscribe_lobby(g.project, self.ctl.clone());
-                    self.lobby = Some(g.project);
-                    let rooms = self.lobby_rooms(g.project).await;
+                    self.st
+                        .host
+                        .subscribe_lobby(grant.project, self.ctl.clone());
+                    self.lobby = Some(grant.project);
+                    let rooms = self.lobby_rooms(grant.project).await;
                     let _ = self.ctl.try_send(ServerMsg::LobbyRooms { rooms });
-                } else if let Some(p) = self.lobby.take() {
-                    self.st.host.unsubscribe_lobby(p, &self.ctl);
+                } else if let Some(lobby) = self.lobby.take() {
+                    self.st.host.unsubscribe_lobby(lobby, &self.ctl);
                 }
                 Ok(())
             }
@@ -719,11 +734,13 @@ impl Session {
         Ok(())
     }
 
-    fn check_room_scope(&self, g: &Grant, name: &str) -> Result<()> {
-        if let Some(r) = &g.room {
-            if r != name {
-                crate::rest::reject(&self.st, g.project, "grant");
-                return Err(NetError::Forbidden(format!("grant is limited to room {r}")));
+    fn check_room_scope(&self, grant: &Grant, name: &str) -> Result<()> {
+        if let Some(allowed) = &grant.room {
+            if allowed != name {
+                crate::rest::reject(&self.st, grant.project, "grant");
+                return Err(NetError::Forbidden(format!(
+                    "grant is limited to room {allowed}"
+                )));
             }
         }
         Ok(())
@@ -731,17 +748,19 @@ impl Session {
 
     /// Refuses suspended projects and banned players (by id, IP or device) and records where the
     /// player was last seen. Every way into a room goes through here.
-    async fn admit(&self, g: &Grant) -> Result<net_db::models::ProjectRow> {
-        let project = queries::get_project(&self.st.pool, g.project.0).await?;
+    async fn admit(&self, grant: &Grant) -> Result<net_db::models::ProjectRow> {
+        let project = queries::get_project(&self.st.pool, grant.project.0).await?;
         if project.disabled_at.is_some() {
-            crate::rest::reject(&self.st, g.project, "suspended");
+            crate::rest::reject(&self.st, grant.project, "suspended");
             return Err(NetError::Forbidden("project disabled".into()));
         }
-        if let Some(b) = queries::get_ban(&self.st.pool, g.project.0, &g.player_id).await? {
-            crate::rest::reject(&self.st, g.project, "banned");
-            return Err(NetError::Forbidden(crate::rest::ban_message(&b)));
+        if let Some(ban) =
+            queries::get_ban(&self.st.pool, grant.project.0, &grant.player_id).await?
+        {
+            crate::rest::reject(&self.st, grant.project, "banned");
+            return Err(NetError::Forbidden(crate::rest::ban_message(&ban)));
         }
-        let device: String = g
+        let device: String = grant
             .meta
             .as_ref()
             .and_then(|m| m.get("device"))
@@ -759,18 +778,20 @@ impl Session {
             if value.is_empty() {
                 continue;
             }
-            if let Some(m) = queries::active_mark(&self.st.pool, g.project.0, kind, value).await? {
-                crate::rest::reject(&self.st, g.project, "banned");
-                return Err(NetError::Forbidden(crate::rest::mark_message(&m)));
+            if let Some(mark) =
+                queries::active_mark(&self.st.pool, grant.project.0, kind, value).await?
+            {
+                crate::rest::reject(&self.st, grant.project, "banned");
+                return Err(NetError::Forbidden(crate::rest::mark_message(&mark)));
             }
         }
         if let Err(e) = queries::touch_player_seen(
             &self.st.pool,
-            g.project.0,
-            &g.player_id,
+            grant.project.0,
+            &grant.player_id,
             &ip,
             &device,
-            &g.name,
+            &grant.name,
         )
         .await
         {
@@ -794,8 +815,8 @@ impl Session {
         if self.st.is_draining() {
             return Err(NetError::Conflict("node_draining".into()));
         }
-        if let Some(h) = self.st.host.by_name(project, name) {
-            return Ok(h);
+        if let Some(handle) = self.st.host.by_name(project, name) {
+            return Ok(handle);
         }
         match queries::find_open_room(&self.st.pool, project.0, name).await? {
             None => Err(NetError::NotFound(format!("room {name}"))),
@@ -803,13 +824,14 @@ impl Session {
             Some(row) => {
                 let host = row.node_id.map(net_common::NodeId::from_uuid);
                 let node = match host {
-                    Some(n) => self.st.registry.resolve(n).await?,
+                    Some(node) => self.st.registry.resolve(node).await?,
                     None => None,
                 };
                 match node {
-                    Some(n) if n.id != self.st.node_id => {
-                        Err(NetError::Conflict(format!("room_elsewhere:{}", n.http_url)))
-                    }
+                    Some(node) if node.id != self.st.node_id => Err(NetError::Conflict(format!(
+                        "room_elsewhere:{}",
+                        node.http_url
+                    ))),
                     // Adoption in progress on another session of this node.
                     _ if self.st.adopting.lock().contains(&row.id) => {
                         Err(NetError::Conflict("room_pending".into()))
@@ -838,7 +860,7 @@ impl Session {
     #[allow(clippy::too_many_arguments)]
     async fn create_room(
         &self,
-        g: &Grant,
+        grant: &Grant,
         name: String,
         mode: RoomMode,
         max_players: Option<u16>,
@@ -849,8 +871,8 @@ impl Session {
         region: Option<String>,
         reserved: Vec<String>,
     ) -> Result<Arc<Mutex<HostedRoom>>> {
-        if !g.can("create") {
-            crate::rest::reject(&self.st, g.project, "grant");
+        if !grant.can("create") {
+            crate::rest::reject(&self.st, grant.project, "grant");
             return Err(NetError::Forbidden("grant may not create rooms".into()));
         }
         if self.st.is_draining() {
@@ -879,40 +901,40 @@ impl Session {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(1);
-            Some(build_sync(&self.st, g.project, &props, seed).await?)
+            Some(build_sync(&self.st, grant.project, &props, seed).await?)
         } else {
             None
         };
         if let Some(ls) = lockstep.as_mut() {
-            attach_lockstep_sim(&self.st, g.project, &props, ls).await?;
+            attach_lockstep_sim(&self.st, grant.project, &props, ls).await?;
         }
-        if let Some(r) = region.as_deref() {
-            if r != self.st.region.as_str() {
+        if let Some(wanted) = region.as_deref() {
+            if wanted != self.st.region.as_str() {
                 return Err(NetError::Conflict(format!(
                     "wrong_region:{}:{}",
-                    self.st.region, r
+                    self.st.region, wanted
                 )));
             }
         }
-        let project = self.admit(g).await?;
+        let project = self.admit(grant).await?;
         let limits = ProjectLimits::from_json(&project.limits).effective(&self.st.cfg.limits);
         if let Some(allowed) = &limits.allowed_regions {
             if !allowed.iter().any(|r| r == self.st.region.as_str()) {
-                crate::rest::reject(&self.st, g.project, "region");
+                crate::rest::reject(&self.st, grant.project, "region");
                 return Err(NetError::Forbidden("region not allowed for project".into()));
             }
         }
-        let open_rooms = queries::count_open_rooms(&self.st.pool, g.project.0).await?;
+        let open_rooms = queries::count_open_rooms(&self.st.pool, grant.project.0).await?;
         if open_rooms >= limits.max_rooms as i64 {
-            crate::rest::reject(&self.st, g.project, "quota");
+            crate::rest::reject(&self.st, grant.project, "quota");
             return Err(NetError::QuotaExceeded(format!(
                 "max {} open rooms",
                 limits.max_rooms
             )));
         }
-        crate::rest::check_usage_cap(&self.st, g.project.0, &limits).await?;
+        crate::rest::check_usage_cap(&self.st, grant.project.0, &limits).await?;
         if self.st.host.len() >= self.st.cfg.limits.max_rooms_per_node as usize {
-            crate::rest::reject(&self.st, g.project, "capacity");
+            crate::rest::reject(&self.st, grant.project, "capacity");
             return Err(NetError::QuotaExceeded("node is full".into()));
         }
         let max_players = max_players
@@ -924,7 +946,7 @@ impl Session {
         let room_id = RoomId::new();
         let cfg = RoomConfig {
             id: room_id,
-            project: g.project,
+            project: grant.project,
             name: name.clone(),
             mode,
             max_players,
@@ -953,7 +975,7 @@ impl Session {
             &self.st.pool,
             &queries::NewRoom {
                 id: cfg.id.0,
-                project_id: g.project.0,
+                project_id: grant.project.0,
                 node_id: self.st.node_id.0,
                 region: self.st.region.to_string(),
                 name,
@@ -971,45 +993,45 @@ impl Session {
             NetError::Conflict(_) => NetError::Conflict("room name already in use".into()),
             e => e,
         })?;
-        let h = self
+        let handle = self
             .st
             .host
-            .insert(g.project, Room::new(cfg, Instant::now()));
+            .insert(grant.project, Room::new(cfg, Instant::now()));
         self.st.webhooks.emit(
-            g.project,
+            grant.project,
             "room.created",
-            serde_json::json!({"room": room_id.to_string(), "name": h.lock().room.cfg.name, "mode": format!("{mode:?}").to_lowercase(), "region": self.st.region.to_string()}),
+            serde_json::json!({"room": room_id.to_string(), "name": handle.lock().room.cfg.name, "mode": format!("{mode:?}").to_lowercase(), "region": self.st.region.to_string()}),
         );
         if let Some(sy) = sync {
             let period = sy.tick_period();
-            h.lock().sync = Some(sy);
+            handle.lock().sync = Some(sy);
             tokio::spawn(run_sync(self.st.clone(), room_id, period));
         }
         if let Some(ls) = lockstep {
             let period = ls.tick_period();
-            h.lock().lockstep = Some(ls);
+            handle.lock().lockstep = Some(ls);
             tokio::spawn(run_lockstep(self.st.clone(), room_id, period));
         }
         self.st.metrics.rooms.set(self.st.host.len() as i64);
-        Ok(h)
+        Ok(handle)
     }
 
     async fn join_hosted(
         &mut self,
-        h: Arc<Mutex<HostedRoom>>,
+        handle: Arc<Mutex<HostedRoom>>,
         player_props: Map<String, Value>,
         rejoin: Option<ActorId>,
         spectator: bool,
     ) -> Result<()> {
-        let g = self.grant()?.clone();
-        let project = self.admit(&g).await?;
+        let grant = self.grant()?.clone();
+        let project = self.admit(&grant).await?;
         // A player coming back to a slot they still hold was validated and counted when they
         // first joined; anyone else is a new arrival, whatever `rejoin_actor` says.
-        let returning = h.lock().room.actor_of(&g.player_id).is_some();
+        let returning = handle.lock().room.actor_of(&grant.player_id).is_some();
         if !returning {
             let (room_id, room_name, mode, props) = {
-                let hr = h.lock();
-                if hr.project != g.project {
+                let hr = handle.lock();
+                if hr.project != grant.project {
                     return Err(NetError::NotFound("room".into()));
                 }
                 (
@@ -1021,18 +1043,18 @@ impl Session {
             };
             let payload = serde_json::json!({
                 "room": room_id.to_string(), "name": room_name, "mode": mode, "room_props": props,
-                "player_id": g.player_id, "player_name": g.name, "player_props": player_props,
+                "player_id": grant.player_id, "player_name": grant.name, "player_props": player_props,
                 "spectator": spectator,
             });
-            match self.st.webhooks.validate_join(g.project, payload).await {
+            match self.st.webhooks.validate_join(grant.project, payload).await {
                 crate::webhooks::JoinVerdict::Allow => {}
                 crate::webhooks::JoinVerdict::Deny(reason) => {
-                    crate::rest::reject(&self.st, g.project, "validate");
+                    crate::rest::reject(&self.st, grant.project, "validate");
                     return Err(NetError::Forbidden(format!("join rejected: {reason}")));
                 }
-                crate::webhooks::JoinVerdict::Unavailable(e) => {
-                    tracing::warn!(project = %g.project, error = %e, "join validator unavailable");
-                    crate::rest::reject(&self.st, g.project, "validate_unavailable");
+                crate::webhooks::JoinVerdict::Unavailable(reason) => {
+                    tracing::warn!(project = %grant.project, error = %reason, "join validator unavailable");
+                    crate::rest::reject(&self.st, grant.project, "validate_unavailable");
                     return Err(NetError::Forbidden("join validator unavailable".into()));
                 }
             }
@@ -1043,13 +1065,13 @@ impl Session {
                 let online: u64 = self
                     .st
                     .redis
-                    .list_rooms(g.project)
+                    .list_rooms(grant.project)
                     .await?
                     .iter()
                     .map(|r| r.players as u64)
                     .sum();
                 if online >= cap as u64 {
-                    crate::rest::reject(&self.st, g.project, "capacity");
+                    crate::rest::reject(&self.st, grant.project, "capacity");
                     return Err(NetError::QuotaExceeded(format!(
                         "project is at its concurrent player cap ({cap})"
                     )));
@@ -1057,15 +1079,15 @@ impl Session {
             }
         }
         let joined = {
-            let mut hr = h.lock();
-            if hr.project != g.project {
+            let mut hr = handle.lock();
+            if hr.project != grant.project {
                 return Err(NetError::NotFound("room".into()));
             }
             // Same player from a second connection: the new session takes the slot, the old
             // one is told and ignored from here on (see `owns_slot`).
-            if let Some(old) = hr.room.online_actor(&g.player_id) {
-                if let Some(a) = hr.sessions.get(&old) {
-                    let _ = a.control.try_send(ServerMsg::Left {
+            if let Some(old) = hr.room.online_actor(&grant.player_id) {
+                if let Some(session) = hr.sessions.get(&old) {
+                    let _ = session.control.try_send(ServerMsg::Left {
                         reason: "session_replaced".into(),
                     });
                 }
@@ -1073,8 +1095,8 @@ impl Session {
             let (actor, out) = hr
                 .room
                 .join(
-                    &g.player_id,
-                    &g.name,
+                    &grant.player_id,
+                    &grant.name,
                     player_props,
                     rejoin,
                     spectator,
@@ -1082,7 +1104,7 @@ impl Session {
                 )
                 .map_err(|e| {
                     if matches!(e, RoomError::Full) {
-                        crate::rest::reject(&self.st, g.project, "room_full");
+                        crate::rest::reject(&self.st, grant.project, "room_full");
                     }
                     room_err(e)
                 })?;
@@ -1148,7 +1170,7 @@ impl Session {
         self.room = Some(InRoom {
             id,
             actor,
-            hosted: h,
+            hosted: handle,
         });
         let _ = self.ctl.try_send(joined);
         self.st.metrics.players.set(self.st.host.players() as i64);
@@ -1158,79 +1180,91 @@ impl Session {
 
     /// Pushes the room's live record to Redis (which fans out lobby updates to all nodes).
     async fn publish_current(&self) {
-        if let Some(r) = &self.room {
-            publish_room(&self.st, &r.hosted).await;
+        if let Some(joined) = &self.room {
+            publish_room(&self.st, &joined.hosted).await;
         }
     }
 
     async fn leave(&mut self, offline: bool) {
-        if let Some(d) = self.data.take() {
-            match &d.sink {
-                DataSink::Quic(c) => c.close(0u32.into(), b"left"),
-                DataSink::WebTransport(c) => c.close(0u32.into(), b"left"),
+        if let Some(data) = self.data.take() {
+            match &data.sink {
+                DataSink::Quic(conn) => conn.close(0u32.into(), b"left"),
+                DataSink::WebTransport(conn) => conn.close(0u32.into(), b"left"),
                 DataSink::Ws(_) => {}
             }
         }
-        let Some(r) = self.room.take() else { return };
-        if !self.owns_slot(&r.hosted.lock(), r.actor) {
+        let Some(joined) = self.room.take() else {
+            return;
+        };
+        if !self.owns_slot(&joined.hosted.lock(), joined.actor) {
             return;
         }
         let (should_close, project, id) = {
-            let mut h = r.hosted.lock();
-            let out = h.room.leave(r.actor, offline, Instant::now());
-            dispatch(&h, out, &self.st.metrics);
-            h.sessions.remove(&r.actor);
+            let mut hosted = joined.hosted.lock();
+            let out = hosted.room.leave(joined.actor, offline, Instant::now());
+            dispatch(&hosted, out, &self.st.metrics);
+            hosted.sessions.remove(&joined.actor);
             self.st.webhooks.emit(
-                h.project,
+                hosted.project,
                 "player.left",
-                serde_json::json!({"room": h.room.id().to_string(), "actor": r.actor.0}),
+                serde_json::json!({"room": hosted.room.id().to_string(), "actor": joined.actor.0}),
             );
-            if let Some(sy) = h.sync.as_mut() {
-                sy.on_leave(r.actor);
+            if let Some(sy) = hosted.sync.as_mut() {
+                sy.on_leave(joined.actor);
             }
-            if let Some(ls) = h.lockstep.as_mut() {
-                ls.on_leave(r.actor);
+            if let Some(ls) = hosted.lockstep.as_mut() {
+                ls.on_leave(joined.actor);
             }
-            (h.room.is_empty() && !offline, h.project, h.room.id())
+            (
+                hosted.room.is_empty() && !offline,
+                hosted.project,
+                hosted.room.id(),
+            )
         };
         self.st.metrics.players.set(self.st.host.players() as i64);
         if should_close {
             close_room(&self.st, project, id).await;
         } else {
-            publish_room(&self.st, &r.hosted).await;
+            publish_room(&self.st, &joined.hosted).await;
         }
     }
 
-    fn on_binary(&mut self, b: Bytes) -> Result<()> {
+    fn on_binary(&mut self, frame: Bytes) -> Result<()> {
         match &self.data {
             None => {
-                let t = self
+                let kind = self
                     .st
                     .tickets
-                    .verify(&b)
+                    .verify(&frame)
                     .ok_or_else(|| NetError::Unauthorized("bad data ticket".into()))?;
-                let r = self.in_room()?;
-                if t.room != r.id || t.actor != r.actor || t.session != self.id {
+                let joined = self.in_room()?;
+                if kind.room != joined.id || kind.actor != joined.actor || kind.session != self.id {
                     return Err(NetError::Unauthorized(
                         "ticket does not match session".into(),
                     ));
                 }
                 let ds = DataSession::new(DataSink::Ws(self.bin.clone()), self.st.metrics.clone());
-                let ds = attach_data(&r.hosted, r.actor, ds);
+                let ds = attach_data(&joined.hosted, joined.actor, ds);
                 spawn_ticker(&self.st, ds.clone());
                 self.data = Some(ds);
                 Ok(())
             }
             Some(ds) => {
-                let r = self.in_room()?;
-                let (hosted, actor) = (r.hosted.clone(), r.actor);
-                for m in ds.receive(b) {
-                    let mut h = hosted.lock();
-                    if !self.owns_slot(&h, actor) {
-                        drop(h);
+                let joined = self.in_room()?;
+                let (hosted, actor) = (joined.hosted.clone(), joined.actor);
+                for message in ds.receive(frame) {
+                    let mut room = hosted.lock();
+                    if !self.owns_slot(&room, actor) {
+                        drop(room);
                         return Err(self.replaced());
                     }
-                    handle_data_frame(&mut h, actor, m.channel, m.payload, &self.st.metrics)?;
+                    handle_data_frame(
+                        &mut room,
+                        actor,
+                        message.channel,
+                        message.payload,
+                        &self.st.metrics,
+                    )?;
                 }
                 Ok(())
             }
@@ -1267,32 +1301,32 @@ impl Session {
     }
 
     async fn cleanup(&mut self) {
-        if let Some(p) = self.lobby.take() {
-            self.st.host.unsubscribe_lobby(p, &self.ctl);
+        if let Some(lobby) = self.lobby.take() {
+            self.st.host.unsubscribe_lobby(lobby, &self.ctl);
         }
-        if let Some(g) = &self.grant {
-            self.st.host.presence_leave(g.project, &g.player_id);
+        if let Some(grant) = &self.grant {
+            self.st.host.presence_leave(grant.project, &grant.player_id);
         }
         self.leave(true).await;
     }
 }
 
 pub fn attach_data(
-    h: &Arc<Mutex<HostedRoom>>,
+    handle: &Arc<Mutex<HostedRoom>>,
     actor: ActorId,
     ds: Arc<DataSession>,
 ) -> Arc<DataSession> {
-    let mut g = h.lock();
-    if let Some(a) = g.sessions.get_mut(&actor) {
-        a.data = Some(ds.clone());
+    let mut hosted = handle.lock();
+    if let Some(session) = hosted.sessions.get_mut(&actor) {
+        session.data = Some(ds.clone());
     }
     // An empty reliable frame tells the client the path is open; a lockstep room past
     // tick 0 then streams the catch-up (checkpoint + journal tail) on the same channel.
     ds.send(net_common::Channel::ReliableOrdered, Bytes::new());
-    let spectator = g.room.player(actor).is_some_and(|p| p.spectator);
-    if let Some(ls) = g.lockstep.as_mut() {
-        for f in ls.catchup_for(spectator) {
-            ds.send(net_common::Channel::ReliableOrdered, f);
+    let spectator = hosted.room.player(actor).is_some_and(|p| p.spectator);
+    if let Some(ls) = hosted.lockstep.as_mut() {
+        for frame in ls.catchup_for(spectator) {
+            ds.send(net_common::Channel::ReliableOrdered, frame);
         }
     }
     ds
@@ -1311,17 +1345,21 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
     iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let checkpoint_every = (2_000_000 / period.as_micros().max(1)) as u64;
     let writer = RoomWriter::spawn(st.clone(), room);
-    let mut n: u64 = 0;
+    let mut ticks: u64 = 0;
     loop {
         iv.tick().await;
-        let Some(h) = st.host.get(room) else { return };
+        let Some(handle) = st.host.get(room) else {
+            return;
+        };
         let t0 = Instant::now();
         let mut checkpoint: Option<(ProjectId, Vec<u8>)> = None;
         {
-            let mut g = h.lock();
-            let project = g.project;
+            let mut hosted = handle.lock();
+            let project = hosted.project;
             let (out, events, actors) = {
-                let Some(sy) = g.sync.as_mut() else { return };
+                let Some(sy) = hosted.sync.as_mut() else {
+                    return;
+                };
                 let out = sy.tick();
                 let events = sy.take_events();
                 let actors: Vec<ActorId> = sy.avatars.keys().copied().collect();
@@ -1332,18 +1370,21 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
                 let (resyncs, starved) = sy.take_replication_stats();
                 st.metrics.sync_resyncs.inc_by(resyncs);
                 st.metrics.sync_aoi_starved.inc_by(starved);
-                n += 1;
-                if n.is_multiple_of(checkpoint_every) {
+                ticks += 1;
+                if ticks.is_multiple_of(checkpoint_every) {
                     checkpoint = Some((project, sy.checkpoint()));
                 }
                 (out, events, actors)
             };
             if let Some((_, body)) = checkpoint.take() {
-                checkpoint = Some((project, RoomCheckpoint::of(&g, Some(body), None).encode()));
+                checkpoint = Some((
+                    project,
+                    RoomCheckpoint::of(&hosted, Some(body), None).encode(),
+                ));
             }
-            for (actor, d) in out {
-                if let Some(ds) = g.sessions.get(&actor).and_then(|s| s.data.as_ref()) {
-                    ds.send(net_common::Channel::UnreliableSequenced, d);
+            for (actor, delta) in out {
+                if let Some(ds) = hosted.sessions.get(&actor).and_then(|s| s.data.as_ref()) {
+                    ds.send(net_common::Channel::UnreliableSequenced, delta);
                     st.metrics.events.with_label_values(&["sync_delta"]).inc();
                 }
             }
@@ -1359,15 +1400,15 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
                         payload,
                     };
                     match target {
-                        Some(a) => outgoing.push(Outgoing::Data(
-                            a,
+                        Some(actor) => outgoing.push(Outgoing::Data(
+                            actor,
                             net_common::Channel::ReliableOrdered,
                             frame,
                         )),
                         None => {
-                            for a in &actors {
+                            for actor in &actors {
                                 outgoing.push(Outgoing::Data(
-                                    *a,
+                                    *actor,
                                     net_common::Channel::ReliableOrdered,
                                     frame.clone(),
                                 ));
@@ -1375,7 +1416,7 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
                         }
                     }
                 }
-                dispatch(&g, outgoing, &st.metrics);
+                dispatch(&hosted, outgoing, &st.metrics);
             }
         }
         let took = t0.elapsed();
@@ -1415,26 +1456,26 @@ impl RoomWriter {
         let journal_broken = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let broken = journal_broken.clone();
         tokio::spawn(async move {
-            while let Some(w) = rx.recv().await {
+            while let Some(write) = rx.recv().await {
                 let redis = st.redis.clone();
-                let is_journal = matches!(w, RedisWrite::Journal(..));
-                let (what, fut): (&str, std::pin::Pin<Box<dyn Future<Output = _> + Send>>) = match w
-                {
-                    RedisWrite::Checkpoint(project, body) => (
-                        "checkpoint",
-                        Box::pin(
-                            async move { redis.put_checkpoint(project, room, &body, 600).await },
+                let is_journal = matches!(write, RedisWrite::Journal(..));
+                let (what, fut): (&str, std::pin::Pin<Box<dyn Future<Output = _> + Send>>) =
+                    match write {
+                        RedisWrite::Checkpoint(project, body) => (
+                            "checkpoint",
+                            Box::pin(async move {
+                                redis.put_checkpoint(project, room, &body, 600).await
+                            }),
                         ),
-                    ),
-                    RedisWrite::Journal(project, entries, keep) => (
-                        "journal",
-                        Box::pin(async move {
-                            redis
-                                .append_journal(project, room, &entries, keep, 600)
-                                .await
-                        }),
-                    ),
-                };
+                        RedisWrite::Journal(project, entries, keep) => (
+                            "journal",
+                            Box::pin(async move {
+                                redis
+                                    .append_journal(project, room, &entries, keep, 600)
+                                    .await
+                            }),
+                        ),
+                    };
                 let ok = match tokio::time::timeout(Self::TIMEOUT, fut).await {
                     Ok(Ok(())) => true,
                     Ok(Err(e)) => {
@@ -1469,9 +1510,9 @@ impl RoomWriter {
 
     /// Queues a write; when Redis is far behind the write is dropped (bounded memory) and the
     /// next checkpoint supersedes it.
-    pub fn push(&self, w: RedisWrite) {
-        let is_journal = matches!(w, RedisWrite::Journal(..));
-        if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(w) {
+    pub fn push(&self, write: RedisWrite) {
+        let is_journal = matches!(write, RedisWrite::Journal(..));
+        if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(write) {
             if is_journal {
                 self.journal_broken
                     .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1494,30 +1535,35 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
     let journal_keep = (10_000_000 / period.as_micros().max(1)) as isize;
     let mut journal_buf: Vec<Vec<u8>> = Vec::new();
     let writer = RoomWriter::spawn(st.clone(), room);
-    let mut n: u64 = 0;
+    let mut ticks: u64 = 0;
     loop {
         iv.tick().await;
-        let Some(h) = st.host.get(room) else { return };
+        let Some(handle) = st.host.get(room) else {
+            return;
+        };
         let t0 = Instant::now();
         let mut checkpoint: Option<(ProjectId, Vec<u8>)> = None;
         let project;
         {
-            let mut g = h.lock();
-            project = g.project;
-            n += 1;
-            if n.is_multiple_of(checkpoint_every) || writer.take_journal_broken() {
-                let snap = g.lockstep.as_ref().map(|l| l.snapshot());
-                checkpoint = Some((g.project, RoomCheckpoint::of(&g, None, snap).encode()));
+            let mut hosted = handle.lock();
+            project = hosted.project;
+            ticks += 1;
+            if ticks.is_multiple_of(checkpoint_every) || writer.take_journal_broken() {
+                let snap = hosted.lockstep.as_ref().map(|l| l.snapshot());
+                checkpoint = Some((
+                    hosted.project,
+                    RoomCheckpoint::of(&hosted, None, snap).encode(),
+                ));
             }
-            let master = g.room.master();
+            let master = hosted.room.master();
             let (bundle, desyncs, actors, ckpt_req, watch, reports, dump_reqs, dumps) = {
-                let Some(ls) = g.lockstep.as_mut() else {
+                let Some(ls) = hosted.lockstep.as_mut() else {
                     return;
                 };
                 ls.master = master;
                 let bundle = ls.tick();
-                if let Some(e) = ls.last_bundle() {
-                    journal_buf.push(e.to_vec());
+                if let Some(bundle) = ls.last_bundle() {
+                    journal_buf.push(bundle.to_vec());
                 }
                 let ckpt_req = ls.checkpoint_request();
                 let desyncs: Vec<(u32, ActorId, u8, Vec<Bytes>)> = ls
@@ -1541,17 +1587,17 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                 let reports = ls.input_reports();
                 let mut dump_reqs: Vec<(ActorId, Bytes)> = Vec::new();
                 for (tick, actor, _, _) in &desyncs {
-                    if let Some(f) = ls.request_dump(*tick, *actor) {
-                        dump_reqs.push((*actor, f));
+                    if let Some(frame) = ls.request_dump(*tick, *actor) {
+                        dump_reqs.push((*actor, frame));
                     }
                     // With a referee sim the node's own state is the reference (already in
                     // `dumps`); otherwise ask the master for its state at that tick.
                     if ls.has_sim() {
                         continue;
                     }
-                    if let Some(m) = master.filter(|m| m != actor) {
-                        if let Some(f) = ls.request_dump(*tick, m) {
-                            dump_reqs.push((m, f));
+                    if let Some(holder) = master.filter(|m| m != actor) {
+                        if let Some(frame) = ls.request_dump(*tick, holder) {
+                            dump_reqs.push((holder, frame));
                         }
                     }
                 }
@@ -1560,21 +1606,28 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                     bundle, desyncs, actors, ckpt_req, watch, reports, dump_reqs, dumps,
                 )
             };
-            for (a, f) in reports {
-                if let Some(ds) = g.sessions.get(&a).and_then(|s| s.data.as_ref()) {
-                    ds.send(net_common::Channel::UnreliableSequenced, f);
+            for (actor, frame) in reports {
+                if let Some(ds) = hosted.sessions.get(&actor).and_then(|s| s.data.as_ref()) {
+                    ds.send(net_common::Channel::UnreliableSequenced, frame);
                 }
             }
-            for (a, f) in dump_reqs {
-                if let Some(ds) = g.sessions.get(&a).and_then(|s| s.data.as_ref()) {
-                    ds.send(net_common::Channel::ReliableOrdered, f);
+            for (actor, frame) in dump_reqs {
+                if let Some(ds) = hosted.sessions.get(&actor).and_then(|s| s.data.as_ref()) {
+                    ds.send(net_common::Channel::ReliableOrdered, frame);
                 }
             }
-            for d in dumps {
+            for dump in dumps {
                 let redis = st.redis.clone();
                 tokio::spawn(async move {
                     if let Err(e) = redis
-                        .put_desync(project, room, d.tick, d.actor.0, d.hash, &d.state)
+                        .put_desync(
+                            project,
+                            room,
+                            dump.tick,
+                            dump.actor.0,
+                            dump.hash,
+                            &dump.state,
+                        )
                         .await
                     {
                         tracing::warn!(room = %room, error = %e, "desync dump not stored");
@@ -1582,19 +1635,19 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                 });
             }
             if let Some((spectators, d)) = watch {
-                for a in &spectators {
-                    if let Some(ds) = g.sessions.get(a).and_then(|s| s.data.as_ref()) {
+                for spectator in &spectators {
+                    if let Some(ds) = hosted.sessions.get(spectator).and_then(|s| s.data.as_ref()) {
                         ds.send(net_common::Channel::UnreliableSequenced, d.clone());
                     }
                 }
             }
             if let Some((req, m)) = ckpt_req.zip(master) {
-                if let Some(ds) = g.sessions.get(&m).and_then(|s| s.data.as_ref()) {
+                if let Some(ds) = hosted.sessions.get(&m).and_then(|s| s.data.as_ref()) {
                     ds.send(net_common::Channel::ReliableOrdered, req);
                 }
             }
-            for a in &actors {
-                if let Some(ds) = g.sessions.get(a).and_then(|s| s.data.as_ref()) {
+            for actor in &actors {
+                if let Some(ds) = hosted.sessions.get(actor).and_then(|s| s.data.as_ref()) {
                     ds.send(net_common::Channel::UnreliableSequenced, bundle.clone());
                     st.metrics
                         .events
@@ -1606,19 +1659,19 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                 let untrusted = strikes >= crate::lockstep::UNTRUSTED_AFTER;
                 st.metrics.lockstep_desyncs.inc();
                 // The desynced client reloads from the master's confirmed state + journal tail.
-                if let Some(ds) = g.sessions.get(&actor).and_then(|s| s.data.as_ref()) {
-                    for f in resync {
-                        ds.send(net_common::Channel::ReliableOrdered, f);
+                if let Some(ds) = hosted.sessions.get(&actor).and_then(|s| s.data.as_ref()) {
+                    for frame in resync {
+                        ds.send(net_common::Channel::ReliableOrdered, frame);
                     }
                 }
                 st.webhooks.emit(
-                    g.project,
+                    hosted.project,
                     "desync",
                     serde_json::json!({"room": room.to_string(), "tick": tick, "actor": actor.0, "strikes": strikes, "untrusted": untrusted}),
                 );
-                for a in &actors {
-                    if let Some(s) = g.sessions.get(a) {
-                        let _ = s.control.try_send(ServerMsg::Desync {
+                for member in &actors {
+                    if let Some(session) = hosted.sessions.get(member) {
+                        let _ = session.control.try_send(ServerMsg::Desync {
                             tick,
                             actor,
                             strikes,
@@ -1732,18 +1785,18 @@ pub struct RoomCheckpoint {
 
 impl RoomCheckpoint {
     pub fn of(
-        g: &HostedRoom,
+        hosted: &HostedRoom,
         sync: Option<Vec<u8>>,
         lockstep: Option<crate::lockstep::LockstepSnapshot>,
     ) -> Self {
         Self {
-            players: g
+            players: hosted
                 .room
                 .players()
                 .filter(|p| !p.spectator)
                 .map(|p| (p.actor, p.player_id.clone(), p.name.clone()))
                 .collect(),
-            master: g.room.master(),
+            master: hosted.room.master(),
             sync,
             lockstep,
         }
@@ -1822,17 +1875,17 @@ pub async fn adopt_room(
     let mut sync = None;
     let mut lockstep = None;
     let mut restored = "none";
-    if let Some(c) = ckpt {
-        room.restore_offline(c.players, c.master, Instant::now());
+    if let Some(checkpoint) = ckpt {
+        room.restore_offline(checkpoint.players, checkpoint.master, Instant::now());
         if mode == RoomMode::Sync {
             let mut sy = build_sync(st, project, &props, 0).await?;
-            if let Some(body) = c.sync {
+            if let Some(body) = checkpoint.sync {
                 sy.restore(&body).map_err(NetError::Invalid)?;
                 restored = "sync";
             }
             sync = Some(sy);
         }
-        if let (RoomMode::Lockstep, Some(snap)) = (mode, c.lockstep) {
+        if let (RoomMode::Lockstep, Some(snap)) = (mode, checkpoint.lockstep) {
             let mut ls = crate::lockstep::LockstepRoom::restore(snap)
                 .with_spectator_delay(prop_secs(&props, "spectator_delay_secs", 3) as u32);
             match st.redis.get_journal(project, room_id).await {
@@ -1863,15 +1916,15 @@ pub async fn adopt_room(
             tracing::warn!(room = %room_id, error = %e, "server sim not attached after adoption");
         }
     }
-    let h = st.host.insert(project, room);
+    let handle = st.host.insert(project, room);
     if let Some(sy) = sync {
         let period = sy.tick_period();
-        h.lock().sync = Some(sy);
+        handle.lock().sync = Some(sy);
         tokio::spawn(run_sync(st.clone(), room_id, period));
     }
     if let Some(ls) = lockstep {
         let period = ls.tick_period();
-        h.lock().lockstep = Some(ls);
+        handle.lock().lockstep = Some(ls);
         tokio::spawn(run_lockstep(st.clone(), room_id, period));
     }
     st.metrics.rooms.set(st.host.len() as i64);
@@ -1882,8 +1935,8 @@ pub async fn adopt_room(
         "room.rehosted",
         serde_json::json!({"room": room_id.to_string(), "name": row.name, "mode": row.mode, "node": st.node_id.to_string(), "restored": restored}),
     );
-    publish_room(st, &h).await;
-    Ok(h)
+    publish_room(st, &handle).await;
+    Ok(handle)
 }
 
 /// Drives every data link every FLUSH_EVERY: coalesced batches, acks, retransmits.
@@ -1896,22 +1949,23 @@ pub async fn flusher(st: Shared) {
     }
 }
 
-pub async fn publish_room(st: &Shared, h: &Arc<Mutex<HostedRoom>>) {
+pub async fn publish_room(st: &Shared, handle: &Arc<Mutex<HostedRoom>>) {
     let (project, live) = {
-        let g = h.lock();
+        let hosted = handle.lock();
         (
-            g.project,
+            hosted.project,
             LiveRoom {
-                room: g.room.id(),
+                room: hosted.room.id(),
                 node: st.node_id.to_string(),
-                name: g.room.cfg.name.clone(),
-                mode: g.room.cfg.mode.to_string(),
-                players: g.room.players().count() as u16,
-                max_players: g.room.cfg.max_players,
-                open: g.room.cfg.open,
-                visible: g.room.cfg.visible,
+                name: hosted.room.cfg.name.clone(),
+                mode: hosted.room.cfg.mode.to_string(),
+                players: hosted.room.players().count() as u16,
+                max_players: hosted.room.cfg.max_players,
+                open: hosted.room.cfg.open,
+                visible: hosted.room.cfg.visible,
                 props: Value::Object(
-                    g.room
+                    hosted
+                        .room
                         .summary()
                         .props
                         .into_iter()
@@ -1938,25 +1992,25 @@ pub fn notice_room(st: &Shared, room: RoomId, text: &str, level: &str) -> Result
         .host
         .get(room)
         .ok_or_else(|| NetError::NotFound("room not hosted here".into()))?;
-    let h = hr.lock();
-    let (out, n) = h.room.notice(text, level);
-    dispatch(&h, out, &st.metrics);
-    Ok(n)
+    let hosted = hr.lock();
+    let (out, reached) = hosted.room.notice(text, level);
+    dispatch(&hosted, out, &st.metrics);
+    Ok(reached)
 }
 
 /// Same for every room of a project hosted here: (rooms, players).
 pub fn notice_project(st: &Shared, project: ProjectId, text: &str, level: &str) -> (usize, usize) {
     let (mut rooms, mut players) = (0usize, 0usize);
     for hr in st.host.all() {
-        let h = hr.lock();
-        if h.project != project {
+        let hosted = hr.lock();
+        if hosted.project != project {
             continue;
         }
-        let (out, n) = h.room.notice(text, level);
-        if n > 0 {
+        let (out, reached) = hosted.room.notice(text, level);
+        if reached > 0 {
             rooms += 1;
-            players += n;
-            dispatch(&h, out, &st.metrics);
+            players += reached;
+            dispatch(&hosted, out, &st.metrics);
         }
     }
     (rooms, players)
@@ -1977,29 +2031,29 @@ pub async fn kick_player(
         .ok_or_else(|| NetError::NotFound("room not hosted here".into()))?;
     let player_id;
     {
-        let mut h = hr.lock();
-        player_id = h
+        let mut hosted = hr.lock();
+        player_id = hosted
             .room
             .player_infos()
             .into_iter()
             .find(|p| p.actor == actor)
             .map(|p| p.player_id)
             .ok_or_else(|| NetError::NotFound("actor not in room".into()))?;
-        let out = h
+        let out = hosted
             .room
             .admin_kick(actor, reason, Instant::now())
             .map_err(room_err)?;
-        dispatch(&h, out, &st.metrics);
-        h.sessions.remove(&actor);
+        dispatch(&hosted, out, &st.metrics);
+        hosted.sessions.remove(&actor);
         st.webhooks.emit(
-            h.project,
+            hosted.project,
             "player.left",
-            serde_json::json!({"room": h.room.id().to_string(), "actor": actor.0, "kicked": true}),
+            serde_json::json!({"room": hosted.room.id().to_string(), "actor": actor.0, "kicked": true}),
         );
-        if let Some(sy) = h.sync.as_mut() {
+        if let Some(sy) = hosted.sync.as_mut() {
             sy.on_leave(actor);
         }
-        if let Some(ls) = h.lockstep.as_mut() {
+        if let Some(ls) = hosted.lockstep.as_mut() {
             ls.on_leave(actor);
         }
     }
@@ -2012,15 +2066,15 @@ pub async fn kick_player(
 /// heartbeat wait). Players get `left{reason:"rehost"}` and rejoin by room name.
 pub async fn handoff_all(st: &Shared) -> usize {
     let rooms = st.host.all();
-    for h in &rooms {
+    for handle in &rooms {
         let (project, id, body) = {
-            let mut g = h.lock();
-            let sync = g.sync.as_mut().map(|s| s.checkpoint());
-            let ls = g.lockstep.as_ref().map(|l| l.snapshot());
+            let mut hosted = handle.lock();
+            let sync = hosted.sync.as_mut().map(|s| s.checkpoint());
+            let ls = hosted.lockstep.as_ref().map(|l| l.snapshot());
             (
-                g.project,
-                g.room.id(),
-                RoomCheckpoint::of(&g, sync, ls).encode(),
+                hosted.project,
+                hosted.room.id(),
+                RoomCheckpoint::of(&hosted, sync, ls).encode(),
             )
         };
         if let Err(e) = st.redis.put_checkpoint(project, id, &body, 600).await {
@@ -2028,31 +2082,31 @@ pub async fn handoff_all(st: &Shared) -> usize {
         }
     }
     match queries::orphan_rooms_of_node(&st.pool, st.node_id.0).await {
-        Ok(n) => tracing::info!(rooms = n, "rooms handed off for adoption"),
+        Ok(count) => tracing::info!(rooms = count, "rooms handed off for adoption"),
         Err(e) => tracing::error!(error = %e, "handoff: orphan rooms"),
     }
-    let n = rooms.len();
-    for h in rooms {
+    let count = rooms.len();
+    for handle in rooms {
         // Taking the sessions out detaches every player: a later leave or disconnect must not
         // touch (or republish) a room this node no longer hosts.
         let (id, sessions) = {
-            let mut g = h.lock();
+            let mut hosted = handle.lock();
             (
-                g.room.id(),
-                std::mem::take(&mut g.sessions)
+                hosted.room.id(),
+                std::mem::take(&mut hosted.sessions)
                     .into_values()
                     .map(|s| s.control)
                     .collect::<Vec<_>>(),
             )
         };
         st.host.remove(id);
-        for s in sessions {
-            let _ = s.try_send(ServerMsg::Left {
+        for session in sessions {
+            let _ = session.try_send(ServerMsg::Left {
                 reason: "rehost".into(),
             });
         }
     }
-    n
+    count
 }
 
 /// Runs with every heartbeat. A node that missed three heartbeats is reaped by its peers and
@@ -2071,16 +2125,16 @@ pub async fn reconcile_rooms(st: &Shared) -> Result<(u64, usize)> {
     let lost = queries::rooms_lost(&st.pool, st.node_id.0, &hosted).await?;
     let mut dropped = 0;
     for id in lost {
-        let Some(h) = st.host.remove(net_common::RoomId(id)) else {
+        let Some(handle) = st.host.remove(net_common::RoomId(id)) else {
             continue;
         };
         dropped += 1;
-        let sessions: Vec<_> = std::mem::take(&mut h.lock().sessions)
+        let sessions: Vec<_> = std::mem::take(&mut handle.lock().sessions)
             .into_values()
             .map(|s| s.control)
             .collect();
-        for s in sessions {
-            let _ = s.try_send(ServerMsg::Left {
+        for session in sessions {
+            let _ = session.try_send(ServerMsg::Left {
                 reason: "rehost".into(),
             });
         }
@@ -2098,22 +2152,22 @@ pub async fn reconcile_rooms(st: &Shared) -> Result<(u64, usize)> {
 /// Upper bound for one stored replay; longer matches keep their most recent ticks.
 pub const MAX_REPLAY_BYTES: usize = 16 << 20;
 
-/// Serializes `r`, dropping the oldest ticks (and their hashes) until it fits `max_bytes`;
+/// Serializes `replay`, dropping the oldest ticks (and their hashes) until it fits `max_bytes`;
 /// `from_tick` moves forward accordingly. None only if even an empty replay does not fit.
-pub fn fit_replay(r: &mut net_rollback::Replay, max_bytes: usize) -> Option<Vec<u8>> {
+pub fn fit_replay(replay: &mut net_rollback::Replay, max_bytes: usize) -> Option<Vec<u8>> {
     loop {
-        let body = serde_json::to_vec(r).ok()?;
+        let body = serde_json::to_vec(replay).ok()?;
         if body.len() <= max_bytes {
             return Some(body);
         }
-        if r.inputs.is_empty() {
+        if replay.inputs.is_empty() {
             return None;
         }
-        let drop = (r.inputs.len() / 2).max(1);
-        r.inputs.drain(..drop);
-        r.from_tick += drop as u32;
-        let from = r.from_tick;
-        r.hashes.retain(|(t, _)| *t >= from);
+        let drop = (replay.inputs.len() / 2).max(1);
+        replay.inputs.drain(..drop);
+        replay.from_tick += drop as u32;
+        let from = replay.from_tick;
+        replay.hashes.retain(|(t, _)| *t >= from);
         tracing::info!(from_tick = from, "replay trimmed to fit the size cap");
     }
 }
@@ -2121,28 +2175,28 @@ pub fn fit_replay(r: &mut net_rollback::Replay, max_bytes: usize) -> Option<Vec<
 /// `room.closed` payload: name/mode/props always; with room prop `export_state_on_close` the
 /// final checkpoint (players, master, sync state or lockstep snapshot) as base64 so a backend can
 /// persist the match (the "persist room state via webhooks" pattern). Capped at 256 KiB.
-fn closed_payload(g: &mut HostedRoom, id: RoomId) -> Value {
+fn closed_payload(hosted: &mut HostedRoom, id: RoomId) -> Value {
     const MAX_EXPORT: usize = 256 * 1024;
-    let mut p = serde_json::json!({
+    let mut payload = serde_json::json!({
         "room": id.to_string(),
-        "name": g.room.cfg.name,
-        "mode": g.room.cfg.mode.as_str(),
-        "props": g.room.cfg.props,
+        "name": hosted.room.cfg.name,
+        "mode": hosted.room.cfg.mode.as_str(),
+        "props": hosted.room.cfg.props,
     });
-    if prop_bool(&g.room.cfg.props, "export_state_on_close", false) {
-        let sync = g.sync.as_mut().map(|s| s.checkpoint());
-        let ls = g.lockstep.as_ref().map(|l| l.snapshot());
-        let bytes = RoomCheckpoint::of(g, sync, ls).encode();
+    if prop_bool(&hosted.room.cfg.props, "export_state_on_close", false) {
+        let sync = hosted.sync.as_mut().map(|s| s.checkpoint());
+        let ls = hosted.lockstep.as_ref().map(|l| l.snapshot());
+        let bytes = RoomCheckpoint::of(hosted, sync, ls).encode();
         if bytes.len() <= MAX_EXPORT {
-            p["state"] = Value::String(base64::Engine::encode(
+            payload["state"] = Value::String(base64::Engine::encode(
                 &base64::engine::general_purpose::STANDARD,
                 &bytes,
             ));
         } else {
-            p["state_too_large"] = Value::from(bytes.len());
+            payload["state_too_large"] = Value::from(bytes.len());
         }
     }
-    p
+    payload
 }
 
 /// The live node hosting `room`, if there is one.
@@ -2157,7 +2211,7 @@ pub(crate) async fn room_host(
 }
 
 pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {
-    let Some(h) = st.host.remove(id) else {
+    let Some(handle) = st.host.remove(id) else {
         st.webhooks.emit(
             project,
             "room.closed",
@@ -2167,32 +2221,32 @@ pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {
     };
     {
         let (sessions, replay) = {
-            let mut g = h.lock();
+            let mut hosted = handle.lock();
             st.webhooks
-                .emit(project, "room.closed", closed_payload(&mut g, id));
-            let replay = g
+                .emit(project, "room.closed", closed_payload(&mut hosted, id));
+            let replay = hosted
                 .lockstep
                 .as_ref()
                 .filter(|l| !l.journal.is_empty())
                 .map(|l| l.replay(""));
             // Detach every player (see `handoff_all`): the room is gone for them too.
             (
-                std::mem::take(&mut g.sessions)
+                std::mem::take(&mut hosted.sessions)
                     .into_values()
                     .map(|s| s.control)
                     .collect::<Vec<mpsc::Sender<ServerMsg>>>(),
                 replay,
             )
         };
-        if let Some(mut r) = replay {
-            if let Some(body) = fit_replay(&mut r, MAX_REPLAY_BYTES) {
+        if let Some(mut kept) = replay {
+            if let Some(body) = fit_replay(&mut kept, MAX_REPLAY_BYTES) {
                 if let Err(e) = st.redis.put_replay(project, id, &body, 86_400).await {
                     tracing::warn!(error = %e, room = %id, "replay store");
                 }
             }
         }
-        for s in sessions {
-            let _ = s.try_send(ServerMsg::Left {
+        for session in sessions {
+            let _ = session.try_send(ServerMsg::Left {
                 reason: "room closed".into(),
             });
         }
@@ -2221,16 +2275,16 @@ pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {
     }
 }
 
-pub fn live_to_summary(r: LiveRoom) -> RoomSummary {
+pub fn live_to_summary(live: LiveRoom) -> RoomSummary {
     RoomSummary {
-        id: r.room.to_string(),
-        name: r.name,
-        mode: r.mode.parse().unwrap_or_default(),
-        players: r.players,
-        max_players: r.max_players,
-        open: r.open && r.players < r.max_players,
-        props: match r.props {
-            Value::Object(m) => m,
+        id: live.room.to_string(),
+        name: live.name,
+        mode: live.mode.parse().unwrap_or_default(),
+        players: live.players,
+        max_players: live.max_players,
+        open: live.open && live.players < live.max_players,
+        props: match live.props {
+            Value::Object(props) => props,
             _ => Map::new(),
         },
     }
@@ -2265,9 +2319,9 @@ pub fn prop_secs(props: &Map<String, Value>, key: &str, default: u64) -> u64 {
 }
 
 fn short_id() -> String {
-    let u = uuid::Uuid::new_v4();
-    let b = u.as_bytes();
-    B64.encode(&b[..6])
+    let uuid = uuid::Uuid::new_v4();
+    let bytes = uuid.as_bytes();
+    B64.encode(&bytes[..6])
         .replace(['+', '/'], "x")
         .trim_end_matches('=')
         .to_lowercase()
@@ -2278,54 +2332,54 @@ pub async fn reaper(st: Shared) {
     let mut iv = tokio::time::interval(Duration::from_secs(2));
     loop {
         iv.tick().await;
-        for h in st.host.all() {
+        for handle in st.host.all() {
             let (close, project, id, changed) = {
-                let mut g = h.lock();
-                let out = g.room.expire(Instant::now());
+                let mut hosted = handle.lock();
+                let out = hosted.room.expire(Instant::now());
                 let changed = !out.is_empty();
                 // `PlayerLeft` goes to every player who stays, so the first field of `Control`
                 // is a recipient. The player whose slot expired is the `actor` of the message.
                 let mut expired = Vec::new();
-                for o in out.iter() {
+                for outgoing in out.iter() {
                     if let net_rooms::Outgoing::Control(
                         _,
                         ServerMsg::PlayerLeft {
                             actor,
                             offline: false,
                         },
-                    ) = o
+                    ) = outgoing
                     {
                         if !expired.contains(actor) {
                             expired.push(*actor);
                         }
                     }
                 }
-                for a in expired.iter() {
-                    g.sessions.remove(a);
+                for actor in expired.iter() {
+                    hosted.sessions.remove(actor);
                     st.webhooks.emit(
-                        g.project,
+                        hosted.project,
                         "player.left",
-                        serde_json::json!({"room": g.room.id().to_string(), "actor": a.0}),
+                        serde_json::json!({"room": hosted.room.id().to_string(), "actor": actor.0}),
                     );
-                    if let Some(sy) = g.sync.as_mut() {
-                        sy.on_leave(*a);
+                    if let Some(sy) = hosted.sync.as_mut() {
+                        sy.on_leave(*actor);
                     }
-                    if let Some(ls) = g.lockstep.as_mut() {
-                        ls.on_leave(*a);
+                    if let Some(ls) = hosted.lockstep.as_mut() {
+                        ls.on_leave(*actor);
                     }
                 }
-                dispatch(&g, out, &st.metrics);
+                dispatch(&hosted, out, &st.metrics);
                 (
-                    g.room.should_close(Instant::now()),
-                    g.project,
-                    g.room.id(),
+                    hosted.room.should_close(Instant::now()),
+                    hosted.project,
+                    hosted.room.id(),
                     changed,
                 )
             };
             if close {
                 close_room(&st, project, id).await;
             } else if changed {
-                publish_room(&st, &h).await;
+                publish_room(&st, &handle).await;
             }
         }
         st.metrics.players.set(st.host.players() as i64);
@@ -2338,7 +2392,7 @@ mod replay_fit_tests {
 
     #[test]
     fn trims_oldest_ticks_until_it_fits() {
-        let mut r = net_rollback::Replay {
+        let mut replay = net_rollback::Replay {
             seed: 1,
             schema_hash: "h".into(),
             tick_hz: 60,
@@ -2354,12 +2408,12 @@ mod replay_fit_tests {
             hash_every: 100,
             hashes: (1..=10).map(|i| (i * 100, i as u64)).collect(),
         };
-        let full = serde_json::to_vec(&r).unwrap().len();
-        let body = fit_replay(&mut r, full / 4).unwrap();
+        let full = serde_json::to_vec(&replay).unwrap().len();
+        let body = fit_replay(&mut replay, full / 4).unwrap();
         assert!(body.len() <= full / 4);
-        assert!(r.from_tick >= 750 && r.inputs.len() + r.from_tick as usize == 1000);
-        assert!(r.hashes.iter().all(|(t, _)| *t >= r.from_tick));
-        let mut tiny = r.clone();
+        assert!(replay.from_tick >= 750 && replay.inputs.len() + replay.from_tick as usize == 1000);
+        assert!(replay.hashes.iter().all(|(t, _)| *t >= replay.from_tick));
+        let mut tiny = replay.clone();
         assert!(fit_replay(&mut tiny, 10).is_none());
     }
 }

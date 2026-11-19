@@ -10,12 +10,19 @@ namespace Aurix.Net.Unity.Framework
     [DisallowMultipleComponent]
     public class NetworkIdentity : MonoBehaviour
     {
-        [Tooltip("Behaviours replicated with this object, in the same order on every peer. Filled from children when empty.")]
+        [Tooltip(
+            "Behaviours replicated with this object, in the same order on every peer. Filled from children when empty."
+        )]
         public List<NetworkBehaviour> behaviours = new List<NetworkBehaviour>();
-        [Tooltip("Despawn this object when its owner leaves (otherwise ownership is just removed).")]
+
+        [Tooltip(
+            "Despawn this object when its owner leaves (otherwise ownership is just removed)."
+        )]
         public bool despawnOnOwnerDisconnect = true;
 
-        [Tooltip("Non-zero for objects placed in the scene: the same id on host and clients binds them (set by the editor; see NetworkManager.RegisterSceneObject).")]
+        [Tooltip(
+            "Non-zero for objects placed in the scene: the same id on host and clients binds them (set by the editor; see NetworkManager.RegisterSceneObject)."
+        )]
         public uint sceneId;
 
         public NetworkManager networkManager { get; private set; }
@@ -28,66 +35,138 @@ namespace Aurix.Net.Unity.Framework
         public bool isClient => isSpawned && networkManager.isClient;
         public bool isHost => isSpawned && networkManager.isHost;
         public bool hasOwner => owner.HasValue;
-        public bool isOwner => isSpawned && networkManager.localPlayer.HasValue && owner == networkManager.localPlayer;
+        public bool isOwner =>
+            isSpawned && networkManager.localPlayer.HasValue && owner == networkManager.localPlayer;
+
         /// <summary>The peer that drives this object: its owner when it has one, else the server.</summary>
         public bool isController => isSpawned && (hasOwner ? isOwner : isServer);
-        public bool IsController(bool ownerHasAuthority) => ownerHasAuthority ? isController : isServer;
+
+        public bool IsController(bool ownerHasAuthority) =>
+            ownerHasAuthority ? isController : isServer;
+
         public PlayerID? localPlayer => networkManager?.localPlayer;
 
         readonly HashSet<PlayerID> _observers = new HashSet<PlayerID>();
+
         /// <summary>Server: players holding a copy of this object (clients: empty).</summary>
         public IReadOnlyCollection<PlayerID> observers => _observers;
+
         /// <summary>Set when a <see cref="NetworkLOD"/> behaviour is attached; gates per-player delta sends.</summary>
         public NetworkLOD lod { get; internal set; }
-        public bool IsObserver(PlayerID p) => _observers.Contains(p);
-        internal bool AddObserver(PlayerID p) { if (!_observers.Add(p)) return false; onObserverAdded?.Invoke(p); return true; }
-        internal bool RemoveObserver(PlayerID p) { if (!_observers.Remove(p)) return false; onObserverRemoved?.Invoke(p); return true; }
+
+        public bool IsObserver(PlayerID player) => _observers.Contains(player);
+
+        internal bool AddObserver(PlayerID player)
+        {
+            if (!_observers.Add(player))
+            {
+                return false;
+            }
+
+            onObserverAdded?.Invoke(player);
+            return true;
+        }
+
+        internal bool RemoveObserver(PlayerID player)
+        {
+            if (!_observers.Remove(player))
+            {
+                return false;
+            }
+
+            onObserverRemoved?.Invoke(player);
+            return true;
+        }
+
         internal void ClearObservers() => _observers.Clear();
+
         [Tooltip("Visibility rules on this object only (null = the manager's rules).")]
         public INetworkVisibilityRule visibilityRule;
 
-        public event Action<PlayerID> onObserverAdded, onObserverRemoved;
+        public event Action<PlayerID> onObserverAdded,
+            onObserverRemoved;
         public event Action<PlayerID?, PlayerID?> onOwnerChanged;
-        public event Action onSpawned, onDespawned;
+        public event Action onSpawned,
+            onDespawned;
 
-        protected virtual void Awake() { if (behaviours.Count == 0) GetComponentsInChildren(true, behaviours); }
-
-        internal void Setup(NetworkManager m, uint id, int prefab, PlayerID? own)
+        protected virtual void Awake()
         {
-            networkManager = m; objectId = id; prefabId = prefab; owner = own;
-            if (behaviours.Count == 0) GetComponentsInChildren(true, behaviours);
-            for (int i = 0; i < behaviours.Count; i++) behaviours[i].Bind(this, i);
+            if (behaviours.Count == 0)
+            {
+                GetComponentsInChildren(true, behaviours);
+            }
+        }
+
+        internal void Setup(NetworkManager manager, uint id, int prefab, PlayerID? own)
+        {
+            networkManager = manager;
+            objectId = id;
+            prefabId = prefab;
+            owner = own;
+            if (behaviours.Count == 0)
+            {
+                GetComponentsInChildren(true, behaviours);
+            }
+
+            for (int i = 0; i < behaviours.Count; i++)
+            {
+                behaviours[i].Bind(this, i);
+            }
         }
 
         internal void MarkSpawned(bool asServer)
         {
             isSpawned = true;
-            foreach (var b in behaviours) b.InternalSpawned(asServer);
+            foreach (var behaviour in behaviours)
+            {
+                behaviour.InternalSpawned(asServer);
+            }
+
             onSpawned?.Invoke();
         }
 
         internal void MarkDespawned()
         {
-            if (!isSpawned) return;
+            if (!isSpawned)
+            {
+                return;
+            }
+
             isSpawned = false;
-            foreach (var b in behaviours) b.InternalDespawned();
+            foreach (var behaviour in behaviours)
+            {
+                behaviour.InternalDespawned();
+            }
+
             onDespawned?.Invoke();
         }
 
-        internal void SetOwner(PlayerID? o)
+        internal void SetOwner(PlayerID? newOwner)
         {
-            if (owner == o) return;
-            var old = owner; owner = o;
-            foreach (var b in behaviours) b.InternalOwnerChanged(old, o);
-            onOwnerChanged?.Invoke(old, o);
+            if (owner == newOwner)
+            {
+                return;
+            }
+
+            var old = owner;
+            owner = newOwner;
+            foreach (var behaviour in behaviours)
+            {
+                behaviour.InternalOwnerChanged(old, newOwner);
+            }
+
+            onOwnerChanged?.Invoke(old, newOwner);
         }
 
         /// <summary>Server only: hand the object to a player (null = server-controlled).</summary>
         public void GiveOwnership(PlayerID? player) => networkManager?.SetOwnership(this, player);
+
         public void RemoveOwnership() => GiveOwnership(null);
+
         /// <summary>Server only: remove the object everywhere.</summary>
         public void Despawn() => networkManager?.Despawn(this);
 
-        public override string ToString() => $"{name}#{objectId}{(hasOwner ? " owner " + owner : "")}";
+        public override string ToString() =>
+            $"{name}#{objectId}{(hasOwner ? " owner " + owner : "")}";
     }
 }

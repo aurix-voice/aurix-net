@@ -35,13 +35,13 @@ impl Fragmenter {
             msg.chunks(FRAG_PAYLOAD)
                 .enumerate()
                 .map(|(i, c)| {
-                    let mut b = BytesMut::with_capacity(FRAG_HDR + c.len());
-                    b.put_u16(id);
-                    b.put_u8(channel as u8);
-                    b.put_u8(i as u8);
-                    b.put_u8(count as u8);
-                    b.extend_from_slice(c);
-                    b.freeze()
+                    let mut buf = BytesMut::with_capacity(FRAG_HDR + c.len());
+                    buf.put_u16(id);
+                    buf.put_u8(channel as u8);
+                    buf.put_u8(i as u8);
+                    buf.put_u8(count as u8);
+                    buf.extend_from_slice(c);
+                    buf.freeze()
                 })
                 .collect(),
         )
@@ -79,27 +79,27 @@ impl Reassembler {
         if !self.partial.contains_key(&id) && self.partial.len() >= MAX_PARTIAL {
             return None;
         }
-        let p = self.partial.entry(id).or_insert_with(|| Partial {
+        let partial = self.partial.entry(id).or_insert_with(|| Partial {
             channel,
             parts: vec![None; count],
             received: 0,
             started: now,
         });
-        if p.parts.len() != count || p.channel != channel {
+        if partial.parts.len() != count || partial.channel != channel {
             self.partial.remove(&id);
             return None;
         }
-        if p.parts[index].is_none() {
-            p.parts[index] = Some(frag);
-            p.received += 1;
+        if partial.parts[index].is_none() {
+            partial.parts[index] = Some(frag);
+            partial.received += 1;
         }
-        if p.received == count {
-            let p = self.partial.remove(&id).unwrap();
+        if partial.received == count {
+            let partial = self.partial.remove(&id).unwrap();
             let mut out = BytesMut::new();
-            for part in p.parts {
+            for part in partial.parts {
                 out.extend_from_slice(&part.unwrap());
             }
-            Some((p.channel, out.freeze()))
+            Some((partial.channel, out.freeze()))
         } else {
             None
         }
@@ -113,15 +113,15 @@ mod tests {
     #[test]
     fn split_and_reassemble_out_of_order() {
         let msg: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
-        let mut f = Fragmenter::default();
-        let mut parts = f.split(Channel::ReliableOrdered, &msg).unwrap();
+        let mut fragmenter = Fragmenter::default();
+        let mut parts = fragmenter.split(Channel::ReliableOrdered, &msg).unwrap();
         assert_eq!(parts.len(), 5000usize.div_ceil(FRAG_PAYLOAD));
         parts.reverse();
-        let mut r = Reassembler::default();
+        let mut reassembler = Reassembler::default();
         let now = Instant::now();
         let mut got = None;
-        for p in parts {
-            got = r.accept(p, now).or(got);
+        for part in parts {
+            got = reassembler.accept(part, now).or(got);
         }
         let (ch, data) = got.unwrap();
         assert_eq!(ch, Channel::ReliableOrdered);
@@ -130,8 +130,8 @@ mod tests {
 
     #[test]
     fn rejects_oversize() {
-        let mut f = Fragmenter::default();
-        assert!(f
+        let mut fragmenter = Fragmenter::default();
+        assert!(fragmenter
             .split(Channel::ReliableOrdered, &vec![0u8; MAX_MESSAGE + 1])
             .is_none());
     }

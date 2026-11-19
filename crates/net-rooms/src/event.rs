@@ -57,8 +57,8 @@ pub enum FrameError {
 
 impl EventFrame {
     pub fn encode(&self) -> Bytes {
-        let mut b = BytesMut::with_capacity(8 + self.payload.len());
-        b.put_u8(self.code);
+        let mut buf = BytesMut::with_capacity(8 + self.payload.len());
+        buf.put_u8(self.code);
         let kind = match self.target {
             EventTarget::All => 0,
             EventTarget::Others => 1,
@@ -74,19 +74,19 @@ impl EventFrame {
         if self.group.is_some() {
             flags |= 0x10;
         }
-        b.put_u8(flags);
-        b.put_u16(self.from.0);
-        if let Some(g) = self.group {
-            b.put_u16(g);
+        buf.put_u8(flags);
+        buf.put_u16(self.from.0);
+        if let Some(group) = self.group {
+            buf.put_u16(group);
         }
-        if let EventTarget::Actors(a) = &self.target {
-            b.put_u16(a.len().min(u16::MAX as usize) as u16);
-            for x in a.iter().take(u16::MAX as usize) {
-                b.put_u16(x.0);
+        if let EventTarget::Actors(actors) = &self.target {
+            buf.put_u16(actors.len().min(u16::MAX as usize) as u16);
+            for actor in actors.iter().take(u16::MAX as usize) {
+                buf.put_u16(actor.0);
             }
         }
-        b.extend_from_slice(&self.payload);
-        b.freeze()
+        buf.extend_from_slice(&self.payload);
+        buf.freeze()
     }
 
     pub fn decode(mut data: Bytes) -> Result<Self, FrameError> {
@@ -112,11 +112,11 @@ impl EventFrame {
                 if data.len() < 2 {
                     return Err(FrameError::TooShort);
                 }
-                let n = data.get_u16() as usize;
-                if data.len() < n * 2 {
+                let count = data.get_u16() as usize;
+                if data.len() < count * 2 {
                     return Err(FrameError::TooShort);
                 }
-                EventTarget::Actors((0..n).map(|_| ActorId(data.get_u16())).collect())
+                EventTarget::Actors((0..count).map(|_| ActorId(data.get_u16())).collect())
             }
         };
         let cache = if flags & 0x04 != 0 {
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn roundtrip_all_shapes() {
-        for (t, g, c) in [
+        for (target, group, cache) in [
             (EventTarget::All, None, CacheOp::None),
             (EventTarget::Others, Some(3), CacheOp::Add),
             (EventTarget::Master, None, CacheOp::Remove),
@@ -153,15 +153,15 @@ mod tests {
                 CacheOp::None,
             ),
         ] {
-            let f = EventFrame {
+            let frame = EventFrame {
                 code: 42,
-                target: t,
-                cache: c,
-                group: g,
+                target,
+                cache,
+                group,
                 from: ActorId(5),
                 payload: Bytes::from_static(b"payload"),
             };
-            assert_eq!(EventFrame::decode(f.encode()).unwrap(), f);
+            assert_eq!(EventFrame::decode(frame.encode()).unwrap(), frame);
         }
     }
 }

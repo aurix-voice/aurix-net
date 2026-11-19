@@ -8,81 +8,149 @@ namespace Aurix.Net.Managed
 {
     public sealed class LockstepClient
     {
-        public const byte KindInput = 0x10, KindBundle = 0x20, KindHash = 0x21, KindCheckpoint = 0x22, KindCheckpointReq = 0x23, KindCatchup = 0x24, KindInputStats = 0x25, KindDumpReq = 0x26, KindDump = 0x27;
+        public const byte KindInput = 0x10,
+            KindBundle = 0x20,
+            KindHash = 0x21,
+            KindCheckpoint = 0x22,
+            KindCheckpointReq = 0x23,
+            KindCatchup = 0x24,
+            KindInputStats = 0x25,
+            KindDumpReq = 0x26,
+            KindDump = 0x27;
         public const byte KindCommand = 0x28;
 
         /// <summary>Confirmed inputs for one tick, in tick order, every tick exactly once (empty dictionary = nobody sent).</summary>
         public event Action<uint, Dictionary<ushort, byte[]>> OnTick;
+
         /// <summary>Pseudo-actor whose input carries the tick's commands (see SendCommand).</summary>
         public const ushort CommandActor = 0xFFFF;
+
         /// <summary>Reliable command delivered to everyone at the same tick: (tick, sender actor, bytes). Raised before OnTick of that tick.</summary>
         public event Action<uint, ushort, byte[]> OnCommand;
+
         /// <summary>Catch-up start: restore the game state from this checkpoint (state empty at tick 0 = fresh start).</summary>
         public event Action<uint, ulong, byte[]> OnRestore;
+
         /// <summary>The node asked us (the master) for the confirmed state at a tick ≤ this one: answer with SendCheckpoint.</summary>
         public event Action<uint> OnCheckpointRequested;
+
         /// <summary>The node flagged a desync and wants our state at this tick (from your rollback history): answer with SendDump, or ignore.</summary>
         public event Action<uint> OnDumpRequested;
 
         readonly Action<Channel, byte[]> _send;
-        readonly SortedDictionary<uint, Dictionary<ushort, byte[]>> _pending = new SortedDictionary<uint, Dictionary<ushort, byte[]>>();
+        readonly SortedDictionary<uint, Dictionary<ushort, byte[]>> _pending =
+            new SortedDictionary<uint, Dictionary<ushort, byte[]>>();
         readonly List<byte[]> _recentInputs = new List<byte[]>();
-        bool _started; uint _next; uint _lastInput;
+        bool _started;
+        uint _next;
+        uint _lastInput;
+
         /// <summary>Next tick to be delivered to OnTick.</summary>
         public uint ConfirmedTick => _next;
+
         /// <summary>Newest tick the node has bundled (+1).</summary>
         public uint ServerTick { get; private set; }
+
         /// <summary>How many ticks ahead of the server clock inputs are stamped (≥1). Tuned automatically between
         /// InputDelayMin and InputDelayMax from the node's input-margin reports when AdaptiveDelay is on.</summary>
         public uint InputDelay = 2;
-        public uint InputDelayMin = 1, InputDelayMax = 8;
+        public uint InputDelayMin = 1,
+            InputDelayMax = 8;
         public bool AdaptiveDelay = true;
+
         /// <summary>Inputs repeated per datagram (1..8): higher survives more loss at the cost of bytes.</summary>
         public int InputRedundancy = 3;
-        /// <summary>Last reported margin (ticks of slack; negative = inputs arrived late) and late inputs so far.</summary>
-        public sbyte LastMargin; public long LateInputs;
-        int _slackStreak;
-        public long Delivered, Catchups, Dropped;
 
-        public LockstepClient(Action<Channel, byte[]> send) { _send = send; }
+        /// <summary>Last reported margin (ticks of slack; negative = inputs arrived late) and late inputs so far.</summary>
+        public sbyte LastMargin;
+        public long LateInputs;
+        int _slackStreak;
+        public long Delivered,
+            Catchups,
+            Dropped;
+
+        public LockstepClient(Action<Channel, byte[]> send)
+        {
+            _send = send;
+        }
 
         /// <summary>Feed every data-path payload from a lockstep room. Returns false when it was not a lockstep frame.</summary>
-        public bool Receive(byte[] p)
+        public bool Receive(byte[] payload)
         {
-            if (p.Length == 0) return false;
-            switch (p[0])
+            if (payload.Length == 0)
+            {
+                return false;
+            }
+
+            switch (payload[0])
             {
                 case KindCatchup:
+                {
+                    if (payload.Length < 17)
                     {
-                        if (p.Length < 17) return true;
-                        uint tick = U32(p, 1); ulong hash = U64(p, 5); int len = (int)U32(p, 13);
-                        var state = new byte[Math.Min(len, p.Length - 17)]; Array.Copy(p, 17, state, 0, state.Length);
-                        _pending.Clear(); _next = tick; _started = true; Catchups++;
-                        OnRestore?.Invoke(tick, hash, state);
                         return true;
                     }
+
+                    uint tick = U32(payload, 1);
+                    ulong hash = U64(payload, 5);
+                    int len = (int)U32(payload, 13);
+                    var state = new byte[Math.Min(len, payload.Length - 17)];
+                    Array.Copy(payload, 17, state, 0, state.Length);
+                    _pending.Clear();
+                    _next = tick;
+                    _started = true;
+                    Catchups++;
+                    OnRestore?.Invoke(tick, hash, state);
+                    return true;
+                }
                 case KindBundle:
+                {
+                    if (payload.Length < 2)
                     {
-                        if (p.Length < 2) return true;
-                        int n = p[1], o = 2;
-                        for (int i = 0; i < n && o + 2 <= p.Length; i++)
-                        {
-                            int len = (p[o] << 8) | p[o + 1]; o += 2; if (o + len > p.Length) break;
-                            DecodeBundle(p, o, len); o += len;
-                        }
-                        Drain();
                         return true;
                     }
+
+                    int count = payload[1],
+                        offset = 2;
+                    for (int i = 0; i < count && offset + 2 <= payload.Length; i++)
+                    {
+                        int len = (payload[offset] << 8) | payload[offset + 1];
+                        offset += 2;
+                        if (offset + len > payload.Length)
+                        {
+                            break;
+                        }
+
+                        DecodeBundle(payload, offset, len);
+                        offset += len;
+                    }
+                    Drain();
+                    return true;
+                }
                 case KindCheckpointReq:
-                    if (p.Length >= 5) OnCheckpointRequested?.Invoke(U32(p, 1));
+                    if (payload.Length >= 5)
+                    {
+                        OnCheckpointRequested?.Invoke(U32(payload, 1));
+                    }
+
                     return true;
                 case KindDumpReq:
-                    if (p.Length >= 5) OnDumpRequested?.Invoke(U32(p, 1));
+                    if (payload.Length >= 5)
+                    {
+                        OnDumpRequested?.Invoke(U32(payload, 1));
+                    }
+
                     return true;
                 case KindInputStats:
-                    if (p.Length >= 7) OnInputStats((sbyte)p[5], p[6]);
+                    if (payload.Length >= 7)
+                    {
+                        OnInputStats((sbyte)payload[5], payload[6]);
+                    }
+
                     return true;
-                case KindCheckpoint: case KindHash: case KindInput:
+                case KindCheckpoint:
+                case KindHash:
+                case KindInput:
                     return true;
             }
             return false;
@@ -92,44 +160,109 @@ namespace Aurix.Net.Managed
         /// consecutive reports with two or more ticks of slack.</summary>
         internal void OnInputStats(sbyte margin, byte late)
         {
-            LastMargin = margin; LateInputs += late;
-            if (!AdaptiveDelay) return;
-            if (margin < 0) { InputDelay = Math.Min(InputDelayMax, InputDelay + (uint)Math.Min(4, -margin)); _slackStreak = 0; }
-            else if (margin >= 2) { if (++_slackStreak >= 3) { _slackStreak = 0; if (InputDelay > InputDelayMin) InputDelay--; } }
-            else _slackStreak = 0;
+            LastMargin = margin;
+            LateInputs += late;
+            if (!AdaptiveDelay)
+            {
+                return;
+            }
+
+            if (margin < 0)
+            {
+                InputDelay = Math.Min(InputDelayMax, InputDelay + (uint)Math.Min(4, -margin));
+                _slackStreak = 0;
+            }
+            else if (margin >= 2)
+            {
+                if (++_slackStreak >= 3)
+                {
+                    _slackStreak = 0;
+                    if (InputDelay > InputDelayMin)
+                    {
+                        InputDelay--;
+                    }
+                }
+            }
+            else
+            {
+                _slackStreak = 0;
+            }
         }
 
-        void DecodeBundle(byte[] b, int o, int len)
+        void DecodeBundle(byte[] bytes, int offset, int len)
         {
-            int end = o + len; if (len < 6 || b[o] != KindBundle) return;
-            uint t = U32(b, o + 1); int k = b[o + 5]; o += 6;
-            if (t + 1 > ServerTick) ServerTick = t + 1;
-            if (!_started) { _started = true; _next = t; }
-            if (t < _next || _pending.ContainsKey(t)) return;
-            var inputs = new Dictionary<ushort, byte[]>(k);
-            for (int i = 0; i < k && o + 3 <= end; i++)
+            int end = offset + len;
+            if (len < 6 || bytes[offset] != KindBundle)
             {
-                ushort a = (ushort)((b[o] << 8) | b[o + 1]); int l = b[o + 2]; o += 3; if (o + l > end) break;
-                var d = new byte[l]; Array.Copy(b, o, d, 0, l); o += l; inputs[a] = d;
+                return;
             }
-            _pending[t] = inputs;
+
+            uint tick = U32(bytes, offset + 1);
+            int count = bytes[offset + 5];
+            offset += 6;
+            if (tick + 1 > ServerTick)
+            {
+                ServerTick = tick + 1;
+            }
+
+            if (!_started)
+            {
+                _started = true;
+                _next = tick;
+            }
+            if (tick < _next || _pending.ContainsKey(tick))
+            {
+                return;
+            }
+
+            var inputs = new Dictionary<ushort, byte[]>(count);
+            for (int i = 0; i < count && offset + 3 <= end; i++)
+            {
+                ushort actor = (ushort)((bytes[offset] << 8) | bytes[offset + 1]);
+                int length = bytes[offset + 2];
+                offset += 3;
+                if (offset + length > end)
+                {
+                    break;
+                }
+
+                var data = new byte[length];
+                Array.Copy(bytes, offset, data, 0, length);
+                offset += length;
+                inputs[actor] = data;
+            }
+            _pending[tick] = inputs;
         }
 
         void Drain()
         {
             while (_pending.TryGetValue(_next, out var inputs))
             {
-                _pending.Remove(_next); var t = _next; _next++; Delivered++;
-                if (inputs.TryGetValue(CommandActor, out var cmds)) { inputs.Remove(CommandActor); DispatchCommands(t, cmds); }
-                OnTick?.Invoke(t, inputs);
+                _pending.Remove(_next);
+                var tick = _next;
+                _next++;
+                Delivered++;
+                if (inputs.TryGetValue(CommandActor, out var cmds))
+                {
+                    inputs.Remove(CommandActor);
+                    DispatchCommands(tick, cmds);
+                }
+                OnTick?.Invoke(tick, inputs);
             }
             // Ticks older than the redundancy window that never arrived are lost for good only if the
             // node skipped them; the node re-sends 3 ticks per datagram and the journal tail is reliable.
             while (_pending.Count > 0)
             {
-                var e = _pending.GetEnumerator(); e.MoveNext(); var oldest = e.Current.Key;
-                if (oldest <= _next + 600) break;
-                _pending.Remove(oldest); Dropped++;
+                var enumerator = _pending.GetEnumerator();
+                enumerator.MoveNext();
+                var oldest = enumerator.Current.Key;
+                if (oldest <= _next + 600)
+                {
+                    break;
+                }
+
+                _pending.Remove(oldest);
+                Dropped++;
             }
         }
 
@@ -138,75 +271,129 @@ namespace Aurix.Net.Managed
         public void SendInput(byte[] input)
         {
             uint tick = Math.Max(ServerTick + InputDelay, _lastInput + 1);
-            if (tick > ServerTick + InputDelay + 1) return;
+            if (tick > ServerTick + InputDelay + 1)
+            {
+                return;
+            }
+
             _lastInput = tick;
-            _recentInputs.Add(input); int keep = Math.Max(1, Math.Min(8, InputRedundancy)); while (_recentInputs.Count > keep) _recentInputs.RemoveAt(0);
-            _send(Channel.Unreliable, SyncWorld.EncodeInput(tick - (uint)(_recentInputs.Count - 1), _recentInputs));
+            _recentInputs.Add(input);
+            int keep = Math.Max(1, Math.Min(8, InputRedundancy));
+            while (_recentInputs.Count > keep)
+            {
+                _recentInputs.RemoveAt(0);
+            }
+
+            _send(
+                Channel.Unreliable,
+                SyncWorld.EncodeInput(tick - (uint)(_recentInputs.Count - 1), _recentInputs)
+            );
         }
 
         /// <summary>Reliable command outside the input stream (buy, surrender, pause): the server stamps it onto the next tick and every client and the referee get it via OnCommand, journaled and replayed. 1..1024 bytes.</summary>
 
         public void SendCommand(byte[] data)
-
         {
+            if (data == null || data.Length == 0 || data.Length > 1024)
+            {
+                throw new ArgumentException("1..1024 bytes", nameof(data));
+            }
 
-            if (data == null || data.Length == 0 || data.Length > 1024) throw new ArgumentException("1..1024 bytes", nameof(data));
+            var bytes = new byte[1 + data.Length];
+            bytes[0] = KindCommand;
+            Buffer.BlockCopy(data, 0, bytes, 1, data.Length);
 
-            var b = new byte[1 + data.Length]; b[0] = KindCommand; Buffer.BlockCopy(data, 0, b, 1, data.Length);
-
-            _send(Channel.Reliable, b);
-
+            _send(Channel.Reliable, bytes);
         }
 
         void DispatchCommands(uint tick, byte[] cmds)
-
         {
+            int index = 0;
 
-            int i = 0;
-
-            while (i + 4 <= cmds.Length)
-
+            while (index + 4 <= cmds.Length)
             {
+                ushort actor = (ushort)((cmds[index] << 8) | cmds[index + 1]);
+                int len = (cmds[index + 2] << 8) | cmds[index + 3];
+                index += 4;
 
-                ushort actor = (ushort)((cmds[i] << 8) | cmds[i + 1]); int len = (cmds[i + 2] << 8) | cmds[i + 3]; i += 4;
+                if (index + len > cmds.Length)
+                {
+                    break;
+                }
 
-                if (i + len > cmds.Length) break;
+                var data = new byte[len];
+                Buffer.BlockCopy(cmds, index, data, 0, len);
+                index += len;
 
-                var d = new byte[len]; Buffer.BlockCopy(cmds, i, d, 0, len); i += len;
-
-                OnCommand?.Invoke(tick, actor, d);
-
+                OnCommand?.Invoke(tick, actor, data);
             }
-
         }
-
 
         public void ReportHash(uint tick, ulong hash)
         {
-            var b = new byte[13]; b[0] = KindHash; W32(b, 1, tick); W64(b, 5, hash); _send(Channel.Unreliable, b);
+            var bytes = new byte[13];
+            bytes[0] = KindHash;
+            W32(bytes, 1, tick);
+            W64(bytes, 5, hash);
+            _send(Channel.Unreliable, bytes);
         }
 
         /// <summary>Master only, in answer to OnCheckpointRequested: confirmed state at `tick` (≤ requested).</summary>
         public void SendCheckpoint(uint tick, ulong hash, byte[] state)
         {
-            var b = new byte[13 + state.Length]; b[0] = KindCheckpoint; W32(b, 1, tick); W64(b, 5, hash); Array.Copy(state, 0, b, 13, state.Length);
-            _send(Channel.Reliable, b);
+            var bytes = new byte[13 + state.Length];
+            bytes[0] = KindCheckpoint;
+            W32(bytes, 1, tick);
+            W64(bytes, 5, hash);
+            Array.Copy(state, 0, bytes, 13, state.Length);
+            _send(Channel.Reliable, bytes);
         }
 
         /// <summary>Answer to OnDumpRequested: your state at `tick` (≤ 60 KiB), stored by the node for 24 h next to
         /// the master's, so the two can be diffed offline.</summary>
         public void SendDump(uint tick, ulong hash, byte[] state)
         {
-            var b = new byte[13 + state.Length]; b[0] = KindDump; W32(b, 1, tick); W64(b, 5, hash); Array.Copy(state, 0, b, 13, state.Length);
-            _send(Channel.Reliable, b);
+            var bytes = new byte[13 + state.Length];
+            bytes[0] = KindDump;
+            W32(bytes, 1, tick);
+            W64(bytes, 5, hash);
+            Array.Copy(state, 0, bytes, 13, state.Length);
+            _send(Channel.Reliable, bytes);
         }
 
         /// <summary>FNV-1a 64 over bytes: a simple, portable state hash.</summary>
-        public static ulong Fnv1a(byte[] data) { ulong h = 14695981039346656037UL; foreach (var x in data) { h ^= x; h *= 1099511628211UL; } return h; }
+        public static ulong Fnv1a(byte[] data)
+        {
+            ulong hash = 14695981039346656037UL;
+            foreach (var value in data)
+            {
+                hash ^= value;
+                hash *= 1099511628211UL;
+            }
+            return hash;
+        }
 
-        static uint U32(byte[] b, int o) => ((uint)b[o] << 24) | ((uint)b[o + 1] << 16) | ((uint)b[o + 2] << 8) | b[o + 3];
-        static ulong U64(byte[] b, int o) => ((ulong)U32(b, o) << 32) | U32(b, o + 4);
-        static void W32(byte[] b, int o, uint v) { b[o] = (byte)(v >> 24); b[o + 1] = (byte)(v >> 16); b[o + 2] = (byte)(v >> 8); b[o + 3] = (byte)v; }
-        static void W64(byte[] b, int o, ulong v) { W32(b, o, (uint)(v >> 32)); W32(b, o + 4, (uint)v); }
+        static uint U32(byte[] bytes, int offset) =>
+            ((uint)bytes[offset] << 24)
+            | ((uint)bytes[offset + 1] << 16)
+            | ((uint)bytes[offset + 2] << 8)
+            | bytes[offset + 3];
+
+        static ulong U64(byte[] bytes, int offset) =>
+            ((ulong)U32(bytes, offset) << 32) | U32(bytes, offset + 4);
+
+        static void W32(byte[] bytes, int offset, uint value)
+        {
+            bytes[offset] = (byte)(value >> 24);
+            bytes[offset + 1] = (byte)(value >> 16);
+            bytes[offset + 2] = (byte)(value >> 8);
+            bytes[offset + 3] = (byte)value;
+        }
+
+        static void W64(byte[] bytes, int offset, ulong value)
+        {
+            W32(bytes, offset, (uint)(value >> 32));
+            W32(bytes, offset + 4, (uint)value);
+        }
     }
 }

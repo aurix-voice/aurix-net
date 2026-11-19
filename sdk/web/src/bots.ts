@@ -21,21 +21,21 @@ export type BtNode =
 
 export class Blackboard {
   readonly values = new Map<number, bigint>();
-  get(k: number): bigint {
-    return this.values.get(k) ?? 0n;
+  get(key: number): bigint {
+    return this.values.get(key) ?? 0n;
   }
-  set(k: number, v: bigint | number) {
-    this.values.set(k, BigInt(v));
+  set(key: number, value: bigint | number) {
+    this.values.set(key, BigInt(value));
   }
-  has(k: number): boolean {
-    return this.values.has(k);
+  has(key: number): boolean {
+    return this.values.has(key);
   }
-  clear(k: number) {
-    this.values.delete(k);
+  clear(key: number) {
+    this.values.delete(key);
   }
   /** Sorted snapshot (same order as the Rust BTreeMap). */
   entries(): [number, bigint][] {
-    return [...this.values.entries()].sort((a, b) => a[0] - b[0]);
+    return [...this.values.entries()].sort((left, right) => left[0] - right[0]);
   }
 }
 
@@ -51,134 +51,177 @@ interface NodeState {
   running: boolean;
 }
 
-function kind(n: BtNode): string {
-  return Object.keys(n)[0];
+type NodeOf<K extends string> = Extract<BtNode, Record<K, unknown>>;
+
+function kind(node: BtNode): string {
+  return Object.keys(node)[0];
 }
-function children(n: BtNode): BtNode[] {
-  const k = kind(n);
-  if (k === "Sequence" || k === "Selector") return (n as any)[k];
-  if (k === "Parallel") return (n as any).Parallel.children;
-  if (k === "Inverter" || k === "Succeeder") return [(n as any)[k]];
-  if (k === "Repeat" || k === "Cooldown" || k === "Timeout") return [(n as any)[k].child];
-  return [];
+function children(node: BtNode): BtNode[] {
+  const nodeKind = kind(node);
+  switch (nodeKind) {
+    case "Sequence":
+      return (node as NodeOf<"Sequence">).Sequence;
+    case "Selector":
+      return (node as NodeOf<"Selector">).Selector;
+    case "Parallel":
+      return (node as NodeOf<"Parallel">).Parallel.children;
+    case "Inverter":
+      return [(node as NodeOf<"Inverter">).Inverter];
+    case "Succeeder":
+      return [(node as NodeOf<"Succeeder">).Succeeder];
+    case "Repeat":
+      return [(node as NodeOf<"Repeat">).Repeat.child];
+    case "Cooldown":
+      return [(node as NodeOf<"Cooldown">).Cooldown.child];
+    case "Timeout":
+      return [(node as NodeOf<"Timeout">).Timeout.child];
+    default:
+      return [];
+  }
 }
-function count(n: BtNode): number {
-  return 1 + children(n).reduce((s, c) => s + count(c), 0);
+function count(node: BtNode): number {
+  return 1 + children(node).reduce((id, child) => id + count(child), 0);
 }
 
 const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 const MASK64 = (1n << 64n) - 1n;
-function fnvMix(h: bigint, v: bigint): bigint {
-  let x = BigInt.asUintN(64, v);
+function fnvMix(hash: bigint, value: bigint): bigint {
+  let x = BigInt.asUintN(64, value);
   for (let i = 0; i < 8; i++) {
-    h ^= x & 0xffn;
-    h = (h * FNV_PRIME) & MASK64;
+    hash ^= x & 0xffn;
+    hash = (hash * FNV_PRIME) & MASK64;
     x >>= 8n;
   }
-  return h;
+  return hash;
 }
 
 export class BehaviorTree {
   private states: NodeState[];
   tick_ = 0;
   constructor(readonly root: BtNode) {
-    this.states = Array.from({ length: count(root) }, () => ({ counter: 0, cooldown: 0, running: false }));
+    this.states = Array.from({ length: count(root) }, () => ({
+      counter: 0,
+      cooldown: 0,
+      running: false,
+    }));
   }
   static fromJSON(text: string | BtNode): BehaviorTree {
-    return new BehaviorTree(typeof text === "string" ? (JSON.parse(text) as BtNode) : text);
+    return new BehaviorTree(
+      typeof text === "string" ? (JSON.parse(text) as BtNode) : text,
+    );
   }
   get tick(): number {
     return this.tick_;
   }
   reset(brain: Brain, bb: Blackboard) {
     this.abort(this.root, 0, brain, bb);
-    for (const s of this.states) {
-      s.counter = 0;
-      s.cooldown = 0;
-      s.running = false;
+    for (const state of this.states) {
+      state.counter = 0;
+      state.cooldown = 0;
+      state.running = false;
     }
   }
   step(brain: Brain, bb: Blackboard): Status {
     const st = this.run(this.root, 0, brain, bb);
-    for (const s of this.states) if (s.cooldown > 0) s.cooldown--;
+    for (const state of this.states) {
+      if (state.cooldown > 0) {
+        state.cooldown--;
+      }
+    }
     this.tick_ = (this.tick_ + 1) >>> 0;
     return st;
   }
   hash(): bigint {
-    let h = fnvMix(FNV_OFFSET, BigInt(this.tick_));
-    for (const s of this.states) {
-      const v = BigInt(s.counter) | (BigInt(s.cooldown) << 32n) | (s.running ? 1n << 63n : 0n);
-      h = fnvMix(h, v);
+    let digest = fnvMix(FNV_OFFSET, BigInt(this.tick_));
+    for (const state of this.states) {
+      const value =
+        BigInt(state.counter) |
+        (BigInt(state.cooldown) << 32n) |
+        (state.running ? 1n << 63n : 0n);
+      digest = fnvMix(digest, value);
     }
-    return h;
+    return digest;
   }
 
   private run(node: BtNode, idx: number, brain: Brain, bb: Blackboard): Status {
-    const k = kind(node);
-    const s = this.states[idx];
-    switch (k) {
+    const nodeKind = kind(node);
+    const state = this.states[idx];
+    switch (nodeKind) {
       case "Condition":
-        return brain.condition((node as any).Condition, bb) ? "Success" : "Failure";
+        return brain.condition((node as NodeOf<"Condition">).Condition, bb)
+          ? "Success"
+          : "Failure";
       case "Action": {
-        const st = brain.action((node as any).Action, bb);
-        s.running = st === "Running";
+        const st = brain.action((node as NodeOf<"Action">).Action, bb);
+        state.running = st === "Running";
         return st;
       }
       case "Compare": {
-        const { key, op, value } = (node as any).Compare;
-        const v = bb.get(key);
+        const { key, op, value } = (node as NodeOf<"Compare">).Compare;
+        const current = bb.get(key);
         const x = BigInt(value);
-        const ok = op === 0 ? v === x : op === 1 ? v !== x : op === 2 ? v < x : op === 3 ? v <= x : op === 4 ? v > x : v >= x;
+        const ok =
+          op === 0
+            ? current === x
+            : op === 1
+              ? current !== x
+              : op === 2
+                ? current < x
+                : op === 3
+                  ? current <= x
+                  : op === 4
+                    ? current > x
+                    : current >= x;
         return ok ? "Success" : "Failure";
       }
       case "Set": {
-        const { key, value } = (node as any).Set;
+        const { key, value } = (node as NodeOf<"Set">).Set;
         bb.set(key, BigInt(value));
         return "Success";
       }
       case "Wait": {
-        s.counter++;
-        if (s.counter >= (node as any).Wait) {
-          s.counter = 0;
-          s.running = false;
+        state.counter++;
+        if (state.counter >= (node as NodeOf<"Wait">).Wait) {
+          state.counter = 0;
+          state.running = false;
           return "Success";
         }
-        s.running = true;
+        state.running = true;
         return "Running";
       }
       case "Sequence":
       case "Selector": {
-        const isSeq = k === "Sequence";
+        const isSeq = nodeKind === "Sequence";
         const kids = children(node);
-        const start = s.counter;
+        const start = state.counter;
         let childIdx = idx + 1;
         let result: Status = isSeq ? "Success" : "Failure";
         for (let i = 0; i < kids.length; i++) {
-          const c = kids[i];
+          const kid = kids[i];
           if (i < start) {
-            const ck = kind(c);
+            const ck = kind(kid);
             if (ck === "Condition" || ck === "Compare") {
-              const st = this.run(c, childIdx, brain, bb);
+              const st = this.run(kid, childIdx, brain, bb);
               if ((isSeq && st === "Failure") || (!isSeq && st === "Success")) {
-                let rest = childIdx + count(c);
+                let rest = childIdx + count(kid);
                 for (const later of kids.slice(i + 1)) {
                   this.abort(later, rest, brain, bb);
                   rest += count(later);
                 }
-                s.counter = 0;
-                s.running = false;
+                state.counter = 0;
+                state.running = false;
                 return st;
               }
             }
-            childIdx += count(c);
+            childIdx += count(kid);
             continue;
           }
-          const st = this.run(c, childIdx, brain, bb);
-          childIdx += count(c);
+          const st = this.run(kid, childIdx, brain, bb);
+          childIdx += count(kid);
           if (st === "Running") {
-            s.counter = i;
-            s.running = true;
+            state.counter = i;
+            state.running = true;
             let rest = childIdx;
             for (const later of kids.slice(i + 1)) {
               this.abort(later, rest, brain, bb);
@@ -195,21 +238,24 @@ export class BehaviorTree {
             break;
           }
         }
-        s.counter = 0;
-        s.running = false;
+        state.counter = 0;
+        state.running = false;
         return result;
       }
       case "Parallel": {
-        const { need } = (node as any).Parallel;
+        const { need } = (node as NodeOf<"Parallel">).Parallel;
         const kids = children(node);
         let childIdx = idx + 1;
         let ok = 0;
         let failed = 0;
-        for (const c of kids) {
-          const st = this.run(c, childIdx, brain, bb);
-          childIdx += count(c);
-          if (st === "Success") ok++;
-          else if (st === "Failure") failed++;
+        for (const kid of kids) {
+          const st = this.run(kid, childIdx, brain, bb);
+          childIdx += count(kid);
+          if (st === "Success") {
+            ok++;
+          } else if (st === "Failure") {
+            failed++;
+          }
         }
         if (ok >= need) {
           this.abortChildren(node, idx, brain, bb);
@@ -222,77 +268,104 @@ export class BehaviorTree {
         return "Running";
       }
       case "Inverter": {
-        const st = this.run((node as any).Inverter, idx + 1, brain, bb);
-        return st === "Success" ? "Failure" : st === "Failure" ? "Success" : "Running";
+        const st = this.run(
+          (node as NodeOf<"Inverter">).Inverter,
+          idx + 1,
+          brain,
+          bb,
+        );
+        return st === "Success"
+          ? "Failure"
+          : st === "Failure"
+            ? "Success"
+            : "Running";
       }
       case "Succeeder": {
-        const st = this.run((node as any).Succeeder, idx + 1, brain, bb);
+        const st = this.run(
+          (node as NodeOf<"Succeeder">).Succeeder,
+          idx + 1,
+          brain,
+          bb,
+        );
         return st === "Running" ? "Running" : "Success";
       }
       case "Repeat": {
-        const { times, child } = (node as any).Repeat;
+        const { times, child } = (node as NodeOf<"Repeat">).Repeat;
         const st = this.run(child, idx + 1, brain, bb);
-        if (st === "Running") return "Running";
+        if (st === "Running") {
+          return "Running";
+        }
         if (st === "Failure") {
-          s.counter = 0;
+          state.counter = 0;
           return "Failure";
         }
-        s.counter++;
-        if (times > 0 && s.counter >= times) {
-          s.counter = 0;
+        state.counter++;
+        if (times > 0 && state.counter >= times) {
+          state.counter = 0;
           return "Success";
         }
         return "Running";
       }
       case "Cooldown": {
-        const { ticks, child } = (node as any).Cooldown;
-        if (s.cooldown > 0 && !s.running) return "Failure";
+        const { ticks, child } = (node as NodeOf<"Cooldown">).Cooldown;
+        if (state.cooldown > 0 && !state.running) {
+          return "Failure";
+        }
         const st = this.run(child, idx + 1, brain, bb);
-        s.running = st === "Running";
-        if (st !== "Running") s.cooldown = ticks + 1;
+        state.running = st === "Running";
+        if (st !== "Running") {
+          state.cooldown = ticks + 1;
+        }
         return st;
       }
       case "Timeout": {
-        const { ticks, child } = (node as any).Timeout;
+        const { ticks, child } = (node as NodeOf<"Timeout">).Timeout;
         const st = this.run(child, idx + 1, brain, bb);
         if (st === "Running") {
-          s.counter++;
-          if (s.counter >= ticks) {
-            s.counter = 0;
+          state.counter++;
+          if (state.counter >= ticks) {
+            state.counter = 0;
             this.abort(child, idx + 1, brain, bb);
             return "Failure";
           }
           return "Running";
         }
-        s.counter = 0;
+        state.counter = 0;
         return st;
       }
     }
-    throw new Error(`unknown node ${k}`);
+    throw new Error(`unknown node ${nodeKind}`);
   }
 
-  private abortChildren(node: BtNode, idx: number, brain: Brain, bb: Blackboard) {
+  private abortChildren(
+    node: BtNode,
+    idx: number,
+    brain: Brain,
+    bb: Blackboard,
+  ) {
     let childIdx = idx + 1;
-    for (const c of children(node)) {
-      this.abort(c, childIdx, brain, bb);
-      childIdx += count(c);
+    for (const child of children(node)) {
+      this.abort(child, childIdx, brain, bb);
+      childIdx += count(child);
     }
   }
 
   private abort(node: BtNode, idx: number, brain: Brain, bb: Blackboard) {
-    const k = kind(node);
-    if (k === "Action") {
-      if (this.states[idx].running) brain.abort?.((node as any).Action, bb);
+    const nodeKind = kind(node);
+    if (nodeKind === "Action") {
+      if (this.states[idx].running) {
+        brain.abort?.((node as NodeOf<"Action">).Action, bb);
+      }
     } else {
       let childIdx = idx + 1;
-      for (const c of children(node)) {
-        this.abort(c, childIdx, brain, bb);
-        childIdx += count(c);
+      for (const child of children(node)) {
+        this.abort(child, childIdx, brain, bb);
+        childIdx += count(child);
       }
     }
-    const s = this.states[idx];
-    s.counter = 0;
-    s.running = false;
+    const state = this.states[idx];
+    state.counter = 0;
+    state.running = false;
   }
 }
 
@@ -310,6 +383,15 @@ export interface State {
   transitions: Transition[];
 }
 
+/** The Rust `StateMachine` JSON: `states` keyed by id, plus the running position. */
+export interface StateMachineJson {
+  states: Record<string, State>;
+  current: number;
+  ticks_in_state?: number;
+  tick?: number;
+  last_action?: Status;
+}
+
 export class StateMachine {
   readonly states = new Map<number, State>();
   current: number;
@@ -317,29 +399,38 @@ export class StateMachine {
   tick = 0;
   private lastAction: Status = "Running";
   constructor(states: State[], initial: number) {
-    for (const s of states) this.states.set(s.id, s);
+    for (const state of states) {
+      this.states.set(state.id, state);
+    }
     this.current = initial;
   }
   /** Accepts the Rust `StateMachine` JSON (`states` object keyed by id). */
-  static fromJSON(text: string | any): StateMachine {
-    const d = typeof text === "string" ? JSON.parse(text) : text;
-    const m = new StateMachine(Object.values(d.states) as State[], d.current);
-    m.ticksInState = d.ticks_in_state ?? 0;
-    m.tick = d.tick ?? 0;
-    m.lastAction = d.last_action ?? "Running";
-    return m;
+  static fromJSON(text: string | StateMachineJson): StateMachine {
+    const json =
+      typeof text === "string" ? (JSON.parse(text) as StateMachineJson) : text;
+    const machine = new StateMachine(Object.values(json.states), json.current);
+    machine.ticksInState = json.ticks_in_state ?? 0;
+    machine.tick = json.tick ?? 0;
+    machine.lastAction = json.last_action ?? "Running";
+    return machine;
   }
   start(brain: Brain, bb: Blackboard) {
     let cur = this.current;
-    for (const s of this.ancestors(cur).reverse()) {
-      const a = this.states.get(s)?.on_enter;
-      if (a != null) brain.action(a, bb);
+    for (const id of this.ancestors(cur).reverse()) {
+      const action = this.states.get(id)?.on_enter;
+      if (action != null) {
+        brain.action(action, bb);
+      }
     }
     for (;;) {
       const init = this.states.get(cur)?.initial;
-      if (init == null) break;
-      const a = this.states.get(init)?.on_enter;
-      if (a != null) brain.action(a, bb);
+      if (init == null) {
+        break;
+      }
+      const action = this.states.get(init)?.on_enter;
+      if (action != null) {
+        brain.action(action, bb);
+      }
       cur = init;
     }
     this.current = cur;
@@ -347,10 +438,10 @@ export class StateMachine {
   }
   ancestors(id: number): number[] {
     const out = [id];
-    let p = this.states.get(id)?.parent;
-    while (p != null) {
-      out.push(p);
-      p = this.states.get(p)?.parent;
+    let parent = this.states.get(id)?.parent;
+    while (parent != null) {
+      out.push(parent);
+      parent = this.states.get(parent)?.parent;
     }
     return out;
   }
@@ -360,40 +451,57 @@ export class StateMachine {
   step(brain: Brain, bb: Blackboard) {
     const chain = this.ancestors(this.current);
     let target: number | null = null;
-    outer: for (const s of chain) {
-      for (const t of this.states.get(s)!.transitions) {
-        const fire = t.condition != null ? brain.condition(t.condition, bb) : this.lastAction !== "Running" && s === this.current;
+    outer: for (const id of chain) {
+      for (const transition of this.states.get(id)!.transitions) {
+        const fire =
+          transition.condition != null
+            ? brain.condition(transition.condition, bb)
+            : this.lastAction !== "Running" && id === this.current;
         if (fire) {
-          target = t.to;
+          target = transition.to;
           break outer;
         }
       }
     }
-    if (target != null) this.transition(target, brain, bb);
-    const a = this.states.get(this.current)?.action;
-    this.lastAction = a != null ? brain.action(a, bb) : "Success";
+    if (target != null) {
+      this.transition(target, brain, bb);
+    }
+    const action = this.states.get(this.current)?.action;
+    this.lastAction = action != null ? brain.action(action, bb) : "Success";
     this.ticksInState = (this.ticksInState + 1) >>> 0;
     this.tick = (this.tick + 1) >>> 0;
   }
   transition(to: number, brain: Brain, bb: Blackboard) {
     const from = this.ancestors(this.current);
     const toChain = this.ancestors(to);
-    for (const s of from) {
-      if (toChain.includes(s)) break;
-      const a = this.states.get(s)?.on_exit;
-      if (a != null) brain.action(a, bb);
+    for (const id of from) {
+      if (toChain.includes(id)) {
+        break;
+      }
+      const action = this.states.get(id)?.on_exit;
+      if (action != null) {
+        brain.action(action, bb);
+      }
     }
-    for (const s of [...toChain].reverse()) {
-      if (from.includes(s)) continue;
-      const a = this.states.get(s)?.on_enter;
-      if (a != null) brain.action(a, bb);
+    for (const id of [...toChain].reverse()) {
+      if (from.includes(id)) {
+        continue;
+      }
+      const action = this.states.get(id)?.on_enter;
+      if (action != null) {
+        brain.action(action, bb);
+      }
     }
     let cur = to;
     for (;;) {
       const init = this.states.get(cur)?.initial;
-      if (init == null) break;
-      const a = this.states.get(init)?.on_enter;
-      if (a != null) brain.action(a, bb);
+      if (init == null) {
+        break;
+      }
+      const action = this.states.get(init)?.on_enter;
+      if (action != null) {
+        brain.action(action, bb);
+      }
       cur = init;
     }
     this.current = cur;
@@ -403,6 +511,11 @@ export class StateMachine {
   /** Same formula as Rust: current ^ ticks_in_state << 32 ^ tick * golden. */
   hash(): bigint {
     const golden = 0x9e3779b97f4a7c15n;
-    return BigInt.asUintN(64, BigInt(this.current) ^ (BigInt(this.ticksInState) << 32n) ^ ((BigInt(this.tick) * golden) & MASK64));
+    return BigInt.asUintN(
+      64,
+      BigInt(this.current) ^
+        (BigInt(this.ticksInState) << 32n) ^
+        ((BigInt(this.tick) * golden) & MASK64),
+    );
   }
 }

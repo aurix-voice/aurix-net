@@ -16,7 +16,7 @@ pub struct SequencedRx {
 impl SequencedRx {
     pub fn accept(&mut self, seq: u16) -> bool {
         match self.last {
-            Some(l) if !seq_newer(seq, l) => false,
+            Some(last) if !seq_newer(seq, last) => false,
             _ => {
                 self.last = Some(seq);
                 true
@@ -67,18 +67,18 @@ impl ReliableTx {
             if self.next_seq.wrapping_sub(oldest) >= RELIABLE_WINDOW {
                 break;
             }
-            let Some(p) = self.pending.pop_front() else {
+            let Some(packet) = self.pending.pop_front() else {
                 break;
             };
             let seq = self.next_seq;
             self.next_seq = self.next_seq.wrapping_add(1);
             self.in_flight.push_back(InFlight {
                 seq,
-                payload: p.clone(),
+                payload: packet.clone(),
                 sent_at: now,
                 retries: 0,
             });
-            out.push((seq, p));
+            out.push((seq, packet));
         }
         out
     }
@@ -90,8 +90,8 @@ impl ReliableTx {
             let acked = if p.seq == ack {
                 true
             } else if seq_newer(ack, p.seq) {
-                let d = ack.wrapping_sub(p.seq);
-                d <= 32 && (ack_bits >> (d - 1)) & 1 == 1
+                let behind = ack.wrapping_sub(p.seq);
+                behind <= 32 && (ack_bits >> (behind - 1)) & 1 == 1
             } else {
                 false
             };
@@ -107,14 +107,14 @@ impl ReliableTx {
     /// `Err(LinkDead)` when a packet exceeded MAX_RETRIES.
     pub fn poll(&mut self, now: Instant, rto: Duration) -> Result<Vec<(u16, Bytes)>, LinkDead> {
         let mut out = Vec::new();
-        for p in self.in_flight.iter_mut() {
-            if now.duration_since(p.sent_at) >= rto {
-                if p.retries >= MAX_RETRIES {
+        for packet in self.in_flight.iter_mut() {
+            if now.duration_since(packet.sent_at) >= rto {
+                if packet.retries >= MAX_RETRIES {
                     return Err(LinkDead);
                 }
-                p.retries += 1;
-                p.sent_at = now;
-                out.push((p.seq, p.payload.clone()));
+                packet.retries += 1;
+                packet.sent_at = now;
+                out.push((packet.seq, packet.payload.clone()));
             }
         }
         out.extend(self.drain_window(now));
@@ -167,9 +167,9 @@ impl ReliableRx {
                 self.ack_bits = 0;
                 true
             }
-            Some(a) if seq == a => false,
-            Some(a) if seq_newer(seq, a) => {
-                let shift = seq.wrapping_sub(a) as u32;
+            Some(newest) if seq == newest => false,
+            Some(newest) if seq_newer(seq, newest) => {
+                let shift = seq.wrapping_sub(newest) as u32;
                 self.ack_bits = if shift >= 32 {
                     0
                 } else {
@@ -178,13 +178,13 @@ impl ReliableRx {
                 self.ack = Some(seq);
                 true
             }
-            Some(a) => {
-                let d = a.wrapping_sub(seq) as u32;
-                if d > 32 {
+            Some(newest) => {
+                let behind = newest.wrapping_sub(seq) as u32;
+                if behind > 32 {
                     // Too old to track in the bitfield; treat as duplicate.
                     return false;
                 }
-                let bit = 1u32 << (d - 1);
+                let bit = 1u32 << (behind - 1);
                 if self.ack_bits & bit != 0 {
                     false
                 } else {
@@ -214,8 +214,8 @@ impl ReliableRx {
         if seq == self.next_deliver {
             let mut out = vec![payload];
             self.next_deliver = self.next_deliver.wrapping_add(1);
-            while let Some(p) = self.reorder.remove(&self.next_deliver) {
-                out.push(p);
+            while let Some(payload) = self.reorder.remove(&self.next_deliver) {
+                out.push(payload);
                 self.next_deliver = self.next_deliver.wrapping_add(1);
             }
             out
@@ -236,33 +236,33 @@ mod tests {
 
     #[test]
     fn sequenced_drops_old() {
-        let mut r = SequencedRx::default();
-        assert!(r.accept(5));
-        assert!(!r.accept(4));
-        assert!(r.accept(6));
-        assert!(!r.accept(6));
+        let mut rx = SequencedRx::default();
+        assert!(rx.accept(5));
+        assert!(!rx.accept(4));
+        assert!(rx.accept(6));
+        assert!(!rx.accept(6));
     }
 
     #[test]
     fn ordered_reorders_and_dedupes() {
-        let mut r = ReliableRx::new(true);
-        assert!(r.accept(1, Bytes::from_static(b"b")).is_empty());
-        let got = r.accept(0, Bytes::from_static(b"a"));
+        let mut rx = ReliableRx::new(true);
+        assert!(rx.accept(1, Bytes::from_static(b"b")).is_empty());
+        let got = rx.accept(0, Bytes::from_static(b"a"));
         assert_eq!(
             got,
             vec![Bytes::from_static(b"a"), Bytes::from_static(b"b")]
         );
-        assert!(r.accept(0, Bytes::from_static(b"a")).is_empty());
-        assert_eq!(r.ack_state(), Some((1, 0b1)));
+        assert!(rx.accept(0, Bytes::from_static(b"a")).is_empty());
+        assert_eq!(rx.ack_state(), Some((1, 0b1)));
     }
 
     #[test]
     fn unordered_delivers_immediately_once() {
-        let mut r = ReliableRx::new(false);
-        assert_eq!(r.accept(3, Bytes::from_static(b"d")).len(), 1);
-        assert_eq!(r.accept(1, Bytes::from_static(b"b")).len(), 1);
-        assert!(r.accept(3, Bytes::from_static(b"d")).is_empty());
-        assert!(r.accept(1, Bytes::from_static(b"b")).is_empty());
+        let mut rx = ReliableRx::new(false);
+        assert_eq!(rx.accept(3, Bytes::from_static(b"d")).len(), 1);
+        assert_eq!(rx.accept(1, Bytes::from_static(b"b")).len(), 1);
+        assert!(rx.accept(3, Bytes::from_static(b"d")).is_empty());
+        assert!(rx.accept(1, Bytes::from_static(b"b")).is_empty());
     }
 
     #[test]
@@ -273,8 +273,8 @@ mod tests {
         assert_eq!(sent.len(), 1);
         let sent2 = tx.push(Bytes::from_static(b"y"), now);
         assert_eq!(sent2[0].0, 1);
-        let r = tx.on_ack(1, 0b1, now + Duration::from_millis(40));
-        assert_eq!(r.len(), 2);
+        let samples = tx.on_ack(1, 0b1, now + Duration::from_millis(40));
+        assert_eq!(samples.len(), 2);
         assert_eq!(tx.in_flight(), 0);
         tx.push(Bytes::from_static(b"z"), now);
         let again = tx

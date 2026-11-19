@@ -28,10 +28,10 @@ impl BitWriter {
         self.bit += nbits as usize;
         // Push in two halves when the scratch would overflow 64 bits.
         let mut remaining = nbits;
-        let mut v = value;
+        let mut rest = value;
         while remaining > 0 {
             let take = remaining.min(64 - self.nscratch);
-            let part = v >> (remaining - take);
+            let part = rest >> (remaining - take);
             let part = if take == 64 {
                 part
             } else {
@@ -45,7 +45,7 @@ impl BitWriter {
             self.nscratch += take;
             remaining -= take;
             if remaining > 0 {
-                v &= (1u64 << remaining) - 1;
+                rest &= (1u64 << remaining) - 1;
             }
             while self.nscratch >= 8 {
                 let byte = (self.scratch >> (self.nscratch - 8)) as u8;
@@ -58,45 +58,45 @@ impl BitWriter {
         }
     }
 
-    pub fn write_bool(&mut self, v: bool) {
-        self.write_bits(v as u64, 1);
+    pub fn write_bool(&mut self, value: bool) {
+        self.write_bits(value as u64, 1);
     }
 
     /// Unsigned integer in `[0, 2^nbits)`, clamped.
-    pub fn write_uint(&mut self, v: u64, nbits: u32) {
+    pub fn write_uint(&mut self, value: u64, nbits: u32) {
         let max = if nbits >= 64 {
             u64::MAX
         } else {
             (1u64 << nbits) - 1
         };
-        self.write_bits(v.min(max), nbits);
+        self.write_bits(value.min(max), nbits);
     }
 
     /// Signed integer via zigzag in `nbits`.
-    pub fn write_int(&mut self, v: i64, nbits: u32) {
-        let zz = ((v << 1) ^ (v >> 63)) as u64;
+    pub fn write_int(&mut self, value: i64, nbits: u32) {
+        let zz = ((value << 1) ^ (value >> 63)) as u64;
         self.write_uint(zz, nbits);
     }
 
-    /// Quantizes `v` into `[min, max]` with step `res`.
-    pub fn write_quantized(&mut self, v: f32, min: f32, max: f32, res: f32) {
+    /// Quantizes `value` into `[min, max]` with step `res`.
+    pub fn write_quantized(&mut self, value: f32, min: f32, max: f32, res: f32) {
         let (nbits, _) = quant_bits(min, max, res);
-        let q = (((v.clamp(min, max) - min) / res) + 0.5) as u64;
-        self.write_uint(q, nbits);
+        let steps = (((value.clamp(min, max) - min) / res) + 0.5) as u64;
+        self.write_uint(steps, nbits);
     }
 
-    pub fn write_f32(&mut self, v: f32) {
-        self.write_bits(v.to_bits() as u64, 32);
+    pub fn write_f32(&mut self, value: f32) {
+        self.write_bits(value.to_bits() as u64, 32);
     }
 
-    pub fn write_bytes(&mut self, b: &[u8]) {
+    pub fn write_bytes(&mut self, bytes: &[u8]) {
         if self.nscratch == 0 {
-            self.buf.extend_from_slice(b);
-            self.bit += b.len() * 8;
+            self.buf.extend_from_slice(bytes);
+            self.bit += bytes.len() * 8;
             return;
         }
-        for x in b {
-            self.write_bits(*x as u64, 8);
+        for byte in bytes {
+            self.write_bits(*byte as u64, 8);
         }
     }
 
@@ -137,7 +137,7 @@ impl<'a> BitReader<'a> {
         if self.bit + nbits as usize > self.buf.len() * 8 {
             return Err(Eof);
         }
-        let mut v = 0u64;
+        let mut value = 0u64;
         let mut remaining = nbits;
         while remaining > 0 {
             let byte = self.buf[self.bit / 8];
@@ -145,11 +145,11 @@ impl<'a> BitReader<'a> {
             let avail = 8 - off;
             let take = remaining.min(avail);
             let chunk = ((byte as u32) >> (avail - take)) & ((1u32 << take) - 1);
-            v = (v << take) | chunk as u64;
+            value = (value << take) | chunk as u64;
             self.bit += take as usize;
             remaining -= take;
         }
-        Ok(v)
+        Ok(value)
     }
 
     pub fn read_bool(&mut self) -> Result<bool, Eof> {
@@ -167,24 +167,26 @@ impl<'a> BitReader<'a> {
 
     pub fn read_quantized(&mut self, min: f32, max: f32, res: f32) -> Result<f32, Eof> {
         let (nbits, _) = quant_bits(min, max, res);
-        let q = self.read_uint(nbits)?;
-        Ok((min + q as f32 * res).min(max))
+        let steps = self.read_uint(nbits)?;
+        Ok((min + steps as f32 * res).min(max))
     }
 
     pub fn read_f32(&mut self) -> Result<f32, Eof> {
         Ok(f32::from_bits(self.read_bits(32)? as u32))
     }
 
-    pub fn read_bytes(&mut self, n: usize) -> Result<Vec<u8>, Eof> {
+    pub fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>, Eof> {
         if self.bit.is_multiple_of(8) {
             let start = self.bit / 8;
-            if start + n > self.buf.len() {
+            if start + len > self.buf.len() {
                 return Err(Eof);
             }
-            self.bit += n * 8;
-            return Ok(self.buf[start..start + n].to_vec());
+            self.bit += len * 8;
+            return Ok(self.buf[start..start + len].to_vec());
         }
-        (0..n).map(|_| self.read_bits(8).map(|b| b as u8)).collect()
+        (0..len)
+            .map(|_| self.read_bits(8).map(|b| b as u8))
+            .collect()
     }
 
     pub fn bits_left(&self) -> usize {
@@ -205,44 +207,44 @@ mod tests {
 
     #[test]
     fn roundtrip_mixed() {
-        let mut w = BitWriter::new();
-        w.write_bool(true);
-        w.write_uint(5, 3);
-        w.write_int(-1234, 20);
-        w.write_quantized(12.345, -100.0, 100.0, 0.01);
-        w.write_f32(1.5);
-        w.write_bytes(b"ab");
-        let bits = w.bit_len();
-        let buf = w.finish();
+        let mut writer = BitWriter::new();
+        writer.write_bool(true);
+        writer.write_uint(5, 3);
+        writer.write_int(-1234, 20);
+        writer.write_quantized(12.345, -100.0, 100.0, 0.01);
+        writer.write_f32(1.5);
+        writer.write_bytes(b"ab");
+        let bits = writer.bit_len();
+        let buf = writer.finish();
         assert_eq!(buf.len(), bits.div_ceil(8));
-        let mut r = BitReader::new(&buf);
-        assert!(r.read_bool().unwrap());
-        assert_eq!(r.read_uint(3).unwrap(), 5);
-        assert_eq!(r.read_int(20).unwrap(), -1234);
-        assert!((r.read_quantized(-100.0, 100.0, 0.01).unwrap() - 12.345).abs() < 0.006);
-        assert_eq!(r.read_f32().unwrap(), 1.5);
-        assert_eq!(r.read_bytes(2).unwrap(), b"ab");
+        let mut reader = BitReader::new(&buf);
+        assert!(reader.read_bool().unwrap());
+        assert_eq!(reader.read_uint(3).unwrap(), 5);
+        assert_eq!(reader.read_int(20).unwrap(), -1234);
+        assert!((reader.read_quantized(-100.0, 100.0, 0.01).unwrap() - 12.345).abs() < 0.006);
+        assert_eq!(reader.read_f32().unwrap(), 1.5);
+        assert_eq!(reader.read_bytes(2).unwrap(), b"ab");
         // Only padding bits remain in the last byte.
         let pad = buf.len() * 8 - bits;
-        assert_eq!(r.read_bits(pad as u32).unwrap(), 0);
-        assert_eq!(r.read_bits(1), Err(Eof));
+        assert_eq!(reader.read_bits(pad as u32).unwrap(), 0);
+        assert_eq!(reader.read_bits(1), Err(Eof));
     }
 
     #[test]
     fn word_boundaries() {
-        let mut w = BitWriter::new();
-        w.write_bits(0x1, 3);
-        w.write_bits(u64::MAX, 64);
-        w.write_bits(0xABCDEF, 24);
-        w.write_bits(0, 61);
-        w.write_bits(0x5, 3);
-        let buf = w.finish();
-        let mut r = BitReader::new(&buf);
-        assert_eq!(r.read_bits(3).unwrap(), 1);
-        assert_eq!(r.read_bits(64).unwrap(), u64::MAX);
-        assert_eq!(r.read_bits(24).unwrap(), 0xABCDEF);
-        assert_eq!(r.read_bits(61).unwrap(), 0);
-        assert_eq!(r.read_bits(3).unwrap(), 5);
+        let mut writer = BitWriter::new();
+        writer.write_bits(0x1, 3);
+        writer.write_bits(u64::MAX, 64);
+        writer.write_bits(0xABCDEF, 24);
+        writer.write_bits(0, 61);
+        writer.write_bits(0x5, 3);
+        let buf = writer.finish();
+        let mut reader = BitReader::new(&buf);
+        assert_eq!(reader.read_bits(3).unwrap(), 1);
+        assert_eq!(reader.read_bits(64).unwrap(), u64::MAX);
+        assert_eq!(reader.read_bits(24).unwrap(), 0xABCDEF);
+        assert_eq!(reader.read_bits(61).unwrap(), 0);
+        assert_eq!(reader.read_bits(3).unwrap(), 5);
     }
 
     #[test]

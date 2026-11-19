@@ -66,15 +66,15 @@ impl Relay {
 async fn webhooks_resume_as_soon_as_the_database_is_back() {
     let relay = Relay::start().await;
     let node = Node::start_with(&[("NET__DATABASE__URL", &relay.url)]).await;
-    let p = node.project("outage").await;
-    let mut alice = p.player("alice").await;
+    let project = node.project("outage").await;
+    let mut alice = project.player("alice").await;
     joined(&alice.call(json!({"t": "create", "name": "arena"})).await);
-    let mut bob = p.player("bob").await;
+    let mut bob = project.player("bob").await;
     joined(&bob.call(json!({"t": "join", "name": "arena"})).await);
-    let carol = p.grant("carol").await;
+    let carol = project.grant("carol").await;
     let mut sink = Sink::start().await;
     let hook = json!({"url": sink.url, "events": ["player.joined", "player.left"]});
-    let (status, reply) = p.api.post("/v1/webhooks", hook).await;
+    let (status, reply) = project.api.post("/v1/webhooks", hook).await;
     assert_eq!(status, 200, "{reply}");
 
     // Bob leaves while the database is away: the node cannot read who to tell.
@@ -83,7 +83,7 @@ async fn webhooks_resume_as_soon_as_the_database_is_back() {
     tokio::time::sleep(Duration::from_secs(7)).await;
     relay.set(true);
 
-    let mut carol = common::Ws::open(&p.api.http, &carol).await;
+    let mut carol = common::Ws::open(&project.api.http, &carol).await;
     let actor = joined(&carol.call(json!({"t": "join", "name": "arena"})).await);
     assert_eq!(sink.next("player.joined").await["data"]["actor"], actor);
 }
@@ -92,14 +92,14 @@ async fn webhooks_resume_as_soon_as_the_database_is_back() {
 async fn webhooks_go_out_through_an_outage_longer_than_the_cache() {
     let relay = Relay::start().await;
     let node = Node::start_with(&[("NET__DATABASE__URL", &relay.url)]).await;
-    let p = node.project("outage-long").await;
+    let project = node.project("outage-long").await;
     let mut sink = Sink::start().await;
     let hook = json!({"url": sink.url, "events": ["player.joined", "player.left"]});
-    let (status, reply) = p.api.post("/v1/webhooks", hook).await;
+    let (status, reply) = project.api.post("/v1/webhooks", hook).await;
     assert_eq!(status, 200, "{reply}");
-    let mut alice = p.player("alice").await;
+    let mut alice = project.player("alice").await;
     joined(&alice.call(json!({"t": "create", "name": "arena"})).await);
-    let mut bob = p.player("bob").await;
+    let mut bob = project.player("bob").await;
     let actor = joined(&bob.call(json!({"t": "join", "name": "arena"})).await);
     while sink.next("player.joined").await["data"]["actor"] != actor {}
 

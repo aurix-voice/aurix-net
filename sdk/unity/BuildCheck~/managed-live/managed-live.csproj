@@ -15,4 +15,7 @@
     <Compile Include="../../Runtime/Unity/*.cs" />
     <Compile Include="Stubs/*.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.2" />
+  </ItemGroup>
 </Project>

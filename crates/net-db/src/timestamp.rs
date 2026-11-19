@@ -49,15 +49,15 @@ impl Deref for Timestamp {
 
 impl Add<Duration> for Timestamp {
     type Output = Self;
-    fn add(self, d: Duration) -> Self {
-        Self(self.0 + d)
+    fn add(self, rhs: Duration) -> Self {
+        Self(self.0 + rhs)
     }
 }
 
 impl Sub<Duration> for Timestamp {
     type Output = Self;
-    fn sub(self, d: Duration) -> Self {
-        Self(self.0 - d)
+    fn sub(self, rhs: Duration) -> Self {
+        Self(self.0 - rhs)
     }
 }
 
@@ -69,14 +69,14 @@ impl Sub for Timestamp {
 }
 
 impl Serialize for Timestamp {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        time::serde::rfc3339::serialize(&self.0, s)
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        time::serde::rfc3339::serialize(&self.0, serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for Timestamp {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        time::serde::rfc3339::deserialize(d).map(|t| Self(t.to_offset(UtcOffset::UTC)))
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        time::serde::rfc3339::deserialize(deserializer).map(|t| Self(t.to_offset(UtcOffset::UTC)))
     }
 }
 
@@ -90,8 +90,8 @@ mod tests {
         )
     }
 
-    fn read(s: &str) -> Option<Timestamp> {
-        serde_json::from_value(serde_json::Value::from(s)).ok()
+    fn read(text: &str) -> Option<Timestamp> {
+        serde_json::from_value(serde_json::Value::from(text)).ok()
     }
 
     #[test]
@@ -104,24 +104,24 @@ mod tests {
             (123_456_000, ".123456"),
             (100, ".0000001"),
         ] {
-            let t = at(secs, nano);
+            let instant = at(secs, nano);
             let text = format!("2026-11-17T19:27:32{frac}Z");
-            assert_eq!(t.to_rfc3339(), text);
-            assert_eq!(serde_json::to_value(t).unwrap(), text);
-            assert_eq!(read(&text), Some(t));
+            assert_eq!(instant.to_rfc3339(), text);
+            assert_eq!(serde_json::to_value(instant).unwrap(), text);
+            assert_eq!(read(&text), Some(instant));
         }
     }
 
     #[test]
     fn reads_any_offset_as_the_same_instant() {
-        let t = Some(at(1_794_943_652, 500_000_000));
-        for s in [
+        let expected = Some(at(1_794_943_652, 500_000_000));
+        for text in [
             "2026-11-17T19:27:32.5Z",
             "2026-11-17t19:27:32.5z",
             "2026-11-17T21:27:32.5+02:00",
             "2026-11-17T14:57:32.5-04:30",
         ] {
-            assert_eq!(read(s), t, "{s}");
+            assert_eq!(read(text), expected, "{text}");
         }
         assert_eq!(
             read("2026-11-17T21:27:32.5+02:00").map(Timestamp::to_rfc3339),
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn refuses_what_is_not_rfc3339() {
-        for s in [
+        for text in [
             "",
             "2026-11-17",
             "2026-11-17T19:27:32",
@@ -143,7 +143,7 @@ mod tests {
             "2026-11-17T24:00:00Z",
             "2026-11-17T19:27:32Z x",
         ] {
-            assert_eq!(read(s), None, "{s}");
+            assert_eq!(read(text), None, "{text}");
         }
     }
 }

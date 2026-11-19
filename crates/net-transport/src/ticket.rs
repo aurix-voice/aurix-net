@@ -32,32 +32,33 @@ impl TicketSigner {
     }
 
     fn mac(&self, body: &[u8]) -> [u8; 16] {
-        let mut m = <Hmac<Sha256>>::new_from_slice(&self.key).expect("hmac accepts any key length");
-        m.update(b"aurix-net-ticket-v1");
-        m.update(body);
-        let out = m.finalize().into_bytes();
-        let mut t = [0u8; 16];
-        t.copy_from_slice(&out[..16]);
-        t
+        let mut mac =
+            <Hmac<Sha256>>::new_from_slice(&self.key).expect("hmac accepts any key length");
+        mac.update(b"aurix-net-ticket-v1");
+        mac.update(body);
+        let out = mac.finalize().into_bytes();
+        let mut tag = [0u8; 16];
+        tag.copy_from_slice(&out[..16]);
+        tag
     }
 
     pub fn issue(&self, session: SessionId, room: RoomId, actor: ActorId) -> Vec<u8> {
         let exp = now_unix() + DATA_TICKET_TTL_SECS;
-        let t = DataTicket {
+        let ticket = DataTicket {
             session,
             room,
             actor,
             exp_unix: exp,
         };
-        self.encode(&t)
+        self.encode(&ticket)
     }
 
-    pub fn encode(&self, t: &DataTicket) -> Vec<u8> {
+    pub fn encode(&self, ticket: &DataTicket) -> Vec<u8> {
         let mut body = Vec::with_capacity(TICKET_LEN);
-        body.extend_from_slice(t.session.0.as_bytes());
-        body.extend_from_slice(t.room.0.as_bytes());
-        body.extend_from_slice(&t.actor.0.to_be_bytes());
-        body.extend_from_slice(&t.exp_unix.to_be_bytes());
+        body.extend_from_slice(ticket.session.0.as_bytes());
+        body.extend_from_slice(ticket.room.0.as_bytes());
+        body.extend_from_slice(&ticket.actor.0.to_be_bytes());
+        body.extend_from_slice(&ticket.exp_unix.to_be_bytes());
         let tag = self.mac(&body);
         body.extend_from_slice(&tag);
         body
@@ -102,25 +103,25 @@ mod tests {
 
     #[test]
     fn roundtrip_and_tamper() {
-        let s = TicketSigner::new(b"secret");
-        let t = s.issue(SessionId::new(), RoomId::new(), ActorId(7));
-        let v = s.verify(&t).unwrap();
-        assert_eq!(v.actor, ActorId(7));
-        let mut bad = t.clone();
+        let signer = TicketSigner::new(b"secret");
+        let ticket = signer.issue(SessionId::new(), RoomId::new(), ActorId(7));
+        let verified = signer.verify(&ticket).unwrap();
+        assert_eq!(verified.actor, ActorId(7));
+        let mut bad = ticket.clone();
         bad[33] ^= 1;
-        assert!(s.verify(&bad).is_none());
-        assert!(TicketSigner::new(b"other").verify(&t).is_none());
+        assert!(signer.verify(&bad).is_none());
+        assert!(TicketSigner::new(b"other").verify(&ticket).is_none());
     }
 
     #[test]
     fn expired_rejected() {
-        let s = TicketSigner::new(b"k");
-        let t = DataTicket {
+        let signer = TicketSigner::new(b"k");
+        let ticket = DataTicket {
             session: SessionId::new(),
             room: RoomId::new(),
             actor: ActorId(1),
             exp_unix: now_unix() - 1,
         };
-        assert!(s.verify(&s.encode(&t)).is_none());
+        assert!(signer.verify(&signer.encode(&ticket)).is_none());
     }
 }

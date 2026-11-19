@@ -89,17 +89,19 @@ impl GrantSigner {
         if player_id.chars().any(char::is_control) {
             return Err(NetError::Invalid("player_id has control characters".into()));
         }
-        if let Some(m) = &meta {
-            let n = serde_json::to_vec(m).map(|v| v.len()).unwrap_or(usize::MAX);
-            if n > MAX_META_BYTES {
+        if let Some(extra) = &meta {
+            let size = serde_json::to_vec(extra)
+                .map(|v| v.len())
+                .unwrap_or(usize::MAX);
+            if size > MAX_META_BYTES {
                 return Err(NetError::Invalid(format!(
                     "meta must serialize to <= {MAX_META_BYTES} bytes"
                 )));
             }
         }
-        for s in scopes {
-            if !KNOWN_SCOPES.contains(s) {
-                return Err(NetError::Invalid(format!("unknown scope {s}")));
+        for scope in scopes {
+            if !KNOWN_SCOPES.contains(scope) {
+                return Err(NetError::Invalid(format!("unknown scope {scope}")));
             }
         }
         let now = std::time::SystemTime::now()
@@ -125,35 +127,35 @@ impl GrantSigner {
     }
 
     pub fn verify(&self, token: &str) -> Result<Grant> {
-        let mut v = Validation::new(Algorithm::HS256);
-        v.leeway = 5;
-        v.validate_exp = true;
-        v.required_spec_claims.clear();
-        let data = match jsonwebtoken::decode::<GrantClaims>(token, &self.dec, &v) {
-            Ok(d) => d,
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.leeway = 5;
+        validation.validate_exp = true;
+        validation.required_spec_claims.clear();
+        let data = match jsonwebtoken::decode::<GrantClaims>(token, &self.dec, &validation) {
+            Ok(decoded) => decoded,
             Err(e) if matches!(e.kind(), jsonwebtoken::errors::ErrorKind::InvalidSignature) => {
                 match &self.prev {
-                    Some(prev) => jsonwebtoken::decode::<GrantClaims>(token, prev, &v)
+                    Some(prev) => jsonwebtoken::decode::<GrantClaims>(token, prev, &validation)
                         .map_err(|e| NetError::Unauthorized(format!("grant: {e}")))?,
                     None => return Err(NetError::Unauthorized(format!("grant: {e}"))),
                 }
             }
             Err(e) => return Err(NetError::Unauthorized(format!("grant: {e}"))),
         };
-        let c = data.claims;
-        let project = c
+        let claims = data.claims;
+        let project = claims
             .pid
             .parse::<ProjectId>()
             .map_err(|_| NetError::Unauthorized("grant: bad project id".into()))?;
         Ok(Grant {
-            player_id: c.sub,
+            player_id: claims.sub,
             project,
-            name: c.name,
-            room: c.room,
-            scopes: c.scopes,
-            meta: c.meta,
-            jti: c.jti,
-            exp: c.exp,
+            name: claims.name,
+            room: claims.room,
+            scopes: claims.scopes,
+            meta: claims.meta,
+            jti: claims.jti,
+            exp: claims.exp,
         })
     }
 }
@@ -183,11 +185,11 @@ mod tests {
 
     #[test]
     fn issue_verify() {
-        let s = GrantSigner::new("s3cret", 60);
-        let p = ProjectId::new();
-        let (tok, _) = s
+        let signer = GrantSigner::new("s3cret", 60);
+        let project = ProjectId::new();
+        let (tok, _) = signer
             .issue(
-                p,
+                project,
                 "player-1",
                 "Ann",
                 Some("lobby"),
@@ -196,21 +198,21 @@ mod tests {
                 None,
             )
             .unwrap();
-        let g = s.verify(&tok).unwrap();
-        assert_eq!(g.player_id, "player-1");
-        assert_eq!(g.project, p);
-        assert_eq!(g.room.as_deref(), Some("lobby"));
-        assert!(g.can("join"));
-        assert!(!g.can("master"));
+        let grant = signer.verify(&tok).unwrap();
+        assert_eq!(grant.player_id, "player-1");
+        assert_eq!(grant.project, project);
+        assert_eq!(grant.room.as_deref(), Some("lobby"));
+        assert!(grant.can("join"));
+        assert!(!grant.can("master"));
         assert!(GrantSigner::new("other", 60).verify(&tok).is_err());
     }
 
     #[test]
     fn ttl_is_capped() {
-        let s = GrantSigner::new("s3cret", 60);
-        let (_, c) = s
+        let signer = GrantSigner::new("s3cret", 60);
+        let (_, claims) = signer
             .issue(ProjectId::new(), "p", "", None, &[], None, Some(10_000))
             .unwrap();
-        assert!(c.exp - c.iat <= 60);
+        assert!(claims.exp - claims.iat <= 60);
     }
 }

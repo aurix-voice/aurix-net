@@ -86,15 +86,15 @@ impl Node {
     }
 
     /// The same project reached through this node.
-    pub fn same_project(&self, p: &Project) -> Project {
+    pub fn same_project(&self, project: &Project) -> Project {
         let at = |api: &Api| Api {
             http: self.http.clone(),
             token: api.token.clone(),
         };
         Project {
-            id: p.id.clone(),
-            api: at(&p.api),
-            operator: at(&p.operator),
+            id: project.id.clone(),
+            api: at(&project.api),
+            operator: at(&project.operator),
         }
     }
 
@@ -151,8 +151,8 @@ impl Api {
         let mut req = reqwest::Client::new()
             .request(method, format!("{}{path}", self.http))
             .bearer_auth(&self.token);
-        if let Some(b) = body {
-            req = req.json(&b);
+        if let Some(json) = body {
+            req = req.json(&json);
         }
         let resp = req.send().await.expect("http request");
         let status = resp.status().as_u16();
@@ -222,11 +222,11 @@ impl Ws {
         let (ws, _) = tokio_tungstenite::connect_async(&url)
             .await
             .expect("ws connect");
-        let mut c = Ws { ws };
-        assert_eq!(c.next().await["t"], "hello");
-        let authed = c.call(json!({"t": "auth", "grant": grant})).await;
+        let mut client = Ws { ws };
+        assert_eq!(client.next().await["t"], "hello");
+        let authed = client.call(json!({"t": "auth", "grant": grant})).await;
         assert_eq!(authed["t"], "authed", "auth: {authed}");
-        c
+        client
     }
 
     pub async fn send(&mut self, msg: Value) {
@@ -261,15 +261,15 @@ impl Ws {
         self.next().await
     }
 
-    /// Skips messages until one of type `t`.
-    pub async fn until(&mut self, t: &str) -> Value {
+    /// Skips messages until one of type `kind`.
+    pub async fn until(&mut self, kind: &str) -> Value {
         let end = tokio::time::Instant::now() + WAIT;
         loop {
             let left = end.saturating_duration_since(tokio::time::Instant::now());
             match self.poll(left).await {
-                Some(m) if m["t"] == t => return m,
+                Some(msg) if msg["t"] == kind => return msg,
                 Some(_) => {}
-                None => panic!("no `{t}` from the node"),
+                None => panic!("no `{kind}` from the node"),
             }
         }
     }
@@ -277,8 +277,8 @@ impl Ws {
     /// Everything that arrives until the socket is quiet for `quiet`.
     pub async fn drain(&mut self, quiet: Duration) -> Vec<Value> {
         let mut out = Vec::new();
-        while let Some(m) = self.poll(quiet).await {
-            out.push(m);
+        while let Some(msg) = self.poll(quiet).await {
+            out.push(msg);
         }
         out
     }

@@ -110,8 +110,8 @@ impl RedisStore {
 
     /// Tells every node that the project's webhooks changed.
     pub async fn webhooks_changed(&self, project: ProjectId) -> Result<()> {
-        let mut c = self.conn.clone();
-        let _: () = c
+        let mut conn = self.conn.clone();
+        let _: () = conn
             .publish(Self::webhooks_channel(project), "")
             .await
             .map_err(|e| NetError::Redis(e.to_string()))?;
@@ -119,14 +119,18 @@ impl RedisStore {
     }
 
     /// Writes/refreshes a room's live record (call on every change and every 30 s).
-    pub async fn put_room(&self, project: ProjectId, r: &LiveRoom) -> Result<()> {
-        let mut c = self.conn.clone();
-        let body = serde_json::to_string(r).map_err(|e| NetError::Internal(e.to_string()))?;
+    pub async fn put_room(&self, project: ProjectId, room: &LiveRoom) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let body = serde_json::to_string(room).map_err(|e| NetError::Internal(e.to_string()))?;
         let _: () = redis::pipe()
-            .set_ex(Self::room_key(project, r.room), &body, ROOM_TTL_SECS as u64)
-            .sadd(Self::index_key(project), r.room.to_string())
+            .set_ex(
+                Self::room_key(project, room.room),
+                &body,
+                ROOM_TTL_SECS as u64,
+            )
+            .sadd(Self::index_key(project), room.room.to_string())
             .publish(Self::lobby_channel(project), &body)
-            .query_async(&mut c)
+            .query_async(&mut conn)
             .await
             .map_err(|e| NetError::Redis(e.to_string()))?;
         Ok(())
@@ -144,8 +148,8 @@ impl RedisStore {
         body: &[u8],
         ttl_secs: u64,
     ) -> Result<()> {
-        let mut c = self.conn.clone();
-        c.set_ex::<_, _, ()>(Self::checkpoint_key(project, room), body, ttl_secs)
+        let mut conn = self.conn.clone();
+        conn.set_ex::<_, _, ()>(Self::checkpoint_key(project, room), body, ttl_secs)
             .await
             .map_err(|e| NetError::Redis(e.to_string()))
     }
@@ -155,8 +159,8 @@ impl RedisStore {
         project: ProjectId,
         room: RoomId,
     ) -> Result<Option<Vec<u8>>> {
-        let mut c = self.conn.clone();
-        c.get::<_, Option<Vec<u8>>>(Self::checkpoint_key(project, room))
+        let mut conn = self.conn.clone();
+        conn.get::<_, Option<Vec<u8>>>(Self::checkpoint_key(project, room))
             .await
             .map_err(|e| NetError::Redis(e.to_string()))
     }
@@ -177,21 +181,21 @@ impl RedisStore {
         if entries.is_empty() {
             return Ok(());
         }
-        let mut c = self.conn.clone();
+        let mut conn = self.conn.clone();
         let key = Self::journal_key(project, room);
         let _: () = redis::pipe()
             .rpush(&key, entries)
             .ltrim(&key, -keep, -1)
             .expire(&key, ttl_secs)
-            .query_async(&mut c)
+            .query_async(&mut conn)
             .await
             .map_err(|e| NetError::Redis(e.to_string()))?;
         Ok(())
     }
 
     pub async fn get_journal(&self, project: ProjectId, room: RoomId) -> Result<Vec<Vec<u8>>> {
-        let mut c = self.conn.clone();
-        c.lrange::<_, Vec<Vec<u8>>>(Self::journal_key(project, room), 0, -1)
+        let mut conn = self.conn.clone();
+        conn.lrange::<_, Vec<Vec<u8>>>(Self::journal_key(project, room), 0, -1)
             .await
             .map_err(|e| NetError::Redis(e.to_string()))
     }
@@ -208,15 +212,15 @@ impl RedisStore {
         body: &[u8],
         ttl_secs: u64,
     ) -> Result<()> {
-        let mut c = self.conn.clone();
-        c.set_ex::<_, _, ()>(Self::replay_key(project, room), body, ttl_secs)
+        let mut conn = self.conn.clone();
+        conn.set_ex::<_, _, ()>(Self::replay_key(project, room), body, ttl_secs)
             .await
             .map_err(|e| NetError::Redis(e.to_string()))
     }
 
     pub async fn get_replay(&self, project: ProjectId, room: RoomId) -> Result<Option<Vec<u8>>> {
-        let mut c = self.conn.clone();
-        c.get::<_, Option<Vec<u8>>>(Self::replay_key(project, room))
+        let mut conn = self.conn.clone();
+        conn.get::<_, Option<Vec<u8>>>(Self::replay_key(project, room))
             .await
             .map_err(|e| NetError::Redis(e.to_string()))
     }
@@ -239,7 +243,7 @@ impl RedisStore {
         state: &[u8],
     ) -> Result<()> {
         const TTL: i64 = 86_400;
-        let mut c = self.conn.clone();
+        let mut conn = self.conn.clone();
         let meta = serde_json::json!({
             "tick": tick, "actor": actor, "hash": format!("{hash:016x}"), "bytes": state.len(),
             "at": net_db::Timestamp::now().to_rfc3339(),
@@ -257,7 +261,7 @@ impl RedisStore {
                 meta,
             )
             .expire(Self::desync_index_key(project, room), TTL)
-            .query_async(&mut c)
+            .query_async(&mut conn)
             .await
             .map_err(|e| NetError::Redis(e.to_string()))?;
         Ok(())
@@ -268,8 +272,8 @@ impl RedisStore {
         project: ProjectId,
         room: RoomId,
     ) -> Result<Vec<serde_json::Value>> {
-        let mut c = self.conn.clone();
-        let all: Vec<(String, String)> = c
+        let mut conn = self.conn.clone();
+        let all: Vec<(String, String)> = conn
             .hgetall(Self::desync_index_key(project, room))
             .await
             .map_err(|e| NetError::Redis(e.to_string()))?;
@@ -293,39 +297,39 @@ impl RedisStore {
         tick: u32,
         actor: u16,
     ) -> Result<Option<Vec<u8>>> {
-        let mut c = self.conn.clone();
-        c.get::<_, Option<Vec<u8>>>(Self::desync_blob_key(project, room, tick, actor))
+        let mut conn = self.conn.clone();
+        conn.get::<_, Option<Vec<u8>>>(Self::desync_blob_key(project, room, tick, actor))
             .await
             .map_err(|e| NetError::Redis(e.to_string()))
     }
 
     pub async fn remove_room(&self, project: ProjectId, room: RoomId) -> Result<()> {
-        let mut c = self.conn.clone();
+        let mut conn = self.conn.clone();
         let gone = serde_json::json!({"room": room, "removed": true}).to_string();
         let _: () = redis::pipe()
             .del(Self::room_key(project, room))
             .del(Self::journal_key(project, room))
             .srem(Self::index_key(project), room.to_string())
             .publish(Self::lobby_channel(project), gone)
-            .query_async(&mut c)
+            .query_async(&mut conn)
             .await
             .map_err(|e| NetError::Redis(e.to_string()))?;
         Ok(())
     }
 
     pub async fn get_room(&self, project: ProjectId, room: RoomId) -> Result<Option<LiveRoom>> {
-        let mut c = self.conn.clone();
-        let v: Option<String> = c
+        let mut conn = self.conn.clone();
+        let stored: Option<String> = conn
             .get(Self::room_key(project, room))
             .await
             .map_err(|e| NetError::Redis(e.to_string()))?;
-        Ok(v.and_then(|s| serde_json::from_str(&s).ok()))
+        Ok(stored.and_then(|s| serde_json::from_str(&s).ok()))
     }
 
     /// All live rooms of a project (expired records are dropped from the index lazily).
     pub async fn list_rooms(&self, project: ProjectId) -> Result<Vec<LiveRoom>> {
-        let mut c = self.conn.clone();
-        let ids: Vec<String> = c
+        let mut conn = self.conn.clone();
+        let ids: Vec<String> = conn
             .smembers(Self::index_key(project))
             .await
             .map_err(|e| NetError::Redis(e.to_string()))?;
@@ -337,20 +341,20 @@ impl RedisStore {
             .filter_map(|s| s.parse::<RoomId>().ok())
             .map(|r| Self::room_key(project, r))
             .collect();
-        let vals: Vec<Option<String>> = c
+        let vals: Vec<Option<String>> = conn
             .mget(&keys)
             .await
             .map_err(|e| NetError::Redis(e.to_string()))?;
         let mut out = Vec::new();
         let mut stale = Vec::new();
-        for (id, v) in ids.iter().zip(vals) {
-            match v.and_then(|s| serde_json::from_str::<LiveRoom>(&s).ok()) {
-                Some(r) => out.push(r),
+        for (id, raw) in ids.iter().zip(vals) {
+            match raw.and_then(|s| serde_json::from_str::<LiveRoom>(&s).ok()) {
+                Some(room) => out.push(room),
                 None => stale.push(id.clone()),
             }
         }
         if !stale.is_empty() {
-            let _: () = c
+            let _: () = conn
                 .srem(Self::index_key(project), stale)
                 .await
                 .map_err(|e| NetError::Redis(e.to_string()))?;
@@ -360,32 +364,32 @@ impl RedisStore {
 
     /// Sliding-window rate limit: true when allowed.
     pub async fn allow(&self, key: &str, limit: u32, window_secs: u64) -> Result<bool> {
-        let mut c = self.conn.clone();
-        let k = format!("net:rl:{key}");
-        let (n,): (i64,) = redis::pipe()
+        let mut conn = self.conn.clone();
+        let counter = format!("net:rl:{key}");
+        let (count,): (i64,) = redis::pipe()
             .atomic()
-            .incr(&k, 1)
-            .expire(&k, window_secs as i64)
+            .incr(&counter, 1)
+            .expire(&counter, window_secs as i64)
             .ignore()
-            .query_async(&mut c)
+            .query_async(&mut conn)
             .await
             .map_err(|e| NetError::Redis(e.to_string()))?;
-        Ok(n as u32 <= limit)
+        Ok(count as u32 <= limit)
     }
 
     /// Per-project rejection counters in hourly buckets (`net:rej:{project}:{hour}` hashes,
     /// 26 h TTL). Fire-and-forget from the hot path; one HINCRBY + EXPIRE.
     pub async fn incr_rejection(&self, project: ProjectId, reason: &str) -> Result<()> {
-        let mut c = self.conn.clone();
+        let mut conn = self.conn.clone();
         let hour = net_db::Timestamp::now().unix_timestamp() / 3600;
-        let k = format!("net:rej:{project}:{hour}");
+        let bucket = format!("net:rej:{project}:{hour}");
         redis::pipe()
             .atomic()
-            .hincr(&k, reason, 1)
+            .hincr(&bucket, reason, 1)
             .ignore()
-            .expire(&k, 26 * 3600)
+            .expire(&bucket, 26 * 3600)
             .ignore()
-            .query_async::<()>(&mut c)
+            .query_async::<()>(&mut conn)
             .await
             .map_err(|e| NetError::Redis(e.to_string()))
     }
@@ -397,18 +401,18 @@ impl RedisStore {
         project: ProjectId,
         hours: u32,
     ) -> Result<Vec<(i64, std::collections::HashMap<String, i64>)>> {
-        let mut c = self.conn.clone();
+        let mut conn = self.conn.clone();
         let now = net_db::Timestamp::now().unix_timestamp() / 3600;
         let hours = hours.clamp(1, 26) as i64;
         let mut out = Vec::with_capacity(hours as usize);
-        for h in (now - hours + 1)..=now {
-            let k = format!("net:rej:{project}:{h}");
-            let m: std::collections::HashMap<String, i64> = redis::cmd("HGETALL")
-                .arg(&k)
-                .query_async(&mut c)
+        for hour in (now - hours + 1)..=now {
+            let bucket = format!("net:rej:{project}:{hour}");
+            let counts: std::collections::HashMap<String, i64> = redis::cmd("HGETALL")
+                .arg(&bucket)
+                .query_async(&mut conn)
                 .await
                 .map_err(|e| NetError::Redis(e.to_string()))?;
-            out.push((h * 3600, m));
+            out.push((hour * 3600, counts));
         }
         Ok(out)
     }

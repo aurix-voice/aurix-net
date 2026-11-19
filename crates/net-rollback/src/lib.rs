@@ -103,17 +103,17 @@ impl<S: Clone + Hashable> Rollback<S> {
         tick: Tick,
         state: S,
     ) -> Self {
-        let mut r = Self::new(cfg, actors, state);
-        r.base_tick = tick.0;
-        r
+        let mut session = Self::new(cfg, actors, state);
+        session.base_tick = tick.0;
+        session
     }
 
     /// Newest state whose every input is confirmed, with the tick it is entering. This is
     /// what a master uploads as a checkpoint.
     pub fn confirmed_state(&self) -> Option<(Tick, &S)> {
-        let c = self.confirmed_tick()?;
-        let i = (c.0 - self.base_tick) as usize + 1;
-        self.states.get(i).map(|s| (Tick(c.0 + 1), s))
+        let confirmed = self.confirmed_tick()?;
+        let len = (confirmed.0 - self.base_tick) as usize + 1;
+        self.states.get(len).map(|s| (Tick(confirmed.0 + 1), s))
     }
 
     pub fn actors(&self) -> &[ActorId] {
@@ -130,15 +130,15 @@ impl<S: Clone + Hashable> Rollback<S> {
 
     /// Highest tick for which every actor's input is confirmed (none = base_tick - 1).
     pub fn confirmed_tick(&self) -> Option<Tick> {
-        let mut t = None;
-        for (i, c) in self.confirmed.iter().enumerate() {
-            if c.iter().all(|x| *x) {
-                t = Some(Tick(self.base_tick + i as u32));
+        let mut newest = None;
+        for (i, flags) in self.confirmed.iter().enumerate() {
+            if flags.iter().all(|x| *x) {
+                newest = Some(Tick(self.base_tick + i as u32));
             } else {
                 break;
             }
         }
-        t
+        newest
     }
 
     fn idx(&self, tick: u32) -> Option<usize> {
@@ -164,65 +164,69 @@ impl<S: Clone + Hashable> Rollback<S> {
         let Some(ai) = self.actors.iter().position(|a| *a == actor) else {
             return Ok(false);
         };
-        let i = self.idx(tick.0).ok_or(RollbackError::TooOld(tick.0))?;
+        let index = self.idx(tick.0).ok_or(RollbackError::TooOld(tick.0))?;
         let cur = self.current_tick().0;
         if tick.0 > cur + self.cfg.max_prediction {
             return Err(RollbackError::TooFar(tick.0));
         }
-        while self.journal.len() <= i {
+        while self.journal.len() <= index {
             self.journal.push_back(TickInputs::new());
             self.confirmed.push_back(vec![false; self.actors.len()]);
         }
-        if self.confirmed[i][ai] {
+        if self.confirmed[index][ai] {
             return Ok(false); // duplicate
         }
-        let predicted = self.journal[i].get(&actor).cloned();
-        self.journal[i].insert(actor, data.clone());
-        self.confirmed[i][ai] = true;
+        let predicted = self.journal[index].get(&actor).cloned();
+        self.journal[index].insert(actor, data.clone());
+        self.confirmed[index][ai] = true;
         // Simulated already and prediction was wrong -> rewind.
-        let simulated = i + 1 < self.states.len();
+        let simulated = index + 1 < self.states.len();
         if simulated && predicted.as_deref() != Some(data.as_slice()) {
             self.rollbacks += 1;
-            self.resimulate_from(i, step);
+            self.resimulate_from(index, step);
             return Ok(true);
         }
         Ok(false)
     }
 
-    fn resimulate_from<F>(&mut self, i: usize, step: &mut F)
+    fn resimulate_from<F>(&mut self, from: usize, step: &mut F)
     where
         F: FnMut(&mut S, &TickInputs, Tick),
     {
         let target = self.states.len() - 1;
-        self.states.truncate(i + 1);
+        self.states.truncate(from + 1);
         // Rebuild last_input from confirmed history before i.
         self.last_input.clear();
-        for t in 0..i {
-            for (a, d) in &self.journal[t] {
-                self.last_input.insert(*a, d.clone());
+        for t in 0..from {
+            for (actor, data) in &self.journal[t] {
+                self.last_input.insert(*actor, data.clone());
             }
         }
-        for t in i..target {
+        for t in from..target {
             self.fill_predictions(t);
-            let mut s = self.states[t].clone();
-            step(&mut s, &self.journal[t], Tick(self.base_tick + t as u32));
-            for (a, d) in &self.journal[t] {
-                self.last_input.insert(*a, d.clone());
+            let mut state = self.states[t].clone();
+            step(
+                &mut state,
+                &self.journal[t],
+                Tick(self.base_tick + t as u32),
+            );
+            for (actor, data) in &self.journal[t] {
+                self.last_input.insert(*actor, data.clone());
             }
-            self.states.push_back(s);
+            self.states.push_back(state);
             self.resimulated_ticks += 1;
         }
     }
 
-    fn fill_predictions(&mut self, t: usize) {
-        while self.journal.len() <= t {
+    fn fill_predictions(&mut self, index: usize) {
+        while self.journal.len() <= index {
             self.journal.push_back(TickInputs::new());
             self.confirmed.push_back(vec![false; self.actors.len()]);
         }
-        for a in &self.actors {
-            if !self.journal[t].contains_key(a) {
-                let d = self.last_input.get(a).cloned().unwrap_or_default();
-                self.journal[t].insert(*a, d);
+        for actor in &self.actors {
+            if !self.journal[index].contains_key(actor) {
+                let data = self.last_input.get(actor).cloned().unwrap_or_default();
+                self.journal[index].insert(*actor, data);
             }
         }
     }
@@ -233,8 +237,8 @@ impl<S: Clone + Hashable> Rollback<S> {
     where
         F: FnMut(&mut S, &TickInputs, Tick),
     {
-        let t = self.states.len() - 1;
-        let cur = self.base_tick + t as u32;
+        let last = self.states.len() - 1;
+        let cur = self.base_tick + last as u32;
         let confirmed = self
             .confirmed_tick()
             .map(|t| t.0 + 1)
@@ -242,13 +246,13 @@ impl<S: Clone + Hashable> Rollback<S> {
         if cur >= confirmed + self.cfg.max_prediction {
             return Err(RollbackError::TooFar(cur));
         }
-        self.fill_predictions(t);
-        let mut s = self.states[t].clone();
-        step(&mut s, &self.journal[t], Tick(cur));
-        for (a, d) in &self.journal[t] {
-            self.last_input.insert(*a, d.clone());
+        self.fill_predictions(last);
+        let mut state = self.states[last].clone();
+        step(&mut state, &self.journal[last], Tick(cur));
+        for (actor, data) in &self.journal[last] {
+            self.last_input.insert(*actor, data.clone());
         }
-        self.states.push_back(s);
+        self.states.push_back(state);
         self.trim();
         let now = self.current_tick();
         if now.0.is_multiple_of(self.cfg.hash_every)
@@ -288,24 +292,24 @@ where
     S: Clone + Hashable,
     F: FnMut(&mut S, &TickInputs, Tick),
 {
-    let mut s = initial;
+    let mut state = initial;
     let mut last: TickInputs = TickInputs::new();
     let mut hashes = Vec::new();
     for (t, inputs) in replay.inputs.iter().enumerate() {
-        for (a, d) in inputs {
-            last.insert(*a, d.clone());
+        for (actor, data) in inputs {
+            last.insert(*actor, data.clone());
         }
         let mut full = TickInputs::new();
-        for a in &replay.actors {
-            full.insert(*a, last.get(a).cloned().unwrap_or_default());
+        for actor in &replay.actors {
+            full.insert(*actor, last.get(actor).cloned().unwrap_or_default());
         }
-        step(&mut s, &full, Tick(t as u32));
+        step(&mut state, &full, Tick(t as u32));
         let now = t as u32 + 1;
         if now.is_multiple_of(replay.hash_every) {
-            hashes.push((now, s.state_hash()));
+            hashes.push((now, state.state_hash()));
         }
     }
-    (s, hashes)
+    (state, hashes)
 }
 
 /// Canonical input journal collector (server side): confirmed inputs per tick.
@@ -321,11 +325,11 @@ impl Journal {
         if tick.0 < self.base {
             return;
         }
-        let i = (tick.0 - self.base) as usize;
-        while self.ticks.len() <= i {
+        let index = (tick.0 - self.base) as usize;
+        while self.ticks.len() <= index {
             self.ticks.push_back(TickInputs::new());
         }
-        self.ticks[i].entry(actor).or_insert(data);
+        self.ticks[index].entry(actor).or_insert(data);
     }
 
     /// Logical length: one past the last recorded tick (counts trimmed/unknown ticks too).
@@ -357,26 +361,26 @@ impl Journal {
 
     /// Every actor that ever submitted an input.
     pub fn actors(&self) -> Vec<ActorId> {
-        let mut v: Vec<ActorId> = self.ticks.iter().flat_map(|t| t.keys().copied()).collect();
-        v.sort();
-        v.dedup();
-        v
+        let mut actors: Vec<ActorId> = self.ticks.iter().flat_map(|t| t.keys().copied()).collect();
+        actors.sort();
+        actors.dedup();
+        actors
     }
 
-    pub fn tick(&self, t: Tick) -> Option<&TickInputs> {
-        if t.0 < self.base {
+    pub fn tick(&self, at: Tick) -> Option<&TickInputs> {
+        if at.0 < self.base {
             return None;
         }
-        self.ticks.get((t.0 - self.base) as usize)
+        self.ticks.get((at.0 - self.base) as usize)
     }
 
     /// Inputs from tick `from` to the end (for re-hosting from a checkpoint). Ticks before the
     /// journal's base are unknown and come back empty.
     pub fn tail(&self, from: u32) -> Vec<TickInputs> {
         if from < self.base {
-            let mut v = vec![TickInputs::new(); (self.base - from) as usize];
-            v.extend(self.ticks.iter().cloned());
-            return v;
+            let mut ticks = vec![TickInputs::new(); (self.base - from) as usize];
+            ticks.extend(self.ticks.iter().cloned());
+            return ticks;
         }
         self.ticks
             .iter()
@@ -415,9 +419,9 @@ impl Journal {
 }
 
 /// Hash helper for plain byte-serialisable states.
-pub fn hash_bytes(b: &[u8]) -> u64 {
-    let h = blake3::hash(b);
-    u64::from_le_bytes(h.as_bytes()[..8].try_into().unwrap())
+pub fn hash_bytes(bytes: &[u8]) -> u64 {
+    let hash = blake3::hash(bytes);
+    u64::from_le_bytes(hash.as_bytes()[..8].try_into().unwrap())
 }
 
 #[cfg(test)]
@@ -430,18 +434,18 @@ mod tests {
     }
     impl Hashable for World {
         fn state_hash(&self) -> u64 {
-            let mut b = Vec::new();
-            for (a, p) in &self.pos {
-                b.extend_from_slice(&a.0.to_le_bytes());
-                b.extend_from_slice(&p.to_le_bytes());
+            let mut bytes = Vec::new();
+            for (actor, position) in &self.pos {
+                bytes.extend_from_slice(&actor.0.to_le_bytes());
+                bytes.extend_from_slice(&position.to_le_bytes());
             }
-            hash_bytes(&b)
+            hash_bytes(&bytes)
         }
     }
-    fn step(w: &mut World, inputs: &TickInputs, _t: Tick) {
-        for (a, d) in inputs {
-            let dx = d.first().copied().unwrap_or(0) as i8 as i64;
-            *w.pos.entry(*a).or_default() += dx;
+    fn step(world: &mut World, inputs: &TickInputs, _t: Tick) {
+        for (actor, data) in inputs {
+            let dx = data.first().copied().unwrap_or(0) as i8 as i64;
+            *world.pos.entry(*actor).or_default() += dx;
         }
     }
     fn world() -> World {
@@ -540,9 +544,9 @@ mod tests {
         assert_eq!(replayed, live);
         assert_eq!(hashes.last().unwrap().1, live.state_hash());
         let live_hashes = rb.hashes();
-        for (t, h) in live_hashes {
-            if let Some((_, rh)) = hashes.iter().find(|(rt, _)| rt == t) {
-                assert_eq!(h, rh, "tick {t}");
+        for (tick, hash) in live_hashes {
+            if let Some((_, rh)) = hashes.iter().find(|(rt, _)| rt == tick) {
+                assert_eq!(hash, rh, "tick {tick}");
             }
         }
         assert!(rb.rollbacks > 0);

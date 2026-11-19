@@ -16,11 +16,16 @@ namespace Aurix.Net.PurrNet
         [Header("Aurix Net")]
         [Tooltip("Node control-plane URL, e.g. https://node.example.com")]
         public string httpUrl = "http://127.0.0.1:8090";
-        [Tooltip("Grant issued by your backend (POST /v1/grants). Leave empty and set GrantProvider from code.")]
+
+        [Tooltip(
+            "Grant issued by your backend (POST /v1/grants). Leave empty and set GrantProvider from code."
+        )]
         public string grant = "";
+
         [Tooltip("Relay room name shared by host and clients.")]
         public string roomName = "purrnet";
         public int maxPlayers = 16;
+
         [Tooltip("Relay event code reserved for PurrNet frames.")]
         public byte eventCode = 200;
 
@@ -42,97 +47,211 @@ namespace Aurix.Net.PurrNet
         public ConnectionState listenerState { get; private set; } = ConnectionState.Disconnected;
         public ConnectionState clientState { get; private set; } = ConnectionState.Disconnected;
 
-        RelayBridge _host, _client;
+        RelayBridge _host,
+            _client;
         static readonly Connection ServerConn = new Connection(0);
 
-        RelayBridge NewBridge() => new RelayBridge(new RelayBridgeSettings
-        {
-            HttpUrl = httpUrl, Grant = grant, GrantProvider = GrantProvider, RoomName = roomName, MaxPlayers = maxPlayers, EventCode = eventCode
-        });
+        RelayBridge NewBridge() =>
+            new RelayBridge(
+                new RelayBridgeSettings
+                {
+                    HttpUrl = httpUrl,
+                    Grant = grant,
+                    GrantProvider = GrantProvider,
+                    RoomName = roomName,
+                    MaxPlayers = maxPlayers,
+                    EventCode = eventCode,
+                }
+            );
 
         protected override void StartClientInternal() => Connect(null, 0);
+
         protected override void StartServerInternal() => Listen(0);
 
         // ---- IListener (PurrNet server = room master) ----
         public void Listen(ushort port)
         {
-            if (_host != null) return;
-            var b = _host = NewBridge();
-            b.OnState += s => { listenerState = Map(s); onConnectionState?.Invoke(listenerState, true); };
-            b.OnPeerJoined += a => { var c = new Connection(a); _connections.Add(c); onConnected?.Invoke(c, true); };
-            b.OnPeerLeft += (a, why) => { var c = new Connection(a); if (_connections.Remove(c)) onDisconnected?.Invoke(c, Map(why, true), true); };
-            b.OnData += (from, d, _) => onDataReceived?.Invoke(new Connection(from), new ByteData(d.Array, d.Offset, d.Count), true);
-            b.OnDisconnected += why => { if (why != BridgeLeave.Local) Debug.LogWarning("[AurixNet] host stopped: " + b.LastError); if (_host == b) _host = null; };
-            b.StartHost();
+            if (_host != null)
+            {
+                return;
+            }
+
+            var bridge = _host = NewBridge();
+            bridge.OnState += state =>
+            {
+                listenerState = Map(state);
+                onConnectionState?.Invoke(listenerState, true);
+            };
+            bridge.OnPeerJoined += actor =>
+            {
+                var connection = new Connection(actor);
+                _connections.Add(connection);
+                onConnected?.Invoke(connection, true);
+            };
+            bridge.OnPeerLeft += (actor, why) =>
+            {
+                var connection = new Connection(actor);
+                if (_connections.Remove(connection))
+                {
+                    onDisconnected?.Invoke(connection, Map(why, true), true);
+                }
+            };
+            bridge.OnData += (from, data, _) =>
+                onDataReceived?.Invoke(
+                    new Connection(from),
+                    new ByteData(data.Array, data.Offset, data.Count),
+                    true
+                );
+            bridge.OnDisconnected += why =>
+            {
+                if (why != BridgeLeave.Local)
+                {
+                    Debug.LogWarning("[AurixNet] host stopped: " + bridge.LastError);
+                }
+
+                if (_host == bridge)
+                {
+                    _host = null;
+                }
+            };
+            bridge.StartHost();
         }
 
-        public void StopListening() { var b = _host; _host = null; b?.Stop(); }
+        public void StopListening()
+        {
+            var bridge = _host;
+            _host = null;
+            bridge?.Stop();
+        }
 
         // ---- IConnectable (PurrNet client) ----
         public void Connect(string ip, ushort port)
         {
-            if (_client != null) return;
-            var b = _client = NewBridge();
-            b.OnState += s =>
+            if (_client != null)
             {
-                clientState = Map(s); onConnectionState?.Invoke(clientState, false);
-                if (s == BridgeState.Started) onConnected?.Invoke(ServerConn, false);
+                return;
+            }
+
+            var bridge = _client = NewBridge();
+            bridge.OnState += state =>
+            {
+                clientState = Map(state);
+                onConnectionState?.Invoke(clientState, false);
+                if (state == BridgeState.Started)
+                {
+                    onConnected?.Invoke(ServerConn, false);
+                }
             };
-            b.OnData += (from, d, _) => onDataReceived?.Invoke(ServerConn, new ByteData(d.Array, d.Offset, d.Count), false);
-            b.OnDisconnected += why =>
+            bridge.OnData += (from, data, _) =>
+                onDataReceived?.Invoke(
+                    ServerConn,
+                    new ByteData(data.Array, data.Offset, data.Count),
+                    false
+                );
+            bridge.OnDisconnected += why =>
             {
-                if (why == BridgeLeave.Failed) Debug.LogError("[AurixNet] connect failed: " + b.LastError);
-                if (_client == b) _client = null;
+                if (why == BridgeLeave.Failed)
+                {
+                    Debug.LogError("[AurixNet] connect failed: " + bridge.LastError);
+                }
+
+                if (_client == bridge)
+                {
+                    _client = null;
+                }
+
                 onDisconnected?.Invoke(ServerConn, Map(why, false), false);
             };
             // Host mode (StartHost = server + client on one transport): the client talks to the local host in-process.
-            if (_host != null) b.StartLocal(_host); else b.StartClient();
+            if (_host != null)
+            {
+                bridge.StartLocal(_host);
+            }
+            else
+            {
+                bridge.StartClient();
+            }
         }
 
-        public void Disconnect() { var b = _client; _client = null; b?.Stop(); }
+        public void Disconnect()
+        {
+            var bridge = _client;
+            _client = null;
+            bridge?.Stop();
+        }
 
         // ---- data ----
-        public void SendToClient(Connection target, ByteData data, PChannel method = PChannel.ReliableOrdered)
+        public void SendToClient(
+            Connection target,
+            ByteData data,
+            PChannel method = PChannel.ReliableOrdered
+        )
         {
-            if (_host == null || !target.isValid) return;
+            if (_host == null || !target.isValid)
+            {
+                return;
+            }
+
             _host.SendTo(target.connectionId, data.segment, Reliable(method));
             onDataSent?.Invoke(target, data, true);
         }
 
         public void SendToServer(ByteData data, PChannel method = PChannel.ReliableOrdered)
         {
-            if (_client == null) return;
+            if (_client == null)
+            {
+                return;
+            }
+
             _client.SendToHost(data.segment, Reliable(method));
             onDataSent?.Invoke(ServerConn, data, false);
         }
 
         public void CloseConnection(Connection conn) => _host?.Kick(conn.connectionId);
 
-        public void RaiseDataReceived(Connection conn, ByteData data, bool asServer) => onDataReceived?.Invoke(conn, data, asServer);
-        public void RaiseDataSent(Connection conn, ByteData data, bool asServer) => onDataSent?.Invoke(conn, data, asServer);
+        public void RaiseDataReceived(Connection conn, ByteData data, bool asServer) =>
+            onDataReceived?.Invoke(conn, data, asServer);
 
-        public void ReceiveMessages(float delta) { _host?.Pump(); _client?.Pump(); }
-        public void SendMessages(float delta) { _host?.Flush(); _client?.Flush(); }
+        public void RaiseDataSent(Connection conn, ByteData data, bool asServer) =>
+            onDataSent?.Invoke(conn, data, asServer);
 
-        public int GetMTU(Connection target, PChannel channel, bool asServer) => RelayBridge.Mtu(Reliable(channel));
-
-        static bool Reliable(PChannel c) => c == PChannel.ReliableOrdered || c == PChannel.ReliableUnordered;
-
-        static ConnectionState Map(BridgeState s) => s switch
+        public void ReceiveMessages(float delta)
         {
-            BridgeState.Starting => ConnectionState.Connecting,
-            BridgeState.Started => ConnectionState.Connected,
-            BridgeState.Stopping => ConnectionState.Disconnecting,
-            _ => ConnectionState.Disconnected
-        };
+            _host?.Pump();
+            _client?.Pump();
+        }
 
-        static DisconnectReason Map(BridgeLeave why, bool asServer) => why switch
+        public void SendMessages(float delta)
         {
-            BridgeLeave.Kicked => DisconnectReason.ServerRequest,
-            BridgeLeave.Local => asServer ? DisconnectReason.ServerRequest : DisconnectReason.ClientRequest,
-            BridgeLeave.Failed => DisconnectReason.ConnectionFailed,
-            _ => DisconnectReason.Timeout
-        };
+            _host?.Flush();
+            _client?.Flush();
+        }
+
+        public int GetMTU(Connection target, PChannel channel, bool asServer) =>
+            RelayBridge.Mtu(Reliable(channel));
+
+        static bool Reliable(PChannel channel) =>
+            channel == PChannel.ReliableOrdered || channel == PChannel.ReliableUnordered;
+
+        static ConnectionState Map(BridgeState state) =>
+            state switch
+            {
+                BridgeState.Starting => ConnectionState.Connecting,
+                BridgeState.Started => ConnectionState.Connected,
+                BridgeState.Stopping => ConnectionState.Disconnecting,
+                _ => ConnectionState.Disconnected,
+            };
+
+        static DisconnectReason Map(BridgeLeave why, bool asServer) =>
+            why switch
+            {
+                BridgeLeave.Kicked => DisconnectReason.ServerRequest,
+                BridgeLeave.Local => asServer
+                    ? DisconnectReason.ServerRequest
+                    : DisconnectReason.ClientRequest,
+                BridgeLeave.Failed => DisconnectReason.ConnectionFailed,
+                _ => DisconnectReason.Timeout,
+            };
     }
 }
 #endif

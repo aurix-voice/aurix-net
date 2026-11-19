@@ -144,6 +144,22 @@ pub unsafe extern "C" fn aurix_net_best_region(
         }
     }
 }
+/// A top-level string field of a JSON object, e.g. `t` of a control message. Returns a malloc'd
+/// string to free with `aurix_net_string_free`, or NULL when the field is absent or not a string.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_json_string(
+    json: *const c_char,
+    key: *const c_char,
+) -> *mut c_char {
+    let (Some(json), Some(key)) = (cstr(json), cstr(key)) else {
+        return std::ptr::null_mut();
+    };
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| v.get(key)?.as_str().and_then(|s| CString::new(s).ok()))
+        .map(CString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_string_free(s: *mut c_char) {
     if !s.is_null() {

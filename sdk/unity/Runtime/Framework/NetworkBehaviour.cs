@@ -11,15 +11,22 @@ using UnityEngine;
 
 namespace Aurix.Net.Unity.Framework
 {
-    public enum RpcKind : byte { Server, Observers, Target }
+    public enum RpcKind : byte
+    {
+        Server,
+        Observers,
+        Target,
+    }
 
     public abstract class RpcAttribute : Attribute
     {
         public abstract RpcKind kind { get; }
         public bool runLocally;
         public bool reliable = true;
+
         /// <summary>Deflate the argument payload when it pays off (see <see cref="RpcCodec"/>).</summary>
         public RpcCompression compression;
+
         /// <summary>Send only the difference from the previous call of this RPC to the same peer.</summary>
         public bool deltaPack;
     }
@@ -30,7 +37,21 @@ namespace Aurix.Net.Unity.Framework
     {
         public override RpcKind kind => RpcKind.Server;
         public bool requireOwnership = true;
-        public ServerRpcAttribute(bool requireOwnership = true, bool runLocally = false, bool reliable = true, RpcCompression compression = RpcCompression.None, bool deltaPack = false) { this.compression = compression; this.deltaPack = deltaPack; this.requireOwnership = requireOwnership; this.runLocally = runLocally; this.reliable = reliable; }
+
+        public ServerRpcAttribute(
+            bool requireOwnership = true,
+            bool runLocally = false,
+            bool reliable = true,
+            RpcCompression compression = RpcCompression.None,
+            bool deltaPack = false
+        )
+        {
+            this.compression = compression;
+            this.deltaPack = deltaPack;
+            this.requireOwnership = requireOwnership;
+            this.runLocally = runLocally;
+            this.reliable = reliable;
+        }
     }
 
     /// <summary>Server → every observer (late joiners get the last call when bufferLast is set).</summary>
@@ -38,8 +59,26 @@ namespace Aurix.Net.Unity.Framework
     public sealed class ObserversRpcAttribute : RpcAttribute
     {
         public override RpcKind kind => RpcKind.Observers;
-        public bool bufferLast, excludeOwner, excludeSender;
-        public ObserversRpcAttribute(bool runLocally = true, bool bufferLast = false, bool excludeOwner = false, bool reliable = true, RpcCompression compression = RpcCompression.None, bool deltaPack = false) { this.compression = compression; this.deltaPack = deltaPack; this.runLocally = runLocally; this.bufferLast = bufferLast; this.excludeOwner = excludeOwner; this.reliable = reliable; }
+        public bool bufferLast,
+            excludeOwner,
+            excludeSender;
+
+        public ObserversRpcAttribute(
+            bool runLocally = true,
+            bool bufferLast = false,
+            bool excludeOwner = false,
+            bool reliable = true,
+            RpcCompression compression = RpcCompression.None,
+            bool deltaPack = false
+        )
+        {
+            this.compression = compression;
+            this.deltaPack = deltaPack;
+            this.runLocally = runLocally;
+            this.bufferLast = bufferLast;
+            this.excludeOwner = excludeOwner;
+            this.reliable = reliable;
+        }
     }
 
     /// <summary>Server → one player (RpcTo).</summary>
@@ -48,19 +87,44 @@ namespace Aurix.Net.Unity.Framework
     {
         public override RpcKind kind => RpcKind.Target;
         public bool bufferLast;
-        public TargetRpcAttribute(bool runLocally = true, bool bufferLast = false, bool reliable = true, RpcCompression compression = RpcCompression.None, bool deltaPack = false) { this.compression = compression; this.deltaPack = deltaPack; this.runLocally = runLocally; this.bufferLast = bufferLast; this.reliable = reliable; }
+
+        public TargetRpcAttribute(
+            bool runLocally = true,
+            bool bufferLast = false,
+            bool reliable = true,
+            RpcCompression compression = RpcCompression.None,
+            bool deltaPack = false
+        )
+        {
+            this.compression = compression;
+            this.deltaPack = deltaPack;
+            this.runLocally = runLocally;
+            this.bufferLast = bufferLast;
+            this.reliable = reliable;
+        }
     }
 
     /// <summary>Optional last parameter of an RPC method: who sent it.</summary>
     public readonly struct RpcInfo
     {
-        public readonly PlayerID sender; public readonly bool asServer;
-        public RpcInfo(PlayerID sender, bool asServer) { this.sender = sender; this.asServer = asServer; }
+        public readonly PlayerID sender;
+        public readonly bool asServer;
+
+        public RpcInfo(PlayerID sender, bool asServer)
+        {
+            this.sender = sender;
+            this.asServer = asServer;
+        }
     }
 
     public sealed class RpcMethod
     {
-        public MethodInfo method; public RpcAttribute attr; public Type[] paramTypes; public bool wantsInfo; public byte index;
+        public MethodInfo method;
+        public RpcAttribute attr;
+        public Type[] paramTypes;
+        public bool wantsInfo;
+        public byte index;
+
         /// <summary>Woven assemblies: the original body, renamed to Method__Impl; invoked instead of <see cref="method"/> on receive.</summary>
         public MethodInfo impl;
     }
@@ -84,58 +148,144 @@ namespace Aurix.Net.Unity.Framework
         internal RpcMethod[] rpcs = Array.Empty<RpcMethod>();
         Dictionary<string, RpcMethod> _rpcByName;
 
-        static readonly Dictionary<Type, (FieldInfo[] fields, RpcMethod[] rpcs)> _cache = new Dictionary<Type, (FieldInfo[], RpcMethod[])>();
+        static readonly Dictionary<Type, (FieldInfo[] fields, RpcMethod[] rpcs)> _cache =
+            new Dictionary<Type, (FieldInfo[], RpcMethod[])>();
 
         internal void Bind(NetworkIdentity id, int index)
         {
-            identity = id; componentIndex = index;
+            identity = id;
+            componentIndex = index;
             OnBeforeBind();
             var (fields, rpcList) = Reflect(GetType());
             modules = new NetworkModule[fields.Length];
             for (int i = 0; i < fields.Length; i++)
             {
-                var m = (NetworkModule)fields[i].GetValue(this);
-                if (m == null) { m = (NetworkModule)Activator.CreateInstance(fields[i].FieldType); fields[i].SetValue(this, m); }
-                m.Bind(this, i); modules[i] = m;
+                var module = (NetworkModule)fields[i].GetValue(this);
+                if (module == null)
+                {
+                    module = (NetworkModule)Activator.CreateInstance(fields[i].FieldType);
+                    fields[i].SetValue(this, module);
+                }
+                module.Bind(this, i);
+                modules[i] = module;
             }
-            rpcs = rpcList; _rpcByName = rpcs.ToDictionary(r => r.method.Name);
+            rpcs = rpcList;
+            _rpcByName = rpcs.ToDictionary(method => method.method.Name);
         }
 
-        static (FieldInfo[], RpcMethod[]) Reflect(Type t)
+        static (FieldInfo[], RpcMethod[]) Reflect(Type type)
         {
-            if (_cache.TryGetValue(t, out var c)) return c;
+            if (_cache.TryGetValue(type, out var cached))
+            {
+                return cached;
+            }
+
             var fields = new List<FieldInfo>();
             var methods = new List<RpcMethod>();
-            for (var cur = t; cur != null && cur != typeof(NetworkBehaviour); cur = cur.BaseType)
+            for (var cur = type; cur != null && cur != typeof(NetworkBehaviour); cur = cur.BaseType)
             {
-                const BindingFlags F = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
-                fields.InsertRange(0, cur.GetFields(F).Where(f => typeof(NetworkModule).IsAssignableFrom(f.FieldType)).OrderBy(f => f.MetadataToken));
-                foreach (var m in cur.GetMethods(F))
+                const BindingFlags Flags =
+                    BindingFlags.Instance
+                    | BindingFlags.Public
+                    | BindingFlags.NonPublic
+                    | BindingFlags.DeclaredOnly;
+                fields.InsertRange(
+                    0,
+                    cur.GetFields(Flags)
+                        .Where(field => typeof(NetworkModule).IsAssignableFrom(field.FieldType))
+                        .OrderBy(field => field.MetadataToken)
+                );
+                foreach (var candidate in cur.GetMethods(Flags))
                 {
-                    var a = m.GetCustomAttribute<RpcAttribute>(); if (a == null) continue;
-                    var ps = m.GetParameters();
+                    var attribute = candidate.GetCustomAttribute<RpcAttribute>();
+                    if (attribute == null)
+                    {
+                        continue;
+                    }
+
+                    var ps = candidate.GetParameters();
                     bool info = ps.Length > 0 && ps[ps.Length - 1].ParameterType == typeof(RpcInfo);
-                    var impl = cur.GetMethod(m.Name + ImplSuffix, F, null, ps.Select(p => p.ParameterType).ToArray(), null);
-                    methods.Add(new RpcMethod { method = m, impl = impl, attr = a, wantsInfo = info, paramTypes = ps.Take(info ? ps.Length - 1 : ps.Length).Select(p => p.ParameterType).ToArray() });
+                    var impl = cur.GetMethod(
+                        candidate.Name + ImplSuffix,
+                        Flags,
+                        null,
+                        ps.Select(parameter => parameter.ParameterType).ToArray(),
+                        null
+                    );
+                    methods.Add(
+                        new RpcMethod
+                        {
+                            method = candidate,
+                            impl = impl,
+                            attr = attribute,
+                            wantsInfo = info,
+                            paramTypes = ps.Take(info ? ps.Length - 1 : ps.Length)
+                                .Select(parameter => parameter.ParameterType)
+                                .ToArray(),
+                        }
+                    );
                 }
             }
-            var ordered = methods.OrderBy(r => r.method.DeclaringType.FullName).ThenBy(r => r.method.Name).ThenBy(r => r.paramTypes.Length).ToArray();
-            if (ordered.Length > 255) throw new NetException(t.Name + ": more than 255 RPC methods");
-            for (int i = 0; i < ordered.Length; i++) ordered[i].index = (byte)i;
+            var ordered = methods
+                .OrderBy(rpc => rpc.method.DeclaringType.FullName)
+                .ThenBy(rpc => rpc.method.Name)
+                .ThenBy(rpc => rpc.paramTypes.Length)
+                .ToArray();
+            if (ordered.Length > 255)
+            {
+                throw new NetException(type.Name + ": more than 255 RPC methods");
+            }
+
+            for (int i = 0; i < ordered.Length; i++)
+            {
+                ordered[i].index = (byte)i;
+            }
+
             var res = (fields.ToArray(), ordered);
-            _cache[t] = res; return res;
+            _cache[type] = res;
+            return res;
         }
 
-        internal void InternalSpawned(bool asServer) { foreach (var m in modules) m.OnSpawned(asServer); OnSpawned(asServer); }
-        internal void InternalDespawned() { foreach (var m in modules) m.OnDespawned(); OnDespawned(); }
-        internal void InternalOwnerChanged(PlayerID? o, PlayerID? n) { foreach (var m in modules) m.OnOwnerChanged(o, n); OnOwnerChanged(o, n); }
+        internal void InternalSpawned(bool asServer)
+        {
+            foreach (var module in modules)
+            {
+                module.OnSpawned(asServer);
+            }
+
+            OnSpawned(asServer);
+        }
+
+        internal void InternalDespawned()
+        {
+            foreach (var module in modules)
+            {
+                module.OnDespawned();
+            }
+
+            OnDespawned();
+        }
+
+        internal void InternalOwnerChanged(PlayerID? previous, PlayerID? next)
+        {
+            foreach (var module in modules)
+            {
+                module.OnOwnerChanged(previous, next);
+            }
+
+            OnOwnerChanged(previous, next);
+        }
 
         /// <summary>Called right before modules are bound: create module instances that depend on inspector fields here.</summary>
         protected virtual void OnBeforeBind() { }
+
         /// <summary>Called once the object is live on this peer (state applied, owner known).</summary>
         protected virtual void OnSpawned(bool asServer) { }
+
         protected virtual void OnDespawned() { }
+
         protected virtual void OnOwnerChanged(PlayerID? oldOwner, PlayerID? newOwner) { }
+
         /// <summary>Called every network tick on the server and on clients.</summary>
         public virtual void OnTick(uint tick) { }
 
@@ -143,83 +293,202 @@ namespace Aurix.Net.Unity.Framework
         public const string ImplSuffix = "__Impl";
 
         /// <summary>Call a [ServerRpc] or [ObserversRpc] method by name (reflection mode; woven assemblies call the method directly).</summary>
-        protected void Rpc(string method, params object[] args) { var r = Find(method); if (networkManager != null && !networkManager.SendRpc(this, r, TargetOf(r, args), args)) InvokeRpcLocal(r, args, LocalInfo()); }
+        protected void Rpc(string method, params object[] args)
+        {
+            var rpc = Find(method);
+            if (
+                networkManager != null
+                && !networkManager.SendRpc(this, rpc, TargetOf(rpc, args), args)
+            )
+            {
+                InvokeRpcLocal(rpc, args, LocalInfo());
+            }
+        }
+
         /// <summary>Call a [TargetRpc] method on one player by name.</summary>
-        protected void RpcTo(PlayerID target, string method, params object[] args) { var r = Find(method); if (networkManager != null && !networkManager.SendRpc(this, r, target, args)) InvokeRpcLocal(r, args, LocalInfo()); }
+        protected void RpcTo(PlayerID target, string method, params object[] args)
+        {
+            var rpc = Find(method);
+            if (networkManager != null && !networkManager.SendRpc(this, rpc, target, args))
+            {
+                InvokeRpcLocal(rpc, args, LocalInfo());
+            }
+        }
 
         /// <summary>Woven RPC prologue: routes the call; returns true when the body must not run here.</summary>
         protected bool __RpcSend(int index, object[] args)
         {
-            if (index >= rpcs.Length || networkManager == null) return false;
-            var r = rpcs[index];
-            return networkManager.SendRpc(this, r, TargetOf(r, args), args);
+            if (index >= rpcs.Length || networkManager == null)
+            {
+                return false;
+            }
+
+            var method = rpcs[index];
+            return networkManager.SendRpc(this, method, TargetOf(method, args), args);
         }
 
         /// <summary>Woven RPC prologue: the RpcInfo for a locally executed call.</summary>
         protected RpcInfo __LocalInfo() => LocalInfo();
+
         /// <summary>Woven prologue of generic RPCs: keeps the RpcInfo delivered by the network, otherwise the local caller's info.</summary>
         protected RpcInfo __LocalInfoOr(RpcInfo received) => _receivingRpc ? received : LocalInfo();
 
-        [NonSerialized] bool _receivingRpc;
+        [NonSerialized]
+        bool _receivingRpc;
+
         /// <summary>Woven prologue of generic RPC methods: routes the call with its type arguments; false when the body should run (local / receiving).</summary>
         protected bool __RpcSendGeneric(int index, Type[] typeArgs, object[] args)
         {
-            if (_receivingRpc || index >= rpcs.Length || networkManager == null) return false;
-            var r = rpcs[index];
-            return networkManager.SendRpc(this, r, TargetOf(r, args), args, typeArgs);
+            if (_receivingRpc || index >= rpcs.Length || networkManager == null)
+            {
+                return false;
+            }
+
+            var method = rpcs[index];
+            return networkManager.SendRpc(this, method, TargetOf(method, args), args, typeArgs);
         }
 
-        static string TypeName(Type t) => t.FullName + ", " + t.Assembly.GetName().Name;
-        static Type ResolveType(string name) => Type.GetType(name, false) ?? throw new NetException("generic RPC: unknown type " + name);
+        static string TypeName(Type type) => type.FullName + ", " + type.Assembly.GetName().Name;
+
+        static Type ResolveType(string name) =>
+            Type.GetType(name, false)
+            ?? throw new NetException("generic RPC: unknown type " + name);
 
         RpcInfo LocalInfo() => new RpcInfo(localPlayer ?? default, isServer);
 
         /// <summary>[TargetRpc] methods take the target player as their first parameter.</summary>
-        static PlayerID? TargetOf(RpcMethod r, object[] args) => r.attr.kind == RpcKind.Target && args.Length > 0 && args[0] is PlayerID p ? p : (PlayerID?)null;
+        static PlayerID? TargetOf(RpcMethod method, object[] args) =>
+            method.attr.kind == RpcKind.Target && args.Length > 0 && args[0] is PlayerID player
+                ? player
+                : (PlayerID?)null;
 
         RpcMethod Find(string name)
         {
-            if (_rpcByName != null && _rpcByName.TryGetValue(name, out var r)) return r;
-            throw new NetException($"{GetType().Name}: no RPC method '{name}' (mark it [ServerRpc]/[ObserversRpc]/[TargetRpc])");
-        }
-
-        internal void WriteArgs(BitWriter w, RpcMethod r, object[] args, Type[] typeArgs = null)
-        {
-            if (args.Length != r.paramTypes.Length) throw new NetException($"{GetType().Name}.{r.method.Name}: expected {r.paramTypes.Length} args, got {args.Length}");
-            var types = r.paramTypes;
-            if (r.method.IsGenericMethodDefinition)
+            if (_rpcByName != null && _rpcByName.TryGetValue(name, out var method))
             {
-                if (typeArgs == null || typeArgs.Length != r.method.GetGenericArguments().Length) throw new NetException($"{GetType().Name}.{r.method.Name}: generic RPC needs its type arguments (is the assembly woven?)");
-                w.WriteUInt((ulong)typeArgs.Length, 8); foreach (var t in typeArgs) NetSerializer.WriteString(w, TypeName(t));
-                types = ClosedParamTypes(r.method.MakeGenericMethod(typeArgs), r.wantsInfo);
+                return method;
             }
-            for (int i = 0; i < args.Length; i++) NetSerializer.Write(w, args[i], types[i]);
+
+            throw new NetException(
+                $"{GetType().Name}: no RPC method '{name}' (mark it [ServerRpc]/[ObserversRpc]/[TargetRpc])"
+            );
         }
 
-        static Type[] ClosedParamTypes(MethodInfo closed, bool wantsInfo) { var ps = closed.GetParameters(); var n = wantsInfo ? ps.Length - 1 : ps.Length; var t = new Type[n]; for (int i = 0; i < n; i++) t[i] = ps[i].ParameterType; return t; }
-
-        internal void InvokeRpc(RpcMethod r, BitReader reader, RpcInfo info)
+        internal void WriteArgs(
+            BitWriter writer,
+            RpcMethod method,
+            object[] args,
+            Type[] typeArgs = null
+        )
         {
-            var target = r.impl ?? r.method; var types = r.paramTypes;
-            if (r.method.IsGenericMethodDefinition)
+            if (args.Length != method.paramTypes.Length)
             {
-                int n = (int)reader.ReadUInt(8); var targs = new Type[n]; for (int i = 0; i < n; i++) targs[i] = ResolveType(NetSerializer.ReadString(reader));
-                target = target.MakeGenericMethod(targs); types = ClosedParamTypes(target, r.wantsInfo);
+                throw new NetException(
+                    $"{GetType().Name}.{method.method.Name}: expected {method.paramTypes.Length} args, got {args.Length}"
+                );
             }
-            var args = new object[types.Length + (r.wantsInfo ? 1 : 0)];
-            for (int i = 0; i < types.Length; i++) args[i] = NetSerializer.Read(reader, types[i]);
-            if (r.wantsInfo) args[args.Length - 1] = info;
-            bool guard = r.method.IsGenericMethodDefinition && r.impl == null;
-            if (guard) _receivingRpc = true;
-            try { target.Invoke(this, args); } finally { if (guard) _receivingRpc = false; }
+
+            var types = method.paramTypes;
+            if (method.method.IsGenericMethodDefinition)
+            {
+                if (
+                    typeArgs == null
+                    || typeArgs.Length != method.method.GetGenericArguments().Length
+                )
+                {
+                    throw new NetException(
+                        $"{GetType().Name}.{method.method.Name}: generic RPC needs its type arguments (is the assembly woven?)"
+                    );
+                }
+
+                writer.WriteUInt((ulong)typeArgs.Length, 8);
+                foreach (var type in typeArgs)
+                {
+                    NetSerializer.WriteString(writer, TypeName(type));
+                }
+
+                types = ClosedParamTypes(
+                    method.method.MakeGenericMethod(typeArgs),
+                    method.wantsInfo
+                );
+            }
+            for (int i = 0; i < args.Length; i++)
+            {
+                NetSerializer.Write(writer, args[i], types[i]);
+            }
         }
 
-        internal void InvokeRpcLocal(RpcMethod r, object[] args, RpcInfo info)
+        static Type[] ClosedParamTypes(MethodInfo closed, bool wantsInfo)
         {
-            var target = r.impl ?? r.method;
-            if (!r.wantsInfo) { target.Invoke(this, args); return; }
-            var a = new object[args.Length + 1]; Array.Copy(args, a, args.Length); a[args.Length] = info;
-            target.Invoke(this, a);
+            var ps = closed.GetParameters();
+            var count = wantsInfo ? ps.Length - 1 : ps.Length;
+            var types = new Type[count];
+            for (int i = 0; i < count; i++)
+            {
+                types[i] = ps[i].ParameterType;
+            }
+
+            return types;
+        }
+
+        internal void InvokeRpc(RpcMethod method, BitReader reader, RpcInfo info)
+        {
+            var target = method.impl ?? method.method;
+            var types = method.paramTypes;
+            if (method.method.IsGenericMethodDefinition)
+            {
+                int count = (int)reader.ReadUInt(8);
+                var targs = new Type[count];
+                for (int i = 0; i < count; i++)
+                {
+                    targs[i] = ResolveType(NetSerializer.ReadString(reader));
+                }
+
+                target = target.MakeGenericMethod(targs);
+                types = ClosedParamTypes(target, method.wantsInfo);
+            }
+            var args = new object[types.Length + (method.wantsInfo ? 1 : 0)];
+            for (int i = 0; i < types.Length; i++)
+            {
+                args[i] = NetSerializer.Read(reader, types[i]);
+            }
+
+            if (method.wantsInfo)
+            {
+                args[args.Length - 1] = info;
+            }
+
+            bool guard = method.method.IsGenericMethodDefinition && method.impl == null;
+            if (guard)
+            {
+                _receivingRpc = true;
+            }
+
+            try
+            {
+                target.Invoke(this, args);
+            }
+            finally
+            {
+                if (guard)
+                {
+                    _receivingRpc = false;
+                }
+            }
+        }
+
+        internal void InvokeRpcLocal(RpcMethod method, object[] args, RpcInfo info)
+        {
+            var target = method.impl ?? method.method;
+            if (!method.wantsInfo)
+            {
+                target.Invoke(this, args);
+                return;
+            }
+            var arguments = new object[args.Length + 1];
+            Array.Copy(args, arguments, args.Length);
+            arguments[args.Length] = info;
+            target.Invoke(this, arguments);
         }
     }
 }

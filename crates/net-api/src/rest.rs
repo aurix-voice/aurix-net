@@ -227,20 +227,22 @@ pub fn router(st: Shared) -> Router {
         .with_state(st)
 }
 
-fn bearer(h: &HeaderMap) -> Option<&str> {
-    h.get("authorization")?
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("authorization")?
         .to_str()
         .ok()?
         .strip_prefix("Bearer ")
         .map(str::trim)
 }
 
-async fn api_key(st: &Shared, h: &HeaderMap, scope: Scope) -> Result<ApiKeyRow> {
-    let k = bearer(h).ok_or_else(|| NetError::Unauthorized("missing bearer api key".into()))?;
-    if !looks_like_key(k) {
+async fn api_key(st: &Shared, headers: &HeaderMap, scope: Scope) -> Result<ApiKeyRow> {
+    let token =
+        bearer(headers).ok_or_else(|| NetError::Unauthorized("missing bearer api key".into()))?;
+    if !looks_like_key(token) {
         return Err(NetError::Unauthorized("malformed api key".into()));
     }
-    let auth = queries::find_api_key(&st.pool, &hash_key(k))
+    let auth = queries::find_api_key(&st.pool, &hash_key(token))
         .await?
         .ok_or_else(|| NetError::Unauthorized("unknown api key".into()))?;
     // A suspended project keeps read access so the team can see its state; everything that
@@ -261,7 +263,7 @@ async fn api_key(st: &Shared, h: &HeaderMap, scope: Scope) -> Result<ApiKeyRow> 
         )));
     }
     if !row.allowed_cidrs.is_empty() {
-        let ip = h
+        let ip = headers
             .get(crate::ratelimit::CLIENT_IP_HEADER)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<IpAddr>().ok());
@@ -281,20 +283,20 @@ pub(crate) struct Operator {
     pub actor: String,
 }
 
-async fn operator(st: &Shared, h: &HeaderMap) -> Result<Operator> {
-    let t = bearer(h).unwrap_or("");
-    if net_auth::admin::admin_token_ok(&st.cfg.auth.admin_token, t) {
+async fn operator(st: &Shared, headers: &HeaderMap) -> Result<Operator> {
+    let token = bearer(headers).unwrap_or("");
+    if net_auth::admin::admin_token_ok(&st.cfg.auth.admin_token, token) {
         return Ok(Operator {
             actor: "operator".into(),
         });
     }
-    if looks_like_key(t) {
-        let ip = h
+    if looks_like_key(token) {
+        let ip = headers
             .get(crate::ratelimit::CLIENT_IP_HEADER)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
         if let Some(row) =
-            queries::find_operator_token(&st.pool, &hash_key(t), ip.as_deref()).await?
+            queries::find_operator_token(&st.pool, &hash_key(token), ip.as_deref()).await?
         {
             if !row.allowed_cidrs.is_empty()
                 && !ip
@@ -326,14 +328,14 @@ struct OperatorTokenReq {
     allowed_cidrs: Vec<String>,
 }
 
-fn operator_token_json(r: &net_db::models::OperatorTokenRow) -> Value {
-    json!({"id": r.id, "name": r.name, "prefix": r.prefix, "created_by": r.created_by, "created_at": r.created_at,
-           "expires_at": r.expires_at, "revoked_at": r.revoked_at, "last_used_at": r.last_used_at,
-           "allowed_cidrs": r.allowed_cidrs, "last_used_ip": r.last_used_ip})
+fn operator_token_json(row: &net_db::models::OperatorTokenRow) -> Value {
+    json!({"id": row.id, "name": row.name, "prefix": row.prefix, "created_by": row.created_by, "created_at": row.created_at,
+           "expires_at": row.expires_at, "revoked_at": row.revoked_at, "last_used_at": row.last_used_at,
+           "allowed_cidrs": row.allowed_cidrs, "last_used_ip": row.last_used_ip})
 }
 
-async fn op_list_tokens(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+async fn op_list_tokens(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    operator(&st, &headers).await?;
     let rows = queries::list_operator_tokens(&st.pool).await?;
     Ok(Json(
         json!({"tokens": rows.iter().map(operator_token_json).collect::<Vec<_>>()}),
@@ -348,18 +350,21 @@ struct AlertWebhookReq {
     events: Vec<String>,
 }
 
-async fn op_list_alert_webhooks(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+async fn op_list_alert_webhooks(
+    State(st): State<Shared>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Value>> {
+    operator(&st, &headers).await?;
     let rows = queries::list_operator_webhooks(&st.pool).await?;
     Ok(Json(json!({"webhooks": rows})))
 }
 
 async fn op_create_alert_webhook(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Json(req): Json<AlertWebhookReq>,
 ) -> ApiResult<Json<Value>> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     crate::webhooks::validate_webhook_url(&req.url, st.cfg.server.environment == "development")?;
     crate::webhooks::validate_operator_events(&req.events)?;
     let secret = ApiKeyMaterial::generate().plaintext;
@@ -382,10 +387,10 @@ async fn op_create_alert_webhook(
 
 async fn op_delete_alert_webhook(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     if !queries::delete_operator_webhook(&st.pool, id).await? {
         return Err(NetError::NotFound("webhook not found".into()).into());
     }
@@ -404,11 +409,11 @@ async fn op_delete_alert_webhook(
 
 async fn op_alert_webhook_deliveries(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Query(q): Query<DeliveriesQuery>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     queries::get_operator_webhook(&st.pool, id)
         .await?
         .ok_or_else(|| NetError::NotFound("webhook not found".into()))?;
@@ -419,10 +424,10 @@ async fn op_alert_webhook_deliveries(
 
 async fn op_alert_webhook_test(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     queries::get_operator_webhook(&st.pool, id)
         .await?
         .ok_or_else(|| NetError::NotFound("webhook not found".into()))?;
@@ -449,30 +454,34 @@ struct BillingQuery {
 }
 
 fn month_bounds(spec: Option<&str>) -> Result<(Timestamp, Timestamp)> {
-    let (y, m) = match spec {
+    let (year, month) = match spec {
         None => {
-            let n = Timestamp::now();
-            (n.year(), u8::from(n.month()))
+            let now = Timestamp::now();
+            (now.year(), u8::from(now.month()))
         }
-        Some(s) => {
-            let (y, m) = s
+        Some(text) => {
+            let (year, month) = text
                 .split_once('-')
                 .ok_or_else(|| NetError::Invalid("month: YYYY-MM".into()))?;
-            let y: i32 = y
+            let year: i32 = year
                 .parse()
                 .map_err(|_| NetError::Invalid("month: YYYY-MM".into()))?;
-            let m: u8 = m
+            let month: u8 = month
                 .parse()
                 .map_err(|_| NetError::Invalid("month: YYYY-MM".into()))?;
-            if !(1..=12).contains(&m) || !(2020..=2100).contains(&y) {
+            if !(1..=12).contains(&month) || !(2020..=2100).contains(&year) {
                 return Err(NetError::Invalid("month: YYYY-MM".into()));
             }
-            (y, m)
+            (year, month)
         }
     };
-    let from =
-        Timestamp::month_start(y, m).ok_or_else(|| NetError::Invalid("month: YYYY-MM".into()))?;
-    let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+    let from = Timestamp::month_start(year, month)
+        .ok_or_else(|| NetError::Invalid("month: YYYY-MM".into()))?;
+    let (ny, nm) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
     let to =
         Timestamp::month_start(ny, nm).ok_or_else(|| NetError::Invalid("month: YYYY-MM".into()))?;
     Ok((from, to))
@@ -482,11 +491,11 @@ fn month_bounds(spec: Option<&str>) -> Result<(Timestamp, Timestamp)> {
 /// applied. Soft-deleted projects are included (they used the service that month).
 async fn op_billing(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Query(q): Query<BillingQuery>,
 ) -> ApiResult<axum::response::Response> {
     use axum::response::IntoResponse;
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     let (from, to) = month_bounds(q.month.as_deref())?;
     let projects = queries::list_projects_all(&st.pool).await?;
     let usage = queries::usage_by_project_between(&st.pool, from, to).await?;
@@ -497,34 +506,34 @@ async fn op_billing(
             .collect();
     let mut by: std::collections::HashMap<Uuid, std::collections::BTreeMap<String, f64>> =
         Default::default();
-    for r in usage {
-        *by.entry(r.project_id)
+    for row in usage {
+        *by.entry(row.project_id)
             .or_default()
-            .entry(r.metric)
-            .or_default() += r.quantity;
+            .entry(row.metric)
+            .or_default() += row.quantity;
     }
     let get =
         |m: &std::collections::BTreeMap<String, f64>, k: &str| m.get(k).copied().unwrap_or(0.0);
     let mut rows: Vec<Value> = Vec::new();
     let mut total = std::collections::BTreeMap::<&str, f64>::new();
-    for p in &projects {
-        let m = by.remove(&p.id).unwrap_or_default();
-        let rooms = created.get(&p.id).copied().unwrap_or(0);
-        if m.is_empty() && rooms == 0 && p.deleted_at.is_some() {
+    for project in &projects {
+        let used = by.remove(&project.id).unwrap_or_default();
+        let rooms = created.get(&project.id).copied().unwrap_or(0);
+        if used.is_empty() && rooms == 0 && project.deleted_at.is_some() {
             continue;
         }
-        let l = net_control::ProjectLimits::from_json(&p.limits);
-        for k in ["player_minutes", "room_minutes", "bytes_in", "bytes_out"] {
-            *total.entry(k).or_default() += get(&m, k);
+        let limits = net_control::ProjectLimits::from_json(&project.limits);
+        for metric in ["player_minutes", "room_minutes", "bytes_in", "bytes_out"] {
+            *total.entry(metric).or_default() += get(&used, metric);
         }
         *total.entry("rooms_created").or_default() += rooms as f64;
         rows.push(json!({
-            "project_id": p.id, "name": p.name, "plan": p.plan,
-            "player_minutes": get(&m, "player_minutes"), "room_minutes": get(&m, "room_minutes"),
-            "bytes_in": get(&m, "bytes_in"), "bytes_out": get(&m, "bytes_out"),
+            "project_id": project.id, "name": project.name, "plan": project.plan,
+            "player_minutes": get(&used, "player_minutes"), "room_minutes": get(&used, "room_minutes"),
+            "bytes_in": get(&used, "bytes_in"), "bytes_out": get(&used, "bytes_out"),
             "rooms_created": rooms,
-            "cap_player_minutes": l.monthly_player_minutes, "cap_bytes": l.monthly_bytes,
-            "deleted_at": p.deleted_at, "disabled_at": p.disabled_at,
+            "cap_player_minutes": limits.monthly_player_minutes, "cap_bytes": limits.monthly_bytes,
+            "deleted_at": project.deleted_at, "disabled_at": project.disabled_at,
         }));
     }
     rows.sort_by(|a, b| {
@@ -558,7 +567,7 @@ async fn op_billing(
                     .iter()
                     .map(|k| match &r[*k] {
                         Value::Null => String::new(),
-                        Value::String(s) => s.clone(),
+                        Value::String(text) => text.clone(),
                         v => v.to_string(),
                     })
                     .collect()
@@ -572,22 +581,22 @@ async fn op_billing(
 
 async fn op_create_token(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Json(req): Json<OperatorTokenReq>,
 ) -> ApiResult<Json<Value>> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     let name = req.name.trim();
     if name.is_empty() || name.len() > 64 || !name.chars().all(|c| c.is_ascii_graphic() || c == ' ')
     {
         return Err(NetError::Invalid("name: 1-64 printable ASCII characters".into()).into());
     }
     let cidrs = parse_cidrs(&req.allowed_cidrs)?;
-    let m = ApiKeyMaterial::generate();
+    let material = ApiKeyMaterial::generate();
     let row = queries::insert_operator_token(
         &st.pool,
         name,
-        &m.hash,
-        &m.prefix,
+        &material.hash,
+        &material.prefix,
         &op.actor,
         key_expiry(req.expires_in_secs),
         &cidrs,
@@ -603,16 +612,16 @@ async fn op_create_token(
     )
     .await;
     let mut out = operator_token_json(&row);
-    out["token"] = Value::String(m.plaintext);
+    out["token"] = Value::String(material.plaintext);
     Ok(Json(out))
 }
 
 async fn op_revoke_token(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     let row = queries::revoke_operator_token(&st.pool, id)
         .await?
         .ok_or_else(|| NetError::NotFound("token not found or already revoked".into()))?;
@@ -681,13 +690,13 @@ pub(crate) async fn usage_month(st: &Shared, project: Uuid) -> Result<(f64, f64)
             return Ok(*v);
         }
     }
-    let v = queries::usage_totals_since(&st.pool, project, month_start()).await?;
-    let mut c = cache.lock().unwrap();
-    if c.len() > 10_000 {
-        c.clear();
+    let totals = queries::usage_totals_since(&st.pool, project, month_start()).await?;
+    let mut cached = cache.lock().unwrap();
+    if cached.len() > 10_000 {
+        cached.clear();
     }
-    c.insert(project, (Instant::now(), v));
-    Ok(v)
+    cached.insert(project, (Instant::now(), totals));
+    Ok(totals)
 }
 
 /// Refuses a new room once a monthly cap is reached (counted as rejection `usage_cap`).
@@ -757,20 +766,20 @@ async fn rejections_json(st: &Shared, project: Uuid, hours: Option<u32>) -> Resu
 
 async fn rejections(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Query(q): Query<RejectionsQuery>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Read).await?;
+    let key = api_key(&st, &headers, Scope::Read).await?;
     Ok(Json(rejections_json(&st, key.project_id, q.hours).await?))
 }
 
 async fn op_rejections(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Query(q): Query<RejectionsQuery>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     Ok(Json(rejections_json(&st, id, q.hours).await?))
 }
 
@@ -807,9 +816,9 @@ async fn healthz(State(st): State<Shared>) -> Response {
         .into_response()
 }
 
-async fn metrics(State(st): State<Shared>, h: HeaderMap) -> Response {
+async fn metrics(State(st): State<Shared>, headers: HeaderMap) -> Response {
     let want = &st.cfg.server.metrics_token;
-    if !want.is_empty() && !net_auth::admin::admin_token_ok(want, bearer(&h).unwrap_or("")) {
+    if !want.is_empty() && !net_auth::admin::admin_token_ok(want, bearer(&headers).unwrap_or("")) {
         return (StatusCode::UNAUTHORIZED, "metrics token required").into_response();
     }
     st.metrics.rooms.set(st.host.len() as i64);
@@ -889,17 +898,17 @@ struct GrantReq {
 
 async fn create_grant(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Json(req): Json<GrantReq>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Rooms).await?;
+    let key = api_key(&st, &headers, Scope::Rooms).await?;
     key_grant(&st, &key)?;
     if !valid_player_id(&req.player_id) {
         return Err(NetError::Invalid("player_id: 1..=128 chars".into()).into());
     }
-    if let Some(b) = queries::get_ban(&st.pool, key.project_id, &req.player_id).await? {
+    if let Some(ban) = queries::get_ban(&st.pool, key.project_id, &req.player_id).await? {
         reject(&st, ProjectId::from_uuid(key.project_id), "banned");
-        return Err(NetError::Forbidden(ban_message(&b)).into());
+        return Err(NetError::Forbidden(ban_message(&ban)).into());
     }
     let scopes: Vec<&str> = req
         .scopes
@@ -925,11 +934,11 @@ async fn create_grant(
 /// written to the audit log, only who/what/for how long.
 async fn op_create_grant(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(req): Json<GrantReq>,
 ) -> ApiResult<Json<Value>> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     let prow = queries::get_project(&st.pool, id).await?;
     if prow.disabled_at.is_some() {
         return Err(NetError::Forbidden("project is suspended".into()).into());
@@ -937,8 +946,8 @@ async fn op_create_grant(
     if !valid_player_id(&req.player_id) {
         return Err(NetError::Invalid("player_id: 1..=128 chars".into()).into());
     }
-    if let Some(b) = queries::get_ban(&st.pool, id, &req.player_id).await? {
-        return Err(NetError::Forbidden(ban_message(&b)).into());
+    if let Some(ban) = queries::get_ban(&st.pool, id, &req.player_id).await? {
+        return Err(NetError::Forbidden(ban_message(&ban)).into());
     }
     let scopes: Vec<&str> = req
         .scopes
@@ -969,8 +978,8 @@ async fn op_create_grant(
     ))
 }
 
-async fn list_rooms(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Read).await?;
+async fn list_rooms(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &headers, Scope::Read).await?;
     let project = ProjectId::from_uuid(key.project_id);
     let live = st.redis.list_rooms(project).await.unwrap_or_default();
     Ok(Json(json!({"rooms": live})))
@@ -1003,10 +1012,10 @@ fn t() -> bool {
 /// Server-side room creation (no player joins). The room lives on this node.
 async fn create_room(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Json(req): Json<CreateRoomReq>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Rooms).await?;
+    let key = api_key(&st, &headers, Scope::Rooms).await?;
     key_write(&st, &key)?;
     if req.mode.as_deref().is_some_and(|m| m != "relay") {
         return Err(NetError::Invalid(
@@ -1104,10 +1113,10 @@ async fn create_room(
 
 async fn get_room(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Read).await?;
+    let key = api_key(&st, &headers, Scope::Read).await?;
     let row = queries::get_room(&st.pool, id).await?;
     if row.project_id != key.project_id {
         return Err(NetError::NotFound("room".into()).into());
@@ -1118,20 +1127,21 @@ async fn get_room(
 /// Players of a room hosted on this node, or `None` when it is not hosted here.
 fn local_players(st: &Shared, id: Uuid) -> Option<Vec<Value>> {
     st.host.get(RoomId::from_uuid(id)).map(|hr| {
-        let g = hr.lock();
+        let hosted = hr.lock();
         let now = std::time::Instant::now();
-        let stats: std::collections::HashMap<_, _> = g
+        let stats: std::collections::HashMap<_, _> = hosted
             .room
             .player_stats(now)
             .into_iter()
             .map(|s| (s.actor, s))
             .collect();
-        g.room
+        hosted
+            .room
             .player_infos()
             .into_iter()
             .map(|p| {
-                let s = stats.get(&p.actor);
-                let rtt_ms = g
+                let link = stats.get(&p.actor);
+                let rtt_ms = hosted
                     .sessions
                     .get(&p.actor)
                     .and_then(|s| s.data.as_ref())
@@ -1139,9 +1149,9 @@ fn local_players(st: &Shared, id: Uuid) -> Option<Vec<Value>> {
                     .filter(|r| *r > 0.0);
                 json!({
                     "actor": p.actor, "player_id": p.player_id, "name": p.name, "online": p.online,
-                    "events": s.map(|s| s.events), "bytes_in": s.map(|s| s.bytes_in),
-                    "eps": s.map(|s| s.eps), "idle_secs": s.and_then(|s| s.idle_secs),
-                    "since_secs": s.map(|s| s.since_secs), "rtt_ms": rtt_ms,
+                    "events": link.map(|s| s.events), "bytes_in": link.map(|s| s.bytes_in),
+                    "eps": link.map(|s| s.eps), "idle_secs": link.and_then(|s| s.idle_secs),
+                    "since_secs": link.map(|s| s.since_secs), "rtt_ms": rtt_ms,
                 })
             })
             .collect()
@@ -1154,30 +1164,35 @@ fn local_stats(st: &Shared) -> Value {
     let mut by_mode: std::collections::BTreeMap<String, u32> = Default::default();
     let mut players = 0usize;
     let mut spectators = 0usize;
-    for r in st.host.all() {
-        let g = r.lock();
-        *by_mode.entry(g.room.cfg.mode.to_string()).or_default() += 1;
-        players += g.room.online_count() as usize;
-        spectators += g.room.player_infos().iter().filter(|p| p.spectator).count();
+    for handle in st.host.all() {
+        let hosted = handle.lock();
+        *by_mode.entry(hosted.room.cfg.mode.to_string()).or_default() += 1;
+        players += hosted.room.online_count() as usize;
+        spectators += hosted
+            .room
+            .player_infos()
+            .iter()
+            .filter(|p| p.spectator)
+            .count();
     }
-    let m = &st.metrics;
-    let tick = m.sync_tick.get_sample_count();
+    let metrics = &st.metrics;
+    let tick = metrics.sync_tick.get_sample_count();
     let tick_avg_ms = if tick > 0 {
-        m.sync_tick.get_sample_sum() / tick as f64 * 1000.0
+        metrics.sync_tick.get_sample_sum() / tick as f64 * 1000.0
     } else {
         0.0
     };
     let tick_p99_ms = {
         use prometheus::core::Metric as _;
-        let proto = m.sync_tick.metric();
-        let h = proto.get_histogram();
-        let total = h.get_sample_count();
+        let proto = metrics.sync_tick.metric();
+        let histogram = proto.get_histogram();
+        let total = histogram.get_sample_count();
         let mut p99 = 0.0;
         if total > 0 {
             let target = (total as f64 * 0.99).ceil() as u64;
-            for b in h.get_bucket() {
-                if b.cumulative_count() >= target {
-                    p99 = b.upper_bound() * 1000.0;
+            for bucket in histogram.get_bucket() {
+                if bucket.cumulative_count() >= target {
+                    p99 = bucket.upper_bound() * 1000.0;
                     break;
                 }
             }
@@ -1202,44 +1217,44 @@ fn local_stats(st: &Shared) -> Value {
         "rooms_by_mode": by_mode,
         "players": players,
         "spectators": spectators,
-        "control_sessions": m.control_sessions.get(),
-        "datagrams_in": m.datagrams_in.get(),
-        "datagrams_out": m.datagrams_out.get(),
-        "bytes_in": m.bytes_in.get(),
-        "bytes_out": m.bytes_out.get(),
+        "control_sessions": metrics.control_sessions.get(),
+        "datagrams_in": metrics.datagrams_in.get(),
+        "datagrams_out": metrics.datagrams_out.get(),
+        "bytes_in": metrics.bytes_in.get(),
+        "bytes_out": metrics.bytes_out.get(),
         "sync_ticks": tick,
         "sync_tick_avg_ms": tick_avg_ms,
         "sync_tick_p99_ms": tick_p99_ms,
-        "tick_overruns": m.tick_overruns.get(),
-        "sync_lost_deltas": m.sync_lost_deltas.get(),
-        "sync_resyncs": m.sync_resyncs.get(),
-        "lockstep_desyncs": m.lockstep_desyncs.get(),
-        "rooms_adopted": m.rooms_adopted.get(),
+        "tick_overruns": metrics.tick_overruns.get(),
+        "sync_lost_deltas": metrics.sync_lost_deltas.get(),
+        "sync_resyncs": metrics.sync_resyncs.get(),
+        "lockstep_desyncs": metrics.lockstep_desyncs.get(),
+        "rooms_adopted": metrics.rooms_adopted.get(),
         "rss_mb": rss_mb,
     })
 }
 
-async fn internal_stats(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+async fn internal_stats(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    operator(&st, &headers).await?;
     Ok(Json(local_stats(&st)))
 }
 
 /// Live stats of any node: answered locally for this node, fetched from the node otherwise.
 async fn op_node_stats(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     if id == st.node_id.0 {
         return Ok(Json(local_stats(&st)));
     }
-    let n = st
+    let node = st
         .registry
         .get(net_common::NodeId::from_uuid(id))
         .ok_or_else(|| NetError::NotFound("node is not live".into()))?;
     Ok(Json(
-        internal_get(&st, &n.http_url, "/v1/internal/stats").await?,
+        internal_get(&st, &node.http_url, "/v1/internal/stats").await?,
     ))
 }
 
@@ -1261,11 +1276,11 @@ struct ProjectQuery {
 /// Node-to-node: rooms hosted here where a player sits. Fleet-wide lookups fan out to every live node.
 async fn internal_find_player(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(player_id): Path<String>,
     Query(q): Query<ProjectQuery>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     Ok(Json(
         json!({"rooms": local_find_player(&st, ProjectId::from_uuid(q.project), &player_id)}),
     ))
@@ -1282,10 +1297,10 @@ struct PresenceQuery {
 /// Node-to-node: presence and room slots of players on this node (`find_friends` fans out to every node).
 async fn internal_presence(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Query(q): Query<PresenceQuery>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     let ids: Vec<String> = q
         .ids
         .split('\n')
@@ -1298,14 +1313,14 @@ async fn internal_presence(
     })))
 }
 
-pub(crate) fn pct(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
+pub(crate) fn pct(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(byte as char)
             }
-            _ => out.push_str(&format!("%{b:02X}")),
+            _ => out.push_str(&format!("%{byte:02X}")),
         }
     }
     out
@@ -1354,14 +1369,14 @@ async fn notice_anywhere(
     let node = crate::ws::room_host(st, &live)
         .await?
         .ok_or_else(|| NetError::NotFound("hosting node unknown".into()))?;
-    let v = internal_post(
+    let reply = internal_post(
         st,
         &node.http_url,
         &format!("/v1/internal/rooms/{id}/notice"),
         json!({"text": text, "level": level}),
     )
     .await?;
-    Ok(v["players"].as_u64().unwrap_or(0) as usize)
+    Ok(reply["players"].as_u64().unwrap_or(0) as usize)
 }
 
 /// Notice to every live room of a project on every node; returns (rooms, players).
@@ -1382,17 +1397,17 @@ async fn notice_project_anywhere(
         .into_iter()
         .filter(|n| n.id != st.node_id);
     let results = futures::future::join_all(remote.map(|n| async move {
-        let r = internal_post(st, &n.http_url, path, body.clone()).await;
-        (n, r)
+        let reply = internal_post(st, &n.http_url, path, body.clone()).await;
+        (n, reply)
     }))
     .await;
-    for (n, r) in results {
-        match r {
-            Ok(v) => {
-                rooms += v["rooms"].as_u64().unwrap_or(0) as usize;
-                players += v["players"].as_u64().unwrap_or(0) as usize;
+    for (node, reply) in results {
+        match reply {
+            Ok(body) => {
+                rooms += body["rooms"].as_u64().unwrap_or(0) as usize;
+                players += body["players"].as_u64().unwrap_or(0) as usize;
             }
-            Err(e) => tracing::warn!(node = %n.http_url, error = %e, "notice: node unreachable"),
+            Err(e) => tracing::warn!(node = %node.http_url, error = %e, "notice: node unreachable"),
         }
     }
     Ok((rooms, players))
@@ -1400,11 +1415,11 @@ async fn notice_project_anywhere(
 
 async fn room_notice(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(req): Json<NoticeReq>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Rooms).await?;
+    let key = api_key(&st, &headers, Scope::Rooms).await?;
     key_write(&st, &key)?;
     let row = queries::get_room(&st.pool, id).await?;
     if row.project_id != key.project_id {
@@ -1425,10 +1440,10 @@ async fn room_notice(
 
 async fn project_notice(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Json(req): Json<NoticeReq>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Rooms).await?;
+    let key = api_key(&st, &headers, Scope::Rooms).await?;
     key_write(&st, &key)?;
     let (rooms, players) = notice_project_anywhere(&st, key.project_id, &req).await?;
     audit_log(
@@ -1445,11 +1460,11 @@ async fn project_notice(
 
 async fn op_room_notice(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(req): Json<NoticeReq>,
 ) -> ApiResult<Json<Value>> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     let row = queries::get_room(&st.pool, id).await?;
     let players = notice_anywhere(&st, ProjectId::from_uuid(row.project_id), id, &req).await?;
     audit_log(
@@ -1466,11 +1481,11 @@ async fn op_room_notice(
 
 async fn op_project_notice(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(req): Json<NoticeReq>,
 ) -> ApiResult<Json<Value>> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     let (rooms, players) = notice_project_anywhere(&st, id, &req).await?;
     audit_log(
         &st,
@@ -1486,11 +1501,11 @@ async fn op_project_notice(
 
 async fn internal_room_notice(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(req): Json<NoticeReq>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     let (text, level) = notice_level(&req)?;
     let players = crate::ws::notice_room(&st, RoomId::from_uuid(id), &text, level)?;
     Ok(Json(json!({"players": players})))
@@ -1498,11 +1513,11 @@ async fn internal_room_notice(
 
 async fn internal_project_notice(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Query(q): Query<ProjectQuery>,
     Json(req): Json<NoticeReq>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     let (text, level) = notice_level(&req)?;
     let (rooms, players) =
         crate::ws::notice_project(&st, ProjectId::from_uuid(q.project), &text, level);
@@ -1568,16 +1583,16 @@ async fn player_lookup_json(st: &Shared, project: Uuid, player_id: &str) -> Resu
         .into_iter()
         .filter(|n| n.id != st.node_id);
     let results = futures::future::join_all(remote.map(|n| async move {
-        let r = internal_get(st, &n.http_url, path).await;
-        (n, r)
+        let reply = internal_get(st, &n.http_url, path).await;
+        (n, reply)
     }))
     .await;
-    for (n, r) in results {
-        match r {
-            Ok(v) => rooms.extend(v["rooms"].as_array().cloned().unwrap_or_default()),
+    for (node, reply) in results {
+        match reply {
+            Ok(body) => rooms.extend(body["rooms"].as_array().cloned().unwrap_or_default()),
             Err(e) => {
-                tracing::warn!(node = %n.http_url, error = %e, "player lookup: node unreachable");
-                unreachable.push(json!({"node_id": n.id, "http_url": n.http_url}));
+                tracing::warn!(node = %node.http_url, error = %e, "player lookup: node unreachable");
+                unreachable.push(json!({"node_id": node.id, "http_url": node.http_url}));
             }
         }
     }
@@ -1626,10 +1641,10 @@ async fn player_erase_json(st: &Shared, project: Uuid, player_id: &str, by: &str
 
 async fn player_export(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(player_id): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Admin).await?;
+    let key = api_key(&st, &headers, Scope::Admin).await?;
     Ok(Json(
         player_export_json(&st, key.project_id, &player_id).await?,
     ))
@@ -1637,10 +1652,10 @@ async fn player_export(
 
 async fn player_erase(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(player_id): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Admin).await?;
+    let key = api_key(&st, &headers, Scope::Admin).await?;
     let by = format!("key:{}", key.id);
     Ok(Json(
         player_erase_json(&st, key.project_id, &player_id, &by).await?,
@@ -1649,19 +1664,19 @@ async fn player_erase(
 
 async fn op_player_export(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((id, player_id)): Path<(Uuid, String)>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     Ok(Json(player_export_json(&st, id, &player_id).await?))
 }
 
 async fn op_player_erase(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((id, player_id)): Path<(Uuid, String)>,
 ) -> ApiResult<Json<Value>> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     Ok(Json(
         player_erase_json(&st, id, &player_id, &op.actor).await?,
     ))
@@ -1669,10 +1684,10 @@ async fn op_player_erase(
 
 async fn player_lookup(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(player_id): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Read).await?;
+    let key = api_key(&st, &headers, Scope::Read).await?;
     Ok(Json(
         player_lookup_json(&st, key.project_id, &player_id).await?,
     ))
@@ -1680,10 +1695,10 @@ async fn player_lookup(
 
 async fn op_player_lookup(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((id, player_id)): Path<(Uuid, String)>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     Ok(Json(player_lookup_json(&st, id, &player_id).await?))
 }
 
@@ -1691,10 +1706,10 @@ async fn op_player_lookup(
 /// Guarded by the fleet-wide admin token; never proxied further (a room is hosted by one node).
 async fn internal_players(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     let players =
         local_players(&st, id).ok_or_else(|| NetError::NotFound("room not hosted here".into()))?;
     Ok(Json(json!({"players": players})))
@@ -1710,21 +1725,21 @@ async fn room_detail(st: &Shared, row: net_db::models::RoomRow) -> Result<Value>
         .get_room(ProjectId::from_uuid(row.project_id), RoomId::from_uuid(id))
         .await?;
     let host = match row.node_id {
-        Some(n) => {
+        Some(node_id) => {
             st.registry
-                .resolve(net_common::NodeId::from_uuid(n))
+                .resolve(net_common::NodeId::from_uuid(node_id))
                 .await?
         }
         None => None,
     };
     let (players, source): (Vec<Value>, &str) = match local_players(st, id) {
-        Some(p) => (p, "local"),
+        Some(found) => (found, "local"),
         None => match host {
-            Some(n) if n.id != st.node_id && live.is_some() => {
-                match remote_players(st, &n.http_url, id).await {
-                    Ok(p) => (p, "remote"),
+            Some(node) if node.id != st.node_id && live.is_some() => {
+                match remote_players(st, &node.http_url, id).await {
+                    Ok(found) => (found, "remote"),
                     Err(e) => {
-                        tracing::warn!(room = %id, node = %n.http_url, error = %e, "remote players unavailable");
+                        tracing::warn!(room = %id, node = %node.http_url, error = %e, "remote players unavailable");
                         (Vec::new(), "unavailable")
                     }
                 }
@@ -1753,11 +1768,12 @@ async fn remote_players(st: &Shared, http_url: &str, id: Uuid) -> Result<Vec<Val
             res.status()
         )));
     }
-    let v: Value = res
+    let body: Value = res
         .json()
         .await
         .map_err(|e| NetError::Internal(e.to_string()))?;
-    Ok(v.get("players")
+    Ok(body
+        .get("players")
         .and_then(|p| p.as_array())
         .cloned()
         .unwrap_or_default())
@@ -1766,10 +1782,10 @@ async fn remote_players(st: &Shared, http_url: &str, id: Uuid) -> Result<Vec<Val
 /// Operator view of any room in the cluster.
 async fn op_room(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     let row = queries::get_room(&st.pool, id).await?;
     Ok(Json(room_detail(&st, row).await?))
 }
@@ -1777,10 +1793,10 @@ async fn op_room(
 /// Operator force-close of any room (abuse response); audited.
 async fn op_delete_room(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     let row = queries::get_room(&st.pool, id).await?;
     close_room_anywhere(&st, ProjectId::from_uuid(row.project_id), id).await;
     audit_log(
@@ -1811,11 +1827,11 @@ struct ReplayQuery {
 /// `?from=&to=` (kill cams, spectator rewinds, bug reports).
 async fn get_replay(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Query(q): Query<ReplayQuery>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Read).await?;
+    let key = api_key(&st, &headers, Scope::Read).await?;
     let row = queries::get_room(&st.pool, id).await?;
     if row.project_id != key.project_id {
         return Err(NetError::NotFound("room".into()).into());
@@ -1825,18 +1841,20 @@ async fn get_replay(
     ))
 }
 
-fn local_replay(st: &Shared, id: Uuid, q: &ReplayQuery) -> Option<Result<Value>> {
-    let h = st.host.get(RoomId::from_uuid(id))?;
-    let g = h.lock();
-    if let Some(sy) = g.sync.as_ref() {
+fn local_replay(st: &Shared, id: Uuid, query: &ReplayQuery) -> Option<Result<Value>> {
+    let handle = st.host.get(RoomId::from_uuid(id))?;
+    let hosted = handle.lock();
+    if let Some(sy) = hosted.sync.as_ref() {
         return Some(
-            serde_json::to_value(sy.replay_window(q.from.unwrap_or(0), q.to))
+            serde_json::to_value(sy.replay_window(query.from.unwrap_or(0), query.to))
                 .map_err(|e| NetError::Internal(e.to_string())),
         );
     }
-    Some(match g.lockstep.as_ref() {
-        Some(l) => serde_json::to_value(l.replay_window(q.from.unwrap_or(0), q.to))
-            .map_err(|e| NetError::Internal(e.to_string())),
+    Some(match hosted.lockstep.as_ref() {
+        Some(lockstep) => {
+            serde_json::to_value(lockstep.replay_window(query.from.unwrap_or(0), query.to))
+                .map_err(|e| NetError::Internal(e.to_string()))
+        }
         None => Err(NetError::Invalid(
             "replays exist for lockstep rooms only".into(),
         )),
@@ -1847,19 +1865,19 @@ async fn replay_anywhere(
     st: &Shared,
     project: ProjectId,
     id: Uuid,
-    q: &ReplayQuery,
+    query: &ReplayQuery,
 ) -> Result<Value> {
-    if let Some(v) = local_replay(st, id, q) {
-        return v;
+    if let Some(replay) = local_replay(st, id, query) {
+        return replay;
     }
     let room = RoomId::from_uuid(id);
     if let Some(live) = st.redis.get_room(project, room).await? {
         if let Some(node) = crate::ws::room_host(st, &live).await? {
             let mut path = format!(
                 "/v1/internal/rooms/{id}/replay?from={}",
-                q.from.unwrap_or(0)
+                query.from.unwrap_or(0)
             );
-            if let Some(to) = q.to {
+            if let Some(to) = query.to {
                 path.push_str(&format!("&to={to}"));
             }
             return internal_get(st, &node.http_url, &path).await;
@@ -1870,34 +1888,34 @@ async fn replay_anywhere(
         .get_replay(project, room)
         .await?
         .ok_or_else(|| NetError::NotFound("replay".into()))?;
-    let mut r: net_rollback::Replay =
+    let mut replay: net_rollback::Replay =
         serde_json::from_slice(&body).map_err(|e| NetError::Internal(e.to_string()))?;
-    if q.from.is_some() || q.to.is_some() {
-        crate::lockstep::window_replay(&mut r, q.from.unwrap_or(0), q.to);
+    if query.from.is_some() || query.to.is_some() {
+        crate::lockstep::window_replay(&mut replay, query.from.unwrap_or(0), query.to);
     }
-    serde_json::to_value(r).map_err(|e| NetError::Internal(e.to_string()))
+    serde_json::to_value(replay).map_err(|e| NetError::Internal(e.to_string()))
 }
 
 async fn internal_replay(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Query(q): Query<ReplayQuery>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
-    let v = local_replay(&st, id, &q)
+    operator(&st, &headers).await?;
+    let replay = local_replay(&st, id, &q)
         .ok_or_else(|| NetError::NotFound("room not hosted here".into()))??;
-    Ok(Json(v))
+    Ok(Json(replay))
 }
 
 /// State dumps collected after lockstep desyncs (the desynced client's and the master's state
 /// at the flagged tick), kept 24 h: compare them offline to find the non-deterministic code.
 async fn list_desyncs(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Read).await?;
+    let key = api_key(&st, &headers, Scope::Read).await?;
     let row = queries::get_room(&st.pool, id).await?;
     if row.project_id != key.project_id {
         return Err(NetError::NotFound("room".into()).into());
@@ -1936,10 +1954,10 @@ async fn desync_blob(
 
 async fn get_desync(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((id, tick, actor)): Path<(Uuid, u32, u16)>,
 ) -> ApiResult<Blob> {
-    let key = api_key(&st, &h, Scope::Read).await?;
+    let key = api_key(&st, &headers, Scope::Read).await?;
     let row = queries::get_room(&st.pool, id).await?;
     if row.project_id != key.project_id {
         return Err(NetError::NotFound("room".into()).into());
@@ -1949,10 +1967,10 @@ async fn get_desync(
 
 async fn op_list_desyncs(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     let row = queries::get_room(&st.pool, id).await?;
     let list = st
         .redis
@@ -1963,10 +1981,10 @@ async fn op_list_desyncs(
 
 async fn op_get_desync(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((id, tick, actor)): Path<(Uuid, u32, u16)>,
 ) -> ApiResult<Blob> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     let row = queries::get_room(&st.pool, id).await?;
     desync_blob(&st, row.project_id, id, tick, actor).await
 }
@@ -1986,8 +2004,8 @@ async fn mm_stats_json(st: &Shared, project: ProjectId) -> Result<Value> {
 }
 
 /// Live matchmaking queue of the caller's project.
-async fn mm_stats(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Read).await?;
+async fn mm_stats(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &headers, Scope::Read).await?;
     Ok(Json(
         mm_stats_json(&st, ProjectId::from_uuid(key.project_id)).await?,
     ))
@@ -1995,10 +2013,10 @@ async fn mm_stats(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Valu
 
 async fn op_mm_stats(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     Ok(Json(mm_stats_json(&st, ProjectId::from_uuid(id)).await?))
 }
 
@@ -2006,43 +2024,43 @@ async fn op_mm_stats(
 /// `join_or_create` the returned room name with the same mode.
 async fn mm_file(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Json(req): Json<crate::matchmaking::TicketReq>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Rooms).await?;
+    let key = api_key(&st, &headers, Scope::Rooms).await?;
     key_write(&st, &key)?;
     if req.max_players == 0 || req.min_players == 0 || req.min_players > req.max_players {
         return Err(NetError::Invalid("min_players must be 1..=max_players".into()).into());
     }
-    let t = st
+    let ticket = st
         .matchmaker
         .file(&st.redis, ProjectId::from_uuid(key.project_id), req)
         .await?;
-    Ok(Json(json!({"ticket": t.id, "state": t.state})))
+    Ok(Json(json!({"ticket": ticket.id, "state": ticket.state})))
 }
 
 async fn mm_get(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Read).await?;
-    let t = st
+    let key = api_key(&st, &headers, Scope::Read).await?;
+    let ticket = st
         .matchmaker
         .get(&st.redis, ProjectId::from_uuid(key.project_id), id)
         .await?
         .ok_or_else(|| NetError::NotFound("ticket".into()))?;
     Ok(Json(
-        json!({"ticket": t.id, "state": t.state, "age_secs": t.age_secs(crate::matchmaking::now_ms())}),
+        json!({"ticket": ticket.id, "state": ticket.state, "age_secs": ticket.age_secs(crate::matchmaking::now_ms())}),
     ))
 }
 
 async fn mm_cancel(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    let key = api_key(&st, &h, Scope::Rooms).await?;
+    let key = api_key(&st, &headers, Scope::Rooms).await?;
     if st
         .matchmaker
         .cancel(&st.redis, ProjectId::from_uuid(key.project_id), id)
@@ -2056,10 +2074,10 @@ async fn mm_cancel(
 
 async fn delete_room(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    let key = api_key(&st, &h, Scope::Rooms).await?;
+    let key = api_key(&st, &headers, Scope::Rooms).await?;
     let row = queries::get_room(&st.pool, id).await?;
     if row.project_id != key.project_id {
         return Err(NetError::NotFound("room".into()).into());
@@ -2080,11 +2098,11 @@ fn usage_out(
     from: Timestamp,
     to: Timestamp,
     rows: Vec<net_db::queries::UsageRow>,
-    q: &UsageQuery,
+    query: &UsageQuery,
     name: &str,
 ) -> Result<axum::response::Response> {
     use axum::response::IntoResponse;
-    match q.format.as_deref() {
+    match query.format.as_deref() {
         None | Some("json") => {
             Ok(Json(json!({"from": from, "to": to, "usage": rows})).into_response())
         }
@@ -2105,10 +2123,10 @@ fn usage_out(
 
 async fn usage(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Query(q): Query<UsageQuery>,
 ) -> ApiResult<axum::response::Response> {
-    let key = api_key(&st, &h, Scope::Read).await?;
+    let key = api_key(&st, &headers, Scope::Read).await?;
     let to = q.to.unwrap_or_else(Timestamp::now);
     let from = q.from.unwrap_or(to - time::Duration::days(30));
     let rows = queries::usage_between(&st.pool, key.project_id, from, to).await?;
@@ -2130,21 +2148,22 @@ struct KeyReq {
 }
 
 /// Normalises `allowed_cidrs`: bare IPs become /32 or /128, at most 32 entries.
-fn parse_cidrs(v: &[String]) -> Result<Vec<String>> {
-    if v.len() > 32 {
+fn parse_cidrs(cidrs: &[String]) -> Result<Vec<String>> {
+    if cidrs.len() > 32 {
         return Err(NetError::Invalid(
             "allowed_cidrs: at most 32 entries".into(),
         ));
     }
-    v.iter()
+    cidrs
+        .iter()
         .map(|c| {
-            let c = c.trim();
-            if let Ok(ip) = c.parse::<IpAddr>() {
+            let cidr = c.trim();
+            if let Ok(ip) = cidr.parse::<IpAddr>() {
                 let bits = if ip.is_ipv4() { 32 } else { 128 };
                 return Ok(format!("{ip}/{bits}"));
             }
-            parse_net(c).map(|_| c.to_string()).ok_or_else(|| {
-                NetError::Invalid(format!("allowed_cidrs: {c:?} is not an IP or CIDR"))
+            parse_net(cidr).map(|_| cidr.to_string()).ok_or_else(|| {
+                NetError::Invalid(format!("allowed_cidrs: {cidr:?} is not an IP or CIDR"))
             })
         })
         .collect()
@@ -2161,16 +2180,16 @@ fn key_expiry(secs: Option<u64>) -> Option<Timestamp> {
         .map(|s| Timestamp::now() + time::Duration::seconds(s.min(10 * 365 * 86_400) as i64))
 }
 
-fn validate_scopes(s: &[String]) -> Result<Vec<String>> {
-    if s.is_empty() {
+fn validate_scopes(scopes: &[String]) -> Result<Vec<String>> {
+    if scopes.is_empty() {
         return Ok(vec!["rooms".into(), "read".into()]);
     }
-    for x in s {
-        if Scope::parse(x).is_none() {
-            return Err(NetError::Invalid(format!("unknown scope {x}")));
+    for scope in scopes {
+        if Scope::parse(scope).is_none() {
+            return Err(NetError::Invalid(format!("unknown scope {scope}")));
         }
     }
-    Ok(s.to_vec())
+    Ok(scopes.to_vec())
 }
 
 async fn issue_key(
@@ -2182,12 +2201,12 @@ async fn issue_key(
     allowed_cidrs: &[String],
 ) -> Result<Value> {
     let scopes = validate_scopes(scopes)?;
-    let m = ApiKeyMaterial::generate();
+    let material = ApiKeyMaterial::generate();
     let row = queries::insert_api_key(
         &st.pool,
         project,
-        &m.hash,
-        &m.prefix,
+        &material.hash,
+        &material.prefix,
         name,
         &scopes,
         expires_at,
@@ -2195,16 +2214,16 @@ async fn issue_key(
     )
     .await?;
     Ok(
-        json!({"id": row.id, "key": m.plaintext, "prefix": row.prefix, "scopes": row.scopes, "name": row.name, "expires_at": row.expires_at, "allowed_cidrs": row.allowed_cidrs}),
+        json!({"id": row.id, "key": material.plaintext, "prefix": row.prefix, "scopes": row.scopes, "name": row.name, "expires_at": row.expires_at, "allowed_cidrs": row.allowed_cidrs}),
     )
 }
 
 async fn create_key(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Json(req): Json<KeyReq>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Admin).await?;
+    let key = api_key(&st, &headers, Scope::Admin).await?;
     key_write(&st, &key)?;
     let cidrs = parse_cidrs(&req.allowed_cidrs)?;
     let out = issue_key(
@@ -2228,8 +2247,8 @@ async fn create_key(
     Ok(Json(out))
 }
 
-async fn list_keys(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Admin).await?;
+async fn list_keys(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &headers, Scope::Admin).await?;
     let rows = queries::list_api_keys(&st.pool, key.project_id).await?;
     Ok(Json(
         json!({"keys": rows.iter().map(key_json).collect::<Vec<_>>()}),
@@ -2238,10 +2257,10 @@ async fn list_keys(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Val
 
 async fn revoke_key(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    let key = api_key(&st, &h, Scope::Admin).await?;
+    let key = api_key(&st, &headers, Scope::Admin).await?;
     if queries::revoke_api_key(&st.pool, key.project_id, id).await? {
         audit_log(
             &st,
@@ -2267,10 +2286,10 @@ struct WebhookReq {
 
 async fn create_webhook(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Json(req): Json<WebhookReq>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Admin).await?;
+    let key = api_key(&st, &headers, Scope::Admin).await?;
     key_write(&st, &key)?;
     crate::webhooks::validate_webhook_url(&req.url, st.cfg.server.environment == "development")?;
     crate::webhooks::validate_events(&req.events)?;
@@ -2292,8 +2311,8 @@ async fn create_webhook(
     ))
 }
 
-async fn list_webhooks(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Admin).await?;
+async fn list_webhooks(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &headers, Scope::Admin).await?;
     let rows = queries::list_webhooks(&st.pool, key.project_id).await?;
     Ok(Json(
         json!({"webhooks": rows.into_iter().map(|r| json!({"id": r.id, "url": r.url, "events": r.events, "created_at": r.created_at, "previous_secret_expires_at": r.previous_secret_expires_at})).collect::<Vec<_>>()}),
@@ -2302,10 +2321,10 @@ async fn list_webhooks(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json
 
 async fn delete_webhook(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    let key = api_key(&st, &h, Scope::Admin).await?;
+    let key = api_key(&st, &headers, Scope::Admin).await?;
     if queries::delete_webhook(&st.pool, key.project_id, id).await? {
         webhooks_changed(&st, key.project_id).await;
         audit_log(
@@ -2335,14 +2354,14 @@ fn default_plan() -> String {
 
 async fn op_create_project(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Json(req): Json<ProjectReq>,
 ) -> ApiResult<Json<Value>> {
-    let op = operator(&st, &h).await?;
-    let p = queries::create_project(&st.pool, &req.name, &req.plan).await?;
+    let op = operator(&st, &headers).await?;
+    let project = queries::create_project(&st.pool, &req.name, &req.plan).await?;
     let key = issue_key(
         &st,
-        p.id,
+        project.id,
         "default",
         &["rooms".into(), "read".into(), "admin".into()],
         None,
@@ -2351,18 +2370,18 @@ async fn op_create_project(
     .await?;
     queries::audit(
         &st.pool,
-        Some(p.id),
+        Some(project.id),
         &op.actor,
         "project.create",
-        &p.id.to_string(),
+        &project.id.to_string(),
         json!({}),
     )
     .await?;
-    Ok(Json(json!({"project": p, "key": key})))
+    Ok(Json(json!({"project": project, "key": key})))
 }
 
-async fn op_list_projects(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+async fn op_list_projects(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    operator(&st, &headers).await?;
     Ok(Json(
         json!({"projects": queries::list_projects(&st.pool).await?}),
     ))
@@ -2370,11 +2389,11 @@ async fn op_list_projects(State(st): State<Shared>, h: HeaderMap) -> ApiResult<J
 
 async fn op_create_key(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(req): Json<KeyReq>,
 ) -> ApiResult<Json<Value>> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     queries::get_project(&st.pool, id).await?;
     let cidrs = parse_cidrs(&req.allowed_cidrs)?;
     let out = issue_key(
@@ -2400,10 +2419,10 @@ async fn op_create_key(
 
 async fn op_revoke_key(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((id, kid)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<StatusCode> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     if !queries::revoke_api_key(&st.pool, id, kid).await? {
         return Err(NetError::NotFound("key".into()).into());
     }
@@ -2429,11 +2448,11 @@ struct SuspendReq {
 /// leave), so the response carries the current live count for the console to show.
 async fn op_set_suspended(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(req): Json<SuspendReq>,
 ) -> ApiResult<Json<Value>> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     if !queries::set_project_disabled(&st.pool, id, req.suspended).await? {
         return Err(NetError::NotFound("project not found".into()).into());
     }
@@ -2456,17 +2475,17 @@ async fn op_set_suspended(
         json!({"live_rooms": live}),
     )
     .await;
-    let p = queries::get_project(&st.pool, id).await?;
-    Ok(Json(json!({"project": p, "live_rooms": live})))
+    let project = queries::get_project(&st.pool, id).await?;
+    Ok(Json(json!({"project": project, "live_rooms": live})))
 }
 
 async fn op_set_limits(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(limits): Json<Value>,
 ) -> ApiResult<StatusCode> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     let _ = net_control::ProjectLimits::from_json(&limits);
     queries::set_project_limits(&st.pool, id, &limits).await?;
     audit_log(
@@ -2538,11 +2557,11 @@ async fn rotate_webhook(
 
 async fn webhook_rotate(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     body: Option<Json<RotateReq>>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Admin).await?;
+    let key = api_key(&st, &headers, Scope::Admin).await?;
     key_write(&st, &key)?;
     let req = body.map(|Json(r)| r).unwrap_or_default();
     Ok(Json(
@@ -2552,11 +2571,11 @@ async fn webhook_rotate(
 
 async fn op_webhook_rotate(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((id, wid)): Path<(Uuid, Uuid)>,
     body: Option<Json<RotateReq>>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     let req = body.map(|Json(r)| r).unwrap_or_default();
     Ok(Json(rotate_webhook(&st, id, wid, &req, "operator").await?))
 }
@@ -2572,11 +2591,11 @@ async fn test_webhook(st: &Shared, project: Uuid, wid: Uuid) -> Result<Value> {
 /// Delivery log of one webhook (project key, read scope).
 async fn webhook_deliveries(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Query(q): Query<DeliveriesQuery>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Read).await?;
+    let key = api_key(&st, &headers, Scope::Read).await?;
     Ok(Json(
         deliveries_json(&st, key.project_id, id, q.limit).await?,
     ))
@@ -2585,30 +2604,30 @@ async fn webhook_deliveries(
 /// Queue a `test` event to one webhook; the result shows up in its delivery log.
 async fn webhook_test(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Admin).await?;
+    let key = api_key(&st, &headers, Scope::Admin).await?;
     key_write(&st, &key)?;
     Ok(Json(test_webhook(&st, key.project_id, id).await?))
 }
 
 async fn op_webhook_deliveries(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((id, wid)): Path<(Uuid, Uuid)>,
     Query(q): Query<DeliveriesQuery>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     Ok(Json(deliveries_json(&st, id, wid, q.limit).await?))
 }
 
 async fn op_webhook_test(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((id, wid)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<Json<Value>> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     let out = test_webhook(&st, id, wid).await?;
     audit_log(
         &st,
@@ -2657,11 +2676,11 @@ async fn close_room_anywhere(st: &Shared, project: ProjectId, id: Uuid) {
         Some(live) => crate::ws::room_host(st, live).await.ok().flatten(),
         None => None,
     };
-    if let Some(n) = node.filter(|n| n.id != st.node_id) {
-        match internal_delete(st, &n.http_url, &format!("/v1/internal/rooms/{id}"), &[]).await {
+    if let Some(host) = node.filter(|n| n.id != st.node_id) {
+        match internal_delete(st, &host.http_url, &format!("/v1/internal/rooms/{id}"), &[]).await {
             Ok(_) => return,
             Err(e) => {
-                tracing::warn!(room = %id, node = %n.http_url, error = %e, "remote close failed; closing locally")
+                tracing::warn!(room = %id, node = %host.http_url, error = %e, "remote close failed; closing locally")
             }
         }
     }
@@ -2673,8 +2692,8 @@ pub(crate) fn validate_room_create(
     name: &str,
     lobby_props: &[String],
 ) -> std::result::Result<(), NetError> {
-    let n = name.chars().count();
-    if !(1..=64).contains(&n) || name.chars().any(char::is_control) {
+    let len = name.chars().count();
+    if !(1..=64).contains(&len) || name.chars().any(char::is_control) {
         return Err(NetError::Invalid(
             "room name must be 1..=64 chars without control characters".into(),
         ));
@@ -2693,9 +2712,9 @@ pub(crate) fn validate_room_create(
     Ok(())
 }
 
-pub(crate) fn valid_player_id(p: &str) -> bool {
-    let n = p.chars().count();
-    (1..=128).contains(&n) && !p.chars().any(char::is_control)
+pub(crate) fn valid_player_id(player_id: &str) -> bool {
+    let len = player_id.chars().count();
+    (1..=128).contains(&len) && !player_id.chars().any(char::is_control)
 }
 
 async fn remove_mark(st: &Shared, project: Uuid, kind: &str, value: &str, by: &str) -> Result<()> {
@@ -2719,10 +2738,10 @@ async fn remove_mark(st: &Shared, project: Uuid, kind: &str, value: &str, by: &s
 
 async fn delete_mark(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((kind, value)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
-    let key = api_key(&st, &h, Scope::Rooms).await?;
+    let key = api_key(&st, &headers, Scope::Rooms).await?;
     remove_mark(
         &st,
         key.project_id,
@@ -2736,21 +2755,21 @@ async fn delete_mark(
 
 async fn op_delete_mark(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((id, kind, value)): Path<(Uuid, String, String)>,
 ) -> ApiResult<StatusCode> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     remove_mark(&st, id, &kind, &value, &op.actor).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub(crate) fn mark_message(m: &net_db::models::BanMarkRow) -> String {
-    let what = if m.kind == "ip" {
+pub(crate) fn mark_message(mark: &net_db::models::BanMarkRow) -> String {
+    let what = if mark.kind == "ip" {
         "this network"
     } else {
         "this device"
     };
-    match (&m.reason, m.expires_at) {
+    match (&mark.reason, mark.expires_at) {
         (r, Some(e)) if !r.is_empty() => format!("{what} is banned until {}: {r}", e.to_rfc3339()),
         (_, Some(e)) => format!("{what} is banned until {}", e.to_rfc3339()),
         (r, None) if !r.is_empty() => format!("{what} is banned: {r}"),
@@ -2758,8 +2777,8 @@ pub(crate) fn mark_message(m: &net_db::models::BanMarkRow) -> String {
     }
 }
 
-pub(crate) fn ban_message(b: &net_db::models::BanRow) -> String {
-    match (&b.reason, b.expires_at) {
+pub(crate) fn ban_message(ban: &net_db::models::BanRow) -> String {
+    match (&ban.reason, ban.expires_at) {
         (r, Some(e)) if !r.is_empty() => format!("banned until {}: {r}", e.to_rfc3339()),
         (_, Some(e)) => format!("banned until {}", e.to_rfc3339()),
         (r, None) if !r.is_empty() => format!("banned: {r}"),
@@ -2868,8 +2887,8 @@ async fn remove_ban(st: &Shared, project: Uuid, player_id: &str, by: &str) -> Re
     Ok(())
 }
 
-async fn list_bans(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Read).await?;
+async fn list_bans(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &headers, Scope::Read).await?;
     Ok(Json(
         json!({"bans": queries::list_bans(&st.pool, key.project_id).await?, "marks": queries::list_marks(&st.pool, key.project_id).await?}),
     ))
@@ -2877,10 +2896,10 @@ async fn list_bans(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Val
 
 async fn create_ban(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Json(req): Json<BanReq>,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Rooms).await?;
+    let key = api_key(&st, &headers, Scope::Rooms).await?;
     key_write(&st, &key)?;
     Ok(Json(
         add_ban(&st, key.project_id, &req, &format!("key:{}", key.id)).await?,
@@ -2889,20 +2908,20 @@ async fn create_ban(
 
 async fn delete_ban(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(player_id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let key = api_key(&st, &h, Scope::Rooms).await?;
+    let key = api_key(&st, &headers, Scope::Rooms).await?;
     remove_ban(&st, key.project_id, &player_id, &format!("key:{}", key.id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn op_list_bans(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     Ok(Json(
         json!({"bans": queries::list_bans(&st.pool, id).await?, "marks": queries::list_marks(&st.pool, id).await?}),
     ))
@@ -2910,21 +2929,21 @@ async fn op_list_bans(
 
 async fn op_create_ban(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(req): Json<BanReq>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     queries::get_project(&st.pool, id).await?;
     Ok(Json(add_ban(&st, id, &req, "operator").await?))
 }
 
 async fn op_delete_ban(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((id, player_id)): Path<(Uuid, String)>,
 ) -> ApiResult<StatusCode> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     remove_ban(&st, id, &player_id, "operator").await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2937,8 +2956,8 @@ struct KickQuery {
 
 /// Reason shown to the kicked player: short, printable ASCII only, so it can travel in a URL
 /// between nodes and in a control frame unchanged.
-fn kick_reason(q: &KickQuery) -> String {
-    let r: String = q
+fn kick_reason(query: &KickQuery) -> String {
+    let filtered: String = query
         .reason
         .as_deref()
         .unwrap_or("")
@@ -2946,11 +2965,11 @@ fn kick_reason(q: &KickQuery) -> String {
         .filter(|c| c.is_ascii_alphanumeric() || " _.,:-".contains(*c))
         .take(64)
         .collect();
-    let r = r.trim().to_string();
-    if r.is_empty() {
+    let reason = filtered.trim().to_string();
+    if reason.is_empty() {
         "kicked".into()
     } else {
-        r
+        reason
     }
 }
 
@@ -2976,17 +2995,17 @@ async fn kick_anywhere(
         .await?
         .ok_or_else(|| NetError::NotFound("hosting node unknown".into()))?;
     let path = format!("/v1/internal/rooms/{id}/players/{actor}");
-    let v = internal_delete(st, &node.http_url, &path, &[("reason", reason)]).await?;
-    Ok(v["player_id"].as_str().unwrap_or_default().to_string())
+    let reply = internal_delete(st, &node.http_url, &path, &[("reason", reason)]).await?;
+    Ok(reply["player_id"].as_str().unwrap_or_default().to_string())
 }
 
 async fn internal_kick(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((id, actor)): Path<(Uuid, u16)>,
     Query(q): Query<KickQuery>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     let player_id = crate::ws::kick_player(
         &st,
         RoomId::from_uuid(id),
@@ -3000,11 +3019,11 @@ async fn internal_kick(
 /// Project backend kicks a player (`rooms` scope); the room must belong to the key's project.
 async fn kick_player(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((id, actor)): Path<(Uuid, u16)>,
     Query(q): Query<KickQuery>,
 ) -> ApiResult<StatusCode> {
-    let key = api_key(&st, &h, Scope::Rooms).await?;
+    let key = api_key(&st, &headers, Scope::Rooms).await?;
     let row = queries::get_room(&st.pool, id).await?;
     if row.project_id != key.project_id {
         return Err(NetError::NotFound("room not found".into()).into());
@@ -3032,11 +3051,11 @@ async fn kick_player(
 
 async fn op_kick_player(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((id, actor)): Path<(Uuid, u16)>,
     Query(q): Query<KickQuery>,
 ) -> ApiResult<StatusCode> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     let row = queries::get_room(&st.pool, id).await?;
     let reason = kick_reason(&q);
     let player_id = kick_anywhere(
@@ -3061,10 +3080,10 @@ async fn op_kick_player(
 
 async fn internal_close_room(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     let room = RoomId::from_uuid(id);
     let project = st
         .host
@@ -3106,18 +3125,18 @@ async fn internal_delete(
 /// modules removed. The project row stays (soft delete) so usage and audit history survive.
 async fn op_delete_project(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     if !queries::soft_delete_project(&st.pool, id).await? {
         return Err(NetError::NotFound("project not found".into()).into());
     }
     let project = ProjectId::from_uuid(id);
     let live = st.redis.list_rooms(project).await.unwrap_or_default();
     let closed = live.len();
-    for r in live {
-        close_room_anywhere(&st, project, r.room.0).await;
+    for room in live {
+        close_room_anywhere(&st, project, room.room.0).await;
     }
     let revoked = queries::revoke_all_api_keys(&st.pool, id).await?;
     let webhooks = queries::delete_webhooks_of_project(&st.pool, id).await?;
@@ -3138,10 +3157,10 @@ async fn op_delete_project(
 
 async fn internal_drain(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Json(req): Json<DrainReq>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     let handed = set_local_draining(&st, req.draining).await?;
     Ok(Json(
         json!({"node_id": st.node_id.0, "draining": req.draining, "rooms_handed_off": handed}),
@@ -3150,11 +3169,11 @@ async fn internal_drain(
 
 async fn op_drain_node(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(req): Json<DrainReq>,
 ) -> ApiResult<Json<Value>> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     let out = if id == st.node_id.0 {
         let handed = set_local_draining(&st, req.draining).await?;
         json!({"node_id": id, "draining": req.draining, "rooms_handed_off": handed})
@@ -3206,16 +3225,16 @@ async fn internal_post(st: &Shared, http_url: &str, path: &str, body: Value) -> 
 
 /// Everything an operator should look at right now: nodes without a heartbeat or draining,
 /// suspended projects, webhooks failing in the last hour, projects with rejections this hour.
-async fn op_attention(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+async fn op_attention(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    operator(&st, &headers).await?;
     Ok(Json(attention_value(&st).await?))
 }
 
 /// A node is stale once it has missed two of its own heartbeats in a row; after the third its
 /// peers reap it. The interval is per node (`server.heartbeat_secs`), so a slow, healthy node is
 /// not reported.
-fn node_stale(n: &net_db::models::NodeRow, now: Timestamp) -> bool {
-    (now - n.last_heartbeat).whole_seconds() > 2 * i64::from(n.heartbeat_secs.max(1))
+fn node_stale(node: &net_db::models::NodeRow, now: Timestamp) -> bool {
+    (now - node.last_heartbeat).whole_seconds() > 2 * i64::from(node.heartbeat_secs.max(1))
 }
 
 /// Everything that deserves an operator's eye right now; shared by `/v1/operator/attention`
@@ -3247,10 +3266,10 @@ pub(crate) async fn attention_value(st: &Shared) -> Result<Value> {
         .map(|f| json!({"project_id": f.project_id, "project_name": names.get(&f.project_id).copied().unwrap_or(""), "webhook_id": f.webhook_id, "url": f.url, "failed": f.failed, "total": f.total}))
         .collect();
     let mut rejections: Vec<Value> = Vec::new();
-    for p in projects.iter().take(200) {
+    for project in projects.iter().take(200) {
         let buckets = st
             .redis
-            .get_rejections(ProjectId::from_uuid(p.id), 1)
+            .get_rejections(ProjectId::from_uuid(project.id), 1)
             .await
             .unwrap_or_default();
         let mut total = 0i64;
@@ -3263,26 +3282,26 @@ pub(crate) async fn attention_value(st: &Shared) -> Result<Value> {
         }
         if total > 0 {
             rejections.push(
-                json!({"project_id": p.id, "project_name": p.name, "total": total, "by": by}),
+                json!({"project_id": project.id, "project_name": project.name, "total": total, "by": by}),
             );
         }
     }
     rejections.sort_by_key(|r| -r["total"].as_i64().unwrap_or(0));
     rejections.truncate(20);
     let mut usage_caps: Vec<Value> = Vec::new();
-    for p in projects.iter().filter(|p| p.deleted_at.is_none()) {
-        let l = net_control::ProjectLimits::from_json(&p.limits);
-        if l.monthly_player_minutes.is_none() && l.monthly_bytes.is_none() {
+    for project in projects.iter().filter(|p| p.deleted_at.is_none()) {
+        let limits = net_control::ProjectLimits::from_json(&project.limits);
+        if limits.monthly_player_minutes.is_none() && limits.monthly_bytes.is_none() {
             continue;
         }
-        let (minutes, bytes) = usage_month(st, p.id).await?;
+        let (minutes, bytes) = usage_month(st, project.id).await?;
         for (metric, used, cap) in [
-            ("player_minutes", minutes, l.monthly_player_minutes),
-            ("bytes", bytes, l.monthly_bytes),
+            ("player_minutes", minutes, limits.monthly_player_minutes),
+            ("bytes", bytes, limits.monthly_bytes),
         ] {
             if let Some(cap) = cap.filter(|c| *c > 0) {
                 if used >= cap as f64 * 0.8 {
-                    usage_caps.push(json!({"project_id": p.id, "project_name": p.name, "metric": metric, "used": used, "cap": cap}));
+                    usage_caps.push(json!({"project_id": project.id, "project_name": project.name, "metric": metric, "used": used, "cap": cap}));
                 }
             }
         }
@@ -3297,8 +3316,8 @@ pub(crate) async fn attention_value(st: &Shared) -> Result<Value> {
     }))
 }
 
-async fn op_nodes(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+async fn op_nodes(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    operator(&st, &headers).await?;
     let rows = queries::list_all_nodes(&st.pool).await?;
     Ok(Json(json!({"nodes": rows})))
 }
@@ -3310,10 +3329,11 @@ pub type AppStateArc = Arc<crate::state::AppState>;
 
 // ---------- game modules (server-side WASM logic for sync rooms) ----------
 
-fn valid_module_name(n: &str) -> bool {
-    !n.is_empty()
-        && n.len() <= 64
-        && n.chars()
+fn valid_module_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
@@ -3321,11 +3341,11 @@ fn valid_module_name(n: &str) -> bool {
 /// compiled before it is stored. Rooms created afterwards with `props.logic = name` use it.
 async fn put_module(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(name): Path<String>,
     body: axum::body::Bytes,
 ) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Admin).await?;
+    let key = api_key(&st, &headers, Scope::Admin).await?;
     key_write(&st, &key)?;
     if !valid_module_name(&name) {
         return Err(NetError::Invalid("module name: 1..=64 chars [A-Za-z0-9._-]".into()).into());
@@ -3354,18 +3374,18 @@ async fn put_module(
     ))
 }
 
-async fn list_modules(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
-    let key = api_key(&st, &h, Scope::Read).await?;
+async fn list_modules(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    let key = api_key(&st, &headers, Scope::Read).await?;
     let rows = queries::list_game_modules(&st.pool, key.project_id).await?;
     Ok(Json(json!({ "modules": rows })))
 }
 
 async fn delete_module(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(name): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let key = api_key(&st, &h, Scope::Admin).await?;
+    let key = api_key(&st, &headers, Scope::Admin).await?;
     if queries::delete_game_module(&st.pool, key.project_id, &name).await? {
         audit_log(
             &st,
@@ -3382,33 +3402,34 @@ async fn delete_module(
     }
 }
 
-fn key_json(r: &ApiKeyRow) -> Value {
+fn key_json(key: &ApiKeyRow) -> Value {
     json!({
-        "id": r.id, "prefix": r.prefix, "name": r.name, "scopes": r.scopes,
-        "created_at": r.created_at, "last_used_at": r.last_used_at, "revoked_at": r.revoked_at,
-        "expires_at": r.expires_at, "allowed_cidrs": r.allowed_cidrs
+        "id": key.id, "prefix": key.prefix, "name": key.name, "scopes": key.scopes,
+        "created_at": key.created_at, "last_used_at": key.last_used_at, "revoked_at": key.revoked_at,
+        "expires_at": key.expires_at, "allowed_cidrs": key.allowed_cidrs
     })
 }
 
 /// Who the bearer is: the operator, or an API key with its project. The console signs in with it.
-async fn me(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
-    if let Ok(op) = operator(&st, &h).await {
+async fn me(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    if let Ok(op) = operator(&st, &headers).await {
         return Ok(Json(
             json!({"kind": "operator", "actor": op.actor, "region": st.region, "node_id": st.node_id}),
         ));
     }
-    let k = bearer(&h).ok_or_else(|| NetError::Unauthorized("missing bearer token".into()))?;
-    if !looks_like_key(k) {
+    let token =
+        bearer(&headers).ok_or_else(|| NetError::Unauthorized("missing bearer token".into()))?;
+    if !looks_like_key(token) {
         return Err(NetError::Unauthorized("malformed api key".into()).into());
     }
-    let row = queries::find_api_key(&st.pool, &hash_key(k))
+    let row = queries::find_api_key(&st.pool, &hash_key(token))
         .await?
         .ok_or_else(|| NetError::Unauthorized("unknown api key".into()))?
         .key;
-    let p = queries::get_project(&st.pool, row.project_id).await?;
+    let project = queries::get_project(&st.pool, row.project_id).await?;
     Ok(Json(json!({
         "kind": "project",
-        "project": {"id": p.id, "name": p.name, "plan": p.plan, "limits": p.limits, "created_at": p.created_at, "disabled_at": p.disabled_at},
+        "project": {"id": project.id, "name": project.name, "plan": project.plan, "limits": project.limits, "created_at": project.created_at, "disabled_at": project.disabled_at},
         "key": key_json(&row),
         "region": st.region,
     })))
@@ -3430,14 +3451,14 @@ struct AuditQuery {
 }
 
 /// `YYYYMMDD`, for file names.
-fn ymd(t: Timestamp) -> String {
-    t.format(format_description!("[year][month][day]"))
+fn ymd(at: Timestamp) -> String {
+    at.format(format_description!("[year][month][day]"))
         .expect("a UTC instant with a four-digit year")
 }
 
 /// `YYYYMMDDTHHMMSSZ`, for file names.
-fn compact(t: Timestamp) -> String {
-    t.format(format_description!(
+fn compact(at: Timestamp) -> String {
+    at.format(format_description!(
         "[year][month][day]T[hour][minute][second]Z"
     ))
     .expect("a UTC instant with a four-digit year")
@@ -3480,10 +3501,10 @@ fn csv_file(
 
 fn audit_out(
     rows: Vec<net_db::models::AuditRow>,
-    q: &AuditQuery,
+    query: &AuditQuery,
 ) -> Result<axum::response::Response> {
     use axum::response::IntoResponse;
-    match q.format.as_deref() {
+    match query.format.as_deref() {
         None | Some("json") => Ok(Json(json!({"audit": rows})).into_response()),
         Some("csv") => {
             const HEADER: [&str; 7] = [
@@ -3515,10 +3536,10 @@ fn audit_out(
 
 async fn list_audit(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Query(q): Query<AuditQuery>,
 ) -> ApiResult<axum::response::Response> {
-    let key = api_key(&st, &h, Scope::Read).await?;
+    let key = api_key(&st, &headers, Scope::Read).await?;
     let rows = queries::list_audit(
         &st.pool,
         Some(key.project_id),
@@ -3532,10 +3553,10 @@ async fn list_audit(
 
 async fn op_audit(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Query(q): Query<AuditQuery>,
 ) -> ApiResult<axum::response::Response> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     let rows = queries::list_audit(
         &st.pool,
         q.project,
@@ -3550,10 +3571,10 @@ async fn op_audit(
 /// Operator removes a project's webhook (e.g. a leaked secret or an abusive endpoint); audited.
 async fn op_delete_webhook(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((id, wid)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<StatusCode> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     if queries::delete_webhook(&st.pool, id, wid).await? {
         webhooks_changed(&st, id).await;
         audit_log(
@@ -3574,10 +3595,10 @@ async fn op_delete_webhook(
 /// Operator view of one project's API keys (same shape as the key-authenticated list).
 async fn op_list_keys(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     queries::get_project(&st.pool, id).await?;
     let rows = queries::list_api_keys(&st.pool, id).await?;
     Ok(Json(
@@ -3587,10 +3608,10 @@ async fn op_list_keys(
 
 async fn op_list_webhooks(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     queries::get_project(&st.pool, id).await?;
     let rows = queries::list_webhooks(&st.pool, id).await?;
     Ok(Json(
@@ -3601,11 +3622,11 @@ async fn op_list_webhooks(
 /// Operator-created webhook; the secret is returned once, exactly like the key path.
 async fn op_create_webhook(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(req): Json<WebhookReq>,
 ) -> ApiResult<Json<Value>> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     let prow = queries::get_project(&st.pool, id).await?;
     if prow.disabled_at.is_some() {
         return Err(NetError::Forbidden("project is suspended".into()).into());
@@ -3631,10 +3652,10 @@ async fn op_create_webhook(
 
 async fn op_list_modules(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     queries::get_project(&st.pool, id).await?;
     let rows = queries::list_game_modules(&st.pool, id).await?;
     Ok(Json(json!({ "modules": rows })))
@@ -3643,11 +3664,11 @@ async fn op_list_modules(
 /// Audit trail scoped to one project (the `project` filter is forced to the path id).
 async fn op_project_audit(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Query(mut q): Query<AuditQuery>,
 ) -> ApiResult<axum::response::Response> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     queries::get_project(&st.pool, id).await?;
     q.project = Some(id);
     let rows = queries::list_audit(
@@ -3664,13 +3685,13 @@ async fn op_project_audit(
 /// Operator upload of a project's game module (the hosted console goes through here).
 async fn op_put_module(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((id, name)): Path<(Uuid, String)>,
     body: axum::body::Bytes,
 ) -> ApiResult<Json<Value>> {
-    let op = operator(&st, &h).await?;
-    let p = queries::get_project(&st.pool, id).await?;
-    if p.deleted_at.is_some() {
+    let op = operator(&st, &headers).await?;
+    let project = queries::get_project(&st.pool, id).await?;
+    if project.deleted_at.is_some() {
         return Err(NetError::NotFound("project deleted".into()).into());
     }
     if !valid_module_name(&name) {
@@ -3703,10 +3724,10 @@ async fn op_put_module(
 /// Operator removes a project's WASM module; audited.
 async fn op_delete_module(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path((id, name)): Path<(Uuid, String)>,
 ) -> ApiResult<StatusCode> {
-    let op = operator(&st, &h).await?;
+    let op = operator(&st, &headers).await?;
     if queries::delete_game_module(&st.pool, id, &name).await? {
         audit_log(&st, Some(id), &op.actor, "module.delete", &name, json!({})).await;
         Ok(StatusCode::NO_CONTENT)
@@ -3718,12 +3739,12 @@ async fn op_delete_module(
 /// Project detail for the operator: row, keys (hashes never leave the DB), webhooks, modules.
 async fn op_project(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
-    let p = queries::get_project(&st.pool, id).await?;
-    if p.deleted_at.is_some() {
+    operator(&st, &headers).await?;
+    let project = queries::get_project(&st.pool, id).await?;
+    if project.deleted_at.is_some() {
         return Err(NetError::NotFound("project deleted".into()).into());
     }
     let keys: Vec<Value> = queries::list_api_keys(&st.pool, id)
@@ -3751,8 +3772,8 @@ async fn op_project(
     let (wh_failed, wh_total) = queries::webhook_delivery_stats_last_hour(&st.pool, id).await?;
     let (mtd_minutes, mtd_bytes) = usage_month(&st, id).await?;
     Ok(Json(json!({
-        "project": p,
-        "effective_limits": net_control::ProjectLimits::from_json(&p.limits).effective(&st.cfg.limits),
+        "project": project,
+        "effective_limits": net_control::ProjectLimits::from_json(&project.limits).effective(&st.cfg.limits),
         "keys": keys,
         "webhooks": webhooks,
         "modules": modules,
@@ -3764,10 +3785,10 @@ async fn op_project(
 
 async fn op_fleet_usage(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Query(q): Query<UsageQuery>,
 ) -> ApiResult<axum::response::Response> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     let to = q.to.unwrap_or_else(Timestamp::now);
     let from = q.from.unwrap_or(to - time::Duration::days(30));
     let rows = queries::usage_fleet_between(&st.pool, from, to).await?;
@@ -3776,11 +3797,11 @@ async fn op_fleet_usage(
 
 async fn op_replay(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Query(q): Query<ReplayQuery>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     let row = queries::get_room(&st.pool, id).await?;
     Ok(Json(
         replay_anywhere(&st, ProjectId::from_uuid(row.project_id), id, &q).await?,
@@ -3789,11 +3810,11 @@ async fn op_replay(
 
 async fn op_usage(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Query(q): Query<UsageQuery>,
 ) -> ApiResult<axum::response::Response> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     let to = q.to.unwrap_or_else(Timestamp::now);
     let from = q.from.unwrap_or(to - time::Duration::days(30));
     let rows = queries::usage_between(&st.pool, id, from, to).await?;
@@ -3802,10 +3823,10 @@ async fn op_usage(
 
 async fn op_project_rooms(
     State(st): State<Shared>,
-    h: HeaderMap,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+    operator(&st, &headers).await?;
     let rooms = st
         .redis
         .list_rooms(ProjectId::from_uuid(id))
@@ -3815,22 +3836,22 @@ async fn op_project_rooms(
 }
 
 /// Every live room in the region, across projects (operator view).
-async fn op_rooms(State(st): State<Shared>, h: HeaderMap) -> ApiResult<Json<Value>> {
-    operator(&st, &h).await?;
+async fn op_rooms(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    operator(&st, &headers).await?;
     let mut out = Vec::new();
-    for p in queries::list_projects(&st.pool).await? {
-        for r in st
+    for project in queries::list_projects(&st.pool).await? {
+        for room in st
             .redis
-            .list_rooms(ProjectId::from_uuid(p.id))
+            .list_rooms(ProjectId::from_uuid(project.id))
             .await
             .unwrap_or_default()
         {
-            let mut v = serde_json::to_value(&r).unwrap_or_default();
-            if let Some(o) = v.as_object_mut() {
-                o.insert("project_id".into(), json!(p.id));
-                o.insert("project_name".into(), json!(p.name));
+            let mut entry = serde_json::to_value(&room).unwrap_or_default();
+            if let Some(fields) = entry.as_object_mut() {
+                fields.insert("project_id".into(), json!(project.id));
+                fields.insert("project_name".into(), json!(project.name));
             }
-            out.push(v);
+            out.push(entry);
         }
     }
     Ok(Json(json!({"rooms": out})))
@@ -3842,9 +3863,9 @@ mod tests {
 
     #[test]
     fn file_names_carry_compact_dates() {
-        let t = Timestamp::from_unix(1_767_582_247).expect("a date");
-        assert_eq!(ymd(t), "20260105");
-        assert_eq!(compact(t), "20260105T030407Z");
+        let at = Timestamp::from_unix(1_767_582_247).expect("a date");
+        assert_eq!(ymd(at), "20260105");
+        assert_eq!(compact(at), "20260105T030407Z");
     }
 
     #[test]

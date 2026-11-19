@@ -116,27 +116,27 @@ impl ClientView {
     pub fn ack(&mut self, last: u32, bits: u32) -> u32 {
         self.acked_any = true;
         let mut lost = 0;
-        while let Some(s) = self.sent.front() {
-            let d = last.wrapping_sub(s.tick);
-            if d >= 1 << 31 {
+        while let Some(oldest) = self.sent.front() {
+            let behind = last.wrapping_sub(oldest.tick);
+            if behind >= 1 << 31 {
                 break;
             }
-            let s = self.sent.pop_front().unwrap();
-            let received = d == 0 || (d <= 32 && (bits >> (d - 1)) & 1 == 1);
+            let sent = self.sent.pop_front().unwrap();
+            let received = behind == 0 || (behind <= 32 && (bits >> (behind - 1)) & 1 == 1);
             if !received {
                 lost += 1;
-                self.forget(s);
+                self.forget(sent);
             }
         }
         self.lost_deltas += lost as u64;
         lost
     }
 
-    fn forget(&mut self, s: Sent) {
-        for id in s.entities {
+    fn forget(&mut self, sent: Sent) {
+        for id in sent.entities {
             self.known.remove(&id);
         }
-        self.pending_despawn.extend(s.despawned);
+        self.pending_despawn.extend(sent.despawned);
     }
 
     pub fn known_count(&self) -> usize {
@@ -189,15 +189,15 @@ impl Replicator {
         }
     }
 
-    fn position(&self, e: &Entity) -> Option<[f32; 3]> {
+    fn position(&self, entity: &Entity) -> Option<[f32; 3]> {
         let (cid, idx) = self.pos_cid?;
-        net_sim::vec3_of(e.components.get(&cid)?, idx)
+        net_sim::vec3_of(entity.components.get(&cid)?, idx)
     }
 
-    fn cell(&self, p: [f32; 3]) -> (i32, i32) {
+    fn cell(&self, position: [f32; 3]) -> (i32, i32) {
         (
-            (p[0] / self.cfg.aoi_cell).floor() as i32,
-            (p[2] / self.cfg.aoi_cell).floor() as i32,
+            (position[0] / self.cfg.aoi_cell).floor() as i32,
+            (position[2] / self.cfg.aoi_cell).floor() as i32,
         )
     }
 
@@ -213,7 +213,7 @@ impl Replicator {
             .filter_map(|e| self.position(e))
             .map(|p| self.cell(p))
             .collect();
-        let r = self.cfg.aoi_radius as i32;
+        let base_radius = self.cfg.aoi_radius as i32;
         frame
             .entities()
             .filter(|e| {
@@ -227,17 +227,17 @@ impl Replicator {
                 match self.position(e) {
                     None => true,
                     Some(_) if origins.is_empty() => true,
-                    Some(p) => {
+                    Some(position) => {
                         // Hysteresis: something already in view stays until one cell further.
-                        let r = if view.known.contains_key(&e.id) {
-                            r + 1
+                        let radius = if view.known.contains_key(&e.id) {
+                            base_radius + 1
                         } else {
-                            r
+                            base_radius
                         };
-                        let c = self.cell(p);
-                        origins
-                            .iter()
-                            .any(|o| (c.0 - o.0).abs() <= r && (c.1 - o.1).abs() <= r)
+                        let cell = self.cell(position);
+                        origins.iter().any(|o| {
+                            (cell.0 - o.0).abs() <= radius && (cell.1 - o.1).abs() <= radius
+                        })
                     }
                 }
             })
@@ -245,17 +245,18 @@ impl Replicator {
             .collect()
     }
 
-    /// Components of `e` this viewer may see (`@owner_only` hides from non-owners).
+    /// Components of `entity` this viewer may see (`@owner_only` hides from non-owners).
     fn visible<'a>(
         &self,
-        e: &'a Entity,
+        entity: &'a Entity,
         viewer: ActorId,
     ) -> std::borrow::Cow<'a, BTreeMap<u16, ComponentValue>> {
-        if self.owner_only.is_empty() || e.owner == Some(viewer) {
-            return std::borrow::Cow::Borrowed(&e.components);
+        if self.owner_only.is_empty() || entity.owner == Some(viewer) {
+            return std::borrow::Cow::Borrowed(&entity.components);
         }
         std::borrow::Cow::Owned(
-            e.components
+            entity
+                .components
                 .iter()
                 .filter(|(c, _)| !self.owner_only.contains(c))
                 .map(|(c, v)| (*c, v.clone()))
@@ -293,47 +294,48 @@ impl Replicator {
         let mut order: Vec<(f32, EntityId)> = relevant
             .iter()
             .map(|id| {
-                let e = frame.entity(*id).unwrap();
-                let k = view.known.entry(*id).or_insert_with(|| Known {
+                let entity = frame.entity(*id).unwrap();
+                let known = view.known.entry(*id).or_insert_with(|| Known {
                     last_sent: tick.wrapping_sub(u32::MAX / 2),
                     ..Default::default()
                 });
-                let dist = match (origin, self.position(e)) {
+                let dist = match (origin, self.position(entity)) {
                     (Some(o), Some(p)) => {
                         ((p[0] - o[0]).powi(2) + (p[1] - o[1]).powi(2) + (p[2] - o[2]).powi(2))
                             .sqrt()
                     }
                     _ => 0.0,
                 };
-                let changed = e.owner != k.owner || *self.visible(e, view.actor) != k.components;
-                let age = tick.wrapping_sub(k.last_sent);
-                k.priority += if changed {
+                let changed = entity.owner != known.owner
+                    || *self.visible(entity, view.actor) != known.components;
+                let age = tick.wrapping_sub(known.last_sent);
+                known.priority += if changed {
                     1.0 / (1.0 + dist / self.cfg.aoi_cell.max(1.0))
                 } else {
                     0.0
                 };
-                let p = if k.components.is_empty() && !e.components.is_empty() {
+                let priority = if known.components.is_empty() && !entity.components.is_empty() {
                     f32::MAX
                 } else if age >= self.cfg.stale_after && changed {
-                    1e6 + k.priority
+                    1e6 + known.priority
                 } else {
-                    k.priority
+                    known.priority
                 };
-                (p, *id)
+                (priority, *id)
             })
             .collect();
         order.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
         let full = view.last_tick.is_none();
-        let mut w = BitWriter::new();
-        w.write_bits(tick as u64, 32);
-        w.write_bits(view.last_tick.map(|t| t.0 as u64 + 1).unwrap_or(0), 32);
-        w.write_bits(despawn.len().min(65535) as u64, 16);
+        let mut writer = BitWriter::new();
+        writer.write_bits(tick as u64, 32);
+        writer.write_bits(view.last_tick.map(|t| t.0 as u64 + 1).unwrap_or(0), 32);
+        writer.write_bits(despawn.len().min(65535) as u64, 16);
         for id in despawn.iter().take(65535) {
-            w.write_bits(id.to_u64(), 48);
+            writer.write_bits(id.to_u64(), 48);
         }
-        let count_pos = w.bit_len();
-        w.write_bits(0, 16);
+        let count_pos = writer.bit_len();
+        writer.write_bits(0, 16);
         let cid_bits = frame.schema.component_id_bits();
         let mut sent = 0u16;
         let mut sent_ids = Vec::new();
@@ -341,30 +343,30 @@ impl Replicator {
             if prio <= 0.0 && !full {
                 continue;
             }
-            let e = frame.entity(id).unwrap();
-            let vis = self.visible(e, view.actor);
-            let k = view.known.get(&id).unwrap();
+            let entity = frame.entity(id).unwrap();
+            let vis = self.visible(entity, view.actor);
+            let known = view.known.get(&id).unwrap();
             let mut ew = BitWriter::new();
             ew.write_bits(id.to_u64(), 48);
-            match e.owner {
-                Some(a) => {
+            match entity.owner {
+                Some(owner) => {
                     ew.write_bool(true);
-                    ew.write_bits(a.0 as u64, 16);
+                    ew.write_bits(owner.0 as u64, 16);
                 }
                 None => ew.write_bool(false),
             }
             let mut comps: Vec<(u16, Option<&ComponentValue>)> = Vec::new();
             for (cid, v) in vis.iter() {
-                if k.components.get(cid) != Some(v) {
+                if known.components.get(cid) != Some(v) {
                     comps.push((*cid, Some(v)));
                 }
             }
-            for cid in k.components.keys() {
+            for cid in known.components.keys() {
                 if !vis.contains_key(cid) {
                     comps.push((*cid, None));
                 }
             }
-            if comps.is_empty() && e.owner == k.owner && !k.components.is_empty() {
+            if comps.is_empty() && entity.owner == known.owner && !known.components.is_empty() {
                 continue;
             }
             ew.write_bits(comps.len().min(255) as u64, 8);
@@ -372,41 +374,41 @@ impl Replicator {
                 ew.write_bits(*cid as u64, cid_bits);
                 match v {
                     None => ew.write_bool(true),
-                    Some(v) => {
+                    Some(value) => {
                         ew.write_bool(false);
-                        let c = frame.schema.by_id(*cid).unwrap();
-                        match k.components.get(cid) {
+                        let component = frame.schema.by_id(*cid).unwrap();
+                        match known.components.get(cid) {
                             Some(base) => {
                                 ew.write_bool(false);
-                                let _ = v.encode_delta(base, c, &mut ew);
+                                let _ = value.encode_delta(base, component, &mut ew);
                             }
                             None => {
                                 ew.write_bool(true);
-                                let _ = v.encode_full(c, &mut ew);
+                                let _ = value.encode_full(component, &mut ew);
                             }
                         }
                     }
                 }
             }
-            if (w.bit_len() + ew.bit_len()).div_ceil(8) > self.cfg.budget_bytes && sent > 0 {
+            if (writer.bit_len() + ew.bit_len()).div_ceil(8) > self.cfg.budget_bytes && sent > 0 {
                 view.starved += 1;
                 break;
             }
             let nbits = ew.bit_len();
-            append_bits(&mut w, &ew.finish(), nbits);
+            append_bits(&mut writer, &ew.finish(), nbits);
             let vis = vis.into_owned();
-            let k = view.known.get_mut(&id).unwrap();
-            k.components = vis;
-            k.owner = e.owner;
-            k.last_sent = tick;
-            k.priority = 0.0;
+            let known = view.known.get_mut(&id).unwrap();
+            known.components = vis;
+            known.owner = entity.owner;
+            known.last_sent = tick;
+            known.priority = 0.0;
             sent_ids.push(id);
             sent += 1;
             if sent == u16::MAX {
                 break;
             }
         }
-        let mut out = w.finish();
+        let mut out = writer.finish();
         out[count_pos / 8..count_pos / 8 + 2].copy_from_slice(&sent.to_be_bytes());
         view.last_tick = Some(frame.tick);
         view.sent.push_back(Sent {
@@ -415,12 +417,12 @@ impl Replicator {
             despawned: despawn,
         });
         if view.sent.len() > SENT_LOG {
-            let s = view.sent.pop_front().unwrap();
+            let sent = view.sent.pop_front().unwrap();
             // A client that acks never let a delta get this old: assume it was lost. Clients
             // that do not ack at all (older SDKs) just get the pre-ack behaviour.
             if view.acked_any {
                 view.lost_deltas += 1;
-                view.forget(s);
+                view.forget(sent);
             }
         }
         out
@@ -435,24 +437,24 @@ impl Replicator {
     /// `apply` that also tells which entities the delta touched (for spawn/change/despawn callbacks).
     pub fn apply_report(frame: &mut Frame, buf: &[u8]) -> Result<ApplyReport, ApplyError> {
         let mut report = ApplyReport::default();
-        let mut r = BitReader::new(buf);
+        let mut reader = BitReader::new(buf);
         let rd = |r: &mut BitReader, n: u32| r.read_bits(n).map_err(|_| ApplyError::Truncated);
-        let tick = Tick(rd(&mut r, 32)? as u32);
+        let tick = Tick(rd(&mut reader, 32)? as u32);
         report.tick = tick;
-        report.baseline = rd(&mut r, 32)? as u32;
-        let nd = rd(&mut r, 16)? as usize;
+        report.baseline = rd(&mut reader, 32)? as u32;
+        let nd = rd(&mut reader, 16)? as usize;
         for _ in 0..nd {
-            let id = EntityId::from_u64(rd(&mut r, 48)?);
+            let id = EntityId::from_u64(rd(&mut reader, 48)?);
             if frame.despawn(id).is_ok() {
                 report.despawned.push(id);
             }
         }
-        let n = rd(&mut r, 16)? as usize;
+        let count = rd(&mut reader, 16)? as usize;
         let cid_bits = frame.schema.component_id_bits();
-        for _ in 0..n {
-            let id = EntityId::from_u64(rd(&mut r, 48)?);
-            let owner = if r.read_bool().map_err(|_| ApplyError::Truncated)? {
-                Some(ActorId(rd(&mut r, 16)? as u16))
+        for _ in 0..count {
+            let id = EntityId::from_u64(rd(&mut reader, 48)?);
+            let owner = if reader.read_bool().map_err(|_| ApplyError::Truncated)? {
+                Some(ActorId(rd(&mut reader, 16)? as u16))
             } else {
                 None
             };
@@ -464,33 +466,33 @@ impl Replicator {
             frame
                 .ensure_entity(id, owner)
                 .map_err(|e| ApplyError::Codec(e.to_string()))?;
-            let nc = rd(&mut r, 8)? as usize;
+            let nc = rd(&mut reader, 8)? as usize;
             for _ in 0..nc {
-                let cid = rd(&mut r, cid_bits)? as u16;
-                let removed = r.read_bool().map_err(|_| ApplyError::Truncated)?;
-                let c = frame
+                let cid = rd(&mut reader, cid_bits)? as u16;
+                let removed = reader.read_bool().map_err(|_| ApplyError::Truncated)?;
+                let component = frame
                     .schema
                     .by_id(cid)
                     .ok_or(ApplyError::Component(cid))?
                     .clone();
-                let e = frame.entity_mut(id).unwrap();
+                let entity = frame.entity_mut(id).unwrap();
                 if removed {
-                    e.components.remove(&cid);
+                    entity.components.remove(&cid);
                     continue;
                 }
-                let is_full = r.read_bool().map_err(|_| ApplyError::Truncated)?;
-                let v = if is_full {
-                    ComponentValue::decode_full(&c, &mut r)
+                let is_full = reader.read_bool().map_err(|_| ApplyError::Truncated)?;
+                let value = if is_full {
+                    ComponentValue::decode_full(&component, &mut reader)
                 } else {
-                    let base = e
+                    let base = entity
                         .components
                         .get(&cid)
                         .cloned()
-                        .unwrap_or_else(|| ComponentValue::zero(&c));
-                    ComponentValue::decode_delta(&base, &c, &mut r)
+                        .unwrap_or_else(|| ComponentValue::zero(&component));
+                    ComponentValue::decode_delta(&base, &component, &mut reader)
                 }
                 .map_err(|e| ApplyError::Codec(e.to_string()))?;
-                e.components.insert(cid, v);
+                entity.components.insert(cid, value);
             }
         }
         frame.tick = tick;
@@ -534,27 +536,27 @@ pub struct AckTracker {
 impl AckTracker {
     /// Records a received delta header. Returns true when the delta before it was missed.
     pub fn on_delta(&mut self, tick: u32, baseline_tick: u32) -> bool {
-        let Some(l) = self.last else {
+        let Some(last) = self.last else {
             self.last = Some(tick);
             return false;
         };
-        let d = tick.wrapping_sub(l);
-        if d == 0 || d >= 1 << 31 {
+        let behind = tick.wrapping_sub(last);
+        if behind == 0 || behind >= 1 << 31 {
             // duplicate or late arrival: fill its slot in the history
-            let back = l.wrapping_sub(tick);
+            let back = last.wrapping_sub(tick);
             if (1..=32).contains(&back) {
                 self.bits |= 1 << (back - 1);
             }
             return false;
         }
-        let gap = baseline_tick != 0 && l != baseline_tick.wrapping_sub(1);
+        let gap = baseline_tick != 0 && last != baseline_tick.wrapping_sub(1);
         if gap {
             self.gaps += 1;
         }
-        self.bits = if d >= 32 {
+        self.bits = if behind >= 32 {
             0
         } else {
-            (self.bits << d) | (1 << (d - 1))
+            (self.bits << behind) | (1 << (behind - 1))
         };
         self.last = Some(tick);
         gap
@@ -567,13 +569,13 @@ impl AckTracker {
 }
 
 /// Concatenates a byte-padded sub-writer bit-exactly.
-fn append_bits(w: &mut BitWriter, bytes: &[u8], nbits: usize) {
-    let mut r = BitReader::new(bytes);
+fn append_bits(writer: &mut BitWriter, bytes: &[u8], nbits: usize) {
+    let mut reader = BitReader::new(bytes);
     let mut left = nbits;
     while left > 0 {
-        let n = left.min(32) as u32;
-        w.write_bits(r.read_bits(n).unwrap(), n);
-        left -= n as usize;
+        let take = left.min(32) as u32;
+        writer.write_bits(reader.read_bits(take).unwrap(), take);
+        left -= take as usize;
     }
 }
 
@@ -591,13 +593,13 @@ mod tests {
             fields: vec![Value::Vec3([x, 0.0, z])],
         }
     }
-    fn hp(v: u64) -> ComponentValue {
+    fn hp(points: u64) -> ComponentValue {
         ComponentValue {
-            fields: vec![Value::UInt(v)],
+            fields: vec![Value::UInt(points)],
         }
     }
-    fn pos(f: &Frame, id: EntityId) -> [f32; 3] {
-        net_sim::vec3_of(f.get(id, "Transform").unwrap(), 0).unwrap()
+    fn pos(frame: &Frame, id: EntityId) -> [f32; 3] {
+        net_sim::vec3_of(frame.get(id, "Transform").unwrap(), 0).unwrap()
     }
 
     #[test]
@@ -611,17 +613,17 @@ mod tests {
             },
             &server.schema,
         );
-        let a = server.spawn(Some(ActorId(1))).unwrap();
-        let b = server.spawn(None).unwrap();
-        server.set(a, "Transform", tf(1.0, 2.0)).unwrap();
-        server.set(a, "Health", hp(100)).unwrap();
-        server.set(b, "Transform", tf(-5.0, 0.0)).unwrap();
+        let owned = server.spawn(Some(ActorId(1))).unwrap();
+        let shared = server.spawn(None).unwrap();
+        server.set(owned, "Transform", tf(1.0, 2.0)).unwrap();
+        server.set(owned, "Health", hp(100)).unwrap();
+        server.set(shared, "Transform", tf(-5.0, 0.0)).unwrap();
         let mut view = ClientView::new(ActorId(1));
         let d1 = rep.build(&server, &mut view);
         assert_eq!(Replicator::apply(&mut client, &d1).unwrap(), Tick(0));
         assert_eq!(client.entity_count(), 2);
-        assert_eq!(client.entity(a).unwrap().owner, Some(ActorId(1)));
-        assert_eq!(client.get(a, "Health"), Some(&hp(100)));
+        assert_eq!(client.entity(owned).unwrap().owner, Some(ActorId(1)));
+        assert_eq!(client.get(owned, "Health"), Some(&hp(100)));
 
         // nothing changed -> header only
         server.advance(|_| {});
@@ -630,16 +632,16 @@ mod tests {
         Replicator::apply(&mut client, &d2).unwrap();
 
         // move a, drop Health, despawn b
-        server.get_mut(a, "Transform").unwrap().fields[0] = Value::Vec3([1.5, 0.0, 2.0]);
-        server.remove_component(a, "Health").unwrap();
-        server.despawn(b).unwrap();
+        server.get_mut(owned, "Transform").unwrap().fields[0] = Value::Vec3([1.5, 0.0, 2.0]);
+        server.remove_component(owned, "Health").unwrap();
+        server.despawn(shared).unwrap();
         server.advance(|_| {});
         let d3 = rep.build(&server, &mut view);
         assert!(d3.len() < 40, "{}", d3.len()); // 1 despawn + 1 entity (vec3 delta, Health removed)
         assert_eq!(Replicator::apply(&mut client, &d3).unwrap(), Tick(2));
         assert_eq!(client.entity_count(), 1);
-        assert!(client.get(a, "Health").is_none());
-        assert!((pos(&client, a)[0] - 1.5).abs() < 0.01);
+        assert!(client.get(owned, "Health").is_none());
+        assert!((pos(&client, owned)[0] - 1.5).abs() < 0.01);
         assert_eq!(view.known_count(), 1);
     }
 
@@ -693,35 +695,35 @@ mod tests {
             &server.schema,
         );
         for i in 0..100 {
-            let e = server.spawn(None).unwrap();
-            server.set(e, "Transform", tf(i as f32, 0.0)).unwrap();
+            let entity = server.spawn(None).unwrap();
+            server.set(entity, "Transform", tf(i as f32, 0.0)).unwrap();
         }
         let mut view = ClientView::new(ActorId(1));
         let mut ticks = 0;
         while client.entity_count() < 100 {
-            let d = rep.build(&server, &mut view);
-            assert!(d.len() <= 200 + 20, "{}", d.len());
-            Replicator::apply(&mut client, &d).unwrap();
+            let delta = rep.build(&server, &mut view);
+            assert!(delta.len() <= 200 + 20, "{}", delta.len());
+            Replicator::apply(&mut client, &delta).unwrap();
             server.advance(|_| {});
             ticks += 1;
             assert!(ticks < 50);
         }
         assert!(ticks > 3);
-        for e in server.entities() {
-            assert_eq!(pos(&client, e.id)[0], pos(&server, e.id)[0]);
+        for entity in server.entities() {
+            assert_eq!(pos(&client, entity.id)[0], pos(&server, entity.id)[0]);
         }
     }
 
     #[test]
     fn ack_tracker_bits() {
-        let mut t = AckTracker::default();
-        assert!(!t.on_delta(0, 0));
-        assert!(!t.on_delta(1, 1));
-        assert!(t.on_delta(3, 3)); // tick 2 missing
-        assert_eq!(t.ack(), Some((3, 0b110)));
-        assert!(!t.on_delta(2, 2)); // late arrival fills the hole
-        assert_eq!(t.ack(), Some((3, 0b111)));
-        assert_eq!(t.gaps, 1);
+        let mut tracker = AckTracker::default();
+        assert!(!tracker.on_delta(0, 0));
+        assert!(!tracker.on_delta(1, 1));
+        assert!(tracker.on_delta(3, 3)); // tick 2 missing
+        assert_eq!(tracker.ack(), Some((3, 0b110)));
+        assert!(!tracker.on_delta(2, 2)); // late arrival fills the hole
+        assert_eq!(tracker.ack(), Some((3, 0b111)));
+        assert_eq!(tracker.gaps, 1);
     }
 
     #[test]
@@ -735,30 +737,30 @@ mod tests {
             },
             &server.schema,
         );
-        let a = server.spawn(None).unwrap();
-        let b = server.spawn(None).unwrap();
-        server.set(a, "Transform", tf(1.0, 0.0)).unwrap();
-        server.set(b, "Transform", tf(2.0, 0.0)).unwrap();
+        let first = server.spawn(None).unwrap();
+        let second = server.spawn(None).unwrap();
+        server.set(first, "Transform", tf(1.0, 0.0)).unwrap();
+        server.set(second, "Transform", tf(2.0, 0.0)).unwrap();
         let mut view = ClientView::new(ActorId(1));
         let mut tracker = AckTracker::default();
         let d0 = rep.build(&server, &mut view);
         tracker.on_delta(0, 0);
         Replicator::apply(&mut client, &d0).unwrap();
         // tick 1: a moves (lost); tick 2: b despawns (lost)
-        server.get_mut(a, "Transform").unwrap().fields[0] = Value::Vec3([5.0, 0.0, 0.0]);
+        server.get_mut(first, "Transform").unwrap().fields[0] = Value::Vec3([5.0, 0.0, 0.0]);
         server.advance(|_| {});
         let _lost1 = rep.build(&server, &mut view);
-        server.despawn(b).unwrap();
+        server.despawn(second).unwrap();
         server.advance(|_| {});
         let _lost2 = rep.build(&server, &mut view);
         // tick 3 arrives: nothing changed, but the client notices the hole
         server.advance(|_| {});
         let d3 = rep.build(&server, &mut view);
-        let (t, base) = delta_header(&d3).unwrap();
-        assert!(tracker.on_delta(t, base));
+        let (tick, base) = delta_header(&d3).unwrap();
+        assert!(tracker.on_delta(tick, base));
         Replicator::apply(&mut client, &d3).unwrap();
         assert_eq!(client.entity_count(), 2);
-        assert_eq!(pos(&client, a)[0], 1.0);
+        assert_eq!(pos(&client, first)[0], 1.0);
         let (last, bits) = tracker.ack().unwrap();
         assert_eq!(view.ack(last, bits), 2);
         assert_eq!(view.lost_deltas, 2);
@@ -767,7 +769,7 @@ mod tests {
         let d4 = rep.build(&server, &mut view);
         Replicator::apply(&mut client, &d4).unwrap();
         assert_eq!(client.entity_count(), 1);
-        assert_eq!(pos(&client, a)[0], 5.0);
+        assert_eq!(pos(&client, first)[0], 5.0);
         assert_eq!(view.known_count(), 1);
         // everything acked -> nothing more to repair
         tracker.on_delta(4, 4);
@@ -813,11 +815,11 @@ mod tests {
         // a change to the hidden component sends nothing to the non-owner
         server.get_mut(me, "Inv").unwrap().fields[0] = Value::UInt(8);
         server.advance(|_| {});
-        let d = rep.build(&server, &mut v2);
-        assert_eq!(d.len(), 12);
-        let d = rep.build(&server, &mut v1);
-        assert!(d.len() > 12);
-        Replicator::apply(&mut owner, &d).unwrap();
+        let delta = rep.build(&server, &mut v2);
+        assert_eq!(delta.len(), 12);
+        let delta = rep.build(&server, &mut v1);
+        assert!(delta.len() > 12);
+        Replicator::apply(&mut owner, &delta).unwrap();
         assert_eq!(owner.get(me, "Inv"), Some(&hp(8)));
     }
 

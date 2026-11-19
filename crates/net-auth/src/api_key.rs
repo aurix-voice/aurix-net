@@ -25,8 +25,8 @@ impl Scope {
             Scope::Admin => "admin",
         }
     }
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
             "rooms" => Some(Scope::Rooms),
             "read" => Some(Scope::Read),
             "admin" => Some(Scope::Admin),
@@ -63,8 +63,8 @@ pub fn hash_key(plaintext: &str) -> String {
 }
 
 /// Cheap syntactic check before hitting the database.
-pub fn looks_like_key(s: &str) -> bool {
-    s.len() > 12 && s.starts_with("an_") && s.is_ascii()
+pub fn looks_like_key(text: &str) -> bool {
+    text.len() > 12 && text.starts_with("an_") && text.is_ascii()
 }
 
 #[cfg(test)]
@@ -73,10 +73,10 @@ mod tests {
 
     #[test]
     fn generate_and_hash() {
-        let k = ApiKeyMaterial::generate();
-        assert!(looks_like_key(&k.plaintext));
-        assert_eq!(k.hash, hash_key(&k.plaintext));
-        assert_eq!(k.hash.len(), 64);
-        assert_ne!(k.hash, ApiKeyMaterial::generate().hash);
+        let material = ApiKeyMaterial::generate();
+        assert!(looks_like_key(&material.plaintext));
+        assert_eq!(material.hash, hash_key(&material.plaintext));
+        assert_eq!(material.hash.len(), 64);
+        assert_ne!(material.hash, ApiKeyMaterial::generate().hash);
     }
 }

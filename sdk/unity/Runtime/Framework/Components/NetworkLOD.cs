@@ -9,10 +9,25 @@ namespace Aurix.Net.Unity.Framework
     [Serializable]
     public struct NetworkLODTier
     {
-        [Tooltip("Players whose closest owned object is within this distance get this tier (or a closer one).")] public float maxDistance;
-        [Tooltip("Extra distance a player must move before dropping back to a closer tier (avoids flapping).")] public float hysteresis;
-        [Tooltip("Send dirty deltas to players in this tier every N server ticks.")] public int sendIntervalTicks;
-        public NetworkLODTier(float maxDistance, int sendIntervalTicks, float hysteresis = 0f) { this.maxDistance = maxDistance; this.sendIntervalTicks = Math.Max(1, sendIntervalTicks); this.hysteresis = hysteresis; }
+        [Tooltip(
+            "Players whose closest owned object is within this distance get this tier (or a closer one)."
+        )]
+        public float maxDistance;
+
+        [Tooltip(
+            "Extra distance a player must move before dropping back to a closer tier (avoids flapping)."
+        )]
+        public float hysteresis;
+
+        [Tooltip("Send dirty deltas to players in this tier every N server ticks.")]
+        public int sendIntervalTicks;
+
+        public NetworkLODTier(float maxDistance, int sendIntervalTicks, float hysteresis = 0f)
+        {
+            this.maxDistance = maxDistance;
+            this.sendIntervalTicks = Math.Max(1, sendIntervalTicks);
+            this.hysteresis = hysteresis;
+        }
     }
 
     /// <summary>
@@ -24,47 +39,127 @@ namespace Aurix.Net.Unity.Framework
     {
         public const byte CulledTier = byte.MaxValue;
 
-        public NetworkLODTier[] tiers = { new NetworkLODTier(25f, 1), new NetworkLODTier(75f, 3, 5f), new NetworkLODTier(200f, 10, 10f) };
-        [Tooltip("Players farther than the last tier get no deltas at all.")] public bool cullBeyondLastTier = true;
-        [Tooltip("Re-evaluate tiers every N server ticks.")] public int evaluateIntervalTicks = 10;
+        public NetworkLODTier[] tiers =
+        {
+            new NetworkLODTier(25f, 1),
+            new NetworkLODTier(75f, 3, 5f),
+            new NetworkLODTier(200f, 10, 10f),
+        };
+
+        [Tooltip("Players farther than the last tier get no deltas at all.")]
+        public bool cullBeyondLastTier = true;
+
+        [Tooltip("Re-evaluate tiers every N server ticks.")]
+        public int evaluateIntervalTicks = 10;
 
         readonly Dictionary<PlayerID, byte> _tiers = new Dictionary<PlayerID, byte>();
         public event Action<PlayerID, byte, byte> onTierChanged;
 
         /// <summary>Tier of a player (0 = closest / full rate; owner is always 0).</summary>
-        public byte GetTier(PlayerID p) { if (identity != null && identity.owner == p) return 0; return _tiers.TryGetValue(p, out var t) ? t : (byte)0; }
-        public bool IsCulled(PlayerID p) => GetTier(p) == CulledTier;
+        public byte GetTier(PlayerID player)
+        {
+            if (identity != null && identity.owner == player)
+            {
+                return 0;
+            }
+
+            return _tiers.TryGetValue(player, out var tier) ? tier : (byte)0;
+        }
+
+        public bool IsCulled(PlayerID player) => GetTier(player) == CulledTier;
 
         /// <summary>Whether a dirty delta of this object should go to the player on this server tick.</summary>
-        public bool ShouldSendToPlayer(PlayerID p, uint tick)
+        public bool ShouldSendToPlayer(PlayerID player, uint tick)
         {
-            byte t = GetTier(p);
-            if (t == CulledTier) return false;
-            if (tiers == null || t >= tiers.Length) return true;
-            int every = Math.Max(1, tiers[t].sendIntervalTicks);
-            if (every == 1) return true;
+            byte tier = GetTier(player);
+            if (tier == CulledTier)
+            {
+                return false;
+            }
+
+            if (tiers == null || tier >= tiers.Length)
+            {
+                return true;
+            }
+
+            int every = Math.Max(1, tiers[tier].sendIntervalTicks);
+            if (every == 1)
+            {
+                return true;
+            }
+
             uint stagger = identity != null ? identity.objectId : 0;
             return (tick + stagger) % (uint)every == 0;
         }
 
-        protected override void OnBeforeBind() { if (identity != null) identity.lod = this; }
-        protected override void OnSpawned(bool asServer) { if (identity != null) identity.lod = this; }
-        protected override void OnDespawned() { _tiers.Clear(); }
+        protected override void OnBeforeBind()
+        {
+            if (identity != null)
+            {
+                identity.lod = this;
+            }
+        }
+
+        protected override void OnSpawned(bool asServer)
+        {
+            if (identity != null)
+            {
+                identity.lod = this;
+            }
+        }
+
+        protected override void OnDespawned()
+        {
+            _tiers.Clear();
+        }
 
         public override void OnTick(uint tick)
         {
-            if (!isServer || networkManager == null || tiers == null || tiers.Length == 0) return;
-            if (evaluateIntervalTicks > 1 && tick % (uint)evaluateIntervalTicks != 0) return;
-            var me = transform.position;
-            foreach (var p in identity.observers)
+            if (!isServer || networkManager == null || tiers == null || tiers.Length == 0)
             {
-                if (identity.owner == p) continue;
+                return;
+            }
+
+            if (evaluateIntervalTicks > 1 && tick % (uint)evaluateIntervalTicks != 0)
+            {
+                return;
+            }
+
+            var me = transform.position;
+            foreach (var player in identity.observers)
+            {
+                if (identity.owner == player)
+                {
+                    continue;
+                }
+
                 float best = float.MaxValue;
-                foreach (var id in networkManager.identities) if (id.owner == p) { float d = Vector3.Distance(id.transform.position, me); if (d < best) best = d; }
-                if (best == float.MaxValue) continue;  // no avatar: keep the current tier
-                byte prev = _tiers.TryGetValue(p, out var pt) ? pt : (byte)0, next = Resolve(best, prev);
-                if (next == prev) { _tiers[p] = next; continue; }
-                _tiers[p] = next; onTierChanged?.Invoke(p, prev, next);
+                foreach (var id in networkManager.identities)
+                {
+                    if (id.owner == player)
+                    {
+                        float distance = Vector3.Distance(id.transform.position, me);
+                        if (distance < best)
+                        {
+                            best = distance;
+                        }
+                    }
+                }
+
+                if (best == float.MaxValue)
+                {
+                    continue; // no avatar: keep the current tier
+                }
+
+                byte prev = _tiers.TryGetValue(player, out var pt) ? pt : (byte)0,
+                    next = Resolve(best, prev);
+                if (next == prev)
+                {
+                    _tiers[player] = next;
+                    continue;
+                }
+                _tiers[player] = next;
+                onTierChanged?.Invoke(player, prev, next);
             }
         }
 
@@ -73,12 +168,19 @@ namespace Aurix.Net.Unity.Framework
             for (int i = 0; i < tiers.Length; i++)
             {
                 float limit = tiers[i].maxDistance;
-                if (current != CulledTier && i < current) limit += tiers[i].hysteresis;  // moving closer needs margin
-                if (dist <= limit) return (byte)i;
+                if (current != CulledTier && i < current)
+                {
+                    limit += tiers[i].hysteresis; // moving closer needs margin
+                }
+
+                if (dist <= limit)
+                {
+                    return (byte)i;
+                }
             }
             return cullBeyondLastTier ? CulledTier : (byte)(tiers.Length - 1);
         }
 
-        internal void RemovePlayer(PlayerID p) => _tiers.Remove(p);
+        internal void RemovePlayer(PlayerID player) => _tiers.Remove(player);
     }
 }

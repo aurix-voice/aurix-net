@@ -1,16 +1,41 @@
 {
   "name": "@aurix/net",
   "version": "0.1.0",
-  "description": "Aurix Net web client: rooms, relay events, sync deltas and lockstep bundles over WebSocket (WebTransport next).",
+  "description": "Aurix Net web client: rooms, relay events, sync deltas and lockstep bundles over WebTransport or WebSocket.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aurix-voice/aurix-net.git",
+    "directory": "sdk/web"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "README.md"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "format": "prettier --write src eslint.config.js",
+    "format:check": "prettier --check src eslint.config.js",
     "pretest": "npm run build",
     "test": "node --test test/*.test.mjs"
   },
-  "devDependencies": { "typescript": "^5.4.0", "@types/node": "^20.0.0", "ws": "^8.17.0" }
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "^20.0.0",
+    "eslint": "10.14.0",
+    "prettier": "3.9.10",
+    "typescript": "^5.4.0",
+    "typescript-eslint": "8.72.1",
+    "ws": "^8.17.0"
+  }
 }

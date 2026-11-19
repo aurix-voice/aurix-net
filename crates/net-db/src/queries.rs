@@ -77,7 +77,7 @@ pub async fn insert_api_key(
 /// Marks the project deleted and disabled in one step; keys/webhooks/modules are handled by the
 /// caller so the operator gets counts back. Returns false if already deleted or unknown.
 pub async fn soft_delete_project(pool: &DbPool, id: Uuid) -> Result<bool> {
-    let r = sqlx::query(
+    let done = sqlx::query(
         "UPDATE projects SET deleted_at = now(), disabled_at = COALESCE(disabled_at, now()) \
          WHERE id = $1 AND deleted_at IS NULL",
     )
@@ -85,40 +85,40 @@ pub async fn soft_delete_project(pool: &DbPool, id: Uuid) -> Result<bool> {
     .execute(pool)
     .await
     .map_err(db_err)?;
-    Ok(r.rows_affected() > 0)
+    Ok(done.rows_affected() > 0)
 }
 
 pub async fn revoke_all_api_keys(pool: &DbPool, project_id: Uuid) -> Result<u64> {
-    let r = sqlx::query(
+    let done = sqlx::query(
         "UPDATE api_keys SET revoked_at = now() WHERE project_id = $1 AND revoked_at IS NULL",
     )
     .bind(project_id)
     .execute(pool)
     .await
     .map_err(db_err)?;
-    Ok(r.rows_affected())
+    Ok(done.rows_affected())
 }
 
 pub async fn delete_webhooks_of_project(pool: &DbPool, project_id: Uuid) -> Result<u64> {
-    let r = sqlx::query("DELETE FROM webhooks WHERE project_id = $1")
+    let done = sqlx::query("DELETE FROM webhooks WHERE project_id = $1")
         .bind(project_id)
         .execute(pool)
         .await
         .map_err(db_err)?;
-    Ok(r.rows_affected())
+    Ok(done.rows_affected())
 }
 
 pub async fn delete_modules_of_project(pool: &DbPool, project_id: Uuid) -> Result<u64> {
-    let r = sqlx::query("DELETE FROM game_modules WHERE project_id = $1")
+    let done = sqlx::query("DELETE FROM game_modules WHERE project_id = $1")
         .bind(project_id)
         .execute(pool)
         .await
         .map_err(db_err)?;
-    Ok(r.rows_affected())
+    Ok(done.rows_affected())
 }
 
 pub async fn set_project_disabled(pool: &DbPool, id: Uuid, disabled: bool) -> Result<bool> {
-    let r = sqlx::query(
+    let done = sqlx::query(
         "UPDATE projects SET disabled_at = CASE WHEN $2 THEN COALESCE(disabled_at, now()) ELSE NULL END WHERE id = $1",
     )
     .bind(id)
@@ -126,7 +126,7 @@ pub async fn set_project_disabled(pool: &DbPool, id: Uuid, disabled: bool) -> Re
     .execute(pool)
     .await
     .map_err(db_err)?;
-    Ok(r.rows_affected() > 0)
+    Ok(done.rows_affected() > 0)
 }
 
 /// Key row plus the owning project's suspension marker, so one lookup authenticates both.
@@ -162,38 +162,38 @@ pub async fn list_api_keys(pool: &DbPool, project_id: Uuid) -> Result<Vec<ApiKey
 }
 
 pub async fn revoke_api_key(pool: &DbPool, project_id: Uuid, id: Uuid) -> Result<bool> {
-    let r = sqlx::query("UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND project_id = $2 AND revoked_at IS NULL")
+    let done = sqlx::query("UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND project_id = $2 AND revoked_at IS NULL")
         .bind(id)
         .bind(project_id)
         .execute(pool)
         .await
         .map_err(db_err)?;
-    Ok(r.rows_affected() == 1)
+    Ok(done.rows_affected() == 1)
 }
 
 // ---------- regions ----------
 
 pub async fn list_regions(pool: &DbPool, enabled_only: bool) -> Result<Vec<RegionRow>> {
-    let q = if enabled_only {
+    let sql = if enabled_only {
         "SELECT id, display_name, dns_label, enabled FROM regions WHERE enabled ORDER BY id"
     } else {
         "SELECT id, display_name, dns_label, enabled FROM regions ORDER BY id"
     };
-    sqlx::query_as::<_, RegionRow>(q)
+    sqlx::query_as::<_, RegionRow>(sql)
         .fetch_all(pool)
         .await
         .map_err(db_err)
 }
 
-pub async fn upsert_region(pool: &DbPool, r: &RegionRow) -> Result<()> {
+pub async fn upsert_region(pool: &DbPool, region: &RegionRow) -> Result<()> {
     sqlx::query(
         "INSERT INTO regions (id, display_name, dns_label, enabled) VALUES ($1,$2,$3,$4)
          ON CONFLICT (id) DO UPDATE SET display_name = EXCLUDED.display_name, dns_label = EXCLUDED.dns_label, enabled = EXCLUDED.enabled",
     )
-    .bind(&r.id)
-    .bind(&r.display_name)
-    .bind(&r.dns_label)
-    .bind(r.enabled)
+    .bind(&region.id)
+    .bind(&region.display_name)
+    .bind(&region.dns_label)
+    .bind(region.enabled)
     .execute(pool)
     .await
     .map_err(db_err)?;
@@ -218,7 +218,7 @@ pub struct NodeHeartbeat {
     pub heartbeat_secs: i32,
 }
 
-pub async fn upsert_node(pool: &DbPool, n: &NodeHeartbeat) -> Result<()> {
+pub async fn upsert_node(pool: &DbPool, node: &NodeHeartbeat) -> Result<()> {
     sqlx::query(
         "INSERT INTO nodes (id, region, public_host, quic_port, http_url, cert_sha256, version, rooms, players, load_factor, draining, heartbeat_secs, last_heartbeat)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
@@ -227,18 +227,18 @@ pub async fn upsert_node(pool: &DbPool, n: &NodeHeartbeat) -> Result<()> {
             players = EXCLUDED.players, load_factor = EXCLUDED.load_factor, draining = EXCLUDED.draining,
             heartbeat_secs = EXCLUDED.heartbeat_secs, last_heartbeat = now()",
     )
-    .bind(n.id)
-    .bind(&n.region)
-    .bind(&n.public_host)
-    .bind(n.quic_port)
-    .bind(&n.http_url)
-    .bind(&n.cert_sha256)
-    .bind(&n.version)
-    .bind(n.rooms)
-    .bind(n.players)
-    .bind(n.load_factor)
-    .bind(n.draining)
-    .bind(n.heartbeat_secs)
+    .bind(node.id)
+    .bind(&node.region)
+    .bind(&node.public_host)
+    .bind(node.quic_port)
+    .bind(&node.http_url)
+    .bind(&node.cert_sha256)
+    .bind(&node.version)
+    .bind(node.rooms)
+    .bind(node.players)
+    .bind(node.load_factor)
+    .bind(node.draining)
+    .bind(node.heartbeat_secs)
     .execute(pool)
     .await
     .map_err(db_err)?;
@@ -271,13 +271,13 @@ pub async fn list_stale_nodes(pool: &DbPool) -> Result<Vec<Uuid>> {
 }
 
 pub async fn set_node_draining(pool: &DbPool, id: Uuid, draining: bool) -> Result<bool> {
-    let r = sqlx::query("UPDATE nodes SET draining = $2 WHERE id = $1")
+    let done = sqlx::query("UPDATE nodes SET draining = $2 WHERE id = $1")
         .bind(id)
         .bind(draining)
         .execute(pool)
         .await
         .map_err(db_err)?;
-    Ok(r.rows_affected() > 0)
+    Ok(done.rows_affected() > 0)
 }
 
 pub async fn get_node(pool: &DbPool, id: Uuid) -> Result<Option<NodeRow>> {
@@ -323,23 +323,23 @@ pub struct NewRoom {
     pub lobby_props: Vec<String>,
 }
 
-pub async fn insert_room(pool: &DbPool, r: &NewRoom) -> Result<RoomRow> {
+pub async fn insert_room(pool: &DbPool, room: &NewRoom) -> Result<RoomRow> {
     sqlx::query_as::<_, RoomRow>(
         "INSERT INTO rooms (id, project_id, node_id, region, name, mode, max_players, visible, open, schema_hash, props, lobby_props)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *",
     )
-    .bind(r.id)
-    .bind(r.project_id)
-    .bind(r.node_id)
-    .bind(&r.region)
-    .bind(&r.name)
-    .bind(&r.mode)
-    .bind(r.max_players)
-    .bind(r.visible)
-    .bind(r.open)
-    .bind(&r.schema_hash)
-    .bind(&r.props)
-    .bind(&r.lobby_props)
+    .bind(room.id)
+    .bind(room.project_id)
+    .bind(room.node_id)
+    .bind(&room.region)
+    .bind(&room.name)
+    .bind(&room.mode)
+    .bind(room.max_players)
+    .bind(room.visible)
+    .bind(room.open)
+    .bind(&room.schema_hash)
+    .bind(&room.props)
+    .bind(&room.lobby_props)
     .fetch_one(pool)
     .await
     .map_err(db_err)
@@ -415,30 +415,30 @@ pub async fn close_room(pool: &DbPool, id: Uuid) -> Result<()> {
 
 /// Rooms left open by a node that disappeared.
 pub async fn close_rooms_of_node(pool: &DbPool, node_id: Uuid) -> Result<u64> {
-    let r = sqlx::query("UPDATE rooms SET state = 'closed', closed_at = now() WHERE node_id = $1 AND state = 'open'")
+    let done = sqlx::query("UPDATE rooms SET state = 'closed', closed_at = now() WHERE node_id = $1 AND state = 'open'")
         .bind(node_id)
         .execute(pool)
         .await
         .map_err(db_err)?;
-    Ok(r.rows_affected())
+    Ok(done.rows_affected())
 }
 
 /// Rooms of a dead node become `orphaned`: the next node a player of that room reaches
 /// adopts them (see `adopt_room`) and re-hosts from the Redis checkpoint.
 pub async fn orphan_rooms_of_node(pool: &DbPool, node_id: Uuid) -> Result<u64> {
-    let r = sqlx::query(
+    let done = sqlx::query(
         "UPDATE rooms SET state = 'orphaned', node_id = NULL, closed_at = now() WHERE node_id = $1 AND state = 'open'",
     )
     .bind(node_id)
     .execute(pool)
     .await
     .map_err(db_err)?;
-    Ok(r.rows_affected())
+    Ok(done.rows_affected())
 }
 
 /// Atomically takes over an orphaned room; false when another node won the race.
 pub async fn adopt_room(pool: &DbPool, room_id: Uuid, node_id: Uuid, region: &str) -> Result<bool> {
-    let r = sqlx::query(
+    let done = sqlx::query(
         "UPDATE rooms SET state = 'open', node_id = $2, region = $3, closed_at = NULL WHERE id = $1 AND state = 'orphaned'",
     )
     .bind(room_id)
@@ -447,13 +447,13 @@ pub async fn adopt_room(pool: &DbPool, room_id: Uuid, node_id: Uuid, region: &st
     .execute(pool)
     .await
     .map_err(db_err)?;
-    Ok(r.rows_affected() == 1)
+    Ok(done.rows_affected() == 1)
 }
 
 /// A node that was reaped while it was only stalled takes back the rooms it still hosts and
 /// nobody adopted in the meantime.
 pub async fn reclaim_rooms(pool: &DbPool, node_id: Uuid, rooms: &[Uuid]) -> Result<u64> {
-    let r = sqlx::query(
+    let done = sqlx::query(
         "UPDATE rooms SET state = 'open', node_id = $1, closed_at = NULL WHERE id = ANY($2) AND state = 'orphaned'",
     )
     .bind(node_id)
@@ -461,7 +461,7 @@ pub async fn reclaim_rooms(pool: &DbPool, node_id: Uuid, rooms: &[Uuid]) -> Resu
     .execute(pool)
     .await
     .map_err(db_err)?;
-    Ok(r.rows_affected())
+    Ok(done.rows_affected())
 }
 
 /// Of `rooms`, the ones whose row no longer belongs to `node_id`: adopted by another node or
@@ -480,14 +480,14 @@ pub async fn rooms_lost(pool: &DbPool, node_id: Uuid, rooms: &[Uuid]) -> Result<
 /// Orphaned rooms nobody adopted within `max_age_secs` (closed_at = when they were
 /// orphaned) are closed for good.
 pub async fn close_stale_orphans(pool: &DbPool, max_age_secs: i64) -> Result<u64> {
-    let r = sqlx::query(
+    let done = sqlx::query(
         "UPDATE rooms SET state = 'closed', closed_at = now() WHERE state = 'orphaned' AND closed_at < now() - ($1 * interval '1 second')",
     )
     .bind(max_age_secs)
     .execute(pool)
     .await
     .map_err(db_err)?;
-    Ok(r.rows_affected())
+    Ok(done.rows_affected())
 }
 
 pub async fn count_open_rooms(pool: &DbPool, project_id: Uuid) -> Result<i64> {
@@ -587,13 +587,13 @@ pub async fn list_webhooks(pool: &DbPool, project_id: Uuid) -> Result<Vec<Webhoo
 }
 
 pub async fn delete_webhook(pool: &DbPool, project_id: Uuid, id: Uuid) -> Result<bool> {
-    let r = sqlx::query("DELETE FROM webhooks WHERE id = $1 AND project_id = $2")
+    let done = sqlx::query("DELETE FROM webhooks WHERE id = $1 AND project_id = $2")
         .bind(id)
         .bind(project_id)
         .execute(pool)
         .await
         .map_err(db_err)?;
-    Ok(r.rows_affected() == 1)
+    Ok(done.rows_affected() == 1)
 }
 
 // ---------- game modules (WASM logic) ----------
@@ -647,13 +647,13 @@ pub async fn list_game_modules(pool: &DbPool, project_id: Uuid) -> Result<Vec<Ga
 }
 
 pub async fn delete_game_module(pool: &DbPool, project_id: Uuid, name: &str) -> Result<bool> {
-    let r = sqlx::query("DELETE FROM game_modules WHERE project_id = $1 AND name = $2")
+    let done = sqlx::query("DELETE FROM game_modules WHERE project_id = $1 AND name = $2")
         .bind(project_id)
         .bind(name)
         .execute(pool)
         .await
         .map_err(db_err)?;
-    Ok(r.rows_affected() == 1)
+    Ok(done.rows_affected() == 1)
 }
 
 // ---------- usage / audit ----------
@@ -819,20 +819,20 @@ pub struct NewDelivery<'a> {
     pub error: Option<&'a str>,
 }
 
-pub async fn insert_webhook_delivery(pool: &DbPool, d: &NewDelivery<'_>) -> Result<()> {
+pub async fn insert_webhook_delivery(pool: &DbPool, delivery: &NewDelivery<'_>) -> Result<()> {
     sqlx::query(
         "INSERT INTO webhook_deliveries (id, webhook_id, project_id, event, ok, status, attempts, latency_ms, error) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(Uuid::now_v7())
-    .bind(d.webhook_id)
-    .bind(d.project_id)
-    .bind(d.event)
-    .bind(d.ok)
-    .bind(d.status)
-    .bind(d.attempts)
-    .bind(d.latency_ms)
-    .bind(d.error)
+    .bind(delivery.webhook_id)
+    .bind(delivery.project_id)
+    .bind(delivery.event)
+    .bind(delivery.ok)
+    .bind(delivery.status)
+    .bind(delivery.attempts)
+    .bind(delivery.latency_ms)
+    .bind(delivery.error)
     .execute(pool)
     .await
     .map_err(db_err)?;
@@ -930,12 +930,12 @@ pub async fn get_operator_webhook(pool: &DbPool, id: Uuid) -> Result<Option<Oper
 }
 
 pub async fn delete_operator_webhook(pool: &DbPool, id: Uuid) -> Result<bool> {
-    let r = sqlx::query("DELETE FROM operator_webhooks WHERE id = $1")
+    let done = sqlx::query("DELETE FROM operator_webhooks WHERE id = $1")
         .bind(id)
         .execute(pool)
         .await
         .map_err(db_err)?;
-    Ok(r.rows_affected() > 0)
+    Ok(done.rows_affected() > 0)
 }
 
 pub struct NewOperatorDelivery<'a> {
@@ -950,20 +950,20 @@ pub struct NewOperatorDelivery<'a> {
 
 pub async fn insert_operator_webhook_delivery(
     pool: &DbPool,
-    d: &NewOperatorDelivery<'_>,
+    delivery: &NewOperatorDelivery<'_>,
 ) -> Result<()> {
     sqlx::query(
         "INSERT INTO operator_webhook_deliveries (id, webhook_id, event, ok, status, attempts, latency_ms, error) \
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
     )
     .bind(Uuid::now_v7())
-    .bind(d.webhook_id)
-    .bind(d.event)
-    .bind(d.ok)
-    .bind(d.status)
-    .bind(d.attempts)
-    .bind(d.latency_ms)
-    .bind(d.error)
+    .bind(delivery.webhook_id)
+    .bind(delivery.event)
+    .bind(delivery.ok)
+    .bind(delivery.status)
+    .bind(delivery.attempts)
+    .bind(delivery.latency_ms)
+    .bind(delivery.error)
     .execute(pool)
     .await
     .map_err(db_err)?;
@@ -989,28 +989,28 @@ pub async fn purge_operator_webhook_deliveries(pool: &DbPool, days: u32) -> Resu
     if days == 0 {
         return Ok(0);
     }
-    let r = sqlx::query(
+    let done = sqlx::query(
         "DELETE FROM operator_webhook_deliveries WHERE created_at < now() - make_interval(days => $1)",
     )
     .bind(days as i32)
     .execute(pool)
     .await
     .map_err(db_err)?;
-    Ok(r.rows_affected())
+    Ok(done.rows_affected())
 }
 
 pub async fn purge_webhook_deliveries(pool: &DbPool, days: u32) -> Result<u64> {
     if days == 0 {
         return Ok(0);
     }
-    let r = sqlx::query(
+    let done = sqlx::query(
         "DELETE FROM webhook_deliveries WHERE created_at < now() - make_interval(days => $1)",
     )
     .bind(days as i32)
     .execute(pool)
     .await
     .map_err(db_err)?;
-    Ok(r.rows_affected())
+    Ok(done.rows_affected())
 }
 
 pub async fn upsert_ban(
@@ -1037,13 +1037,13 @@ pub async fn upsert_ban(
 }
 
 pub async fn delete_ban(pool: &DbPool, project_id: Uuid, player_id: &str) -> Result<bool> {
-    let r = sqlx::query("DELETE FROM bans WHERE project_id = $1 AND player_id = $2")
+    let done = sqlx::query("DELETE FROM bans WHERE project_id = $1 AND player_id = $2")
         .bind(project_id)
         .bind(player_id)
         .execute(pool)
         .await
         .map_err(db_err)?;
-    Ok(r.rows_affected() > 0)
+    Ok(done.rows_affected() > 0)
 }
 
 pub async fn touch_player_seen(
@@ -1246,49 +1246,49 @@ pub async fn get_ban(pool: &DbPool, project_id: Uuid, player_id: &str) -> Result
 }
 
 pub async fn purge_expired_bans(pool: &DbPool) -> Result<u64> {
-    let r = sqlx::query("DELETE FROM bans WHERE expires_at IS NOT NULL AND expires_at < now()")
+    let done = sqlx::query("DELETE FROM bans WHERE expires_at IS NOT NULL AND expires_at < now()")
         .execute(pool)
         .await
         .map_err(db_err)?;
-    Ok(r.rows_affected())
+    Ok(done.rows_affected())
 }
 
 pub async fn purge_closed_rooms(pool: &DbPool, days: u32) -> Result<u64> {
     if days == 0 {
         return Ok(0);
     }
-    let r = sqlx::query(
+    let done = sqlx::query(
         "DELETE FROM rooms WHERE state = 'closed' AND closed_at < now() - ($1 * interval '1 day')",
     )
     .bind(days as f64)
     .execute(pool)
     .await
     .map_err(db_err)?;
-    Ok(r.rows_affected())
+    Ok(done.rows_affected())
 }
 
 pub async fn purge_audit(pool: &DbPool, days: u32) -> Result<u64> {
     if days == 0 {
         return Ok(0);
     }
-    let r = sqlx::query("DELETE FROM audit WHERE created_at < now() - ($1 * interval '1 day')")
+    let done = sqlx::query("DELETE FROM audit WHERE created_at < now() - ($1 * interval '1 day')")
         .bind(days as f64)
         .execute(pool)
         .await
         .map_err(db_err)?;
-    Ok(r.rows_affected())
+    Ok(done.rows_affected())
 }
 
 pub async fn purge_usage(pool: &DbPool, days: u32) -> Result<u64> {
     if days == 0 {
         return Ok(0);
     }
-    let r = sqlx::query("DELETE FROM usage_hours WHERE hour < now() - ($1 * interval '1 day')")
+    let done = sqlx::query("DELETE FROM usage_hours WHERE hour < now() - ($1 * interval '1 day')")
         .bind(days as f64)
         .execute(pool)
         .await
         .map_err(db_err)?;
-    Ok(r.rows_affected())
+    Ok(done.rows_affected())
 }
 
 /// Audit rows whose target is exactly `target` (e.g. a player id), newest first.

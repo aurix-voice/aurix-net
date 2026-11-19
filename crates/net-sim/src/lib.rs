@@ -18,10 +18,10 @@ impl EntityId {
     pub fn to_u64(self) -> u64 {
         ((self.generation as u64) << 32) | self.index as u64
     }
-    pub fn from_u64(v: u64) -> Self {
+    pub fn from_u64(raw: u64) -> Self {
         Self {
-            index: v as u32,
-            generation: (v >> 32) as u16,
+            index: raw as u32,
+            generation: (raw >> 32) as u16,
         }
     }
 }
@@ -153,7 +153,7 @@ impl Frame {
             .get_mut(id.index as usize)
             .ok_or(SimError::NoEntity)?;
         match slot {
-            Some(e) if e.id == id => {
+            Some(entity) if entity.id == id => {
                 *slot = None;
                 self.generations[id.index as usize] =
                     self.generations[id.index as usize].wrapping_add(1);
@@ -169,16 +169,16 @@ impl Frame {
     /// Ids beyond `cfg.max_entities` are rejected instead of growing the slot table (a crafted
     /// id must not make a peer allocate gigabytes).
     pub fn ensure_entity(&mut self, id: EntityId, owner: Option<ActorId>) -> Result<(), SimError> {
-        let i = id.index as usize;
+        let index = id.index as usize;
         if id.index >= self.cfg.max_entities {
             return Err(SimError::Full(self.cfg.max_entities));
         }
-        if i >= self.slots.len() {
-            self.slots.resize(i + 1, None);
-            self.generations.resize(i + 1, 0);
+        if index >= self.slots.len() {
+            self.slots.resize(index + 1, None);
+            self.generations.resize(index + 1, 0);
         }
-        match &mut self.slots[i] {
-            Some(e) if e.id == id => e.owner = owner,
+        match &mut self.slots[index] {
+            Some(entity) if entity.id == id => entity.owner = owner,
             slot => {
                 *slot = Some(Entity {
                     id,
@@ -186,7 +186,7 @@ impl Frame {
                     components: BTreeMap::new(),
                     spawned_at: self.tick,
                 });
-                self.generations[i] = id.generation;
+                self.generations[index] = id.generation;
                 self.free.retain(|f| *f != id.index);
             }
         }
@@ -222,23 +222,23 @@ impl Frame {
         component: &str,
         value: ComponentValue,
     ) -> Result<(), SimError> {
-        let c = self
+        let schema = self
             .schema
             .component(component)
             .ok_or(SimError::NoComponent(u16::MAX))?
             .clone();
-        let mut w = BitWriter::new();
+        let mut writer = BitWriter::new();
         value
-            .encode_full(&c, &mut w)
+            .encode_full(&schema, &mut writer)
             .map_err(|e| SimError::Codec(e.to_string()))?;
-        let e = self.entity_mut(id).ok_or(SimError::NoEntity)?;
-        e.components.insert(c.id, value);
+        let entity = self.entity_mut(id).ok_or(SimError::NoEntity)?;
+        entity.components.insert(schema.id, value);
         Ok(())
     }
 
     pub fn get(&self, id: EntityId, component: &str) -> Option<&ComponentValue> {
-        let c = self.schema.component(component)?;
-        self.entity(id)?.components.get(&c.id)
+        let schema = self.schema.component(component)?;
+        self.entity(id)?.components.get(&schema.id)
     }
 
     pub fn get_mut(&mut self, id: EntityId, component: &str) -> Option<&mut ComponentValue> {
@@ -267,11 +267,11 @@ impl Frame {
         if input.tick.0 < self.tick.0 {
             return false;
         }
-        let q = self.inputs.entry(input.actor).or_default();
-        q.insert(input.tick.0, input.data);
-        while q.len() > self.cfg.input_window as usize {
-            let first = *q.keys().next().unwrap();
-            q.remove(&first);
+        let queue = self.inputs.entry(input.actor).or_default();
+        queue.insert(input.tick.0, input.data);
+        while queue.len() > self.cfg.input_window as usize {
+            let first = *queue.keys().next().unwrap();
+            queue.remove(&first);
         }
         true
     }
@@ -284,9 +284,9 @@ impl Frame {
             .get_mut(&actor)
             .and_then(|q| q.remove(&self.tick.0));
         match fresh {
-            Some(d) => {
-                self.last_input.insert(actor, d.clone());
-                (d, true)
+            Some(data) => {
+                self.last_input.insert(actor, data.clone());
+                (data, true)
             }
             None => (
                 self.last_input.get(&actor).cloned().unwrap_or_default(),
@@ -336,9 +336,9 @@ impl Frame {
     pub fn advance<F: FnOnce(&mut Frame)>(&mut self, step: F) {
         step(self);
         self.tick = Tick(self.tick.0.wrapping_add(1));
-        let t = self.tick.0;
-        for q in self.inputs.values_mut() {
-            q.retain(|k, _| *k >= t);
+        let tick = self.tick.0;
+        for queue in self.inputs.values_mut() {
+            queue.retain(|k, _| *k >= tick);
         }
     }
 
@@ -347,44 +347,44 @@ impl Frame {
     /// Full state: tick, rng, every live entity with all components. Schema-encoded so it is
     /// compact and stable across builds.
     pub fn snapshot(&self) -> Vec<u8> {
-        let mut w = BitWriter::new();
-        w.write_bits(self.tick.0 as u64, 32);
-        w.write_bits(self.rng, 64);
-        w.write_bits(self.slots.len() as u64, 32);
-        w.write_bits(self.entity_count() as u64, 32);
+        let mut writer = BitWriter::new();
+        writer.write_bits(self.tick.0 as u64, 32);
+        writer.write_bits(self.rng, 64);
+        writer.write_bits(self.slots.len() as u64, 32);
+        writer.write_bits(self.entity_count() as u64, 32);
         let cid_bits = self.schema.component_id_bits();
-        for e in self.entities() {
-            w.write_bits(e.id.index as u64, 32);
-            w.write_bits(e.id.generation as u64, 16);
-            w.write_bits(e.spawned_at.0 as u64, 32);
-            match e.owner {
-                Some(a) => {
-                    w.write_bool(true);
-                    w.write_bits(a.0 as u64, 16);
+        for entity in self.entities() {
+            writer.write_bits(entity.id.index as u64, 32);
+            writer.write_bits(entity.id.generation as u64, 16);
+            writer.write_bits(entity.spawned_at.0 as u64, 32);
+            match entity.owner {
+                Some(owner) => {
+                    writer.write_bool(true);
+                    writer.write_bits(owner.0 as u64, 16);
                 }
-                None => w.write_bool(false),
+                None => writer.write_bool(false),
             }
-            w.write_bits(e.components.len() as u64, 16);
-            for (cid, v) in &e.components {
-                w.write_bits(*cid as u64, cid_bits);
-                if let Some(c) = self.schema.by_id(*cid) {
-                    let _ = v.encode_full(c, &mut w);
+            writer.write_bits(entity.components.len() as u64, 16);
+            for (cid, v) in &entity.components {
+                writer.write_bits(*cid as u64, cid_bits);
+                if let Some(component) = self.schema.by_id(*cid) {
+                    let _ = v.encode_full(component, &mut writer);
                 }
             }
         }
-        for g in &self.generations {
-            w.write_bits(*g as u64, 16);
+        for generation in &self.generations {
+            writer.write_bits(*generation as u64, 16);
         }
-        w.finish()
+        writer.finish()
     }
 
     pub fn restore(&mut self, buf: &[u8]) -> Result<(), SimError> {
         let err = |e: net_wire::bits::Eof| SimError::Codec(e.to_string());
-        let mut r = BitReader::new(buf);
-        let tick = Tick(r.read_bits(32).map_err(err)? as u32);
-        let rng = r.read_bits(64).map_err(err)?;
-        let nslots = r.read_bits(32).map_err(err)? as usize;
-        let nents = r.read_bits(32).map_err(err)? as usize;
+        let mut reader = BitReader::new(buf);
+        let tick = Tick(reader.read_bits(32).map_err(err)? as u32);
+        let rng = reader.read_bits(64).map_err(err)?;
+        let nslots = reader.read_bits(32).map_err(err)? as usize;
+        let nents = reader.read_bits(32).map_err(err)? as usize;
         if nslots > self.cfg.max_entities as usize || nents > nslots {
             return Err(SimError::Codec(format!(
                 "snapshot claims {nslots} slots / {nents} entities (limit {})",
@@ -394,22 +394,22 @@ impl Frame {
         let cid_bits = self.schema.component_id_bits();
         let mut slots: Vec<Option<Entity>> = vec![None; nslots];
         for _ in 0..nents {
-            let index = r.read_bits(32).map_err(err)? as u32;
-            let generation = r.read_bits(16).map_err(err)? as u16;
-            let spawned_at = Tick(r.read_bits(32).map_err(err)? as u32);
-            let owner = if r.read_bool().map_err(err)? {
-                Some(ActorId(r.read_bits(16).map_err(err)? as u16))
+            let index = reader.read_bits(32).map_err(err)? as u32;
+            let generation = reader.read_bits(16).map_err(err)? as u16;
+            let spawned_at = Tick(reader.read_bits(32).map_err(err)? as u32);
+            let owner = if reader.read_bool().map_err(err)? {
+                Some(ActorId(reader.read_bits(16).map_err(err)? as u16))
             } else {
                 None
             };
-            let n = r.read_bits(16).map_err(err)? as usize;
+            let count = reader.read_bits(16).map_err(err)? as usize;
             let mut components = BTreeMap::new();
-            for _ in 0..n {
-                let cid = r.read_bits(cid_bits).map_err(err)? as u16;
-                let c = self.schema.by_id(cid).ok_or(SimError::NoComponent(cid))?;
-                let v = ComponentValue::decode_full(c, &mut r)
+            for _ in 0..count {
+                let cid = reader.read_bits(cid_bits).map_err(err)? as u16;
+                let component = self.schema.by_id(cid).ok_or(SimError::NoComponent(cid))?;
+                let value = ComponentValue::decode_full(component, &mut reader)
                     .map_err(|e| SimError::Codec(e.to_string()))?;
-                components.insert(cid, v);
+                components.insert(cid, value);
             }
             if index as usize >= nslots {
                 return Err(SimError::Codec("entity index out of range".into()));
@@ -423,7 +423,7 @@ impl Frame {
         }
         let mut generations = Vec::with_capacity(nslots);
         for _ in 0..nslots {
-            generations.push(r.read_bits(16).map_err(err)? as u16);
+            generations.push(reader.read_bits(16).map_err(err)? as u16);
         }
         self.free = (0..nslots as u32)
             .filter(|i| slots[*i as usize].is_none())
@@ -445,8 +445,8 @@ impl Frame {
 }
 
 /// Convenience for games that keep a position vec3 in a component field.
-pub fn vec3_of(v: &ComponentValue, field: usize) -> Option<[f32; 3]> {
-    match v.fields.get(field) {
+pub fn vec3_of(value: &ComponentValue, field: usize) -> Option<[f32; 3]> {
+    match value.fields.get(field) {
         Some(Value::Vec3(p)) => Some(*p),
         _ => None,
     }
@@ -457,20 +457,20 @@ mod tests {
     #[test]
     fn crafted_ids_and_snapshots_do_not_allocate() {
         let schema = net_wire::schema::Schema::parse("component T {\n  hp: u8\n}\n").unwrap();
-        let mut f = super::Frame::new(schema, super::FrameConfig::default(), 1);
+        let mut frame = super::Frame::new(schema, super::FrameConfig::default(), 1);
         let huge = super::EntityId {
             index: u32::MAX - 1,
             generation: 0,
         };
-        assert!(f.ensure_entity(huge, None).is_err());
-        assert_eq!(f.entity_count(), 0);
-        let mut w = net_wire::bits::BitWriter::new();
-        w.write_bits(0, 32);
-        w.write_bits(1, 64);
-        w.write_bits(u64::from(u32::MAX), 32);
-        w.write_bits(0, 32);
-        assert!(f.restore(&w.finish()).is_err());
-        assert_eq!(f.entity_count(), 0);
+        assert!(frame.ensure_entity(huge, None).is_err());
+        assert_eq!(frame.entity_count(), 0);
+        let mut writer = net_wire::bits::BitWriter::new();
+        writer.write_bits(0, 32);
+        writer.write_bits(1, 64);
+        writer.write_bits(u64::from(u32::MAX), 32);
+        writer.write_bits(0, 32);
+        assert!(frame.restore(&writer.finish()).is_err());
+        assert_eq!(frame.entity_count(), 0);
     }
 
     use super::*;
@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn spawn_despawn_generations() {
-        let mut f = Frame::new(
+        let mut frame = Frame::new(
             schema(),
             FrameConfig {
                 max_entities: 2,
@@ -498,57 +498,57 @@ mod tests {
             },
             1,
         );
-        let a = f.spawn(Some(ActorId(1))).unwrap();
-        let b = f.spawn(None).unwrap();
-        assert_eq!(f.spawn(None), Err(SimError::Full(2)));
-        f.despawn(a).unwrap();
-        assert_eq!(f.despawn(a), Err(SimError::NoEntity));
-        let c = f.spawn(None).unwrap();
-        assert_eq!(c.index, a.index);
-        assert_ne!(c.generation, a.generation);
-        assert!(f.entity(a).is_none());
-        assert!(f.entity(b).is_some() && f.entity(c).is_some());
-        assert_eq!(EntityId::from_u64(c.to_u64()), c);
+        let owned = frame.spawn(Some(ActorId(1))).unwrap();
+        let free = frame.spawn(None).unwrap();
+        assert_eq!(frame.spawn(None), Err(SimError::Full(2)));
+        frame.despawn(owned).unwrap();
+        assert_eq!(frame.despawn(owned), Err(SimError::NoEntity));
+        let reused = frame.spawn(None).unwrap();
+        assert_eq!(reused.index, owned.index);
+        assert_ne!(reused.generation, owned.generation);
+        assert!(frame.entity(owned).is_none());
+        assert!(frame.entity(free).is_some() && frame.entity(reused).is_some());
+        assert_eq!(EntityId::from_u64(reused.to_u64()), reused);
     }
 
     #[test]
     fn components_validate_against_schema() {
-        let mut f = Frame::new(schema(), FrameConfig::default(), 1);
-        let e = f.spawn(None).unwrap();
-        f.set(e, "Transform", transform(5.0)).unwrap();
+        let mut frame = Frame::new(schema(), FrameConfig::default(), 1);
+        let entity = frame.spawn(None).unwrap();
+        frame.set(entity, "Transform", transform(5.0)).unwrap();
         assert_eq!(
-            vec3_of(f.get(e, "Transform").unwrap(), 0),
+            vec3_of(frame.get(entity, "Transform").unwrap(), 0),
             Some([5.0, 0.0, 0.0])
         );
         assert!(matches!(
-            f.set(e, "Health", transform(1.0)),
+            frame.set(entity, "Health", transform(1.0)),
             Err(SimError::Codec(_))
         ));
         assert!(matches!(
-            f.set(e, "Nope", transform(1.0)),
+            frame.set(entity, "Nope", transform(1.0)),
             Err(SimError::NoComponent(_))
         ));
     }
 
     #[test]
     fn inputs_fresh_then_repeat() {
-        let mut f = Frame::new(schema(), FrameConfig::default(), 1);
-        let a = ActorId(3);
-        assert!(f.push_input(Input {
-            actor: a,
+        let mut frame = Frame::new(schema(), FrameConfig::default(), 1);
+        let actor = ActorId(3);
+        assert!(frame.push_input(Input {
+            actor,
             tick: Tick(0),
             data: vec![1]
         }));
-        assert!(f.push_input(Input {
-            actor: a,
+        assert!(frame.push_input(Input {
+            actor,
             tick: Tick(2),
             data: vec![3]
         }));
         let mut seen = Vec::new();
         for _ in 0..4 {
-            f.advance(|fr| {
-                let (d, fresh) = fr.input_for(a);
-                seen.push((d, fresh));
+            frame.advance(|fr| {
+                let (data, fresh) = fr.input_for(actor);
+                seen.push((data, fresh));
             });
         }
         assert_eq!(
@@ -560,47 +560,48 @@ mod tests {
                 (vec![3], false)
             ]
         );
-        assert!(!f.push_input(Input {
-            actor: a,
+        assert!(!frame.push_input(Input {
+            actor,
             tick: Tick(1),
             data: vec![9]
         }));
-        assert_eq!(f.tick, Tick(4));
+        assert_eq!(frame.tick, Tick(4));
     }
 
     #[test]
     fn snapshot_restore_hash() {
-        let mut f = Frame::new(schema(), FrameConfig::default(), 42);
-        let e1 = f.spawn(Some(ActorId(1))).unwrap();
-        let e2 = f.spawn(None).unwrap();
-        f.despawn(e2).unwrap();
-        let e3 = f.spawn(None).unwrap();
-        f.set(e1, "Transform", transform(1.25)).unwrap();
-        f.set(
-            e3,
-            "Health",
-            ComponentValue {
-                fields: vec![Value::UInt(77)],
-            },
-        )
-        .unwrap();
-        f.advance(|fr| {
+        let mut frame = Frame::new(schema(), FrameConfig::default(), 42);
+        let e1 = frame.spawn(Some(ActorId(1))).unwrap();
+        let e2 = frame.spawn(None).unwrap();
+        frame.despawn(e2).unwrap();
+        let e3 = frame.spawn(None).unwrap();
+        frame.set(e1, "Transform", transform(1.25)).unwrap();
+        frame
+            .set(
+                e3,
+                "Health",
+                ComponentValue {
+                    fields: vec![Value::UInt(77)],
+                },
+            )
+            .unwrap();
+        frame.advance(|fr| {
             fr.rand_u32();
         });
-        f.raise(1, None, vec![]);
-        let snap = f.snapshot();
-        let h = f.hash();
+        frame.raise(1, None, vec![]);
+        let snap = frame.snapshot();
+        let hash = frame.hash();
 
-        let mut g = Frame::new(schema(), FrameConfig::default(), 0);
-        g.restore(&snap).unwrap();
-        assert_eq!(g.tick, Tick(1));
-        assert_eq!(g.hash(), h);
-        assert_eq!(g.entity_count(), 2);
-        assert_eq!(g.entity(e3).unwrap().components.len(), 1);
+        let mut restored = Frame::new(schema(), FrameConfig::default(), 0);
+        restored.restore(&snap).unwrap();
+        assert_eq!(restored.tick, Tick(1));
+        assert_eq!(restored.hash(), hash);
+        assert_eq!(restored.entity_count(), 2);
+        assert_eq!(restored.entity(e3).unwrap().components.len(), 1);
         assert_eq!(e3.index, e2.index); // e3 reused e2's slot
-        assert_eq!(g.spawn(None).unwrap().index, 2); // no free slots after restore
-        assert_eq!(g.rand_u32(), f.rand_u32());
-        g.set(e1, "Transform", transform(2.0)).unwrap();
-        assert_ne!(g.hash(), h);
+        assert_eq!(restored.spawn(None).unwrap().index, 2); // no free slots after restore
+        assert_eq!(restored.rand_u32(), frame.rand_u32());
+        restored.set(e1, "Transform", transform(2.0)).unwrap();
+        assert_ne!(restored.hash(), hash);
     }
 }

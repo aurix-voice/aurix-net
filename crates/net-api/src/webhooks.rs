@@ -43,10 +43,10 @@ pub const OPERATOR_EVENTS: &[&str] = &[
 ];
 
 pub fn validate_operator_events(events: &[String]) -> Result<(), NetError> {
-    for e in events {
-        if !OPERATOR_EVENTS.contains(&e.as_str()) {
+    for event in events {
+        if !OPERATOR_EVENTS.contains(&event.as_str()) {
             return Err(NetError::Invalid(format!(
-                "events: unknown event {e:?}; known: {}",
+                "events: unknown event {event:?}; known: {}",
                 OPERATOR_EVENTS.join(", ")
             )));
         }
@@ -59,10 +59,10 @@ pub fn validate_events(events: &[String]) -> Result<(), NetError> {
     if events.len() > EVENTS.len() {
         return Err(NetError::Invalid("events: too many entries".into()));
     }
-    for e in events {
-        if !EVENTS.contains(&e.as_str()) {
+    for event in events {
+        if !EVENTS.contains(&event.as_str()) {
             return Err(NetError::Invalid(format!(
-                "events: unknown event {e:?}; known: {}",
+                "events: unknown event {event:?}; known: {}",
                 EVENTS.join(", ")
             )));
         }
@@ -171,7 +171,7 @@ impl Dispatcher {
             return JoinVerdict::Allow;
         };
         let hooks = match subscribed(&self.hooks, pool, project, "join.validate").await {
-            Ok(h) => h,
+            Ok(found) => found,
             Err(e) => return JoinVerdict::Unavailable(format!("validator lookup failed: {e}")),
         };
         if hooks.is_empty() {
@@ -184,12 +184,12 @@ impl Dispatcher {
             "data": payload,
         })
         .to_string();
-        for h in hooks {
+        for hook in hooks {
             let started = Instant::now();
-            let (verdict, outcome) = self.ask(&h, &body).await;
+            let (verdict, outcome) = self.ask(&hook, &body).await;
             let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
-            let d = queries::NewDelivery {
-                webhook_id: h.id,
+            let delivery = queries::NewDelivery {
+                webhook_id: hook.id,
                 project_id: project.0,
                 event: "join.validate",
                 ok: outcome.ok,
@@ -198,7 +198,7 @@ impl Dispatcher {
                 latency_ms,
                 error: outcome.error.as_deref(),
             };
-            if let Err(e) = queries::insert_webhook_delivery(pool, &d).await {
+            if let Err(e) = queries::insert_webhook_delivery(pool, &delivery).await {
                 tracing::warn!(error = %e, "webhook delivery log");
             }
             if verdict != JoinVerdict::Allow {
@@ -217,10 +217,10 @@ impl Dispatcher {
             return RpcOutcome::failed(None, "rpc: no database");
         };
         let hooks = match subscribed(&self.hooks, pool, project, "rpc").await {
-            Ok(h) => h,
+            Ok(found) => found,
             Err(e) => return RpcOutcome::failed(None, format!("rpc endpoint lookup failed: {e}")),
         };
-        let Some(h) = hooks.first() else {
+        let Some(hook) = hooks.first() else {
             return RpcOutcome::failed(None, "no webhook subscribed to `rpc`");
         };
         let body = serde_json::json!({
@@ -231,9 +231,9 @@ impl Dispatcher {
         })
         .to_string();
         let started = Instant::now();
-        let out = self.call_rpc(h, &body).await;
-        let d = queries::NewDelivery {
-            webhook_id: h.id,
+        let out = self.call_rpc(hook, &body).await;
+        let delivery = queries::NewDelivery {
+            webhook_id: hook.id,
             project_id: project.0,
             event: "rpc",
             ok: out.ok,
@@ -242,29 +242,33 @@ impl Dispatcher {
             latency_ms: started.elapsed().as_millis().min(i32::MAX as u128) as i32,
             error: out.error.as_deref(),
         };
-        if let Err(e) = queries::insert_webhook_delivery(pool, &d).await {
+        if let Err(e) = queries::insert_webhook_delivery(pool, &delivery).await {
             tracing::warn!(error = %e, "webhook delivery log");
         }
         out
     }
-    async fn call_rpc(&self, h: &Hook, body: &str) -> RpcOutcome {
+    async fn call_rpc(&self, hook: &Hook, body: &str) -> RpcOutcome {
         if !self.allow_private
-            && (validate_webhook_url(&h.url, false).is_err() || !resolves_public(&h.url).await)
+            && (validate_webhook_url(&hook.url, false).is_err()
+                || !resolves_public(&hook.url).await)
         {
             return RpcOutcome::failed(None, "target is not a public host");
         }
         let mut req = self
             .http
-            .post(&h.url)
+            .post(&hook.url)
             .timeout(RPC_TIMEOUT)
             .header("content-type", "application/json")
             .header("x-aurix-event", "rpc")
-            .header("x-aurix-signature", sign(&h.secret, body.as_bytes()));
-        if let Some(p) = &h.previous {
-            req = req.header("x-aurix-signature-previous", sign(p, body.as_bytes()));
+            .header("x-aurix-signature", sign(&hook.secret, body.as_bytes()));
+        if let Some(previous) = &hook.previous {
+            req = req.header(
+                "x-aurix-signature-previous",
+                sign(previous, body.as_bytes()),
+            );
         }
         let mut resp = match req.body(body.to_string()).send().await {
-            Ok(r) => r,
+            Ok(response) => response,
             Err(e) => return RpcOutcome::failed(None, format!("rpc endpoint: {e}")),
         };
         let status = resp.status().as_u16();
@@ -285,7 +289,7 @@ impl Dispatcher {
             serde_json::Value::Null
         } else {
             match serde_json::from_slice(&buf) {
-                Ok(v) => v,
+                Ok(parsed) => parsed,
                 Err(_) => {
                     return RpcOutcome::failed(Some(status), "rpc endpoint answered non-JSON")
                 }
@@ -298,9 +302,10 @@ impl Dispatcher {
             error: None,
         }
     }
-    async fn ask(&self, h: &Hook, body: &str) -> (JoinVerdict, Outcome) {
+    async fn ask(&self, hook: &Hook, body: &str) -> (JoinVerdict, Outcome) {
         if !self.allow_private
-            && (validate_webhook_url(&h.url, false).is_err() || !resolves_public(&h.url).await)
+            && (validate_webhook_url(&hook.url, false).is_err()
+                || !resolves_public(&hook.url).await)
         {
             let msg = "target is not a public host".to_string();
             return (
@@ -315,12 +320,15 @@ impl Dispatcher {
         }
         let mut req = self
             .http
-            .post(&h.url)
+            .post(&hook.url)
             .header("content-type", "application/json")
             .header("x-aurix-event", "join.validate")
-            .header("x-aurix-signature", sign(&h.secret, body.as_bytes()));
-        if let Some(p) = &h.previous {
-            req = req.header("x-aurix-signature-previous", sign(p, body.as_bytes()));
+            .header("x-aurix-signature", sign(&hook.secret, body.as_bytes()));
+        if let Some(previous) = &hook.previous {
+            req = req.header(
+                "x-aurix-signature-previous",
+                sign(previous, body.as_bytes()),
+            );
         }
         match req.body(body.to_string()).send().await {
             Ok(resp) => {
@@ -339,11 +347,11 @@ impl Dispatcher {
                     );
                 }
                 let text = resp.text().await.unwrap_or_default();
-                let v: serde_json::Value = if text.trim().is_empty() {
+                let verdict: serde_json::Value = if text.trim().is_empty() {
                     serde_json::json!({"allow": true})
                 } else {
                     match serde_json::from_str(&text) {
-                        Ok(v) => v,
+                        Ok(parsed) => parsed,
                         Err(_) => {
                             let msg = "validator answered non-JSON".to_string();
                             return (
@@ -358,7 +366,10 @@ impl Dispatcher {
                         }
                     }
                 };
-                let allow = v.get("allow").and_then(|a| a.as_bool()).unwrap_or(true);
+                let allow = verdict
+                    .get("allow")
+                    .and_then(|a| a.as_bool())
+                    .unwrap_or(true);
                 let ok = Outcome {
                     ok: true,
                     status: code,
@@ -368,7 +379,7 @@ impl Dispatcher {
                 if allow {
                     (JoinVerdict::Allow, ok)
                 } else {
-                    let reason = v
+                    let reason = verdict
                         .get("reason")
                         .and_then(|r| r.as_str())
                         .unwrap_or("rejected by validator")
@@ -516,17 +527,17 @@ async fn subscribed(
 /// loopback/private/link-local hosts (literal or well-known names). Outside development
 /// plain `http://` is refused too.
 pub fn validate_webhook_url(url: &str, allow_private: bool) -> net_common::Result<()> {
-    let u = reqwest::Url::parse(url).map_err(|e| NetError::Invalid(format!("url: {e}")))?;
-    match u.scheme() {
+    let parsed = reqwest::Url::parse(url).map_err(|e| NetError::Invalid(format!("url: {e}")))?;
+    match parsed.scheme() {
         "https" => {}
         "http" if allow_private => {}
         "http" => return Err(NetError::Invalid("url must be https".into())),
         _ => return Err(NetError::Invalid("url must be http(s)".into())),
     }
-    if !u.username().is_empty() || u.password().is_some() {
+    if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(NetError::Invalid("url must not carry credentials".into()));
     }
-    let Some(host) = u.host_str() else {
+    let Some(host) = parsed.host_str() else {
         return Err(NetError::Invalid("url has no host".into()));
     };
     if allow_private {
@@ -536,13 +547,13 @@ pub fn validate_webhook_url(url: &str, allow_private: bool) -> net_common::Resul
     let blocked = match literal.parse::<std::net::IpAddr>() {
         Ok(ip) => !is_public_ip(ip),
         Err(_) => {
-            let d = host.trim_end_matches('.').to_ascii_lowercase();
-            d == "localhost"
-                || d.ends_with(".localhost")
-                || d.ends_with(".local")
-                || d.ends_with(".internal")
-                || d.ends_with(".arpa")
-                || !d.contains('.')
+            let domain = host.trim_end_matches('.').to_ascii_lowercase();
+            domain == "localhost"
+                || domain.ends_with(".localhost")
+                || domain.ends_with(".local")
+                || domain.ends_with(".internal")
+                || domain.ends_with(".arpa")
+                || !domain.contains('.')
         }
     };
     if blocked {
@@ -553,21 +564,21 @@ pub fn validate_webhook_url(url: &str, allow_private: bool) -> net_common::Resul
 
 /// Resolves the host right before sending and refuses private answers (DNS rebinding).
 async fn resolves_public(url: &str) -> bool {
-    let Ok(u) = reqwest::Url::parse(url) else {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
         return false;
     };
-    let Some(host) = u
+    let Some(host) = parsed
         .host_str()
         .map(|h| h.trim_start_matches('[').trim_end_matches(']').to_string())
     else {
         return false;
     };
-    let port = u.port_or_known_default().unwrap_or(443);
+    let port = parsed.port_or_known_default().unwrap_or(443);
     let target = format!("{host}:{port}");
     match tokio::net::lookup_host(target).await {
         Ok(addrs) => {
-            let v: Vec<_> = addrs.collect();
-            !v.is_empty() && v.iter().all(|a| is_public_ip(a.ip()))
+            let resolved: Vec<_> = addrs.collect();
+            !resolved.is_empty() && resolved.iter().all(|a| is_public_ip(a.ip()))
         }
         Err(_) => false,
     }
@@ -647,7 +658,7 @@ async fn worker(
                 .await;
                 let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
                 if project.is_nil() {
-                    let d = queries::NewOperatorDelivery {
+                    let delivery = queries::NewOperatorDelivery {
                         webhook_id: id,
                         event,
                         ok: outcome.ok,
@@ -656,12 +667,14 @@ async fn worker(
                         latency_ms,
                         error: outcome.error.as_deref(),
                     };
-                    if let Err(e) = queries::insert_operator_webhook_delivery(&pool, &d).await {
+                    if let Err(e) =
+                        queries::insert_operator_webhook_delivery(&pool, &delivery).await
+                    {
                         tracing::warn!(error = %e, "operator webhook delivery log");
                     }
                     return;
                 }
-                let d = queries::NewDelivery {
+                let delivery = queries::NewDelivery {
                     webhook_id: id,
                     project_id: project,
                     event,
@@ -671,7 +684,7 @@ async fn worker(
                     latency_ms,
                     error: outcome.error.as_deref(),
                 };
-                if let Err(e) = queries::insert_webhook_delivery(&pool, &d).await {
+                if let Err(e) = queries::insert_webhook_delivery(&pool, &delivery).await {
                     tracing::warn!(error = %e, "webhook delivery log");
                 }
             });
@@ -769,8 +782,8 @@ async fn attempt(
         .header("content-type", "application/json")
         .header("x-aurix-event", event)
         .header("x-aurix-signature", sig);
-    if let Some(p) = sig_prev {
-        req = req.header("x-aurix-signature-previous", p);
+    if let Some(previous) = sig_prev {
+        req = req.header("x-aurix-signature-previous", previous);
     }
     match req.body(body.to_string()).send().await {
         Ok(resp) if resp.status().is_success() => Ok(resp.status().as_u16() as i16),
@@ -831,28 +844,28 @@ mod tests {
         body: Vec<u8>,
     ) -> (String, tokio::sync::oneshot::Receiver<String>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/rpc", l.local_addr().unwrap());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/rpc", listener.local_addr().unwrap());
         let (tx, rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
-            let (mut s, _) = l.accept().await.unwrap();
+            let (mut stream, _) = listener.accept().await.unwrap();
             let mut buf = vec![0u8; 64 * 1024];
             let mut got = Vec::new();
             loop {
-                let n = s.read(&mut buf).await.unwrap();
-                got.extend_from_slice(&buf[..n]);
+                let read = stream.read(&mut buf).await.unwrap();
+                got.extend_from_slice(&buf[..read]);
                 let text = String::from_utf8_lossy(&got).to_string();
-                if let Some(h) = text.find("\r\n\r\n") {
-                    let len = text[..h]
+                if let Some(head_end) = text.find("\r\n\r\n") {
+                    let len = text[..head_end]
                         .lines()
                         .find_map(|l| l.strip_prefix("content-length: "))
                         .and_then(|v| v.trim().parse::<usize>().ok())
                         .unwrap_or(0);
-                    if got.len() >= h + 4 + len || n == 0 {
+                    if got.len() >= head_end + 4 + len || read == 0 {
                         break;
                     }
                 }
-                if n == 0 {
+                if read == 0 {
                     break;
                 }
             }
@@ -861,9 +874,9 @@ mod tests {
                 "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                 body.len()
             );
-            let _ = s.write_all(head.as_bytes()).await;
-            let _ = s.write_all(&body).await;
-            let _ = s.shutdown().await;
+            let _ = stream.write_all(head.as_bytes()).await;
+            let _ = stream.write_all(&body).await;
+            let _ = stream.shutdown().await;
         });
         (url, rx)
     }
@@ -880,10 +893,10 @@ mod tests {
 
     #[tokio::test]
     async fn rpc_call_is_signed_and_answer_comes_back() {
-        let d = Dispatcher::noop();
+        let dispatcher = Dispatcher::noop();
         let (url, rx) = one_shot(200, br#"{"echo": 42}"#.to_vec()).await;
         let body = r#"{"event":"rpc","data":{"name":"echo"}}"#;
-        let out = d.call_rpc(&hook(url), body).await;
+        let out = dispatcher.call_rpc(&hook(url), body).await;
         assert_eq!(out.status, Some(200));
         assert!(out.ok, "{out:?}");
         assert_eq!(out.body["echo"], 42);
@@ -899,21 +912,21 @@ mod tests {
 
     #[tokio::test]
     async fn rpc_non_2xx_non_json_and_oversize_are_reported() {
-        let d = Dispatcher::noop();
+        let dispatcher = Dispatcher::noop();
         let (url, _rx) = one_shot(404, br#"{"error":"nope"}"#.to_vec()).await;
-        let out = d.call_rpc(&hook(url), "{}").await;
+        let out = dispatcher.call_rpc(&hook(url), "{}").await;
         assert!(!out.ok && out.status == Some(404) && out.body["error"] == "nope");
         let (url, _rx) = one_shot(200, b"<html>".to_vec()).await;
-        let out = d.call_rpc(&hook(url), "{}").await;
+        let out = dispatcher.call_rpc(&hook(url), "{}").await;
         assert!(!out.ok && out.error.as_deref() == Some("rpc endpoint answered non-JSON"));
         let (url, _rx) = one_shot(200, vec![b' '; RPC_MAX_RESPONSE + 1]).await;
-        let out = d.call_rpc(&hook(url), "{}").await;
+        let out = dispatcher.call_rpc(&hook(url), "{}").await;
         assert!(!out.ok && out.error.as_deref() == Some("rpc answer too large"));
-        let out = d
+        let out = dispatcher
             .call_rpc(&hook("http://127.0.0.1:9/rpc".into()), "{}")
             .await;
         assert!(!out.ok && out.status.is_none());
-        assert!(d
+        assert!(dispatcher
             .rpc(ProjectId(Uuid::nil()), serde_json::json!({}))
             .await
             .error
@@ -928,11 +941,11 @@ mod tests {
 
     #[test]
     fn signature_is_stable() {
-        let s = super::sign("secret", b"{}");
-        assert!(s.starts_with("sha256="));
-        assert_eq!(s.len(), 7 + 64);
-        assert_eq!(s, super::sign("secret", b"{}"));
-        assert_ne!(s, super::sign("other", b"{}"));
+        let signature = super::sign("secret", b"{}");
+        assert!(signature.starts_with("sha256="));
+        assert_eq!(signature.len(), 7 + 64);
+        assert_eq!(signature, super::sign("secret", b"{}"));
+        assert_ne!(signature, super::sign("other", b"{}"));
     }
 }
 

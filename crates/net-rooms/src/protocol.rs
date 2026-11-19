@@ -374,9 +374,9 @@ mod tests {
 
     #[test]
     fn client_json_shapes() {
-        let m: ClientMsg = serde_json::from_str(r#"{"t":"join","name":"lobby"}"#).unwrap();
+        let msg: ClientMsg = serde_json::from_str(r#"{"t":"join","name":"lobby"}"#).unwrap();
         assert_eq!(
-            m,
+            msg,
             ClientMsg::Join {
                 spectator: false,
                 name: "lobby".into(),
@@ -385,11 +385,11 @@ mod tests {
                 schema_hash: None,
             }
         );
-        let m: ClientMsg = serde_json::from_str(
+        let msg: ClientMsg = serde_json::from_str(
             r#"{"t":"event","code":7,"data":"AQI=","target":{"kind":"actors","actors":[1,2]}}"#,
         )
         .unwrap();
-        match m {
+        match msg {
             ClientMsg::Event {
                 target, channel, ..
             } => {

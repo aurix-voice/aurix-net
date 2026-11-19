@@ -12,13 +12,13 @@ const QUIET: Duration = Duration::from_millis(300);
 #[tokio::test]
 async fn banned_player_cannot_join_a_room() {
     let node = Node::start().await;
-    let p = node.project("ban").await;
-    let mut alice = p.player("alice").await;
+    let project = node.project("ban").await;
+    let mut alice = project.player("alice").await;
     joined(&alice.call(json!({"t": "create", "name": "arena"})).await);
 
     // The grant is issued before the ban and stays valid: the join itself must refuse.
-    let mut mallory = p.player("mallory").await;
-    let (status, body) = p
+    let mut mallory = project.player("mallory").await;
+    let (status, body) = project
         .api
         .post(
             "/v1/bans",
@@ -50,14 +50,14 @@ async fn banned_player_cannot_join_a_room() {
 #[tokio::test]
 async fn player_of_a_suspended_project_cannot_join_a_room() {
     let node = Node::start().await;
-    let p = node.project("suspended").await;
-    let mut alice = p.player("alice").await;
+    let project = node.project("suspended").await;
+    let mut alice = project.player("alice").await;
     joined(&alice.call(json!({"t": "create", "name": "arena"})).await);
-    let mut bob = p.player("bob").await;
-    let (status, body) = p
+    let mut bob = project.player("bob").await;
+    let (status, body) = project
         .operator
         .post(
-            &format!("/v1/operator/projects/{}/suspend", p.id),
+            &format!("/v1/operator/projects/{}/suspend", project.id),
             json!({"suspended": true}),
         )
         .await;
@@ -72,19 +72,19 @@ async fn player_of_a_suspended_project_cannot_join_a_room() {
 #[tokio::test]
 async fn rejoin_actor_does_not_lift_the_player_cap() {
     let node = Node::start().await;
-    let p = node.project("cap").await;
-    let (status, body) = p
+    let project = node.project("cap").await;
+    let (status, body) = project
         .operator
         .post(
-            &format!("/v1/operator/projects/{}/limits", p.id),
+            &format!("/v1/operator/projects/{}/limits", project.id),
             json!({"max_concurrent_players": 1}),
         )
         .await;
     assert!(status < 300, "limits: {body}");
-    let mut alice = p.player("alice").await;
+    let mut alice = project.player("alice").await;
     joined(&alice.call(json!({"t": "create", "name": "arena"})).await);
 
-    let mut bob = p.player("bob").await;
+    let mut bob = project.player("bob").await;
     refused(
         &bob.call(json!({"t": "join", "name": "arena"})).await,
         "quota_exceeded",
@@ -99,15 +99,15 @@ async fn rejoin_actor_does_not_lift_the_player_cap() {
 #[tokio::test]
 async fn offline_player_returns_to_the_same_slot_at_the_cap() {
     let node = Node::start().await;
-    let p = node.project("return").await;
-    let mut alice = p.player("alice").await;
+    let project = node.project("return").await;
+    let mut alice = project.player("alice").await;
     joined(&alice.call(json!({"t": "create", "name": "arena"})).await);
-    let mut bob = p.player("bob").await;
+    let mut bob = project.player("bob").await;
     let actor = joined(&bob.call(json!({"t": "join", "name": "arena"})).await);
-    let (status, body) = p
+    let (status, body) = project
         .operator
         .post(
-            &format!("/v1/operator/projects/{}/limits", p.id),
+            &format!("/v1/operator/projects/{}/limits", project.id),
             json!({"max_concurrent_players": 2}),
         )
         .await;
@@ -118,12 +118,12 @@ async fn offline_player_returns_to_the_same_slot_at_the_cap() {
     assert_eq!(left["offline"], true, "{left}");
 
     // The project is full (alice and bob's held slot), a stranger is refused, bob comes back.
-    let mut carol = p.player("carol").await;
+    let mut carol = project.player("carol").await;
     refused(
         &carol.call(json!({"t": "join", "name": "arena"})).await,
         "quota_exceeded",
     );
-    let mut bob = p.player("bob").await;
+    let mut bob = project.player("bob").await;
     let back = bob
         .call(json!({"t": "join", "name": "arena", "rejoin_actor": actor}))
         .await;
@@ -133,18 +133,18 @@ async fn offline_player_returns_to_the_same_slot_at_the_cap() {
 #[tokio::test]
 async fn room_grant_holds_create_and_join_random() {
     let node = Node::start().await;
-    let p = node.project("scope").await;
-    let mut alice = p.player("alice").await;
+    let project = node.project("scope").await;
+    let mut alice = project.player("alice").await;
     joined(
         &alice
             .call(json!({"t": "create", "name": "open-room"}))
             .await,
     );
 
-    let grant = p
+    let grant = project
         .grant_with(json!({"player_id": "bob", "name": "bob", "room": "lobby-7"}))
         .await;
-    let mut bob = common::Ws::open(&p.api.http, &grant).await;
+    let mut bob = common::Ws::open(&project.api.http, &grant).await;
     refused(
         &bob.call(json!({"t": "join", "name": "open-room"})).await,
         "forbidden",
@@ -159,7 +159,7 @@ async fn room_grant_holds_create_and_join_random() {
         random["t"], "error",
         "join_random left the grant's room: {random}"
     );
-    assert_eq!(p.room_names().await, ["open-room"]);
+    assert_eq!(project.room_names().await, ["open-room"]);
 
     joined(&bob.call(json!({"t": "create", "name": "lobby-7"})).await);
 }
@@ -167,10 +167,10 @@ async fn room_grant_holds_create_and_join_random() {
 #[tokio::test]
 async fn kicked_player_can_create_a_room_at_once() {
     let node = Node::start().await;
-    let p = node.project("kick").await;
-    let mut alice = p.player("alice").await;
+    let project = node.project("kick").await;
+    let mut alice = project.player("alice").await;
     joined(&alice.call(json!({"t": "create", "name": "arena"})).await);
-    let mut bob = p.player("bob").await;
+    let mut bob = project.player("bob").await;
     let actor = joined(&bob.call(json!({"t": "join", "name": "arena"})).await);
 
     alice
@@ -185,15 +185,15 @@ async fn kicked_player_can_create_a_room_at_once() {
 #[tokio::test]
 async fn closed_room_frees_its_players_and_stays_closed() {
     let node = Node::start().await;
-    let p = node.project("close").await;
-    let mut alice = p.player("alice").await;
+    let project = node.project("close").await;
+    let mut alice = project.player("alice").await;
     let created = alice.call(json!({"t": "create", "name": "arena"})).await;
     joined(&created);
-    let mut bob = p.player("bob").await;
+    let mut bob = project.player("bob").await;
     joined(&bob.call(json!({"t": "join", "name": "arena"})).await);
 
     let room = created["room"].as_str().expect("room id");
-    let (status, body) = p.api.delete(&format!("/v1/rooms/{room}")).await;
+    let (status, body) = project.api.delete(&format!("/v1/rooms/{room}")).await;
     assert_eq!(status, 204, "close room: {body}");
     assert_eq!(alice.until("left").await["reason"], "room closed");
     assert_eq!(bob.until("left").await["reason"], "room closed");
@@ -203,22 +203,22 @@ async fn closed_room_frees_its_players_and_stays_closed() {
     // A player of the closed room going away must not put the room back into the listing.
     drop(bob);
     tokio::time::sleep(QUIET).await;
-    assert_eq!(p.room_names().await, ["next"]);
+    assert_eq!(project.room_names().await, ["next"]);
 }
 
 #[tokio::test]
 async fn spectator_cannot_become_master() {
     let node = Node::start().await;
-    let p = node.project("master").await;
-    let mut ann = p.player("ann").await;
+    let project = node.project("master").await;
+    let mut ann = project.player("ann").await;
     let created = ann.call(json!({"t": "create", "name": "arena"})).await;
     let master = joined(&created);
-    let mut ben = p.player("ben").await;
+    let mut ben = project.player("ben").await;
     let spectator = joined(
         &ben.call(json!({"t": "join", "name": "arena", "spectator": true}))
             .await,
     );
-    let mut cid = p.player("cid").await;
+    let mut cid = project.player("cid").await;
     let player = joined(&cid.call(json!({"t": "join", "name": "arena"})).await);
     for who in [&mut ann, &mut ben, &mut cid] {
         who.drain(QUIET).await;
@@ -244,16 +244,16 @@ async fn spectator_cannot_become_master() {
 #[tokio::test]
 async fn expired_offline_slot_leaves_the_others_connected() {
     let node = Node::start().await;
-    let p = node.project("expire").await;
-    let mut alice = p.player("alice").await;
+    let project = node.project("expire").await;
+    let mut alice = project.player("alice").await;
     joined(
         &alice
             .call(json!({"t": "create", "name": "arena", "props": {"player_ttl_secs": 1}}))
             .await,
     );
-    let mut bob = p.player("bob").await;
+    let mut bob = project.player("bob").await;
     joined(&bob.call(json!({"t": "join", "name": "arena"})).await);
-    let mut carol = p.player("carol").await;
+    let mut carol = project.player("carol").await;
     let gone = joined(&carol.call(json!({"t": "join", "name": "arena"})).await);
 
     drop(carol);
@@ -281,9 +281,9 @@ async fn expired_offline_slot_leaves_the_others_connected() {
 #[tokio::test]
 async fn player_left_webhook_tells_a_kick_from_a_leave() {
     let node = Node::start().await;
-    let p = node.project("kick-hook").await;
+    let project = node.project("kick-hook").await;
     let mut sink = Sink::start().await;
-    let (status, reply) = p
+    let (status, reply) = project
         .api
         .post(
             "/v1/webhooks",
@@ -291,9 +291,9 @@ async fn player_left_webhook_tells_a_kick_from_a_leave() {
         )
         .await;
     assert_eq!(status, 200, "{reply}");
-    let mut alice = p.player("alice").await;
+    let mut alice = project.player("alice").await;
     let master = joined(&alice.call(json!({"t": "create", "name": "arena"})).await);
-    let mut bob = p.player("bob").await;
+    let mut bob = project.player("bob").await;
     let kicked = joined(&bob.call(json!({"t": "join", "name": "arena"})).await);
     alice.until("player_joined").await;
 
@@ -311,29 +311,29 @@ async fn player_left_webhook_tells_a_kick_from_a_leave() {
 #[tokio::test]
 async fn refused_ban_request_bans_nobody() {
     let node = Node::start().await;
-    let p = node.project("ban-refused").await;
+    let project = node.project("ban-refused").await;
     for (player, scope) in [("eve", "planet"), ("fred", "player_ip")] {
         let ban = json!({"player_id": player, "scope": scope});
-        let (status, reply) = p.api.post("/v1/bans", ban).await;
+        let (status, reply) = project.api.post("/v1/bans", ban).await;
         assert_eq!(status, 400, "{reply}");
     }
-    let (_, listed) = p.api.get("/v1/bans").await;
+    let (_, listed) = project.api.get("/v1/bans").await;
     assert_eq!(listed["bans"], json!([]), "{listed}");
-    p.grant("eve").await;
-    p.grant("fred").await;
+    project.grant("eve").await;
+    project.grant("fred").await;
 }
 
 #[tokio::test]
 async fn address_ban_stops_the_next_player_from_that_address() {
     let node = Node::start().await;
-    let p = node.project("ban-address").await;
-    let mut alice = p.player("alice").await;
+    let project = node.project("ban-address").await;
+    let mut alice = project.player("alice").await;
     joined(&alice.call(json!({"t": "create", "name": "arena"})).await);
     let ban = json!({"player_id": "alice", "scope": "player_ip"});
-    let (status, reply) = p.api.post("/v1/bans", ban).await;
+    let (status, reply) = project.api.post("/v1/bans", ban).await;
     assert_eq!(status, 200, "{reply}");
 
-    let mut zed = p.player("zed").await;
+    let mut zed = project.player("zed").await;
     let reply = zed.call(json!({"t": "create", "name": "other"})).await;
     refused(&reply, "forbidden");
 }

@@ -14,8 +14,8 @@ macro_rules! uuid_id {
             pub fn new() -> Self {
                 Self(Uuid::now_v7())
             }
-            pub fn from_uuid(u: Uuid) -> Self {
-                Self(u)
+            pub fn from_uuid(uuid: Uuid) -> Self {
+                Self(uuid)
             }
             pub fn as_uuid(&self) -> Uuid {
                 self.0
@@ -64,8 +64,8 @@ pub struct Tick(pub u32);
 pub struct RegionId(pub String);
 
 impl RegionId {
-    pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
     }
     pub fn as_str(&self) -> &str {
         &self.0
@@ -146,8 +146,8 @@ pub enum Channel {
 }
 
 impl Channel {
-    pub fn from_u8(v: u8) -> Option<Self> {
-        match v {
+    pub fn from_u8(byte: u8) -> Option<Self> {
+        match byte {
             0 => Some(Self::UnreliableSequenced),
             1 => Some(Self::ReliableOrdered),
             2 => Some(Self::ReliableUnordered),

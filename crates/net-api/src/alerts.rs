@@ -21,7 +21,7 @@ pub async fn run(st: Shared) {
 }
 
 async fn is_leader(st: &Shared) -> anyhow::Result<bool> {
-    let mut c = st.redis.raw();
+    let mut redis = st.redis.raw();
     let node = st.node_id.to_string();
     let got: Option<String> = redis::cmd("SET")
         .arg(LEADER_KEY)
@@ -29,20 +29,20 @@ async fn is_leader(st: &Shared) -> anyhow::Result<bool> {
         .arg("NX")
         .arg("PX")
         .arg(LEADER_TTL_MS)
-        .query_async(&mut c)
+        .query_async(&mut redis)
         .await?;
     if got.is_some() {
         return Ok(true);
     }
     let leader: Option<String> = redis::cmd("GET")
         .arg(LEADER_KEY)
-        .query_async(&mut c)
+        .query_async(&mut redis)
         .await?;
     if leader.as_deref() == Some(node.as_str()) {
         let _: () = redis::cmd("PEXPIRE")
             .arg(LEADER_KEY)
             .arg(LEADER_TTL_MS)
-            .query_async(&mut c)
+            .query_async(&mut redis)
             .await?;
         return Ok(true);
     }
@@ -51,14 +51,14 @@ async fn is_leader(st: &Shared) -> anyhow::Result<bool> {
 
 /// True the first time a subject is seen within `REPEAT_SECS`.
 async fn first_time(st: &Shared, key: &str) -> anyhow::Result<bool> {
-    let mut c = st.redis.raw();
+    let mut redis = st.redis.raw();
     let got: Option<String> = redis::cmd("SET")
         .arg(format!("aurix:alert:{key}"))
         .arg("1")
         .arg("NX")
         .arg("EX")
         .arg(REPEAT_SECS)
-        .query_async(&mut c)
+        .query_async(&mut redis)
         .await?;
     Ok(got.is_some())
 }
@@ -72,32 +72,40 @@ async fn cycle(st: &Shared) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let mut items: Vec<(&'static str, String, serde_json::Value)> = Vec::new();
     let arr = |k: &str| att[k].as_array().cloned().unwrap_or_default();
-    for n in arr("stale_nodes") {
-        items.push(("node.stale", n["id"].to_string(), n));
+    for node in arr("stale_nodes") {
+        items.push(("node.stale", node["id"].to_string(), node));
     }
-    for n in arr("draining_nodes") {
-        items.push(("node.draining", n["id"].to_string(), n));
+    for node in arr("draining_nodes") {
+        items.push(("node.draining", node["id"].to_string(), node));
     }
-    for p in arr("suspended_projects") {
-        items.push(("project.suspended", p["id"].to_string(), p));
+    for project in arr("suspended_projects") {
+        items.push(("project.suspended", project["id"].to_string(), project));
     }
-    for w in arr("failing_webhooks") {
-        items.push(("webhook.failing", w["webhook_id"].to_string(), w));
+    for webhook in arr("failing_webhooks") {
+        items.push((
+            "webhook.failing",
+            webhook["webhook_id"].to_string(),
+            webhook,
+        ));
     }
-    for u in arr("usage_caps") {
-        let hard = u["used"].as_f64().unwrap_or(0.0) >= u["cap"].as_f64().unwrap_or(f64::MAX);
+    for cap in arr("usage_caps") {
+        let hard = cap["used"].as_f64().unwrap_or(0.0) >= cap["cap"].as_f64().unwrap_or(f64::MAX);
         let key = format!(
             "{}:{}:{}",
-            u["project_id"],
-            u["metric"],
+            cap["project_id"],
+            cap["metric"],
             if hard { "hard" } else { "soft" }
         );
-        let mut u = u;
-        u["hard"] = serde_json::Value::Bool(hard);
-        items.push(("project.usage_cap", key, u));
+        let mut cap = cap;
+        cap["hard"] = serde_json::Value::Bool(hard);
+        items.push(("project.usage_cap", key, cap));
     }
-    for r in arr("rejections") {
-        items.push(("project.rejections", r["project_id"].to_string(), r));
+    for rejection in arr("rejections") {
+        items.push((
+            "project.rejections",
+            rejection["project_id"].to_string(),
+            rejection,
+        ));
     }
     for (event, subject, payload) in items {
         if first_time(st, &format!("{event}:{subject}")).await? {

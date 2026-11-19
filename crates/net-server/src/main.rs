@@ -39,19 +39,20 @@ fn healthcheck(cfg: &NetConfig) -> bool {
         addr.set_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
     }
     let timeout = std::time::Duration::from_secs(2);
-    let Ok(mut s) = std::net::TcpStream::connect_timeout(&addr, timeout) else {
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, timeout) else {
         return false;
     };
-    let _ = s.set_read_timeout(Some(timeout));
-    let _ = s.set_write_timeout(Some(timeout));
-    if s.write_all(b"GET /healthz HTTP/1.0\r\nHost: localhost\r\n\r\n")
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    if stream
+        .write_all(b"GET /healthz HTTP/1.0\r\nHost: localhost\r\n\r\n")
         .is_err()
     {
         return false;
     }
     let mut buf = [0u8; 64];
-    let n = s.read(&mut buf).unwrap_or(0);
-    buf[..n].starts_with(b"HTTP/1.1 200") || buf[..n].starts_with(b"HTTP/1.0 200")
+    let len = stream.read(&mut buf).unwrap_or(0);
+    buf[..len].starts_with(b"HTTP/1.1 200") || buf[..len].starts_with(b"HTTP/1.0 200")
 }
 
 #[tokio::main]
@@ -74,11 +75,11 @@ async fn main() -> anyhow::Result<()> {
         tracing_subscriber::fmt().with_env_filter(filter).init();
     }
     let _ = rustls::crypto::ring::default_provider().install_default();
-    for w in &startup_warnings {
-        warn!("production check: {w}");
+    for warning in &startup_warnings {
+        warn!("production check: {warning}");
     }
-    for k in NetConfig::unknown_env_keys() {
-        warn!(var = %k, "unknown NET__ section in environment, ignored (sections: server, transport, database, redis, auth, limits, retention)");
+    for key in NetConfig::unknown_env_keys() {
+        warn!(var = %key, "unknown NET__ section in environment, ignored (sections: server, transport, database, redis, auth, limits, retention)");
     }
     info!(version = env!("CARGO_PKG_VERSION"), region = %cfg.server.region, "starting aurix-net node");
 
@@ -208,17 +209,17 @@ async fn main() -> anyhow::Result<()> {
                     .await
                 {
                     Ok(found) => {
-                        for m in found {
-                            tracing::debug!(room = %m.room, players = m.players.len(), "match started");
+                        for started in found {
+                            tracing::debug!(room = %started.room, players = started.players.len(), "match started");
                             st.webhooks.emit(
-                                m.project,
+                                started.project,
                                 "match.found",
                                 serde_json::json!({
-                                    "room": m.room,
-                                    "mode": m.mode.as_str(),
-                                    "players": m.players,
-                                    "tickets": m.tickets,
-                                    "bots": m.bots,
+                                    "room": started.room,
+                                    "mode": started.mode.as_str(),
+                                    "players": started.players,
+                                    "tickets": started.tickets,
+                                    "bots": started.bots,
                                 }),
                             );
                         }
@@ -282,8 +283,8 @@ async fn main() -> anyhow::Result<()> {
             if let Err(e) = heartbeat(&st, &http_url, true).await {
                 warn!(error = %e, "drain heartbeat failed");
             }
-            let n = net_api::ws::handoff_all(&st).await;
-            info!(rooms = n, "shutdown: rooms handed off");
+            let moved = net_api::ws::handoff_all(&st).await;
+            info!(rooms = moved, "shutdown: rooms handed off");
             if let Err(e) = queries::delete_node(&st.pool, st.node_id.0).await {
                 error!(error = %e, "delete node row");
             }
@@ -394,15 +395,15 @@ async fn fleet_listen_once(st: &Arc<AppState>, redis: &RedisConfig) -> anyhow::R
             continue;
         }
         let payload: String = match msg.get_payload() {
-            Ok(p) => p,
+            Ok(text) => text,
             Err(_) => continue,
         };
-        let v: serde_json::Value = match serde_json::from_str(&payload) {
-            Ok(v) => v,
+        let change: serde_json::Value = match serde_json::from_str(&payload) {
+            Ok(parsed) => parsed,
             Err(_) => continue,
         };
-        if v.get("removed").and_then(|r| r.as_bool()) == Some(true) {
-            let id = v
+        if change.get("removed").and_then(|r| r.as_bool()) == Some(true) {
+            let id = change
                 .get("room")
                 .and_then(|r| r.as_str())
                 .unwrap_or("")
@@ -422,7 +423,9 @@ async fn fleet_listen_once(st: &Arc<AppState>, redis: &RedisConfig) -> anyhow::R
                     removed: true,
                 },
             );
-        } else if let Ok(live) = serde_json::from_value::<net_control::redis_store::LiveRoom>(v) {
+        } else if let Ok(live) =
+            serde_json::from_value::<net_control::redis_store::LiveRoom>(change)
+        {
             let listed = live.visible && live.open && live.players < live.max_players;
             st.host.notify_lobby(
                 pid,

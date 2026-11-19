@@ -11,15 +11,15 @@ const FAST: &[(&str, &str)] = &[("NET__SERVER__HEARTBEAT_SECS", "1")];
 
 #[tokio::test]
 async fn stalled_node_takes_its_rooms_back() {
-    let a = Node::start_with(FAST).await;
-    let b = Node::start_with(FAST).await;
-    let pa = a.project("stall").await;
-    let pb = b.same_project(&pa);
+    let node_a = Node::start_with(FAST).await;
+    let node_b = Node::start_with(FAST).await;
+    let pa = node_a.project("stall").await;
+    let pb = node_b.same_project(&pa);
     let mut alice = pa.player("alice").await;
     joined(&alice.call(json!({"t": "create", "name": "arena"})).await);
 
     // B reaps A and offers its rooms for adoption; nobody takes them before A carries on.
-    a.freeze(Duration::from_secs(6)).await;
+    node_a.freeze(Duration::from_secs(6)).await;
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // The room has one home again: B points the player to A instead of starting a second copy.
@@ -28,7 +28,7 @@ async fn stalled_node_takes_its_rooms_back() {
     refused(&reply, "conflict");
     let message = reply["message"].as_str().unwrap_or_default();
     assert!(
-        message.contains(&format!("room_elsewhere:{}", a.http)),
+        message.contains(&format!("room_elsewhere:{}", node_a.http)),
         "{reply}"
     );
     let mut bob = pa.player("bob").await;
@@ -41,15 +41,15 @@ async fn stalled_node_takes_its_rooms_back() {
 
 #[tokio::test]
 async fn stalled_node_lets_go_of_a_room_adopted_elsewhere() {
-    let a = Node::start_with(FAST).await;
-    let b = Node::start_with(FAST).await;
-    let pa = a.project("adopted").await;
-    let pb = b.same_project(&pa);
+    let node_a = Node::start_with(FAST).await;
+    let node_b = Node::start_with(FAST).await;
+    let pa = node_a.project("adopted").await;
+    let pb = node_b.same_project(&pa);
     let mut alice = pa.player("alice").await;
     joined(&alice.call(json!({"t": "create", "name": "arena"})).await);
 
     // While A is silent a player reaches the room through B, which adopts it.
-    let frozen = a.freeze(Duration::from_secs(8));
+    let frozen = node_a.freeze(Duration::from_secs(8));
     let adopt = async {
         tokio::time::sleep(Duration::from_secs(5)).await;
         let mut bob = pb.player("bob").await;
@@ -64,17 +64,17 @@ async fn stalled_node_lets_go_of_a_room_adopted_elsewhere() {
     refused(&reply, "conflict");
     let message = reply["message"].as_str().unwrap_or_default();
     assert!(
-        message.contains(&format!("room_elsewhere:{}", b.http)),
+        message.contains(&format!("room_elsewhere:{}", node_b.http)),
         "{reply}"
     );
 }
 
 #[tokio::test]
 async fn room_on_a_node_that_just_started_is_found_from_the_others() {
-    let a = Node::start().await;
-    let b = Node::start().await;
-    let pa = a.project("fresh").await;
-    let pb = b.same_project(&pa);
+    let node_a = Node::start().await;
+    let node_b = Node::start().await;
+    let pa = node_a.project("fresh").await;
+    let pb = node_b.same_project(&pa);
     let mut bob = pb.player("bob").await;
     joined(&bob.call(json!({"t": "create", "name": "arena"})).await);
 
@@ -85,8 +85,8 @@ async fn room_on_a_node_that_just_started_is_found_from_the_others() {
     assert_eq!(pb.room_names().await, ["arena"]);
 }
 
-async fn room_id(p: &common::Project, name: &str) -> String {
-    let (status, body) = p.api.get("/v1/rooms").await;
+async fn room_id(project: &common::Project, name: &str) -> String {
+    let (status, body) = project.api.get("/v1/rooms").await;
     assert_eq!(status, 200, "list rooms: {body}");
     let room = body["rooms"]
         .as_array()
@@ -97,10 +97,10 @@ async fn room_id(p: &common::Project, name: &str) -> String {
 
 #[tokio::test]
 async fn project_key_closes_a_room_hosted_on_another_node() {
-    let b = Node::start().await;
-    let a = Node::start().await;
-    let pb = b.project("close").await;
-    let pa = a.same_project(&pb);
+    let node_b = Node::start().await;
+    let node_a = Node::start().await;
+    let pb = node_b.project("close").await;
+    let pa = node_a.same_project(&pb);
     let mut bob = pb.player("bob").await;
     joined(&bob.call(json!({"t": "create", "name": "arena"})).await);
 
@@ -112,10 +112,10 @@ async fn project_key_closes_a_room_hosted_on_another_node() {
 
 #[tokio::test]
 async fn notice_reaches_a_room_on_a_node_that_just_started() {
-    let a = Node::start().await;
-    let b = Node::start().await;
-    let pa = a.project("notice").await;
-    let pb = b.same_project(&pa);
+    let node_a = Node::start().await;
+    let node_b = Node::start().await;
+    let pa = node_a.project("notice").await;
+    let pb = node_b.same_project(&pa);
     let mut bob = pb.player("bob").await;
     joined(&bob.call(json!({"t": "create", "name": "arena"})).await);
 
@@ -133,10 +133,10 @@ async fn notice_reaches_a_room_on_a_node_that_just_started() {
 
 #[tokio::test]
 async fn kick_through_another_node_keeps_the_reason() {
-    let b = Node::start().await;
-    let a = Node::start().await;
-    let pb = b.project("kick").await;
-    let pa = a.same_project(&pb);
+    let node_b = Node::start().await;
+    let node_a = Node::start().await;
+    let pb = node_b.project("kick").await;
+    let pa = node_a.same_project(&pb);
     let mut bob = pb.player("bob").await;
     let actor = joined(&bob.call(json!({"t": "create", "name": "arena"})).await);
 

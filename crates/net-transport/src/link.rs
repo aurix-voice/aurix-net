@@ -104,7 +104,7 @@ impl Link {
     pub fn rto(&self) -> Duration {
         match self.srtt {
             None => Duration::from_millis(250),
-            Some(s) => (s + 4 * self.rttvar).clamp(MIN_RTO, MAX_RTO),
+            Some(srtt) => (srtt + 4 * self.rttvar).clamp(MIN_RTO, MAX_RTO),
         }
     }
 
@@ -141,18 +141,18 @@ impl Link {
         }
     }
 
-    fn push_datagram(&mut self, h: Header, payload: &[u8]) {
-        let mut b = BytesMut::with_capacity(HEADER_LEN + payload.len());
-        h.encode(&mut b);
-        b.extend_from_slice(payload);
+    fn push_datagram(&mut self, header: Header, payload: &[u8]) {
+        let mut buf = BytesMut::with_capacity(HEADER_LEN + payload.len());
+        header.encode(&mut buf);
+        buf.extend_from_slice(payload);
         self.stats.sent_datagrams += 1;
-        self.stats.sent_bytes += b.len() as u64;
-        self.out.push_back(b.freeze());
+        self.stats.sent_bytes += buf.len() as u64;
+        self.out.push_back(buf.freeze());
     }
 
     fn emit(&mut self, kind: Kind, seq: u16, payload: &[u8], ack_only: bool) {
-        let h = self.header(kind, seq, ack_only);
-        self.push_datagram(h, payload);
+        let header = self.header(kind, seq, ack_only);
+        self.push_datagram(header, payload);
     }
 
     /// Queues an application message on `channel`.
@@ -162,8 +162,8 @@ impl Link {
                 .fragmenter
                 .split(channel, &msg)
                 .ok_or(LinkError::TooLarge)?;
-            for p in parts {
-                for (seq, payload) in self.frag_tx.push(p, now) {
+            for part in parts {
+                for (seq, payload) in self.frag_tx.push(part, now) {
                     self.emit(Kind::Fragment, seq, &payload, false);
                 }
             }
@@ -195,16 +195,16 @@ impl Link {
     }
 
     fn sample_rtt(&mut self, samples: Vec<Duration>) {
-        for r in samples {
+        for sample in samples {
             match self.srtt {
                 None => {
-                    self.srtt = Some(r);
-                    self.rttvar = r / 2;
+                    self.srtt = Some(sample);
+                    self.rttvar = sample / 2;
                 }
-                Some(s) => {
-                    let diff = s.abs_diff(r);
+                Some(srtt) => {
+                    let diff = srtt.abs_diff(sample);
                     self.rttvar = (self.rttvar * 3 + diff) / 4;
-                    self.srtt = Some((s * 7 + r) / 8);
+                    self.srtt = Some((srtt * 7 + sample) / 8);
                 }
             }
         }
@@ -216,8 +216,8 @@ impl Link {
     pub fn receive(&mut self, datagram: Bytes, now: Instant) -> Vec<Received> {
         self.stats.recv_datagrams += 1;
         self.stats.recv_bytes += datagram.len() as u64;
-        let (h, payload) = match Header::decode(datagram) {
-            Ok(x) => x,
+        let (header, payload) = match Header::decode(datagram) {
+            Ok(decoded) => decoded,
             Err(PacketError::TooShort)
             | Err(PacketError::Version(_))
             | Err(PacketError::Kind(_)) => {
@@ -227,31 +227,31 @@ impl Link {
         };
         self.last_recv = now;
         let mut out = Vec::new();
-        match h.kind {
+        match header.kind {
             Kind::Channel(Channel::UnreliableSequenced) => {
-                if h.ack_only {
+                if header.ack_only {
                     return out;
                 }
-                if self.seq_rx.accept(h.seq) {
-                    if h.batch {
-                        let mut p = payload;
-                        while p.len() >= 2 {
-                            let n = u16::from_be_bytes([p[0], p[1]]) as usize;
-                            p.advance(2);
-                            if p.len() < n {
+                if self.seq_rx.accept(header.seq) {
+                    if header.batch {
+                        let mut rest = payload;
+                        while rest.len() >= 2 {
+                            let len = u16::from_be_bytes([rest[0], rest[1]]) as usize;
+                            rest.advance(2);
+                            if rest.len() < len {
                                 self.stats.decode_errors += 1;
                                 break;
                             }
                             out.push(Received {
                                 channel: Channel::UnreliableSequenced,
-                                tick: h.tick,
-                                payload: p.split_to(n),
+                                tick: header.tick,
+                                payload: rest.split_to(len),
                             });
                         }
                     } else {
                         out.push(Received {
                             channel: Channel::UnreliableSequenced,
-                            tick: h.tick,
+                            tick: header.tick,
                             payload,
                         });
                     }
@@ -260,49 +260,49 @@ impl Link {
                 }
             }
             Kind::Channel(Channel::ReliableOrdered) => {
-                if h.has_ack {
-                    let s = self.ordered_tx.on_ack(h.ack, h.ack_bits, now);
-                    self.sample_rtt(s);
+                if header.has_ack {
+                    let samples = self.ordered_tx.on_ack(header.ack, header.ack_bits, now);
+                    self.sample_rtt(samples);
                 }
-                if !h.ack_only {
+                if !header.ack_only {
                     self.ack_dirty = true;
-                    for p in self.ordered_rx.accept(h.seq, payload) {
+                    for message in self.ordered_rx.accept(header.seq, payload) {
                         out.push(Received {
                             channel: Channel::ReliableOrdered,
-                            tick: h.tick,
-                            payload: p,
+                            tick: header.tick,
+                            payload: message,
                         });
                     }
                 }
             }
             Kind::Channel(Channel::ReliableUnordered) => {
-                if h.has_ack {
-                    let s = self.unordered_tx.on_ack(h.ack, h.ack_bits, now);
-                    self.sample_rtt(s);
+                if header.has_ack {
+                    let samples = self.unordered_tx.on_ack(header.ack, header.ack_bits, now);
+                    self.sample_rtt(samples);
                 }
-                if !h.ack_only {
+                if !header.ack_only {
                     self.ack_dirty = true;
-                    for p in self.unordered_rx.accept(h.seq, payload) {
+                    for message in self.unordered_rx.accept(header.seq, payload) {
                         out.push(Received {
                             channel: Channel::ReliableUnordered,
-                            tick: h.tick,
-                            payload: p,
+                            tick: header.tick,
+                            payload: message,
                         });
                     }
                 }
             }
             Kind::Fragment => {
-                if h.has_ack {
-                    let s = self.frag_tx.on_ack(h.ack, h.ack_bits, now);
-                    self.sample_rtt(s);
+                if header.has_ack {
+                    let samples = self.frag_tx.on_ack(header.ack, header.ack_bits, now);
+                    self.sample_rtt(samples);
                 }
-                if !h.ack_only {
+                if !header.ack_only {
                     self.ack_dirty = true;
-                    for frag in self.frag_rx.accept(h.seq, payload) {
+                    for frag in self.frag_rx.accept(header.seq, payload) {
                         if let Some((channel, msg)) = self.reassembler.accept(frag, now) {
                             out.push(Received {
                                 channel,
-                                tick: h.tick,
+                                tick: header.tick,
                                 payload: msg,
                             });
                         }
@@ -345,8 +345,8 @@ impl Link {
             return Err(LinkError::Dead);
         }
         for (kind, seq, payload) in retrans {
-            let h = self.header(kind, seq, false);
-            self.push_datagram(h, &payload);
+            let header = self.header(kind, seq, false);
+            self.push_datagram(header, &payload);
         }
         if self.ack_dirty && now.duration_since(self.last_ack_sent) >= ACK_DELAY {
             self.ack_dirty = false;
@@ -372,11 +372,11 @@ impl Link {
         }
         let seq = self.seq_tx;
         self.seq_tx = self.seq_tx.wrapping_add(1);
-        let mut h = self.header(Kind::Channel(Channel::UnreliableSequenced), seq, false);
-        h.batch = true;
+        let mut header = self.header(Kind::Channel(Channel::UnreliableSequenced), seq, false);
+        header.batch = true;
         let payload = self.batch.split().freeze();
         self.batch_n = 0;
-        self.push_datagram(h, &payload);
+        self.push_datagram(header, &payload);
     }
 
     /// Next datagram to put on the wire.
@@ -396,19 +396,19 @@ mod tests {
     /// Delivers a's outgoing datagrams to b, dropping roughly `drop_pct` percent with a
     /// deterministic LCG so the test is reproducible.
     fn pump(
-        a: &mut Link,
-        b: &mut Link,
+        from: &mut Link,
+        to: &mut Link,
         now: Instant,
         drop_pct: u32,
         rng: &mut u32,
     ) -> Vec<Received> {
         let mut got = Vec::new();
-        while let Some(d) = a.next_outgoing() {
+        while let Some(datagram) = from.next_outgoing() {
             *rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             if (*rng >> 16) % 100 < drop_pct {
                 continue;
             }
-            got.extend(b.receive(d, now));
+            got.extend(to.receive(datagram, now));
         }
         got
     }
@@ -416,10 +416,10 @@ mod tests {
     #[test]
     fn reliable_ordered_survives_loss() {
         let t0 = Instant::now();
-        let mut a = Link::new(t0);
-        let mut b = Link::new(t0);
+        let mut near = Link::new(t0);
+        let mut far = Link::new(t0);
         for i in 0..100u32 {
-            a.send(
+            near.send(
                 Channel::ReliableOrdered,
                 Bytes::from(i.to_le_bytes().to_vec()),
                 t0,
@@ -427,22 +427,22 @@ mod tests {
             .unwrap();
         }
         let mut rng = 42u32;
-        let mut received = pump(&mut a, &mut b, t0, 30, &mut rng);
+        let mut received = pump(&mut near, &mut far, t0, 30, &mut rng);
         let mut now = t0;
         for _ in 0..200 {
             now += Duration::from_millis(300);
-            b.poll(now).unwrap();
-            pump(&mut b, &mut a, now, 30, &mut rng);
-            a.poll(now).unwrap();
-            received.extend(pump(&mut a, &mut b, now, 30, &mut rng));
+            far.poll(now).unwrap();
+            pump(&mut far, &mut near, now, 30, &mut rng);
+            near.poll(now).unwrap();
+            received.extend(pump(&mut near, &mut far, now, 30, &mut rng));
             if received.len() == 100 {
                 break;
             }
         }
         assert_eq!(received.len(), 100);
-        for (i, r) in received.iter().enumerate() {
+        for (i, got) in received.iter().enumerate() {
             assert_eq!(
-                u32::from_le_bytes(r.payload[..].try_into().unwrap()),
+                u32::from_le_bytes(got.payload[..].try_into().unwrap()),
                 i as u32
             );
         }
@@ -451,12 +451,13 @@ mod tests {
     #[test]
     fn large_message_is_fragmented_and_rebuilt() {
         let t0 = Instant::now();
-        let mut a = Link::new(t0);
-        let mut b = Link::new(t0);
+        let mut near = Link::new(t0);
+        let mut far = Link::new(t0);
         let msg = Bytes::from(vec![7u8; 20_000]);
-        a.send(Channel::ReliableUnordered, msg.clone(), t0).unwrap();
-        assert!(a.outgoing_len() > 10);
-        let got = pump(&mut a, &mut b, t0, 0, &mut 1u32);
+        near.send(Channel::ReliableUnordered, msg.clone(), t0)
+            .unwrap();
+        assert!(near.outgoing_len() > 10);
+        let got = pump(&mut near, &mut far, t0, 0, &mut 1u32);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].channel, Channel::ReliableUnordered);
         assert_eq!(got[0].payload, msg);
@@ -465,61 +466,61 @@ mod tests {
     #[test]
     fn sequenced_drops_reordered_old() {
         let t0 = Instant::now();
-        let mut a = Link::new(t0);
-        let mut b = Link::new(t0);
-        a.send(Channel::UnreliableSequenced, Bytes::from_static(b"1"), t0)
+        let mut near = Link::new(t0);
+        let mut far = Link::new(t0);
+        near.send(Channel::UnreliableSequenced, Bytes::from_static(b"1"), t0)
             .unwrap();
-        a.flush_batch();
-        a.send(Channel::UnreliableSequenced, Bytes::from_static(b"2"), t0)
+        near.flush_batch();
+        near.send(Channel::UnreliableSequenced, Bytes::from_static(b"2"), t0)
             .unwrap();
-        a.flush_batch();
-        let d1 = a.next_outgoing().unwrap();
-        let d2 = a.next_outgoing().unwrap();
-        assert_eq!(b.receive(d2, t0).len(), 1);
-        assert_eq!(b.receive(d1, t0).len(), 0);
-        assert_eq!(b.stats().dropped_old, 1);
+        near.flush_batch();
+        let d1 = near.next_outgoing().unwrap();
+        let d2 = near.next_outgoing().unwrap();
+        assert_eq!(far.receive(d2, t0).len(), 1);
+        assert_eq!(far.receive(d1, t0).len(), 0);
+        assert_eq!(far.stats().dropped_old, 1);
     }
 
     #[test]
     fn unreliable_messages_coalesce() {
         let t0 = Instant::now();
-        let mut a = Link::new(t0);
-        let mut b = Link::new(t0);
+        let mut near = Link::new(t0);
+        let mut far = Link::new(t0);
         for i in 0..20u8 {
-            a.send(Channel::UnreliableSequenced, Bytes::from(vec![i; 40]), t0)
+            near.send(Channel::UnreliableSequenced, Bytes::from(vec![i; 40]), t0)
                 .unwrap();
         }
-        assert_eq!(a.outgoing_len(), 0);
-        a.flush_batch();
-        assert_eq!(a.outgoing_len(), 1);
-        let got = pump(&mut a, &mut b, t0, 0, &mut 1u32);
+        assert_eq!(near.outgoing_len(), 0);
+        near.flush_batch();
+        assert_eq!(near.outgoing_len(), 1);
+        let got = pump(&mut near, &mut far, t0, 0, &mut 1u32);
         assert_eq!(got.len(), 20);
         assert_eq!(got[7].payload, Bytes::from(vec![7u8; 40]));
         for _ in 0..40 {
-            a.send(
+            near.send(
                 Channel::UnreliableSequenced,
                 Bytes::from(vec![1u8; 100]),
                 t0,
             )
             .unwrap();
         }
-        a.flush_batch();
-        assert!(a.outgoing_len() >= 4);
-        assert_eq!(pump(&mut a, &mut b, t0, 0, &mut 1u32).len(), 40);
+        near.flush_batch();
+        assert!(near.outgoing_len() >= 4);
+        assert_eq!(pump(&mut near, &mut far, t0, 0, &mut 1u32).len(), 40);
     }
 
     #[test]
     fn link_dies_without_acks() {
         let t0 = Instant::now();
-        let mut a = Link::new(t0);
-        a.send(Channel::ReliableOrdered, Bytes::from_static(b"x"), t0)
+        let mut near = Link::new(t0);
+        near.send(Channel::ReliableOrdered, Bytes::from_static(b"x"), t0)
             .unwrap();
         let mut now = t0;
         let mut dead = false;
         for _ in 0..40 {
             now += Duration::from_secs(2);
-            while a.next_outgoing().is_some() {}
-            if a.poll(now).is_err() {
+            while near.next_outgoing().is_some() {}
+            if near.poll(now).is_err() {
                 dead = true;
                 break;
             }

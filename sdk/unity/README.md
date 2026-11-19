@@ -2,6 +2,7 @@
 
 Pure C#, no native library, every Unity platform including WebGL. Install as a UPM package
 (`Packages/manifest.json` → `"com.aurix.net": "file:../../sdk/unity"` or a git URL).
+JSON is read with Newtonsoft.Json; the package pulls in Unity's `com.unity.nuget.newtonsoft-json`.
 
 ## Quick start (sync mode, ~10 minutes)
 

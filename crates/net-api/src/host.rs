@@ -46,34 +46,34 @@ impl DataSession {
     /// Queues a message and flushes everything the link produced.
     pub fn send(&self, channel: Channel, payload: Bytes) {
         let out: Vec<Bytes> = {
-            let mut l = self.link.lock();
-            if l.send(channel, payload, Instant::now()).is_err() {
+            let mut link = self.link.lock();
+            if link.send(channel, payload, Instant::now()).is_err() {
                 return;
             }
             // Unreliable messages are coalesced and leave on the next flusher pass.
             if channel == Channel::UnreliableSequenced {
                 return;
             }
-            std::iter::from_fn(|| l.next_outgoing()).collect()
+            std::iter::from_fn(|| link.next_outgoing()).collect()
         };
         self.flush(out);
     }
 
     pub fn flush(&self, out: Vec<Bytes>) {
-        for d in out {
+        for datagram in out {
             self.metrics.datagrams_out.inc();
-            self.metrics.bytes_out.inc_by(d.len() as u64);
+            self.metrics.bytes_out.inc_by(datagram.len() as u64);
             let ok = match &self.sink {
-                DataSink::Quic(c) => match c.send_datagram(d) {
+                DataSink::Quic(conn) => match conn.send_datagram(datagram) {
                     Ok(()) => true,
                     Err(quinn::SendDatagramError::TooLarge) => {
-                        tracing::warn!(max = ?c.max_datagram_size(), "datagram too large for path");
+                        tracing::warn!(max = ?conn.max_datagram_size(), "datagram too large for path");
                         false
                     }
                     Err(_) => false,
                 },
-                DataSink::WebTransport(c) => c.send_datagram(d).is_ok(),
-                DataSink::Ws(tx) => tx.try_send(d).is_ok(),
+                DataSink::WebTransport(conn) => conn.send_datagram(datagram).is_ok(),
+                DataSink::Ws(tx) => tx.try_send(datagram).is_ok(),
             };
             if !ok {
                 self.metrics
@@ -85,16 +85,16 @@ impl DataSession {
     }
 
     /// Feeds a datagram; returns decoded application messages.
-    pub fn receive(&self, d: Bytes) -> Vec<net_transport::Received> {
+    pub fn receive(&self, datagram: Bytes) -> Vec<net_transport::Received> {
         self.metrics.datagrams_in.inc();
-        self.metrics.bytes_in.inc_by(d.len() as u64);
+        self.metrics.bytes_in.inc_by(datagram.len() as u64);
         let (recv, out) = {
-            let mut l = self.link.lock();
-            let r = l.receive(d, Instant::now());
-            let _ = l.poll(Instant::now());
+            let mut link = self.link.lock();
+            let received = link.receive(datagram, Instant::now());
+            let _ = link.poll(Instant::now());
             (
-                r,
-                std::iter::from_fn(|| l.next_outgoing()).collect::<Vec<_>>(),
+                received,
+                std::iter::from_fn(|| link.next_outgoing()).collect::<Vec<_>>(),
             )
         };
         self.flush(out);
@@ -104,11 +104,11 @@ impl DataSession {
     /// Timer-driven retransmits/acks. Returns false when the link is dead.
     pub fn tick(&self) -> bool {
         let (alive, out) = {
-            let mut l = self.link.lock();
-            let alive = l.poll(Instant::now()).is_ok();
+            let mut link = self.link.lock();
+            let alive = link.poll(Instant::now()).is_ok();
             (
                 alive,
-                std::iter::from_fn(|| l.next_outgoing()).collect::<Vec<_>>(),
+                std::iter::from_fn(|| link.next_outgoing()).collect::<Vec<_>>(),
             )
         };
         self.flush(out);
@@ -155,17 +155,17 @@ impl RoomHost {
     /// One pass: poll every live link and push its datagrams. Returns dead links.
     pub fn flush_all(&self) -> usize {
         let sessions: Vec<Arc<DataSession>> = {
-            let mut v = self.data_sessions.lock();
-            v.retain(|w| w.strong_count() > 1);
-            v.iter().filter_map(|w| w.upgrade()).collect()
+            let mut sessions = self.data_sessions.lock();
+            sessions.retain(|w| w.strong_count() > 1);
+            sessions.iter().filter_map(|w| w.upgrade()).collect()
         };
         let mut dead = 0;
-        for s in sessions {
-            if !s.tick() {
+        for session in sessions {
+            if !session.tick() {
                 dead += 1;
-                match &s.sink {
-                    DataSink::Quic(c) => c.close(4u32.into(), b"link dead"),
-                    DataSink::WebTransport(c) => c.close(4u32.into(), b"link dead"),
+                match &session.sink {
+                    DataSink::Quic(conn) => conn.close(4u32.into(), b"link dead"),
+                    DataSink::WebTransport(conn) => conn.close(4u32.into(), b"link dead"),
                     DataSink::Ws(_) => {}
                 }
             }
@@ -176,16 +176,16 @@ impl RoomHost {
     pub fn insert(&self, project: ProjectId, room: Room) -> Arc<Mutex<HostedRoom>> {
         let id = room.id();
         let name = room.cfg.name.clone();
-        let h = Arc::new(Mutex::new(HostedRoom {
+        let handle = Arc::new(Mutex::new(HostedRoom {
             room,
             sessions: HashMap::new(),
             project,
             sync: None,
             lockstep: None,
         }));
-        self.rooms.insert(id, h.clone());
+        self.rooms.insert(id, handle.clone());
         self.by_name.insert((project, name), id);
-        h
+        handle
     }
 
     pub fn get(&self, id: RoomId) -> Option<Arc<Mutex<HostedRoom>>> {
@@ -198,35 +198,35 @@ impl RoomHost {
     }
 
     pub fn remove(&self, id: RoomId) -> Option<Arc<Mutex<HostedRoom>>> {
-        let (_, h) = self.rooms.remove(&id)?;
+        let (_, handle) = self.rooms.remove(&id)?;
         let (project, name) = {
-            let g = h.lock();
-            (g.project, g.room.cfg.name.clone())
+            let hosted = handle.lock();
+            (hosted.project, hosted.room.cfg.name.clone())
         };
         self.by_name.remove(&(project, name));
-        Some(h)
+        Some(handle)
     }
 
     /// Per project: (rooms, online players, new bytes in, new bytes out) since the last call.
     pub fn usage(&self) -> HashMap<ProjectId, (u64, u64, u64, u64)> {
         use std::sync::atomic::Ordering;
         let mut out: HashMap<ProjectId, (u64, u64, u64, u64)> = HashMap::new();
-        for r in self.rooms.iter() {
-            let g = r.value().lock();
-            let e = out.entry(g.project).or_default();
-            e.0 += 1;
-            e.1 += g.room.online_count() as u64;
-            for s in g.sessions.values() {
-                if let Some(d) = &s.data {
-                    let st = d.link.lock().stats();
+        for entry in self.rooms.iter() {
+            let hosted = entry.value().lock();
+            let totals = out.entry(hosted.project).or_default();
+            totals.0 += 1;
+            totals.1 += hosted.room.online_count() as u64;
+            for session in hosted.sessions.values() {
+                if let Some(data) = &session.data {
+                    let st = data.link.lock().stats();
                     let din = st
                         .recv_bytes
-                        .saturating_sub(d.metered_in.swap(st.recv_bytes, Ordering::Relaxed));
+                        .saturating_sub(data.metered_in.swap(st.recv_bytes, Ordering::Relaxed));
                     let dout = st
                         .sent_bytes
-                        .saturating_sub(d.metered_out.swap(st.sent_bytes, Ordering::Relaxed));
-                    e.2 += din;
-                    e.3 += dout;
+                        .saturating_sub(data.metered_out.swap(st.sent_bytes, Ordering::Relaxed));
+                    totals.2 += din;
+                    totals.3 += dout;
                 }
             }
         }
@@ -240,20 +240,20 @@ impl RoomHost {
         player_id: &str,
     ) -> Vec<(RoomId, String, net_common::RoomMode, u16, String, bool)> {
         let mut out = Vec::new();
-        for r in self.rooms.iter() {
-            let g = r.value().lock();
-            if g.project != project {
+        for entry in self.rooms.iter() {
+            let hosted = entry.value().lock();
+            if hosted.project != project {
                 continue;
             }
-            for p in g.room.player_infos() {
-                if p.player_id == player_id {
+            for player in hosted.room.player_infos() {
+                if player.player_id == player_id {
                     out.push((
-                        *r.key(),
-                        g.room.cfg.name.clone(),
-                        g.room.cfg.mode,
-                        p.actor.0,
-                        p.name.clone(),
-                        p.online,
+                        *entry.key(),
+                        hosted.room.cfg.name.clone(),
+                        hosted.room.cfg.mode,
+                        player.actor.0,
+                        player.name.clone(),
+                        player.online,
                     ));
                 }
             }
@@ -284,8 +284,9 @@ impl RoomHost {
         self.rooms
             .iter()
             .filter_map(|r| {
-                let g = r.lock();
-                (g.project == project && g.room.is_listed()).then(|| g.room.summary())
+                let hosted = r.lock();
+                (hosted.project == project && hosted.room.is_listed())
+                    .then(|| hosted.room.summary())
             })
             .collect()
     }
@@ -300,9 +301,9 @@ impl RoomHost {
     pub fn presence_leave(&self, project: ProjectId, player: &str) {
         let key = (project, player.to_string());
         let gone = match self.presence.get_mut(&key) {
-            Some(mut n) => {
-                *n = n.saturating_sub(1);
-                *n == 0
+            Some(mut count) => {
+                *count = count.saturating_sub(1);
+                *count == 0
             }
             None => false,
         };
@@ -323,44 +324,44 @@ impl RoomHost {
     }
 
     pub fn unsubscribe_lobby(&self, project: ProjectId, tx: &mpsc::Sender<ServerMsg>) {
-        if let Some(mut v) = self.lobby.get_mut(&project) {
-            v.retain(|t| !t.same_channel(tx));
+        if let Some(mut watchers) = self.lobby.get_mut(&project) {
+            watchers.retain(|t| !t.same_channel(tx));
         }
     }
 
     pub fn notify_lobby(&self, project: ProjectId, msg: ServerMsg) {
-        if let Some(mut v) = self.lobby.get_mut(&project) {
-            v.retain(|t| !t.is_closed());
-            for t in v.iter() {
-                let _ = t.try_send(msg.clone());
+        if let Some(mut watchers) = self.lobby.get_mut(&project) {
+            watchers.retain(|t| !t.is_closed());
+            for watcher in watchers.iter() {
+                let _ = watcher.try_send(msg.clone());
             }
         }
     }
 }
 
 /// Delivers what the room logic produced.
-pub fn dispatch(h: &HostedRoom, out: Vec<Outgoing>, metrics: &Metrics) {
-    for o in out {
-        match o {
+pub fn dispatch(hosted: &HostedRoom, out: Vec<Outgoing>, metrics: &Metrics) {
+    for outgoing in out {
+        match outgoing {
             Outgoing::Control(actor, msg) => {
-                if let Some(s) = h.sessions.get(&actor) {
-                    let _ = s.control.try_send(msg);
+                if let Some(session) = hosted.sessions.get(&actor) {
+                    let _ = session.control.try_send(msg);
                 }
             }
             Outgoing::Data(actor, channel, frame) => {
-                let Some(s) = h.sessions.get(&actor) else {
+                let Some(session) = hosted.sessions.get(&actor) else {
                     continue;
                 };
                 metrics
                     .events
                     .with_label_values(&[channel_name(channel)])
                     .inc();
-                match &s.data {
-                    Some(d) => d.send(channel, frame.encode()),
+                match &session.data {
+                    Some(data) => data.send(channel, frame.encode()),
                     None => {
                         // No data path yet: fall back to the control channel.
                         use base64::Engine;
-                        let _ = s.control.try_send(ServerMsg::Event {
+                        let _ = session.control.try_send(ServerMsg::Event {
                             code: frame.code,
                             from: frame.from,
                             data: base64::engine::general_purpose::STANDARD.encode(&frame.payload),
@@ -372,8 +373,8 @@ pub fn dispatch(h: &HostedRoom, out: Vec<Outgoing>, metrics: &Metrics) {
     }
 }
 
-pub fn channel_name(c: Channel) -> &'static str {
-    match c {
+pub fn channel_name(channel: Channel) -> &'static str {
+    match channel {
         Channel::UnreliableSequenced => "unreliable_sequenced",
         Channel::ReliableOrdered => "reliable_ordered",
         Channel::ReliableUnordered => "reliable_unordered",
@@ -382,7 +383,7 @@ pub fn channel_name(c: Channel) -> &'static str {
 
 /// Routes one data-path frame from `actor` through the room.
 pub fn handle_data_frame(
-    h: &mut HostedRoom,
+    hosted: &mut HostedRoom,
     actor: ActorId,
     channel: Channel,
     payload: Bytes,
@@ -390,23 +391,27 @@ pub fn handle_data_frame(
 ) -> Result<()> {
     // Simulation frames travel on any channel (inputs unreliable, checkpoint uploads
     // reliable); unknown kinds fall through to relay events.
-    if let Some(sy) = h.sync.as_mut() {
+    if let Some(sy) = hosted.sync.as_mut() {
         if sy.handle(actor, payload.clone()) {
-            h.room.count_input(actor, payload.len(), Instant::now());
+            hosted
+                .room
+                .count_input(actor, payload.len(), Instant::now());
             return Ok(());
         }
     }
-    if let Some(ls) = h.lockstep.as_mut() {
+    if let Some(ls) = hosted.lockstep.as_mut() {
         if ls.handle(actor, payload.clone()) {
-            h.room.count_input(actor, payload.len(), Instant::now());
+            hosted
+                .room
+                .count_input(actor, payload.len(), Instant::now());
             return Ok(());
         }
     }
     let frame = EventFrame::decode(payload).map_err(|e| NetError::Invalid(e.to_string()))?;
-    let out = h
+    let out = hosted
         .room
         .raise_event(actor, frame, channel, Instant::now())
         .map_err(|e| NetError::Invalid(e.to_string()))?;
-    dispatch(h, out, metrics);
+    dispatch(hosted, out, metrics);
     Ok(())
 }

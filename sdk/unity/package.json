@@ -5,5 +5,8 @@
   "unity": "2021.3",
   "description": "Aurix Net client: rooms, relay events, server-authoritative sync and deterministic lockstep over QUIC/WebSocket.",
   "license": "Apache-2.0",
-  "author": { "name": "Aurix" }
+  "author": { "name": "Aurix" },
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.2.1"
+  }
 }

@@ -249,7 +249,7 @@ impl NetConfig {
             "limits",
             "retention",
         ];
-        let mut v: Vec<String> = std::env::vars_os()
+        let mut names: Vec<String> = std::env::vars_os()
             .filter_map(|(k, _)| k.into_string().ok())
             .filter(|k| k.starts_with("NET__"))
             .filter(|k| {
@@ -257,18 +257,18 @@ impl NetConfig {
                 !SECTIONS.contains(&section.as_str())
             })
             .collect();
-        v.sort();
-        v
+        names.sort();
+        names
     }
 
     /// Defaults, then optional TOML file, then `NET__SECTION__KEY` env vars.
     pub fn load(path: Option<&str>) -> Result<Self> {
-        let mut b = config::Config::builder()
+        let mut builder = config::Config::builder()
             .add_source(config::File::from_str(DEFAULTS, config::FileFormat::Toml));
-        if let Some(p) = path {
-            b = b.add_source(config::File::with_name(p));
+        if let Some(file) = path {
+            builder = builder.add_source(config::File::with_name(file));
         }
-        let cfg: NetConfig = b
+        let cfg: NetConfig = builder
             .add_source(config::Environment::with_prefix("NET").separator("__"))
             .build()
             .map_err(|e| NetError::Config(e.to_string()))?
@@ -305,10 +305,10 @@ impl NetConfig {
                 ));
             }
         }
-        for p in &self.server.trusted_proxies {
-            if crate::ipnet::parse_net(p).is_none() {
+        for proxy in &self.server.trusted_proxies {
+            if crate::ipnet::parse_net(proxy).is_none() {
                 return Err(NetError::Config(format!(
-                    "server.trusted_proxies: bad entry {p}"
+                    "server.trusted_proxies: bad entry {proxy}"
                 )));
             }
         }
@@ -342,10 +342,11 @@ impl NetConfig {
             ));
         }
         if self.server.environment != "development" {
-            let h = self.server.public_host.trim();
-            let local = h.is_empty()
-                || h == "localhost"
-                || h.parse::<std::net::IpAddr>()
+            let host = self.server.public_host.trim();
+            let local = host.is_empty()
+                || host == "localhost"
+                || host
+                    .parse::<std::net::IpAddr>()
                     .map(|ip| ip.is_loopback() || ip.is_unspecified())
                     .unwrap_or(false);
             if local {
@@ -360,29 +361,30 @@ impl NetConfig {
 
     /// Settings that are legal but weaken a production node; the server logs them at start.
     pub fn production_warnings(&self) -> Vec<String> {
-        let mut w = Vec::new();
+        let mut warnings = Vec::new();
         if self.server.environment == "development" {
-            return w;
+            return warnings;
         }
         if self.server.metrics_token.is_empty() {
-            w.push("server.metrics_token is empty: GET /metrics is public".into());
+            warnings.push("server.metrics_token is empty: GET /metrics is public".into());
         }
         if self.server.allowed_origins.is_empty() {
-            w.push(
+            warnings.push(
                 "server.allowed_origins is empty: any browser origin may call the HTTP API".into(),
             );
         }
         if self.auth.admin_token.is_empty() {
-            w.push("auth.admin_token is empty: operator endpoints are disabled".into());
+            warnings.push("auth.admin_token is empty: operator endpoints are disabled".into());
         }
         if self.database.url.contains("sslmode=disable") || !self.database.url.contains("sslmode=")
         {
-            w.push("database.url without sslmode=require: use TLS or a private network".into());
+            warnings
+                .push("database.url without sslmode=require: use TLS or a private network".into());
         }
         if self.redis.url.starts_with("redis://") && !self.redis.url.contains('@') {
-            w.push("redis.url without password or TLS (rediss://)".into());
+            warnings.push("redis.url without password or TLS (rediss://)".into());
         }
-        w
+        warnings
     }
 }
 
@@ -392,21 +394,21 @@ mod tests {
 
     #[test]
     fn defaults_load() {
-        let c = NetConfig::load(None).unwrap();
-        assert_eq!(c.server.environment, "development");
-        assert_eq!(c.limits.max_players_per_room, 128);
+        let config = NetConfig::load(None).unwrap();
+        assert_eq!(config.server.environment, "development");
+        assert_eq!(config.limits.max_players_per_room, 128);
     }
 
     #[test]
     fn production_rejects_loopback_public_host_and_warns() {
-        let mut c = NetConfig::load(None).unwrap();
-        c.server.environment = "production".into();
-        c.auth.grant_secret = "x".repeat(40);
-        assert!(c.validate().is_err());
-        c.server.public_host = "node-a.net.example.com".into();
-        assert!(c.validate().is_ok());
-        let w = c.production_warnings();
-        assert!(w.iter().any(|m| m.contains("metrics_token")));
-        assert!(w.iter().any(|m| m.contains("allowed_origins")));
+        let mut config = NetConfig::load(None).unwrap();
+        config.server.environment = "production".into();
+        config.auth.grant_secret = "x".repeat(40);
+        assert!(config.validate().is_err());
+        config.server.public_host = "node-a.net.example.com".into();
+        assert!(config.validate().is_ok());
+        let warnings = config.production_warnings();
+        assert!(warnings.iter().any(|m| m.contains("metrics_token")));
+        assert!(warnings.iter().any(|m| m.contains("allowed_origins")));
     }
 }

@@ -22,4 +22,7 @@
   <ItemGroup>
     <None Include="../../../../target/release/libnet_sim_wasm.so" Condition="Exists('../../../../target/release/libnet_sim_wasm.so')" CopyToOutputDirectory="PreserveNewest" Link="libnet_sim_wasm.so" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.2" />
+  </ItemGroup>
 </Project>

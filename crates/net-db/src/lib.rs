@@ -35,8 +35,8 @@ pub async fn create_pool(cfg: &DatabaseConfig) -> Result<DbPool> {
 pub(crate) fn db_err(e: sqlx::Error) -> NetError {
     match e {
         sqlx::Error::RowNotFound => NetError::NotFound("row".into()),
-        sqlx::Error::Database(d) if d.is_unique_violation() => {
-            NetError::Conflict(d.message().to_string())
+        sqlx::Error::Database(cause) if cause.is_unique_violation() => {
+            NetError::Conflict(cause.message().to_string())
         }
         other => NetError::Database(other.to_string()),
     }

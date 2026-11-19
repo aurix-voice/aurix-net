@@ -192,7 +192,7 @@ public class ManagedCoreTests
         var dir = AppContext.BaseDirectory;
         while (dir != null && !Directory.Exists(Path.Combine(dir, "crates"))) dir = Path.GetDirectoryName(dir.TrimEnd(Path.DirectorySeparatorChar));
         var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir, "crates/net-sim-bots/fixtures/vectors.json"))).RootElement;
-        var tree = new BehaviorTree(BtNode.Parse(doc.GetProperty("tree")));
+        var tree = new BehaviorTree(BtNode.Parse(doc.GetProperty("tree").GetRawText()));
         var bb = new Blackboard(); var brain = new Scripted { PatrolLeft = 2 };
         bool ok = true; uint t = 0;
         foreach (var exp in doc.GetProperty("tree_ticks").EnumerateArray())
@@ -334,5 +334,14 @@ public class ManagedCoreTests
             alive = a.Poll();
         }
         Assert.That(lost && alive && got != null && got.SequenceEqual(msg), "link: a lost packet in a burst longer than the ack window is retransmitted");
+    }
+
+    [Test]
+    public void ControlJsonTests()
+    {
+        const string joined = "{\"t\":\"joined\",\"name\":\"actor\",\"mode\":\"relay\",\"actor\":7,"
+            + "\"players\":[{\"actor\":3,\"name\":\"schema_hash\"}],\"schema_hash\":\"ab\\\"c\"}";
+        Assert.That(Aurix.Net.Managed.ManagedClientTestHooks.Num(joined, "actor") == 7, "json: a room named like a field does not hide the field");
+        Assert.That(Aurix.Net.Managed.ManagedClientTestHooks.Str(joined, "schema_hash") == "ab\"c", "json: a player named like a field does not hide the field");
     }
 }

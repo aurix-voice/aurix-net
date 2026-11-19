@@ -28,10 +28,10 @@ thread_local! {
     static WORLDS: RefCell<Vec<Option<Slot>>> = const { RefCell::new(Vec::new()) };
 }
 
-fn with<R>(h: u32, f: impl FnOnce(&mut Slot) -> R) -> Option<R> {
+fn with<R>(world: u32, f: impl FnOnce(&mut Slot) -> R) -> Option<R> {
     WORLDS.with(|w| {
         w.borrow_mut()
-            .get_mut(h as usize)
+            .get_mut(world as usize)
             .and_then(|s| s.as_mut())
             .map(f)
     })
@@ -77,33 +77,33 @@ pub extern "C" fn sim_world_new(gravity_x: i64, gravity_y: i64, tick_hz: u32) ->
 }
 
 #[no_mangle]
-pub extern "C" fn sim_world_free(h: u32) {
+pub extern "C" fn sim_world_free(world: u32) {
     WORLDS.with(|w| {
-        if let Some(s) = w.borrow_mut().get_mut(h as usize) {
+        if let Some(s) = w.borrow_mut().get_mut(world as usize) {
             *s = None;
         }
     });
 }
 
 #[no_mangle]
-pub extern "C" fn sim_step(h: u32) {
-    with(h, |s| s.world.step());
+pub extern "C" fn sim_step(world: u32) {
+    with(world, |s| s.world.step());
 }
 
 #[no_mangle]
-pub extern "C" fn sim_tick(h: u32) -> u32 {
-    with(h, |s| s.world.tick).unwrap_or(0)
+pub extern "C" fn sim_tick(world: u32) -> u32 {
+    with(world, |s| s.world.tick).unwrap_or(0)
 }
 
 #[no_mangle]
-pub extern "C" fn sim_hash(h: u32) -> u64 {
-    with(h, |s| s.world.hash()).unwrap_or(0)
+pub extern "C" fn sim_hash(world: u32) -> u64 {
+    with(world, |s| s.world.hash()).unwrap_or(0)
 }
 
 /// Snapshot into an internal buffer; returns its length (read with `sim_snapshot_byte`).
 #[no_mangle]
-pub extern "C" fn sim_snapshot(h: u32) -> u32 {
-    with(h, |s| {
+pub extern "C" fn sim_snapshot(world: u32) -> u32 {
+    with(world, |s| {
         s.snapshot = s.world.snapshot();
         s.snapshot.len() as u32
     })
@@ -111,8 +111,8 @@ pub extern "C" fn sim_snapshot(h: u32) -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn sim_snapshot_byte(h: u32, i: u32) -> u32 {
-    with(h, |s| {
+pub extern "C" fn sim_snapshot_byte(world: u32, i: u32) -> u32 {
+    with(world, |s| {
         s.snapshot.get(i as usize).copied().unwrap_or(0) as u32
     })
     .unwrap_or(0)
@@ -120,20 +120,20 @@ pub extern "C" fn sim_snapshot_byte(h: u32, i: u32) -> u32 {
 
 /// Restore from the internal buffer (fill it with `sim_snapshot_set_byte` first).
 #[no_mangle]
-pub extern "C" fn sim_snapshot_set_len(h: u32, len: u32) {
-    with(h, |s| s.snapshot = vec![0; len as usize]);
+pub extern "C" fn sim_snapshot_set_len(world: u32, len: u32) {
+    with(world, |s| s.snapshot = vec![0; len as usize]);
 }
 #[no_mangle]
-pub extern "C" fn sim_snapshot_set_byte(h: u32, i: u32, v: u32) {
-    with(h, |s| {
+pub extern "C" fn sim_snapshot_set_byte(world: u32, i: u32, v: u32) {
+    with(world, |s| {
         if let Some(b) = s.snapshot.get_mut(i as usize) {
             *b = v as u8;
         }
     });
 }
 #[no_mangle]
-pub extern "C" fn sim_restore(h: u32) -> u32 {
-    with(h, |s| match World::restore(&s.snapshot) {
+pub extern "C" fn sim_restore(world: u32) -> u32 {
+    with(world, |s| match World::restore(&s.snapshot) {
         Some(w) => {
             s.world = w;
             1
@@ -144,8 +144,15 @@ pub extern "C" fn sim_restore(h: u32) -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn sim_add_circle(h: u32, k: u32, x: i64, y: i64, radius: i64, density: i64) -> u32 {
-    with(h, |s| {
+pub extern "C" fn sim_add_circle(
+    world: u32,
+    k: u32,
+    x: i64,
+    y: i64,
+    radius: i64,
+    density: i64,
+) -> u32 {
+    with(world, |s| {
         s.world
             .add(
                 Body::new(
@@ -162,7 +169,7 @@ pub extern "C" fn sim_add_circle(h: u32, k: u32, x: i64, y: i64, radius: i64, de
 
 #[no_mangle]
 pub extern "C" fn sim_add_box(
-    h: u32,
+    world: u32,
     k: u32,
     x: i64,
     y: i64,
@@ -170,7 +177,7 @@ pub extern "C" fn sim_add_box(
     half_h: i64,
     density: i64,
 ) -> u32 {
-    with(h, |s| {
+    with(world, |s| {
         s.world
             .add(
                 Body::new(
@@ -187,7 +194,7 @@ pub extern "C" fn sim_add_box(
 
 #[no_mangle]
 pub extern "C" fn sim_add_capsule(
-    h: u32,
+    world: u32,
     k: u32,
     x: i64,
     y: i64,
@@ -195,7 +202,7 @@ pub extern "C" fn sim_add_capsule(
     radius: i64,
     density: i64,
 ) -> u32 {
-    with(h, |s| {
+    with(world, |s| {
         s.world
             .add(
                 Body::new(
@@ -214,13 +221,13 @@ pub extern "C" fn sim_add_capsule(
 }
 
 #[no_mangle]
-pub extern "C" fn sim_remove_body(h: u32, id: u32) {
-    with(h, |s| s.world.remove(BodyId(id)));
+pub extern "C" fn sim_remove_body(world: u32, id: u32) {
+    with(world, |s| s.world.remove(BodyId(id)));
 }
 
 #[no_mangle]
-pub extern "C" fn sim_set_material(h: u32, id: u32, friction: i64, restitution: i64) {
-    with(h, |s| {
+pub extern "C" fn sim_set_material(world: u32, id: u32, friction: i64, restitution: i64) {
+    with(world, |s| {
         if let Some(b) = s.world.body_mut(BodyId(id)) {
             b.friction = Fx(friction);
             b.restitution = Fx(restitution);
@@ -229,8 +236,8 @@ pub extern "C" fn sim_set_material(h: u32, id: u32, friction: i64, restitution: 
 }
 
 #[no_mangle]
-pub extern "C" fn sim_set_layers(h: u32, id: u32, layer: u32, mask: u32, sensor: u32) {
-    with(h, |s| {
+pub extern "C" fn sim_set_layers(world: u32, id: u32, layer: u32, mask: u32, sensor: u32) {
+    with(world, |s| {
         if let Some(b) = s.world.body_mut(BodyId(id)) {
             b.layer = layer;
             b.mask = mask;
@@ -240,8 +247,8 @@ pub extern "C" fn sim_set_layers(h: u32, id: u32, layer: u32, mask: u32, sensor:
 }
 
 #[no_mangle]
-pub extern "C" fn sim_set_velocity(h: u32, id: u32, vx: i64, vy: i64, w: i64) {
-    with(h, |s| {
+pub extern "C" fn sim_set_velocity(world: u32, id: u32, vx: i64, vy: i64, w: i64) {
+    with(world, |s| {
         if let Some(b) = s.world.body_mut(BodyId(id)) {
             b.velocity = FxVec2::new(Fx(vx), Fx(vy));
             b.angular_velocity = Fx(w);
@@ -250,8 +257,8 @@ pub extern "C" fn sim_set_velocity(h: u32, id: u32, vx: i64, vy: i64, w: i64) {
 }
 
 #[no_mangle]
-pub extern "C" fn sim_set_position(h: u32, id: u32, x: i64, y: i64, angle: i64) {
-    with(h, |s| {
+pub extern "C" fn sim_set_position(world: u32, id: u32, x: i64, y: i64, angle: i64) {
+    with(world, |s| {
         if let Some(b) = s.world.body_mut(BodyId(id)) {
             b.position = FxVec2::new(Fx(x), Fx(y));
             b.angle = Fx(angle);
@@ -260,8 +267,8 @@ pub extern "C" fn sim_set_position(h: u32, id: u32, x: i64, y: i64, angle: i64) 
 }
 
 #[no_mangle]
-pub extern "C" fn sim_apply_impulse(h: u32, id: u32, ix: i64, iy: i64) {
-    with(h, |s| {
+pub extern "C" fn sim_apply_impulse(world: u32, id: u32, ix: i64, iy: i64) {
+    with(world, |s| {
         s.world
             .apply_impulse(BodyId(id), FxVec2::new(Fx(ix), Fx(iy)))
     });
@@ -269,8 +276,8 @@ pub extern "C" fn sim_apply_impulse(h: u32, id: u32, ix: i64, iy: i64) {
 
 /// Body state accessors: field 0..=4 = x, y, angle, vx, vy, 5 = angular velocity.
 #[no_mangle]
-pub extern "C" fn sim_body_get(h: u32, id: u32, field: u32) -> i64 {
-    with(h, |s| {
+pub extern "C" fn sim_body_get(world: u32, id: u32, field: u32) -> i64 {
+    with(world, |s| {
         s.world
             .body(BodyId(id))
             .map(|b| match field {
@@ -288,8 +295,8 @@ pub extern "C" fn sim_body_get(h: u32, id: u32, field: u32) -> i64 {
 
 /// Raycast; returns body id (0 = miss) and stores fraction/point/normal for `sim_ray_get` (0..=4).
 #[no_mangle]
-pub extern "C" fn sim_raycast(h: u32, x: i64, y: i64, dx: i64, dy: i64, mask: u32) -> u32 {
-    with(h, |s| {
+pub extern "C" fn sim_raycast(world: u32, x: i64, y: i64, dx: i64, dy: i64, mask: u32) -> u32 {
+    with(world, |s| {
         match s
             .world
             .raycast(FxVec2::new(Fx(x), Fx(y)), FxVec2::new(Fx(dx), Fx(dy)), mask)
@@ -323,8 +330,8 @@ pub extern "C" fn sim_ray_get(field: u32) -> i64 {
 
 /// Character controller over a kinematic body; returns a controller index.
 #[no_mangle]
-pub extern "C" fn sim_kcc_new(h: u32, body: u32, step_height: i64, min_ground_ny: i64) -> u32 {
-    with(h, |s| {
+pub extern "C" fn sim_kcc_new(world: u32, body: u32, step_height: i64, min_ground_ny: i64) -> u32 {
+    with(world, |s| {
         let mut k = CharacterController::new(BodyId(body));
         k.step_height = Fx(step_height);
         k.min_ground_normal_y = Fx(min_ground_ny);
@@ -336,8 +343,8 @@ pub extern "C" fn sim_kcc_new(h: u32, body: u32, step_height: i64, min_ground_ny
 
 /// Move the controller by (dx, dy); returns 1 when grounded afterwards.
 #[no_mangle]
-pub extern "C" fn sim_kcc_move(h: u32, k: u32, dx: i64, dy: i64) -> u32 {
-    with(h, |s| {
+pub extern "C" fn sim_kcc_move(world: u32, k: u32, dx: i64, dy: i64) -> u32 {
+    with(world, |s| {
         let Some(mut kcc) = s.kcc.get(k as usize).cloned() else {
             return 0;
         };
@@ -353,9 +360,9 @@ pub extern "C" fn sim_kcc_move(h: u32, k: u32, dx: i64, dy: i64) -> u32 {
 /// simulated for 240 ticks. Native tests and the wasm build must return the same value.
 #[no_mangle]
 pub extern "C" fn sim_golden_hash() -> u64 {
-    let h = sim_world_new(0, Fx::from_int(-10).0, 60);
+    let world = sim_world_new(0, Fx::from_int(-10).0, 60);
     sim_add_box(
-        h,
+        world,
         0,
         0,
         Fx::from_int(-1).0,
@@ -367,7 +374,7 @@ pub extern "C" fn sim_golden_hash() -> u64 {
         for i in 0..(5 - row) {
             let x = Fx::from_ratio((2 * i + row) as i64 * 11, 10) - Fx::from_int(5);
             sim_add_box(
-                h,
+                world,
                 2,
                 x.0,
                 Fx::from_ratio(2 * row as i64 + 1, 1).0,
@@ -379,21 +386,21 @@ pub extern "C" fn sim_golden_hash() -> u64 {
     }
     for i in 0..4i32 {
         let id = sim_add_circle(
-            h,
+            world,
             2,
             Fx::from_int(10 + i * 3).0,
             Fx::from_int(8 + i).0,
             Fx::from_ratio(1, 2).0,
             Fx::ONE.0,
         );
-        sim_set_material(h, id, Fx::from_ratio(3, 10).0, Fx::from_ratio(7, 10).0);
-        sim_set_velocity(h, id, Fx::from_int(-i).0, 0, 0);
+        sim_set_material(world, id, Fx::from_ratio(3, 10).0, Fx::from_ratio(7, 10).0);
+        sim_set_velocity(world, id, Fx::from_int(-i).0, 0, 0);
     }
     for _ in 0..240 {
-        sim_step(h);
+        sim_step(world);
     }
-    let hash = sim_hash(h);
-    sim_world_free(h);
+    let hash = sim_hash(world);
+    sim_world_free(world);
     hash
 }
 
@@ -402,7 +409,7 @@ pub extern "C" fn sim_golden_hash() -> u64 {
 /// Distance/rope joint between local anchors; `min_len < len` makes it a rope (slack allowed).
 #[no_mangle]
 pub extern "C" fn sim_joint_distance(
-    h: u32,
+    world: u32,
     a: u32,
     b: u32,
     ax: i64,
@@ -412,7 +419,7 @@ pub extern "C" fn sim_joint_distance(
     len: i64,
     min_len: i64,
 ) -> u32 {
-    with(h, |s| {
+    with(world, |s| {
         s.world
             .add_joint(Joint::new(
                 BodyId(a),
@@ -434,7 +441,7 @@ pub extern "C" fn sim_joint_distance(
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn sim_joint_revolute(
-    h: u32,
+    world: u32,
     a: u32,
     b: u32,
     ax: i64,
@@ -447,7 +454,7 @@ pub extern "C" fn sim_joint_revolute(
     motor_speed: i64,
     max_torque: i64,
 ) -> u32 {
-    with(h, |s| {
+    with(world, |s| {
         s.world
             .add_joint(Joint::new(
                 BodyId(a),
@@ -468,7 +475,7 @@ pub extern "C" fn sim_joint_revolute(
 
 #[no_mangle]
 pub extern "C" fn sim_joint_weld(
-    h: u32,
+    world: u32,
     a: u32,
     b: u32,
     ax: i64,
@@ -477,7 +484,7 @@ pub extern "C" fn sim_joint_weld(
     by: i64,
     rel_angle: i64,
 ) -> u32 {
-    with(h, |s| {
+    with(world, |s| {
         s.world
             .add_joint(Joint::new(
                 BodyId(a),
@@ -494,14 +501,17 @@ pub extern "C" fn sim_joint_weld(
 }
 
 #[no_mangle]
-pub extern "C" fn sim_joint_remove(h: u32, id: u32) -> u32 {
-    with(h, |s| s.world.remove_joint(JointId(id)).is_some() as u32).unwrap_or(0)
+pub extern "C" fn sim_joint_remove(world: u32, id: u32) -> u32 {
+    with(world, |s| {
+        s.world.remove_joint(JointId(id)).is_some() as u32
+    })
+    .unwrap_or(0)
 }
 
 /// Retune a revolute motor at runtime (no-op for other joint kinds).
 #[no_mangle]
-pub extern "C" fn sim_joint_motor(h: u32, id: u32, speed: i64, max_torque: i64) {
-    with(h, |s| {
+pub extern "C" fn sim_joint_motor(world: u32, id: u32, speed: i64, max_torque: i64) {
+    with(world, |s| {
         if let Some(j) = s.world.joint_mut(JointId(id)) {
             if let JointKind::Revolute {
                 motor_speed,
@@ -518,14 +528,14 @@ pub extern "C" fn sim_joint_motor(h: u32, id: u32, speed: i64, max_torque: i64) 
 
 /// Number of contact begin/end events produced by the last `sim_step`.
 #[no_mangle]
-pub extern "C" fn sim_events_len(h: u32) -> u32 {
-    with(h, |s| s.world.events().len() as u32).unwrap_or(0)
+pub extern "C" fn sim_events_len(world: u32) -> u32 {
+    with(world, |s| s.world.events().len() as u32).unwrap_or(0)
 }
 
 /// Event field: 0 = body a, 1 = body b, 2 = begin (1) / end (0).
 #[no_mangle]
-pub extern "C" fn sim_event_get(h: u32, i: u32, field: u32) -> u32 {
-    with(h, |s| {
+pub extern "C" fn sim_event_get(world: u32, i: u32, field: u32) -> u32 {
+    with(world, |s| {
         s.world
             .events()
             .get(i as usize)
@@ -542,7 +552,7 @@ pub extern "C" fn sim_event_get(h: u32, i: u32, field: u32) -> u32 {
 /// Sweep a circle; result fields as `sim_raycast` via `sim_ray_get`.
 #[no_mangle]
 pub extern "C" fn sim_circlecast(
-    h: u32,
+    world: u32,
     x: i64,
     y: i64,
     dx: i64,
@@ -550,7 +560,7 @@ pub extern "C" fn sim_circlecast(
     radius: i64,
     mask: u32,
 ) -> u32 {
-    with(h, |s| {
+    with(world, |s| {
         match s.world.circle_cast(
             FxVec2::new(Fx(x), Fx(y)),
             FxVec2::new(Fx(dx), Fx(dy)),
@@ -580,11 +590,25 @@ pub extern "C" fn sim_circlecast(
 #[no_mangle]
 pub extern "C" fn sim_joint_golden_hash() -> u64 {
     let one = Fx::ONE.0;
-    let h = sim_world_new(0, Fx::from_int(-10).0, 60);
-    let anchor = sim_add_circle(h, 0, 0, Fx::from_int(10).0, Fx::from_ratio(1, 10).0, one);
-    let bob = sim_add_circle(h, 2, Fx::from_int(3).0, Fx::from_int(10).0, Fx::HALF.0, one);
+    let world = sim_world_new(0, Fx::from_int(-10).0, 60);
+    let anchor = sim_add_circle(
+        world,
+        0,
+        0,
+        Fx::from_int(10).0,
+        Fx::from_ratio(1, 10).0,
+        one,
+    );
+    let bob = sim_add_circle(
+        world,
+        2,
+        Fx::from_int(3).0,
+        Fx::from_int(10).0,
+        Fx::HALF.0,
+        one,
+    );
     sim_joint_distance(
-        h,
+        world,
         anchor,
         bob,
         0,
@@ -594,10 +618,17 @@ pub extern "C" fn sim_joint_golden_hash() -> u64 {
         Fx::from_int(3).0,
         Fx::from_int(3).0,
     );
-    let rope_end = sim_add_circle(h, 2, Fx::from_int(-2).0, Fx::from_int(8).0, Fx::HALF.0, one);
-    sim_joint_distance(h, anchor, rope_end, 0, 0, 0, 0, Fx::from_int(5).0, 0);
+    let rope_end = sim_add_circle(
+        world,
+        2,
+        Fx::from_int(-2).0,
+        Fx::from_int(8).0,
+        Fx::HALF.0,
+        one,
+    );
+    sim_joint_distance(world, anchor, rope_end, 0, 0, 0, 0, Fx::from_int(5).0, 0);
     let axle = sim_add_circle(
-        h,
+        world,
         0,
         Fx::from_int(8).0,
         Fx::from_int(2).0,
@@ -605,7 +636,7 @@ pub extern "C" fn sim_joint_golden_hash() -> u64 {
         one,
     );
     let wheel = sim_add_circle(
-        h,
+        world,
         2,
         Fx::from_int(8).0,
         Fx::from_int(2).0,
@@ -613,7 +644,7 @@ pub extern "C" fn sim_joint_golden_hash() -> u64 {
         one,
     );
     sim_joint_revolute(
-        h,
+        world,
         axle,
         wheel,
         0,
@@ -626,16 +657,30 @@ pub extern "C" fn sim_joint_golden_hash() -> u64 {
         Fx::from_int(4).0,
         Fx::from_int(50).0,
     );
-    let wa = sim_add_circle(h, 2, Fx::from_int(-8).0, Fx::from_int(6).0, Fx::HALF.0, one);
-    let wb = sim_add_circle(h, 2, Fx::from_int(-7).0, Fx::from_int(6).0, Fx::HALF.0, one);
-    sim_joint_weld(h, wa, wb, Fx::HALF.0, 0, -Fx::HALF.0, 0, 0);
+    let wa = sim_add_circle(
+        world,
+        2,
+        Fx::from_int(-8).0,
+        Fx::from_int(6).0,
+        Fx::HALF.0,
+        one,
+    );
+    let wb = sim_add_circle(
+        world,
+        2,
+        Fx::from_int(-7).0,
+        Fx::from_int(6).0,
+        Fx::HALF.0,
+        one,
+    );
+    sim_joint_weld(world, wa, wb, Fx::HALF.0, 0, -Fx::HALF.0, 0, 0);
     let mut events = 0u64;
     for _ in 0..240 {
-        sim_step(h);
-        events += sim_events_len(h) as u64;
+        sim_step(world);
+        events += sim_events_len(world) as u64;
     }
-    let hash = sim_hash(h) ^ events.wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    sim_world_free(h);
+    let hash = sim_hash(world) ^ events.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    sim_world_free(world);
     hash
 }
 
@@ -644,8 +689,15 @@ pub extern "C" fn sim_joint_golden_hash() -> u64 {
 /// Grid navmesh: `cols × rows` cells of size `cell` from (ox, oy); blocked cells are given as
 /// (col, row) pairs in the snapshot buffer (u32 LE pairs: fill with `sim_snapshot_set_*`).
 #[no_mangle]
-pub extern "C" fn sim_nav_grid(h: u32, ox: i64, oy: i64, cell: i64, cols: u32, rows: u32) -> u32 {
-    with(h, |s| {
+pub extern "C" fn sim_nav_grid(
+    world: u32,
+    ox: i64,
+    oy: i64,
+    cell: i64,
+    cols: u32,
+    rows: u32,
+) -> u32 {
+    with(world, |s| {
         let blocked: Vec<(u32, u32)> = s
             .snapshot
             .as_chunks::<8>()
@@ -673,8 +725,8 @@ pub extern "C" fn sim_nav_grid(h: u32, ox: i64, oy: i64, cell: i64, cols: u32, r
 
 /// Load a navmesh from its JSON bytes placed in the snapshot buffer (see `NavMesh::to_bytes`).
 #[no_mangle]
-pub extern "C" fn sim_nav_load(h: u32) -> u32 {
-    with(h, |s| match NavMesh::from_bytes(&s.snapshot) {
+pub extern "C" fn sim_nav_load(world: u32) -> u32 {
+    with(world, |s| match NavMesh::from_bytes(&s.snapshot) {
         Some(m) => {
             s.nav = Some(m);
             s.crowd.fields.clear();
@@ -686,14 +738,14 @@ pub extern "C" fn sim_nav_load(h: u32) -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn sim_nav_hash(h: u32) -> u64 {
-    with(h, |s| s.nav.as_ref().map(|m| m.hash()).unwrap_or(0)).unwrap_or(0)
+pub extern "C" fn sim_nav_hash(world: u32) -> u64 {
+    with(world, |s| s.nav.as_ref().map(|m| m.hash()).unwrap_or(0)).unwrap_or(0)
 }
 
 /// Polygon containing (x, y), or u32::MAX.
 #[no_mangle]
-pub extern "C" fn sim_nav_locate(h: u32, x: i64, y: i64) -> u32 {
-    with(h, |s| {
+pub extern "C" fn sim_nav_locate(world: u32, x: i64, y: i64) -> u32 {
+    with(world, |s| {
         s.nav
             .as_ref()
             .and_then(|m| m.locate(FxVec2::new(Fx(x), Fx(y))))
@@ -704,8 +756,8 @@ pub extern "C" fn sim_nav_locate(h: u32, x: i64, y: i64) -> u32 {
 
 /// Find a path; returns the number of waypoints stored for `sim_nav_point` (0 = no path).
 #[no_mangle]
-pub extern "C" fn sim_nav_path(h: u32, x0: i64, y0: i64, x1: i64, y1: i64, mask: u32) -> u32 {
-    with(h, |s| {
+pub extern "C" fn sim_nav_path(world: u32, x0: i64, y0: i64, x1: i64, y1: i64, mask: u32) -> u32 {
+    with(world, |s| {
         s.points.clear();
         let Some(m) = s.nav.as_ref() else { return 0 };
         match m.find_path(
@@ -728,14 +780,14 @@ pub extern "C" fn sim_nav_path(h: u32, x0: i64, y0: i64, x1: i64, y1: i64, mask:
 
 /// Coordinate `i` (0 = x0, 1 = y0, 2 = x1, ...) of the last path.
 #[no_mangle]
-pub extern "C" fn sim_nav_point(h: u32, i: u32) -> i64 {
-    with(h, |s| s.points.get(i as usize).copied().unwrap_or(0)).unwrap_or(0)
+pub extern "C" fn sim_nav_point(world: u32, i: u32) -> i64 {
+    with(world, |s| s.points.get(i as usize).copied().unwrap_or(0)).unwrap_or(0)
 }
 
 /// Mesh raycast; returns 1 and stores the hit point in `sim_ray_get(1..=2)` when blocked.
 #[no_mangle]
-pub extern "C" fn sim_nav_raycast(h: u32, x0: i64, y0: i64, x1: i64, y1: i64) -> u32 {
-    with(h, |s| {
+pub extern "C" fn sim_nav_raycast(world: u32, x0: i64, y0: i64, x1: i64, y1: i64) -> u32 {
+    with(world, |s| {
         let Some(m) = s.nav.as_ref() else { return 0 };
         match m.raycast(FxVec2::new(Fx(x0), Fx(y0)), FxVec2::new(Fx(x1), Fx(y1))) {
             Some(hit) => {
@@ -758,8 +810,8 @@ pub extern "C" fn sim_nav_raycast(h: u32, x0: i64, y0: i64, x1: i64, y1: i64) ->
 
 /// Build a flow field towards (x, y); returns its index (u32::MAX when unreachable).
 #[no_mangle]
-pub extern "C" fn sim_nav_field(h: u32, x: i64, y: i64, mask: u32) -> u32 {
-    with(h, |s| {
+pub extern "C" fn sim_nav_field(world: u32, x: i64, y: i64, mask: u32) -> u32 {
+    with(world, |s| {
         let Some(m) = s.nav.as_ref() else {
             return u32::MAX;
         };
@@ -773,8 +825,8 @@ pub extern "C" fn sim_nav_field(h: u32, x: i64, y: i64, mask: u32) -> u32 {
 
 /// Add a crowd agent; returns its id (0 = no navmesh).
 #[no_mangle]
-pub extern "C" fn sim_agent_add(h: u32, x: i64, y: i64, radius: i64, max_speed: i64) -> u32 {
-    with(h, |s| {
+pub extern "C" fn sim_agent_add(world: u32, x: i64, y: i64, radius: i64, max_speed: i64) -> u32 {
+    with(world, |s| {
         let Some(m) = s.nav.as_ref() else { return 0 };
         s.crowd.add(
             m,
@@ -785,14 +837,14 @@ pub extern "C" fn sim_agent_add(h: u32, x: i64, y: i64, radius: i64, max_speed: 
 }
 
 #[no_mangle]
-pub extern "C" fn sim_agent_remove(h: u32, id: u32) {
-    with(h, |s| s.crowd.remove(id));
+pub extern "C" fn sim_agent_remove(world: u32, id: u32) {
+    with(world, |s| s.crowd.remove(id));
 }
 
 /// Steer towards a point (clears any flow field).
 #[no_mangle]
-pub extern "C" fn sim_agent_target(h: u32, id: u32, x: i64, y: i64) {
-    with(h, |s| {
+pub extern "C" fn sim_agent_target(world: u32, id: u32, x: i64, y: i64) {
+    with(world, |s| {
         if let Some(a) = s.crowd.agents.get_mut(&id) {
             a.target = Some(FxVec2::new(Fx(x), Fx(y)));
             a.field = None;
@@ -803,8 +855,8 @@ pub extern "C" fn sim_agent_target(h: u32, id: u32, x: i64, y: i64) {
 
 /// Follow a flow field (clears any point target).
 #[no_mangle]
-pub extern "C" fn sim_agent_follow(h: u32, id: u32, field: u32) {
-    with(h, |s| {
+pub extern "C" fn sim_agent_follow(world: u32, id: u32, field: u32) {
+    with(world, |s| {
         if let Some(a) = s.crowd.agents.get_mut(&id) {
             a.field = Some(field);
             a.target = None;
@@ -814,8 +866,8 @@ pub extern "C" fn sim_agent_follow(h: u32, id: u32, field: u32) {
 }
 
 #[no_mangle]
-pub extern "C" fn sim_agent_stop(h: u32, id: u32) {
-    with(h, |s| {
+pub extern "C" fn sim_agent_stop(world: u32, id: u32) {
+    with(world, |s| {
         if let Some(a) = s.crowd.agents.get_mut(&id) {
             a.field = None;
             a.target = None;
@@ -826,8 +878,8 @@ pub extern "C" fn sim_agent_stop(h: u32, id: u32) {
 
 /// Agent field: 0 = x, 1 = y, 2 = vx, 3 = vy, 4 = arrived (0/1), 5 = polygon.
 #[no_mangle]
-pub extern "C" fn sim_agent_get(h: u32, id: u32, field: u32) -> i64 {
-    with(h, |s| {
+pub extern "C" fn sim_agent_get(world: u32, id: u32, field: u32) -> i64 {
+    with(world, |s| {
         s.crowd
             .agents
             .get(&id)
@@ -846,8 +898,8 @@ pub extern "C" fn sim_agent_get(h: u32, id: u32, field: u32) -> i64 {
 
 /// Advance the crowd one tick (call alongside `sim_step`).
 #[no_mangle]
-pub extern "C" fn sim_crowd_step(h: u32) {
-    with(h, |s| {
+pub extern "C" fn sim_crowd_step(world: u32) {
+    with(world, |s| {
         if let Some(m) = s.nav.as_ref() {
             s.crowd.step(m);
         }
@@ -855,14 +907,14 @@ pub extern "C" fn sim_crowd_step(h: u32) {
 }
 
 #[no_mangle]
-pub extern "C" fn sim_crowd_hash(h: u32) -> u64 {
-    with(h, |s| s.crowd.hash()).unwrap_or(0)
+pub extern "C" fn sim_crowd_hash(world: u32) -> u64 {
+    with(world, |s| s.crowd.hash()).unwrap_or(0)
 }
 
 /// Snapshot the crowd into the snapshot buffer; returns its length.
 #[no_mangle]
-pub extern "C" fn sim_crowd_snapshot(h: u32) -> u32 {
-    with(h, |s| {
+pub extern "C" fn sim_crowd_snapshot(world: u32) -> u32 {
+    with(world, |s| {
         s.snapshot = s.crowd.snapshot();
         s.snapshot.len() as u32
     })
@@ -870,8 +922,8 @@ pub extern "C" fn sim_crowd_snapshot(h: u32) -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn sim_crowd_restore(h: u32) -> u32 {
-    with(h, |s| match Crowd::restore(&s.snapshot) {
+pub extern "C" fn sim_crowd_restore(world: u32) -> u32 {
+    with(world, |s| match Crowd::restore(&s.snapshot) {
         Some(c) => {
             s.crowd = c;
             1
@@ -885,8 +937,8 @@ pub extern "C" fn sim_crowd_restore(h: u32) -> u32 {
 /// head-on agents, 600 ticks; equal on native and wasm32.
 #[no_mangle]
 pub extern "C" fn sim_nav_golden_hash() -> u64 {
-    let h = sim_world_new(0, 0, 60);
-    sim_snapshot_set_len(h, 40);
+    let world = sim_world_new(0, 0, 60);
+    sim_snapshot_set_len(world, 40);
     for r in 0..5u32 {
         for (k, b) in 4u32
             .to_le_bytes()
@@ -894,43 +946,43 @@ pub extern "C" fn sim_nav_golden_hash() -> u64 {
             .chain(r.to_le_bytes().iter())
             .enumerate()
         {
-            sim_snapshot_set_byte(h, r * 8 + k as u32, *b as u32);
+            sim_snapshot_set_byte(world, r * 8 + k as u32, *b as u32);
         }
     }
-    sim_nav_grid(h, 0, 0, Fx::ONE.0, 8, 6);
+    sim_nav_grid(world, 0, 0, Fx::ONE.0, 8, 6);
     let goal = (Fx::from_ratio(15, 2).0, Fx::HALF.0);
-    let field = sim_nav_field(h, goal.0, goal.1, u32::MAX);
+    let field = sim_nav_field(world, goal.0, goal.1, u32::MAX);
     for i in 0..6i64 {
         let id = sim_agent_add(
-            h,
+            world,
             (Fx::HALF + Fx::from_ratio(i % 3, 2)).0,
             (Fx::HALF + Fx::from_ratio(i / 3, 1)).0,
             Fx::from_ratio(1, 4).0,
             Fx::from_int(3).0,
         );
-        sim_agent_follow(h, id, field);
+        sim_agent_follow(world, id, field);
     }
     let l = sim_agent_add(
-        h,
+        world,
         Fx::from_ratio(11, 2).0,
         Fx::HALF.0,
         Fx::from_ratio(1, 4).0,
         Fx::from_int(2).0,
     );
-    sim_agent_target(h, l, Fx::from_ratio(15, 2).0, Fx::from_ratio(11, 2).0);
+    sim_agent_target(world, l, Fx::from_ratio(15, 2).0, Fx::from_ratio(11, 2).0);
     let r = sim_agent_add(
-        h,
+        world,
         Fx::from_ratio(15, 2).0,
         Fx::from_ratio(11, 2).0,
         Fx::from_ratio(1, 4).0,
         Fx::from_int(2).0,
     );
-    sim_agent_target(h, r, Fx::from_ratio(11, 2).0, Fx::HALF.0);
+    sim_agent_target(world, r, Fx::from_ratio(11, 2).0, Fx::HALF.0);
     for _ in 0..600 {
-        sim_crowd_step(h);
+        sim_crowd_step(world);
     }
-    let hash = sim_crowd_hash(h) ^ sim_nav_hash(h);
-    sim_world_free(h);
+    let hash = sim_crowd_hash(world) ^ sim_nav_hash(world);
+    sim_world_free(world);
     hash
 }
 
@@ -951,14 +1003,14 @@ mod tests {
         let a = sim_joint_golden_hash();
         assert_eq!(a, sim_joint_golden_hash());
         eprintln!("native joint golden hash: {a:#x}");
-        let h = sim_world_new(0, 0, 60);
-        let wall = sim_add_circle(h, 0, Fx::from_int(10).0, 0, Fx::ONE.0, Fx::ONE.0);
+        let world = sim_world_new(0, 0, 60);
+        let wall = sim_add_circle(world, 0, Fx::from_int(10).0, 0, Fx::ONE.0, Fx::ONE.0);
         assert_eq!(
-            sim_circlecast(h, 0, 0, Fx::from_int(20).0, 0, Fx::HALF.0, u32::MAX),
+            sim_circlecast(world, 0, 0, Fx::from_int(20).0, 0, Fx::HALF.0, u32::MAX),
             wall + 1
         );
         assert!((Fx(sim_ray_get(1)) - Fx::from_ratio(85, 10)).abs() < Fx::from_ratio(1, 1000));
-        sim_world_free(h);
+        sim_world_free(world);
     }
 
     #[test]
@@ -966,11 +1018,11 @@ mod tests {
         let a = sim_nav_golden_hash();
         assert_eq!(a, sim_nav_golden_hash());
         eprintln!("native nav golden hash: {a:#x}");
-        let h = sim_world_new(0, 0, 60);
-        sim_snapshot_set_len(h, 0);
-        sim_nav_grid(h, 0, 0, Fx::ONE.0, 4, 4);
+        let world = sim_world_new(0, 0, 60);
+        sim_snapshot_set_len(world, 0);
+        sim_nav_grid(world, 0, 0, Fx::ONE.0, 4, 4);
         let n = sim_nav_path(
-            h,
+            world,
             Fx::HALF.0,
             Fx::HALF.0,
             Fx::from_ratio(7, 2).0,
@@ -978,21 +1030,24 @@ mod tests {
             u32::MAX,
         );
         assert!((2..=4).contains(&n), "open grid path has {n} waypoints");
-        assert_eq!(Fx(sim_nav_point(h, 2 * (n - 1))), Fx::from_ratio(7, 2));
-        assert_eq!(Fx(sim_nav_point(h, 2 * (n - 1) + 1)), Fx::from_ratio(7, 2));
+        assert_eq!(Fx(sim_nav_point(world, 2 * (n - 1))), Fx::from_ratio(7, 2));
         assert_eq!(
-            sim_nav_raycast(h, Fx::HALF.0, Fx::HALF.0, Fx::from_int(9).0, Fx::HALF.0),
+            Fx(sim_nav_point(world, 2 * (n - 1) + 1)),
+            Fx::from_ratio(7, 2)
+        );
+        assert_eq!(
+            sim_nav_raycast(world, Fx::HALF.0, Fx::HALF.0, Fx::from_int(9).0, Fx::HALF.0),
             1
         );
         assert!((Fx(sim_ray_get(1)) - Fx::from_int(4)).abs() < Fx::from_ratio(1, 1000));
-        sim_world_free(h);
+        sim_world_free(world);
     }
 
     #[test]
     fn flat_abi_round_trip() {
-        let h = sim_world_new(0, Fx::from_int(-10).0, 60);
+        let world = sim_world_new(0, Fx::from_int(-10).0, 60);
         sim_add_box(
-            h,
+            world,
             0,
             0,
             Fx::from_int(-1).0,
@@ -1000,26 +1055,35 @@ mod tests {
             Fx::ONE.0,
             Fx::ONE.0,
         );
-        let ball = sim_add_circle(h, 2, 0, Fx::from_int(5).0, Fx::ONE.0, Fx::ONE.0);
+        let ball = sim_add_circle(world, 2, 0, Fx::from_int(5).0, Fx::ONE.0, Fx::ONE.0);
         for _ in 0..120 {
-            sim_step(h);
+            sim_step(world);
         }
-        let y = Fx(sim_body_get(h, ball, 1)).to_f64();
+        let y = Fx(sim_body_get(world, ball, 1)).to_f64();
         assert!((0.9..1.1).contains(&y), "ball at {y}");
-        let len = sim_snapshot(h);
-        let bytes: Vec<u8> = (0..len).map(|i| sim_snapshot_byte(h, i) as u8).collect();
-        let before = sim_hash(h);
-        sim_step(h);
-        sim_snapshot_set_len(h, len);
+        let len = sim_snapshot(world);
+        let bytes: Vec<u8> = (0..len)
+            .map(|i| sim_snapshot_byte(world, i) as u8)
+            .collect();
+        let before = sim_hash(world);
+        sim_step(world);
+        sim_snapshot_set_len(world, len);
         for (i, b) in bytes.iter().enumerate() {
-            sim_snapshot_set_byte(h, i as u32, *b as u32);
+            sim_snapshot_set_byte(world, i as u32, *b as u32);
         }
-        assert_eq!(sim_restore(h), 1);
-        assert_eq!(sim_hash(h), before);
+        assert_eq!(sim_restore(world), 1);
+        assert_eq!(sim_hash(world), before);
         assert_ne!(
-            sim_raycast(h, 0, Fx::from_int(5).0, 0, Fx::from_int(-10).0, u32::MAX),
+            sim_raycast(
+                world,
+                0,
+                Fx::from_int(5).0,
+                0,
+                Fx::from_int(-10).0,
+                u32::MAX
+            ),
             0
         );
-        sim_world_free(h);
+        sim_world_free(world);
     }
 }

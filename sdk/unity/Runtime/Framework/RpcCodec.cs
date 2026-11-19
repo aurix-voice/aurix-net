@@ -7,7 +7,13 @@ using System.IO.Compression;
 
 namespace Aurix.Net.Unity.Framework
 {
-    public enum RpcCompression : byte { None, Fast, Balanced, Best }
+    public enum RpcCompression : byte
+    {
+        None,
+        Fast,
+        Balanced,
+        Best,
+    }
 
     /// <summary>
     /// Packs RPC argument payloads when the attribute asks for it. Delta packing XORs the payload with the previous
@@ -17,83 +23,207 @@ namespace Aurix.Net.Unity.Framework
     /// </summary>
     public sealed class RpcCodec
     {
-        const byte FlagCompressed = 1, FlagDelta = 2;
+        const byte FlagCompressed = 1,
+            FlagDelta = 2;
         const int MinCompressBytes = 48;
-        readonly Dictionary<(ulong key, int peer), byte[]> _sent = new Dictionary<(ulong, int), byte[]>(), _recv = new Dictionary<(ulong, int), byte[]>();
+        readonly Dictionary<(ulong key, int peer), byte[]> _sent = new Dictionary<
+                (ulong, int),
+                byte[]
+            >(),
+            _recv = new Dictionary<(ulong, int), byte[]>();
 
-        public static bool Wants(RpcAttribute a) => a.compression != RpcCompression.None || a.deltaPack;
-        public void Clear() { _sent.Clear(); _recv.Clear(); }
+        public static bool Wants(RpcAttribute attribute) =>
+            attribute.compression != RpcCompression.None || attribute.deltaPack;
+
+        public void Clear()
+        {
+            _sent.Clear();
+            _recv.Clear();
+        }
+
         public void ForgetPeer(int peer)
         {
-            var ks = new List<(ulong, int)>(); foreach (var k in _sent.Keys) if (k.peer == peer) ks.Add(k); foreach (var k in ks) _sent.Remove(k);
-            ks.Clear(); foreach (var k in _recv.Keys) if (k.peer == peer) ks.Add(k); foreach (var k in ks) _recv.Remove(k);
+            var ks = new List<(ulong, int)>();
+            foreach (var key in _sent.Keys)
+            {
+                if (key.peer == peer)
+                {
+                    ks.Add(key);
+                }
+            }
+
+            foreach (var key in ks)
+            {
+                _sent.Remove(key);
+            }
+
+            ks.Clear();
+            foreach (var key in _recv.Keys)
+            {
+                if (key.peer == peer)
+                {
+                    ks.Add(key);
+                }
+            }
+
+            foreach (var key in ks)
+            {
+                _recv.Remove(key);
+            }
         }
 
-        public byte[] Encode(ulong key, int peer, RpcAttribute a, byte[] raw)
+        public byte[] Encode(ulong key, int peer, RpcAttribute attribute, byte[] raw)
         {
-            if (!Wants(a)) return raw;
-            byte flags = 0; var body = raw;
-            if (a.deltaPack)
+            if (!Wants(attribute))
             {
-                if (_sent.TryGetValue((key, peer), out var prev) && prev.Length == raw.Length) { body = RleZeros(Xor(raw, prev)); flags |= FlagDelta; }
+                return raw;
+            }
+
+            byte flags = 0;
+            var body = raw;
+            if (attribute.deltaPack)
+            {
+                if (_sent.TryGetValue((key, peer), out var prev) && prev.Length == raw.Length)
+                {
+                    body = RleZeros(Xor(raw, prev));
+                    flags |= FlagDelta;
+                }
                 _sent[(key, peer)] = raw;
             }
-            if (a.compression != RpcCompression.None && body.Length >= MinCompressBytes)
+            if (attribute.compression != RpcCompression.None && body.Length >= MinCompressBytes)
             {
-                var c = Deflate(body, a.compression);
-                if (c.Length < body.Length) { body = c; flags |= FlagCompressed; }
+                var compressed = Deflate(body, attribute.compression);
+                if (compressed.Length < body.Length)
+                {
+                    body = compressed;
+                    flags |= FlagCompressed;
+                }
             }
-            var o = new byte[body.Length + 1]; o[0] = flags; Buffer.BlockCopy(body, 0, o, 1, body.Length); return o;
+            var output = new byte[body.Length + 1];
+            output[0] = flags;
+            Buffer.BlockCopy(body, 0, output, 1, body.Length);
+            return output;
         }
 
-        public byte[] Decode(ulong key, int peer, RpcAttribute a, byte[] wire)
+        public byte[] Decode(ulong key, int peer, RpcAttribute attribute, byte[] wire)
         {
-            if (!Wants(a)) return wire;
-            if (wire.Length == 0) return wire;
-            byte flags = wire[0]; var body = new byte[wire.Length - 1]; Buffer.BlockCopy(wire, 1, body, 0, body.Length);
-            if ((flags & FlagCompressed) != 0) body = Inflate(body);
+            if (!Wants(attribute))
+            {
+                return wire;
+            }
+
+            if (wire.Length == 0)
+            {
+                return wire;
+            }
+
+            byte flags = wire[0];
+            var body = new byte[wire.Length - 1];
+            Buffer.BlockCopy(wire, 1, body, 0, body.Length);
+            if ((flags & FlagCompressed) != 0)
+            {
+                body = Inflate(body);
+            }
+
             if ((flags & FlagDelta) != 0)
             {
-                if (!_recv.TryGetValue((key, peer), out var prev)) throw new NetException("RpcCodec: delta-packed RPC without a base payload");
+                if (!_recv.TryGetValue((key, peer), out var prev))
+                {
+                    throw new NetException("RpcCodec: delta-packed RPC without a base payload");
+                }
+
                 body = Xor(UnRleZeros(body, prev.Length), prev);
             }
-            if (a.deltaPack) _recv[(key, peer)] = body;
+            if (attribute.deltaPack)
+            {
+                _recv[(key, peer)] = body;
+            }
+
             return body;
         }
 
-        static byte[] Xor(byte[] a, byte[] b) { var o = new byte[a.Length]; for (int i = 0; i < a.Length; i++) o[i] = (byte)(a[i] ^ b[i]); return o; }
+        static byte[] Xor(byte[] left, byte[] right)
+        {
+            var output = new byte[left.Length];
+            for (int i = 0; i < left.Length; i++)
+            {
+                output[i] = (byte)(left[i] ^ right[i]);
+            }
+
+            return output;
+        }
 
         // runs: [zeroRun:1][litLen:1][lit...]... ; runs longer than 255 split.
-        static byte[] RleZeros(byte[] d)
+        static byte[] RleZeros(byte[] data)
         {
-            var o = new List<byte>(d.Length / 2 + 4); int i = 0;
-            while (i < d.Length)
+            var output = new List<byte>(data.Length / 2 + 4);
+            int index = 0;
+            while (index < data.Length)
             {
-                int z = 0; while (i < d.Length && d[i] == 0 && z < 255) { z++; i++; }
-                int start = i; while (i < d.Length && d[i] != 0 && i - start < 255) i++;
-                o.Add((byte)z); o.Add((byte)(i - start)); for (int k = start; k < i; k++) o.Add(d[k]);
+                int zeros = 0;
+                while (index < data.Length && data[index] == 0 && zeros < 255)
+                {
+                    zeros++;
+                    index++;
+                }
+                int start = index;
+                while (index < data.Length && data[index] != 0 && index - start < 255)
+                {
+                    index++;
+                }
+
+                output.Add((byte)zeros);
+                output.Add((byte)(index - start));
+                for (int k = start; k < index; k++)
+                {
+                    output.Add(data[k]);
+                }
             }
-            return o.ToArray();
-        }
-        static byte[] UnRleZeros(byte[] e, int length)
-        {
-            var o = new byte[length]; int i = 0, p = 0;
-            while (i + 1 < e.Length && p < length)
-            {
-                int z = e[i++], l = e[i++]; p += z;
-                for (int k = 0; k < l && p < length; k++) o[p++] = e[i++];
-            }
-            return o;
+            return output.ToArray();
         }
 
-        static byte[] Deflate(byte[] d, RpcCompression level)
+        static byte[] UnRleZeros(byte[] encoded, int length)
         {
-            var lv = level == RpcCompression.Fast ? CompressionLevel.Fastest : CompressionLevel.Optimal;
-            using (var ms = new MemoryStream()) { using (var z = new DeflateStream(ms, lv, true)) z.Write(d, 0, d.Length); return ms.ToArray(); }
+            var output = new byte[length];
+            int index = 0,
+                position = 0;
+            while (index + 1 < encoded.Length && position < length)
+            {
+                int zeros = encoded[index++],
+                    literals = encoded[index++];
+                position += zeros;
+                for (int k = 0; k < literals && position < length; k++)
+                {
+                    output[position++] = encoded[index++];
+                }
+            }
+            return output;
         }
-        static byte[] Inflate(byte[] d)
+
+        static byte[] Deflate(byte[] data, RpcCompression level)
         {
-            using (var src = new MemoryStream(d)) using (var z = new DeflateStream(src, CompressionMode.Decompress)) using (var ms = new MemoryStream()) { z.CopyTo(ms); return ms.ToArray(); }
+            var lv =
+                level == RpcCompression.Fast ? CompressionLevel.Fastest : CompressionLevel.Optimal;
+            using (var ms = new MemoryStream())
+            {
+                using (var deflate = new DeflateStream(ms, lv, true))
+                {
+                    deflate.Write(data, 0, data.Length);
+                }
+
+                return ms.ToArray();
+            }
+        }
+
+        static byte[] Inflate(byte[] data)
+        {
+            using (var src = new MemoryStream(data))
+            using (var deflate = new DeflateStream(src, CompressionMode.Decompress))
+            using (var ms = new MemoryStream())
+            {
+                deflate.CopyTo(ms);
+                return ms.ToArray();
+            }
         }
     }
 }

@@ -39,9 +39,9 @@ const QUAT_BITS: u32 = 10;
 
 impl ComponentValue {
     /// Default (zero) value for a component.
-    pub fn zero(c: &Component) -> Self {
+    pub fn zero(component: &Component) -> Self {
         Self {
-            fields: c
+            fields: component
                 .fields
                 .iter()
                 .map(|f| match &f.ty {
@@ -60,91 +60,99 @@ impl ComponentValue {
     }
 
     fn write_field(
-        w: &mut BitWriter,
+        writer: &mut BitWriter,
         ty: &FieldType,
-        v: &Value,
+        value: &Value,
         idx: usize,
     ) -> Result<(), CodecError> {
-        match (ty, v) {
-            (FieldType::Bool, Value::Bool(b)) => w.write_bool(*b),
-            (FieldType::UInt { bits }, Value::UInt(x)) => w.write_uint(*x, *bits),
-            (FieldType::Int { bits }, Value::Int(x)) => w.write_int(*x, *bits),
-            (FieldType::F32, Value::F32(x)) => w.write_f32(*x),
+        match (ty, value) {
+            (FieldType::Bool, Value::Bool(b)) => writer.write_bool(*b),
+            (FieldType::UInt { bits }, Value::UInt(x)) => writer.write_uint(*x, *bits),
+            (FieldType::Int { bits }, Value::Int(x)) => writer.write_int(*x, *bits),
+            (FieldType::F32, Value::F32(x)) => writer.write_f32(*x),
             (FieldType::Quant { min, max, res }, Value::F32(x)) => {
-                w.write_quantized(*x, *min, *max, *res)
+                writer.write_quantized(*x, *min, *max, *res)
             }
             (FieldType::Vec2 { min, max, res }, Value::Vec2(a)) => {
                 for x in a {
-                    w.write_quantized(*x, *min, *max, *res);
+                    writer.write_quantized(*x, *min, *max, *res);
                 }
             }
             (FieldType::Vec3 { min, max, res }, Value::Vec3(a)) => {
                 for x in a {
-                    w.write_quantized(*x, *min, *max, *res);
+                    writer.write_quantized(*x, *min, *max, *res);
                 }
             }
-            (FieldType::Quat, Value::Quat(q)) => write_quat(w, *q),
+            (FieldType::Quat, Value::Quat(q)) => write_quat(writer, *q),
             (FieldType::String { max }, Value::String(s)) => {
-                let b = &s.as_bytes()[..s.len().min(*max as usize)];
-                let b = truncate_utf8(b);
-                w.write_uint(b.len() as u64, len_bits(*max));
-                w.write_bytes(b);
+                let bytes = &s.as_bytes()[..s.len().min(*max as usize)];
+                let bytes = truncate_utf8(bytes);
+                writer.write_uint(bytes.len() as u64, len_bits(*max));
+                writer.write_bytes(bytes);
             }
             (FieldType::Bytes { max }, Value::Bytes(b)) => {
-                let b = &b[..b.len().min(*max as usize)];
-                w.write_uint(b.len() as u64, len_bits(*max));
-                w.write_bytes(b);
+                let bytes = &b[..b.len().min(*max as usize)];
+                writer.write_uint(bytes.len() as u64, len_bits(*max));
+                writer.write_bytes(bytes);
             }
             _ => return Err(CodecError::Type(idx)),
         }
         Ok(())
     }
 
-    fn read_field(r: &mut BitReader, ty: &FieldType) -> Result<Value, CodecError> {
+    fn read_field(reader: &mut BitReader, ty: &FieldType) -> Result<Value, CodecError> {
         Ok(match ty {
-            FieldType::Bool => Value::Bool(r.read_bool()?),
-            FieldType::UInt { bits } => Value::UInt(r.read_uint(*bits)?),
-            FieldType::Int { bits } => Value::Int(r.read_int(*bits)?),
-            FieldType::F32 => Value::F32(r.read_f32()?),
-            FieldType::Quant { min, max, res } => Value::F32(r.read_quantized(*min, *max, *res)?),
+            FieldType::Bool => Value::Bool(reader.read_bool()?),
+            FieldType::UInt { bits } => Value::UInt(reader.read_uint(*bits)?),
+            FieldType::Int { bits } => Value::Int(reader.read_int(*bits)?),
+            FieldType::F32 => Value::F32(reader.read_f32()?),
+            FieldType::Quant { min, max, res } => {
+                Value::F32(reader.read_quantized(*min, *max, *res)?)
+            }
             FieldType::Vec2 { min, max, res } => Value::Vec2([
-                r.read_quantized(*min, *max, *res)?,
-                r.read_quantized(*min, *max, *res)?,
+                reader.read_quantized(*min, *max, *res)?,
+                reader.read_quantized(*min, *max, *res)?,
             ]),
             FieldType::Vec3 { min, max, res } => Value::Vec3([
-                r.read_quantized(*min, *max, *res)?,
-                r.read_quantized(*min, *max, *res)?,
-                r.read_quantized(*min, *max, *res)?,
+                reader.read_quantized(*min, *max, *res)?,
+                reader.read_quantized(*min, *max, *res)?,
+                reader.read_quantized(*min, *max, *res)?,
             ]),
-            FieldType::Quat => Value::Quat(read_quat(r)?),
+            FieldType::Quat => Value::Quat(read_quat(reader)?),
             FieldType::String { max } => {
-                let n = r.read_uint(len_bits(*max))? as usize;
-                Value::String(String::from_utf8(r.read_bytes(n)?).map_err(|_| CodecError::Utf8)?)
+                let len = reader.read_uint(len_bits(*max))? as usize;
+                Value::String(
+                    String::from_utf8(reader.read_bytes(len)?).map_err(|_| CodecError::Utf8)?,
+                )
             }
             FieldType::Bytes { max } => {
-                let n = r.read_uint(len_bits(*max))? as usize;
-                Value::Bytes(r.read_bytes(n)?)
+                let len = reader.read_uint(len_bits(*max))? as usize;
+                Value::Bytes(reader.read_bytes(len)?)
             }
         })
     }
 
     /// All fields.
-    pub fn encode_full(&self, c: &Component, w: &mut BitWriter) -> Result<(), CodecError> {
-        if self.fields.len() != c.fields.len() {
+    pub fn encode_full(
+        &self,
+        component: &Component,
+        writer: &mut BitWriter,
+    ) -> Result<(), CodecError> {
+        if self.fields.len() != component.fields.len() {
             return Err(CodecError::Arity);
         }
-        for (i, (f, v)) in c.fields.iter().zip(&self.fields).enumerate() {
-            Self::write_field(w, &f.ty, v, i)?;
+        for (i, (f, v)) in component.fields.iter().zip(&self.fields).enumerate() {
+            Self::write_field(writer, &f.ty, v, i)?;
         }
         Ok(())
     }
 
-    pub fn decode_full(c: &Component, r: &mut BitReader) -> Result<Self, CodecError> {
+    pub fn decode_full(component: &Component, reader: &mut BitReader) -> Result<Self, CodecError> {
         Ok(Self {
-            fields: c
+            fields: component
                 .fields
                 .iter()
-                .map(|f| Self::read_field(r, &f.ty))
+                .map(|f| Self::read_field(reader, &f.ty))
                 .collect::<Result<_, _>>()?,
         })
     }
@@ -154,10 +162,12 @@ impl ComponentValue {
     pub fn encode_delta(
         &self,
         base: &Self,
-        c: &Component,
-        w: &mut BitWriter,
+        component: &Component,
+        writer: &mut BitWriter,
     ) -> Result<bool, CodecError> {
-        if self.fields.len() != c.fields.len() || base.fields.len() != c.fields.len() {
+        if self.fields.len() != component.fields.len()
+            || base.fields.len() != component.fields.len()
+        {
             return Err(CodecError::Arity);
         }
         let changed: Vec<bool> = self
@@ -170,25 +180,29 @@ impl ComponentValue {
             return Ok(false);
         }
         for ch in &changed {
-            w.write_bool(*ch);
+            writer.write_bool(*ch);
         }
-        for (i, (f, v)) in c.fields.iter().zip(&self.fields).enumerate() {
+        for (i, (f, v)) in component.fields.iter().zip(&self.fields).enumerate() {
             if changed[i] {
-                Self::write_field(w, &f.ty, v, i)?;
+                Self::write_field(writer, &f.ty, v, i)?;
             }
         }
         Ok(true)
     }
 
-    pub fn decode_delta(base: &Self, c: &Component, r: &mut BitReader) -> Result<Self, CodecError> {
-        let mut changed = Vec::with_capacity(c.fields.len());
-        for _ in 0..c.fields.len() {
-            changed.push(r.read_bool()?);
+    pub fn decode_delta(
+        base: &Self,
+        component: &Component,
+        reader: &mut BitReader,
+    ) -> Result<Self, CodecError> {
+        let mut changed = Vec::with_capacity(component.fields.len());
+        for _ in 0..component.fields.len() {
+            changed.push(reader.read_bool()?);
         }
         let mut out = base.clone();
-        for (i, f) in c.fields.iter().enumerate() {
+        for (i, field) in component.fields.iter().enumerate() {
             if changed[i] {
-                out.fields[i] = Self::read_field(r, &f.ty)?;
+                out.fields[i] = Self::read_field(reader, &field.ty)?;
             }
         }
         Ok(out)
@@ -199,34 +213,34 @@ fn len_bits(max: u32) -> u32 {
     (64 - (max as u64).leading_zeros()).max(1)
 }
 
-fn truncate_utf8(b: &[u8]) -> &[u8] {
-    let mut n = b.len();
-    while n > 0 && std::str::from_utf8(&b[..n]).is_err() {
-        n -= 1;
+fn truncate_utf8(bytes: &[u8]) -> &[u8] {
+    let mut len = bytes.len();
+    while len > 0 && std::str::from_utf8(&bytes[..len]).is_err() {
+        len -= 1;
     }
-    &b[..n]
+    &bytes[..len]
 }
 
 /// Smallest-three: drop the largest-magnitude component, send the other three in [-1/√2, 1/√2].
-fn write_quat(w: &mut BitWriter, q: [f32; 4]) {
-    let len = (q.iter().map(|x| x * x).sum::<f32>()).sqrt();
-    let q = if len > 0.0 {
-        q.map(|x| x / len)
+fn write_quat(writer: &mut BitWriter, quat: [f32; 4]) {
+    let len = (quat.iter().map(|x| x * x).sum::<f32>()).sqrt();
+    let quat = if len > 0.0 {
+        quat.map(|x| x / len)
     } else {
         [0.0, 0.0, 0.0, 1.0]
     };
     let mut largest = 0;
-    for (i, x) in q.iter().enumerate().skip(1) {
-        if x.abs() > q[largest].abs() {
+    for (i, x) in quat.iter().enumerate().skip(1) {
+        if x.abs() > quat[largest].abs() {
             largest = i;
         }
     }
-    let sign = if q[largest] < 0.0 { -1.0 } else { 1.0 };
-    w.write_uint(largest as u64, 2);
+    let sign = if quat[largest] < 0.0 { -1.0 } else { 1.0 };
+    writer.write_uint(largest as u64, 2);
     let lim = std::f32::consts::FRAC_1_SQRT_2;
-    for (i, x) in q.iter().enumerate() {
+    for (i, x) in quat.iter().enumerate() {
         if i != largest {
-            w.write_quantized(
+            writer.write_quantized(
                 x * sign,
                 -lim,
                 lim,
@@ -236,20 +250,21 @@ fn write_quat(w: &mut BitWriter, q: [f32; 4]) {
     }
 }
 
-fn read_quat(r: &mut BitReader) -> Result<[f32; 4], Eof> {
-    let largest = r.read_uint(2)? as usize;
+fn read_quat(reader: &mut BitReader) -> Result<[f32; 4], Eof> {
+    let largest = reader.read_uint(2)? as usize;
     let lim = std::f32::consts::FRAC_1_SQRT_2;
-    let mut q = [0.0f32; 4];
+    let mut quat = [0.0f32; 4];
     let mut sum = 0.0;
-    for (i, slot) in q.iter_mut().enumerate() {
+    for (i, slot) in quat.iter_mut().enumerate() {
         if i != largest {
-            let v = r.read_quantized(-lim, lim, 2.0 * lim / ((1u32 << QUAT_BITS) - 1) as f32)?;
-            *slot = v;
-            sum += v * v;
+            let part =
+                reader.read_quantized(-lim, lim, 2.0 * lim / ((1u32 << QUAT_BITS) - 1) as f32)?;
+            *slot = part;
+            sum += part * part;
         }
     }
-    q[largest] = (1.0 - sum).max(0.0).sqrt();
-    Ok(q)
+    quat[largest] = (1.0 - sum).max(0.0).sqrt();
+    Ok(quat)
 }
 
 #[cfg(test)]
@@ -266,9 +281,9 @@ mod tests {
 
     #[test]
     fn full_roundtrip_and_sizes() {
-        let s = schema();
-        let c = s.component("T").unwrap();
-        let v = ComponentValue {
+        let schema = schema();
+        let component = schema.component("T").unwrap();
+        let value = ComponentValue {
             fields: vec![
                 Value::Vec3([1.23, -45.67, 99.99]),
                 Value::Quat([0.1, 0.2, 0.3, 0.927]),
@@ -278,13 +293,13 @@ mod tests {
                 Value::F32(3.5),
             ],
         };
-        let mut w = BitWriter::new();
-        v.encode_full(c, &mut w).unwrap();
+        let mut writer = BitWriter::new();
+        value.encode_full(component, &mut writer).unwrap();
         // 3*15 + (2+30) + 8 + (4+8*8) + 16 + 32 = 201 bits
-        assert!(w.bit_len() <= 210, "{}", w.bit_len());
-        let buf = w.finish();
-        let d = ComponentValue::decode_full(c, &mut BitReader::new(&buf)).unwrap();
-        match (&d.fields[0], &d.fields[1], &d.fields[3]) {
+        assert!(writer.bit_len() <= 210, "{}", writer.bit_len());
+        let buf = writer.finish();
+        let decoded = ComponentValue::decode_full(component, &mut BitReader::new(&buf)).unwrap();
+        match (&decoded.fields[0], &decoded.fields[1], &decoded.fields[3]) {
             (Value::Vec3(p), Value::Quat(q), Value::String(n)) => {
                 assert!((p[1] + 45.67).abs() < 0.006);
                 let dot: f32 = q
@@ -297,37 +312,40 @@ mod tests {
             }
             _ => panic!(),
         }
-        assert_eq!(d.fields[2], Value::UInt(200));
-        assert_eq!(d.fields[4], Value::Int(-300));
-        assert_eq!(d.fields[5], Value::F32(3.5));
+        assert_eq!(decoded.fields[2], Value::UInt(200));
+        assert_eq!(decoded.fields[4], Value::Int(-300));
+        assert_eq!(decoded.fields[5], Value::F32(3.5));
     }
 
     #[test]
     fn delta_only_changed_fields() {
-        let s = schema();
-        let c = s.component("T").unwrap();
-        let base = ComponentValue::zero(c);
+        let schema = schema();
+        let component = schema.component("T").unwrap();
+        let base = ComponentValue::zero(component);
         let mut cur = base.clone();
         cur.fields[2] = Value::UInt(7);
-        let mut w = BitWriter::new();
-        assert!(cur.encode_delta(&base, c, &mut w).unwrap());
-        assert_eq!(w.bit_len(), 6 + 8);
-        let buf = w.finish();
-        let d = ComponentValue::decode_delta(&base, c, &mut BitReader::new(&buf)).unwrap();
-        assert_eq!(d, cur);
+        let mut writer = BitWriter::new();
+        assert!(cur.encode_delta(&base, component, &mut writer).unwrap());
+        assert_eq!(writer.bit_len(), 6 + 8);
+        let buf = writer.finish();
+        let decoded =
+            ComponentValue::decode_delta(&base, component, &mut BitReader::new(&buf)).unwrap();
+        assert_eq!(decoded, cur);
         let mut w2 = BitWriter::new();
-        assert!(!cur.encode_delta(&cur, c, &mut w2).unwrap());
+        assert!(!cur.encode_delta(&cur, component, &mut w2).unwrap());
         assert_eq!(w2.bit_len(), 0);
     }
 
     #[test]
     fn type_mismatch_is_error() {
-        let s = schema();
-        let c = s.component("T").unwrap();
-        let mut v = ComponentValue::zero(c);
-        v.fields[2] = Value::Bool(true);
+        let schema = schema();
+        let component = schema.component("T").unwrap();
+        let mut value = ComponentValue::zero(component);
+        value.fields[2] = Value::Bool(true);
         assert_eq!(
-            v.encode_full(c, &mut BitWriter::new()).unwrap_err(),
+            value
+                .encode_full(component, &mut BitWriter::new())
+                .unwrap_err(),
             CodecError::Type(2)
         );
     }

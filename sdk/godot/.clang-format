@@ -1,0 +1,21 @@
+# The Godot engine's own style, as used by godot-cpp, so the extension reads like engine code.
+BasedOnStyle: LLVM
+AccessModifierOffset: -4
+AlignAfterOpenBracket: DontAlign
+AlignOperands: DontAlign
+AlignTrailingComments: false
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowShortFunctionsOnASingleLine: Inline
+BreakConstructorInitializers: AfterColon
+ColumnLimit: 0
+ConstructorInitializerIndentWidth: 8
+ContinuationIndentWidth: 8
+Cpp11BracedListStyle: false
+IndentCaseLabels: true
+IndentWidth: 4
+InsertBraces: true
+KeepEmptyLinesAtTheStartOfBlocks: false
+PackConstructorInitializers: NextLine
+Standard: c++17
+TabWidth: 4
+UseTab: Always

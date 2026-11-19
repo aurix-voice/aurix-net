@@ -45,6 +45,11 @@ jobs:
           pip3 install --user scons
           git clone -q --depth 1 -b 4.2 https://github.com/godotengine/godot-cpp sdk/godot/godot-cpp
           (cd sdk/godot && ~/.local/bin/scons target=template_debug -j"$(nproc)" >/dev/null && ls -la bin)
+      - name: C++ and Godot SDK formatting
+        run: |
+          pip3 install --user clang-format==18.1.8
+          (cd sdk/cpp && ~/.local/bin/clang-format --dry-run -Werror aurix_net.hpp)
+          (cd sdk/godot && ~/.local/bin/clang-format --dry-run -Werror src/*.cpp src/aurix_net_*.h)
       - name: aurix-sim C ABI (libaurix_net + ctest/sim.c, header up to date)
         run: |
           cargo build --release -p net-ffi
@@ -94,6 +99,8 @@ jobs:
       - uses: actions/setup-node@v7
         with: { node-version: 22 }
       - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
       - run: npm run build
       - run: npm test   # live echo test skips itself without NET_API_KEY
 
@@ -106,6 +113,9 @@ jobs:
         with: { name: sim-and-server, path: target }
       - uses: actions/setup-dotnet@v6
         with: { dotnet-version: 8.0.x }
+      - name: Unity SDK formatting
+        working-directory: sdk/unity
+        run: dotnet tool restore && dotnet csharpier --check Runtime Editor Weaver Samples~
       - run: dotnet build -c Release "sdk/unity/BuildCheck~/managed-live/managed-live.csproj"
       - run: dotnet build -c Release "sdk/unity/BuildCheck~/managed-rehost/managed-rehost.csproj"
       - run: dotnet test -c Release "sdk/unity/BuildCheck~/managed-tests/managed-tests.csproj"

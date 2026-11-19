@@ -17,28 +17,38 @@ pub async fn run(st: Shared) {
             .map(|d| u64::from(d.subsec_nanos()) % 5_000)
             .unwrap_or(0);
         tokio::time::sleep(Duration::from_millis(jitter)).await;
-        let r = &st.cfg.retention;
+        let retention = &st.cfg.retention;
         for (what, res) in [
             (
                 "rooms",
-                queries::purge_closed_rooms(&st.pool, r.closed_rooms_days).await,
+                queries::purge_closed_rooms(&st.pool, retention.closed_rooms_days).await,
             ),
-            ("audit", queries::purge_audit(&st.pool, r.audit_days).await),
-            ("usage", queries::purge_usage(&st.pool, r.usage_days).await),
+            (
+                "audit",
+                queries::purge_audit(&st.pool, retention.audit_days).await,
+            ),
+            (
+                "usage",
+                queries::purge_usage(&st.pool, retention.usage_days).await,
+            ),
             ("bans", queries::purge_expired_bans(&st.pool).await),
             (
                 "webhook_deliveries",
-                queries::purge_webhook_deliveries(&st.pool, r.webhook_deliveries_days).await,
+                queries::purge_webhook_deliveries(&st.pool, retention.webhook_deliveries_days)
+                    .await,
             ),
             (
                 "operator_webhook_deliveries",
-                queries::purge_operator_webhook_deliveries(&st.pool, r.webhook_deliveries_days)
-                    .await,
+                queries::purge_operator_webhook_deliveries(
+                    &st.pool,
+                    retention.webhook_deliveries_days,
+                )
+                .await,
             ),
         ] {
             match res {
                 Ok(0) => {}
-                Ok(n) => tracing::info!(table = what, deleted = n, "janitor"),
+                Ok(count) => tracing::info!(table = what, deleted = count, "janitor"),
                 Err(e) => tracing::warn!(table = what, error = %e, "janitor"),
             }
         }

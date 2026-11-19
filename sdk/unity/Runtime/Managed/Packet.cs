@@ -10,41 +10,72 @@ namespace Aurix.Net.Managed
         public const int HeaderLen = 12;
         public const int MaxDatagram = 1100;
         public const int MaxUnfragmented = MaxDatagram - HeaderLen;
-        public const byte FlagAckOnly = 0x80, FlagHasAck = 0x40, FlagBatch = 0x20;
+        public const byte FlagAckOnly = 0x80,
+            FlagHasAck = 0x40,
+            FlagBatch = 0x20;
         public const byte KindFragment = 3;
 
         public struct Header
         {
-            public byte Kind; public bool AckOnly, HasAck, Batch;
-            public ushort Seq, Ack; public uint AckBits; public ushort Tick;
+            public byte Kind;
+            public bool AckOnly,
+                HasAck,
+                Batch;
+            public ushort Seq,
+                Ack;
+            public uint AckBits;
+            public ushort Tick;
         }
 
-        public static byte[] Encode(in Header h, ReadOnlySpan<byte> payload)
+        public static byte[] Encode(in Header header, ReadOnlySpan<byte> payload)
         {
-            var o = new byte[HeaderLen + payload.Length];
-            o[0] = ProtocolVersion;
-            o[1] = (byte)((h.Kind & 0x1f) | (h.AckOnly ? FlagAckOnly : 0) | (h.HasAck ? FlagHasAck : 0) | (h.Batch ? FlagBatch : 0));
-            o[2] = (byte)(h.Seq >> 8); o[3] = (byte)h.Seq; o[4] = (byte)(h.Ack >> 8); o[5] = (byte)h.Ack;
-            o[6] = (byte)(h.AckBits >> 24); o[7] = (byte)(h.AckBits >> 16); o[8] = (byte)(h.AckBits >> 8); o[9] = (byte)h.AckBits;
-            o[10] = (byte)(h.Tick >> 8); o[11] = (byte)h.Tick;
-            payload.CopyTo(o.AsSpan(HeaderLen));
-            return o;
+            var output = new byte[HeaderLen + payload.Length];
+            output[0] = ProtocolVersion;
+            output[1] = (byte)(
+                (header.Kind & 0x1f)
+                | (header.AckOnly ? FlagAckOnly : 0)
+                | (header.HasAck ? FlagHasAck : 0)
+                | (header.Batch ? FlagBatch : 0)
+            );
+            output[2] = (byte)(header.Seq >> 8);
+            output[3] = (byte)header.Seq;
+            output[4] = (byte)(header.Ack >> 8);
+            output[5] = (byte)header.Ack;
+            output[6] = (byte)(header.AckBits >> 24);
+            output[7] = (byte)(header.AckBits >> 16);
+            output[8] = (byte)(header.AckBits >> 8);
+            output[9] = (byte)header.AckBits;
+            output[10] = (byte)(header.Tick >> 8);
+            output[11] = (byte)header.Tick;
+            payload.CopyTo(output.AsSpan(HeaderLen));
+            return output;
         }
 
-        public static bool Decode(byte[] d, out Header h, out ArraySegment<byte> payload)
+        public static bool Decode(byte[] data, out Header header, out ArraySegment<byte> payload)
         {
-            h = default; payload = default;
-            if (d.Length < HeaderLen || d[0] != ProtocolVersion) return false;
-            byte k = d[1];
-            h.Kind = (byte)(k & 0x1f); h.AckOnly = (k & FlagAckOnly) != 0; h.HasAck = (k & FlagHasAck) != 0; h.Batch = (k & FlagBatch) != 0;
-            h.Seq = (ushort)((d[2] << 8) | d[3]); h.Ack = (ushort)((d[4] << 8) | d[5]);
-            h.AckBits = ((uint)d[6] << 24) | ((uint)d[7] << 16) | ((uint)d[8] << 8) | d[9];
-            h.Tick = (ushort)((d[10] << 8) | d[11]);
-            payload = new ArraySegment<byte>(d, HeaderLen, d.Length - HeaderLen);
+            header = default;
+            payload = default;
+            if (data.Length < HeaderLen || data[0] != ProtocolVersion)
+            {
+                return false;
+            }
+
+            byte kind = data[1];
+            header.Kind = (byte)(kind & 0x1f);
+            header.AckOnly = (kind & FlagAckOnly) != 0;
+            header.HasAck = (kind & FlagHasAck) != 0;
+            header.Batch = (kind & FlagBatch) != 0;
+            header.Seq = (ushort)((data[2] << 8) | data[3]);
+            header.Ack = (ushort)((data[4] << 8) | data[5]);
+            header.AckBits =
+                ((uint)data[6] << 24) | ((uint)data[7] << 16) | ((uint)data[8] << 8) | data[9];
+            header.Tick = (ushort)((data[10] << 8) | data[11]);
+            payload = new ArraySegment<byte>(data, HeaderLen, data.Length - HeaderLen);
             return true;
         }
 
         /// <summary>true when a is a newer 16-bit sequence than b.</summary>
-        public static bool SeqNewer(ushort a, ushort b) => a != b && (ushort)(a - b) < 0x8000;
+        public static bool SeqNewer(ushort left, ushort right) =>
+            left != right && (ushort)(left - right) < 0x8000;
     }
 }

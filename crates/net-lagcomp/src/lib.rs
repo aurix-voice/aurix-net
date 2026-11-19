@@ -69,12 +69,12 @@ impl History {
     /// Hitboxes at `tick`; when that tick is older than the window the oldest frame is used,
     /// when it is in the future the newest one. Returns the tick actually used.
     pub fn at_or_nearest(&self, tick: Tick) -> Option<(Tick, &[(EntityId, Hitbox)])> {
-        if let Some(b) = self.at(tick) {
-            return Some((tick, b));
+        if let Some(boxes) = self.at(tick) {
+            return Some((tick, boxes));
         }
         let (mn, mx) = (self.index.keys().min()?, self.index.keys().max()?);
-        let t = if tick.0 < *mn { *mn } else { *mx };
-        self.at(Tick(t)).map(|b| (Tick(t), b))
+        let nearest = if tick.0 < *mn { *mn } else { *mx };
+        self.at(Tick(nearest)).map(|b| (Tick(nearest), b))
     }
 
     /// Nearest hit along a ray at `tick`, skipping `ignore` (the shooter).
@@ -91,21 +91,21 @@ impl History {
         if len <= 0.0 {
             return None;
         }
-        let d = [dir[0] / len, dir[1] / len, dir[2] / len];
+        let unit = [dir[0] / len, dir[1] / len, dir[2] / len];
         let mut best: Option<Hit> = None;
         for (id, hb) in boxes {
             if Some(*id) == ignore {
                 continue;
             }
-            if let Some(t) = ray_aabb(origin, d, hb) {
-                if t <= max_dist && best.is_none_or(|b| t < b.distance) {
+            if let Some(distance) = ray_aabb(origin, unit, hb) {
+                if distance <= max_dist && best.is_none_or(|b| distance < b.distance) {
                     best = Some(Hit {
                         entity: *id,
-                        distance: t,
+                        distance,
                         point: [
-                            origin[0] + d[0] * t,
-                            origin[1] + d[1] * t,
-                            origin[2] + d[2] * t,
+                            origin[0] + unit[0] * distance,
+                            origin[1] + unit[1] * distance,
+                            origin[2] + unit[2] * distance,
                         ],
                     });
                 }
@@ -140,20 +140,20 @@ impl History {
 }
 
 /// Slab test; returns entry distance (0 when origin is inside).
-fn ray_aabb(o: [f32; 3], d: [f32; 3], hb: &Hitbox) -> Option<f32> {
+fn ray_aabb(origin: [f32; 3], dir: [f32; 3], hb: &Hitbox) -> Option<f32> {
     let mut tmin = 0.0f32;
     let mut tmax = f32::INFINITY;
     for i in 0..3 {
         let lo = hb.center[i] - hb.half[i];
         let hi = hb.center[i] + hb.half[i];
-        if d[i].abs() < 1e-8 {
-            if o[i] < lo || o[i] > hi {
+        if dir[i].abs() < 1e-8 {
+            if origin[i] < lo || origin[i] > hi {
                 return None;
             }
             continue;
         }
-        let inv = 1.0 / d[i];
-        let (mut t1, mut t2) = ((lo - o[i]) * inv, (hi - o[i]) * inv);
+        let inv = 1.0 / dir[i];
+        let (mut t1, mut t2) = ((lo - origin[i]) * inv, (hi - origin[i]) * inv);
         if t1 > t2 {
             std::mem::swap(&mut t1, &mut t2);
         }
@@ -185,69 +185,70 @@ mod tests {
 
     #[test]
     fn ring_keeps_window_and_rewinds() {
-        let mut h = History::new(4);
+        let mut history = History::new(4);
         for t in 0..10u32 {
-            h.record(Tick(t), vec![(e(1), hb(t as f32))]);
+            history.record(Tick(t), vec![(e(1), hb(t as f32))]);
         }
-        assert_eq!(h.oldest(), Some(Tick(6)));
-        assert!(h.at(Tick(5)).is_none());
-        assert_eq!(h.at(Tick(7)).unwrap()[0].1.center[0], 7.0);
+        assert_eq!(history.oldest(), Some(Tick(6)));
+        assert!(history.at(Tick(5)).is_none());
+        assert_eq!(history.at(Tick(7)).unwrap()[0].1.center[0], 7.0);
         // too old -> oldest frame, future -> newest
-        assert_eq!(h.at_or_nearest(Tick(2)).unwrap().0, Tick(6));
-        assert_eq!(h.at_or_nearest(Tick(99)).unwrap().0, Tick(9));
+        assert_eq!(history.at_or_nearest(Tick(2)).unwrap().0, Tick(6));
+        assert_eq!(history.at_or_nearest(Tick(99)).unwrap().0, Tick(9));
     }
 
     #[test]
     fn raycast_hits_where_target_was() {
-        let mut h = History::new(8);
-        h.record(Tick(10), vec![(e(1), hb(10.0)), (e(2), hb(20.0))]);
-        h.record(Tick(11), vec![(e(1), hb(50.0)), (e(2), hb(20.0))]);
+        let mut history = History::new(8);
+        history.record(Tick(10), vec![(e(1), hb(10.0)), (e(2), hb(20.0))]);
+        history.record(Tick(11), vec![(e(1), hb(50.0)), (e(2), hb(20.0))]);
         // shooter saw tick 10: entity 1 at x=10, nearest along +x
-        let hit = h
+        let hit = history
             .raycast_at(Tick(10), [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 100.0, None)
             .unwrap();
         assert_eq!(hit.entity, e(1));
         assert!((hit.distance - 9.5).abs() < 1e-4);
         // at tick 11 entity 1 moved away; entity 2 is nearest
-        let hit = h
+        let hit = history
             .raycast_at(Tick(11), [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 100.0, None)
             .unwrap();
         assert_eq!(hit.entity, e(2));
         // ignore shooter, range limit, miss
         assert_eq!(
-            h.raycast_at(
-                Tick(10),
-                [0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                100.0,
-                Some(e(1))
-            )
-            .unwrap()
-            .entity,
+            history
+                .raycast_at(
+                    Tick(10),
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    100.0,
+                    Some(e(1))
+                )
+                .unwrap()
+                .entity,
             e(2)
         );
-        assert!(h
+        assert!(history
             .raycast_at(Tick(10), [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 5.0, None)
             .is_none());
-        assert!(h
+        assert!(history
             .raycast_at(Tick(10), [0.0, 5.0, 0.0], [1.0, 0.0, 0.0], 100.0, None)
             .is_none());
-        assert!(h
+        assert!(history
             .raycast_at(Tick(10), [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], 100.0, None)
             .is_none());
     }
 
     #[test]
     fn sphere_overlap() {
-        let mut h = History::new(2);
-        h.record(
+        let mut history = History::new(2);
+        history.record(
             Tick(1),
             vec![(e(1), hb(0.0)), (e(2), hb(3.0)), (e(3), hb(9.0))],
         );
-        let mut ids = h.overlap_sphere_at(Tick(1), [1.0, 0.0, 0.0], 2.0);
+        let mut ids = history.overlap_sphere_at(Tick(1), [1.0, 0.0, 0.0], 2.0);
         ids.sort();
         assert_eq!(ids, vec![e(1), e(2)]);
-        assert!(h
+        assert!(history
             .overlap_sphere_at(Tick(1), [100.0, 0.0, 0.0], 1.0)
             .is_empty());
     }

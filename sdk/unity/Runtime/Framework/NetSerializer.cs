@@ -12,152 +12,374 @@ namespace Aurix.Net.Unity.Framework
     public readonly struct PlayerID : IEquatable<PlayerID>
     {
         public readonly ushort id;
-        public PlayerID(ushort id) { this.id = id; }
-        public bool Equals(PlayerID o) => id == o.id;
-        public override bool Equals(object o) => o is PlayerID p && p.id == id;
+
+        public PlayerID(ushort id)
+        {
+            this.id = id;
+        }
+
+        public bool Equals(PlayerID owner) => id == owner.id;
+
+        public override bool Equals(object target) => target is PlayerID player && player.id == id;
+
         public override int GetHashCode() => id;
+
         public override string ToString() => "P" + id;
-        public static bool operator ==(PlayerID a, PlayerID b) => a.id == b.id;
-        public static bool operator !=(PlayerID a, PlayerID b) => a.id != b.id;
-        public static implicit operator ushort(PlayerID p) => p.id;
+
+        public static bool operator ==(PlayerID left, PlayerID right) => left.id == right.id;
+
+        public static bool operator !=(PlayerID left, PlayerID right) => left.id != right.id;
+
+        public static implicit operator ushort(PlayerID player) => player.id;
     }
 
     /// <summary>Implement on your own structs/classes to send them through SyncVars and RPCs.</summary>
     public interface INetSerializable
     {
-        void Write(BitWriter w);
-        void Read(BitReader r);
+        void Write(BitWriter writer);
+        void Read(BitReader reader);
     }
 
     public static class NetSerializer
     {
-        public const int MaxString = 65535, MaxBytes = 1 << 20, MaxCount = 1 << 16;
+        public const int MaxString = 65535,
+            MaxBytes = 1 << 20,
+            MaxCount = 1 << 16;
 
         /// <summary>Resolver for NetworkIdentity references; set by the NetworkManager.</summary>
         public static Func<uint, NetworkIdentity> ResolveIdentity;
 
-        public static void Write(BitWriter w, object v, Type t)
+        public static void Write(BitWriter writer, object value, Type type)
         {
-            if (t.IsEnum) t = Enum.GetUnderlyingType(t);
-            switch (Type.GetTypeCode(t))
+            if (type.IsEnum)
             {
-                case TypeCode.Boolean: w.WriteBool((bool)v); return;
-                case TypeCode.Byte: w.WriteBits((byte)v, 8); return;
-                case TypeCode.SByte: w.WriteBits((byte)(sbyte)v, 8); return;
-                case TypeCode.Int16: w.WriteBits((ushort)(short)v, 16); return;
-                case TypeCode.UInt16: w.WriteBits((ushort)v, 16); return;
-                case TypeCode.Int32: w.WriteBits((uint)(int)v, 32); return;
-                case TypeCode.UInt32: w.WriteBits((uint)v, 32); return;
-                case TypeCode.Int64: w.WriteBits((ulong)(long)v, 64); return;
-                case TypeCode.UInt64: w.WriteBits((ulong)v, 64); return;
-                case TypeCode.Single: w.WriteF32((float)v); return;
-                case TypeCode.Double: w.WriteBits((ulong)BitConverter.DoubleToInt64Bits((double)v), 64); return;
-                case TypeCode.Char: w.WriteBits((char)v, 16); return;
-                case TypeCode.String: WriteString(w, (string)v); return;
+                type = Enum.GetUnderlyingType(type);
             }
-            if (t == typeof(Vector2)) { var x = (Vector2)v; w.WriteF32(x.x); w.WriteF32(x.y); return; }
-            if (t == typeof(Vector3)) { var x = (Vector3)v; w.WriteF32(x.x); w.WriteF32(x.y); w.WriteF32(x.z); return; }
-            if (t == typeof(Quaternion)) { var q = (Quaternion)v; w.WriteF32(q.x); w.WriteF32(q.y); w.WriteF32(q.z); w.WriteF32(q.w); return; }
-            if (t == typeof(Color)) { var c = (Color)v; w.WriteF32(c.r); w.WriteF32(c.g); w.WriteF32(c.b); w.WriteF32(c.a); return; }
-            if (t == typeof(PlayerID)) { w.WriteBits(((PlayerID)v).id, 16); return; }
-            if (t == typeof(byte[])) { var b = (byte[])v ?? Array.Empty<byte>(); w.WriteUInt((ulong)b.Length, 20); w.WriteBytes(b); return; }
-            if (typeof(NetworkIdentity).IsAssignableFrom(t)) { var id = (NetworkIdentity)v; w.WriteBits(id != null && id.isSpawned ? id.objectId : 0u, 32); return; }
-            if (typeof(INetSerializable).IsAssignableFrom(t))
+
+            switch (Type.GetTypeCode(type))
             {
-                bool has = v != null || t.IsValueType; w.WriteBool(has);
-                if (has) ((INetSerializable)v).Write(w);
+                case TypeCode.Boolean:
+                    writer.WriteBool((bool)value);
+                    return;
+                case TypeCode.Byte:
+                    writer.WriteBits((byte)value, 8);
+                    return;
+                case TypeCode.SByte:
+                    writer.WriteBits((byte)(sbyte)value, 8);
+                    return;
+                case TypeCode.Int16:
+                    writer.WriteBits((ushort)(short)value, 16);
+                    return;
+                case TypeCode.UInt16:
+                    writer.WriteBits((ushort)value, 16);
+                    return;
+                case TypeCode.Int32:
+                    writer.WriteBits((uint)(int)value, 32);
+                    return;
+                case TypeCode.UInt32:
+                    writer.WriteBits((uint)value, 32);
+                    return;
+                case TypeCode.Int64:
+                    writer.WriteBits((ulong)(long)value, 64);
+                    return;
+                case TypeCode.UInt64:
+                    writer.WriteBits((ulong)value, 64);
+                    return;
+                case TypeCode.Single:
+                    writer.WriteF32((float)value);
+                    return;
+                case TypeCode.Double:
+                    writer.WriteBits((ulong)BitConverter.DoubleToInt64Bits((double)value), 64);
+                    return;
+                case TypeCode.Char:
+                    writer.WriteBits((char)value, 16);
+                    return;
+                case TypeCode.String:
+                    WriteString(writer, (string)value);
+                    return;
+            }
+            if (type == typeof(Vector2))
+            {
+                var vector = (Vector2)value;
+                writer.WriteF32(vector.x);
+                writer.WriteF32(vector.y);
                 return;
             }
-            if (t.IsArray)
+            if (type == typeof(Vector3))
             {
-                var a = (Array)v; var et = t.GetElementType();
-                w.WriteUInt((ulong)(a?.Length ?? 0), 16);
-                if (a != null) foreach (var e in a) Write(w, e, et);
+                var vector = (Vector3)value;
+                writer.WriteF32(vector.x);
+                writer.WriteF32(vector.y);
+                writer.WriteF32(vector.z);
                 return;
             }
-            if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(List<>))
+            if (type == typeof(Quaternion))
             {
-                var l = (IList)v; var et = t.GetGenericArguments()[0];
-                w.WriteUInt((ulong)(l?.Count ?? 0), 16);
-                if (l != null) foreach (var e in l) Write(w, e, et);
+                var rotation = (Quaternion)value;
+                writer.WriteF32(rotation.x);
+                writer.WriteF32(rotation.y);
+                writer.WriteF32(rotation.z);
+                writer.WriteF32(rotation.w);
                 return;
             }
-            if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(Nullable<>))
+            if (type == typeof(Color))
             {
-                bool has = v != null; w.WriteBool(has);
-                if (has) Write(w, v, Nullable.GetUnderlyingType(t));
+                var color = (Color)value;
+                writer.WriteF32(color.r);
+                writer.WriteF32(color.g);
+                writer.WriteF32(color.b);
+                writer.WriteF32(color.a);
                 return;
             }
-            throw new NetException("cannot serialize " + t.FullName + " (implement INetSerializable)");
+            if (type == typeof(PlayerID))
+            {
+                writer.WriteBits(((PlayerID)value).id, 16);
+                return;
+            }
+            if (type == typeof(byte[]))
+            {
+                var bytes = (byte[])value ?? Array.Empty<byte>();
+                writer.WriteUInt((ulong)bytes.Length, 20);
+                writer.WriteBytes(bytes);
+                return;
+            }
+            if (typeof(NetworkIdentity).IsAssignableFrom(type))
+            {
+                var id = (NetworkIdentity)value;
+                writer.WriteBits(id != null && id.isSpawned ? id.objectId : 0u, 32);
+                return;
+            }
+            if (typeof(INetSerializable).IsAssignableFrom(type))
+            {
+                bool has = value != null || type.IsValueType;
+                writer.WriteBool(has);
+                if (has)
+                {
+                    ((INetSerializable)value).Write(writer);
+                }
+
+                return;
+            }
+            if (type.IsArray)
+            {
+                var array = (Array)value;
+                var et = type.GetElementType();
+                writer.WriteUInt((ulong)(array?.Length ?? 0), 16);
+                if (array != null)
+                {
+                    foreach (var element in array)
+                    {
+                        Write(writer, element, et);
+                    }
+                }
+
+                return;
+            }
+            if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>))
+            {
+                var list = (IList)value;
+                var et = type.GetGenericArguments()[0];
+                writer.WriteUInt((ulong)(list?.Count ?? 0), 16);
+                if (list != null)
+                {
+                    foreach (var element in list)
+                    {
+                        Write(writer, element, et);
+                    }
+                }
+
+                return;
+            }
+            if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Nullable<>))
+            {
+                bool has = value != null;
+                writer.WriteBool(has);
+                if (has)
+                {
+                    Write(writer, value, Nullable.GetUnderlyingType(type));
+                }
+
+                return;
+            }
+            throw new NetException(
+                "cannot serialize " + type.FullName + " (implement INetSerializable)"
+            );
         }
 
-        public static object Read(BitReader r, Type t)
+        public static object Read(BitReader reader, Type type)
         {
-            var orig = t;
-            if (t.IsEnum) t = Enum.GetUnderlyingType(t);
-            object o = null;
-            switch (Type.GetTypeCode(t))
+            var orig = type;
+            if (type.IsEnum)
             {
-                case TypeCode.Boolean: o = r.ReadBool(); break;
-                case TypeCode.Byte: o = (byte)r.ReadBits(8); break;
-                case TypeCode.SByte: o = (sbyte)(byte)r.ReadBits(8); break;
-                case TypeCode.Int16: o = (short)(ushort)r.ReadBits(16); break;
-                case TypeCode.UInt16: o = (ushort)r.ReadBits(16); break;
-                case TypeCode.Int32: o = (int)(uint)r.ReadBits(32); break;
-                case TypeCode.UInt32: o = (uint)r.ReadBits(32); break;
-                case TypeCode.Int64: o = (long)r.ReadBits(64); break;
-                case TypeCode.UInt64: o = r.ReadBits(64); break;
-                case TypeCode.Single: o = r.ReadF32(); break;
-                case TypeCode.Double: o = BitConverter.Int64BitsToDouble((long)r.ReadBits(64)); break;
-                case TypeCode.Char: o = (char)r.ReadBits(16); break;
-                case TypeCode.String: o = ReadString(r); break;
+                type = Enum.GetUnderlyingType(type);
             }
-            if (o != null) return orig.IsEnum ? Enum.ToObject(orig, o) : o;
-            if (t == typeof(Vector2)) return new Vector2(r.ReadF32(), r.ReadF32());
-            if (t == typeof(Vector3)) return new Vector3(r.ReadF32(), r.ReadF32(), r.ReadF32());
-            if (t == typeof(Quaternion)) return new Quaternion(r.ReadF32(), r.ReadF32(), r.ReadF32(), r.ReadF32());
-            if (t == typeof(Color)) return new Color(r.ReadF32(), r.ReadF32(), r.ReadF32(), r.ReadF32());
-            if (t == typeof(PlayerID)) return new PlayerID((ushort)r.ReadBits(16));
-            if (t == typeof(byte[])) { int n = (int)r.ReadUInt(20); if (n > MaxBytes) throw new NetException("byte[] too long"); return r.ReadBytes(n); }
-            if (typeof(NetworkIdentity).IsAssignableFrom(t)) { uint id = (uint)r.ReadBits(32); return id == 0 ? null : ResolveIdentity?.Invoke(id); }
-            if (typeof(INetSerializable).IsAssignableFrom(t))
+
+            object target = null;
+            switch (Type.GetTypeCode(type))
             {
-                if (!r.ReadBool()) return null;
-                var s = (INetSerializable)Activator.CreateInstance(t); s.Read(r); return s;
+                case TypeCode.Boolean:
+                    target = reader.ReadBool();
+                    break;
+                case TypeCode.Byte:
+                    target = (byte)reader.ReadBits(8);
+                    break;
+                case TypeCode.SByte:
+                    target = (sbyte)(byte)reader.ReadBits(8);
+                    break;
+                case TypeCode.Int16:
+                    target = (short)(ushort)reader.ReadBits(16);
+                    break;
+                case TypeCode.UInt16:
+                    target = (ushort)reader.ReadBits(16);
+                    break;
+                case TypeCode.Int32:
+                    target = (int)(uint)reader.ReadBits(32);
+                    break;
+                case TypeCode.UInt32:
+                    target = (uint)reader.ReadBits(32);
+                    break;
+                case TypeCode.Int64:
+                    target = (long)reader.ReadBits(64);
+                    break;
+                case TypeCode.UInt64:
+                    target = reader.ReadBits(64);
+                    break;
+                case TypeCode.Single:
+                    target = reader.ReadF32();
+                    break;
+                case TypeCode.Double:
+                    target = BitConverter.Int64BitsToDouble((long)reader.ReadBits(64));
+                    break;
+                case TypeCode.Char:
+                    target = (char)reader.ReadBits(16);
+                    break;
+                case TypeCode.String:
+                    target = ReadString(reader);
+                    break;
             }
-            if (t.IsArray)
+            if (target != null)
             {
-                int n = (int)r.ReadUInt(16); var et = t.GetElementType(); var a = Array.CreateInstance(et, n);
-                for (int i = 0; i < n; i++) a.SetValue(Read(r, et), i);
-                return a;
+                return orig.IsEnum ? Enum.ToObject(orig, target) : target;
             }
-            if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(List<>))
+
+            if (type == typeof(Vector2))
             {
-                int n = (int)r.ReadUInt(16); var et = t.GetGenericArguments()[0]; var l = (IList)Activator.CreateInstance(t);
-                for (int i = 0; i < n; i++) l.Add(Read(r, et));
-                return l;
+                return new Vector2(reader.ReadF32(), reader.ReadF32());
             }
-            if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(Nullable<>))
-                return r.ReadBool() ? Read(r, Nullable.GetUnderlyingType(t)) : null;
-            throw new NetException("cannot deserialize " + t.FullName + " (implement INetSerializable)");
+
+            if (type == typeof(Vector3))
+            {
+                return new Vector3(reader.ReadF32(), reader.ReadF32(), reader.ReadF32());
+            }
+
+            if (type == typeof(Quaternion))
+            {
+                return new Quaternion(
+                    reader.ReadF32(),
+                    reader.ReadF32(),
+                    reader.ReadF32(),
+                    reader.ReadF32()
+                );
+            }
+
+            if (type == typeof(Color))
+            {
+                return new Color(
+                    reader.ReadF32(),
+                    reader.ReadF32(),
+                    reader.ReadF32(),
+                    reader.ReadF32()
+                );
+            }
+
+            if (type == typeof(PlayerID))
+            {
+                return new PlayerID((ushort)reader.ReadBits(16));
+            }
+
+            if (type == typeof(byte[]))
+            {
+                int count = (int)reader.ReadUInt(20);
+                if (count > MaxBytes)
+                {
+                    throw new NetException("byte[] too long");
+                }
+
+                return reader.ReadBytes(count);
+            }
+            if (typeof(NetworkIdentity).IsAssignableFrom(type))
+            {
+                uint id = (uint)reader.ReadBits(32);
+                return id == 0 ? null : ResolveIdentity?.Invoke(id);
+            }
+            if (typeof(INetSerializable).IsAssignableFrom(type))
+            {
+                if (!reader.ReadBool())
+                {
+                    return null;
+                }
+
+                var serializable = (INetSerializable)Activator.CreateInstance(type);
+                serializable.Read(reader);
+                return serializable;
+            }
+            if (type.IsArray)
+            {
+                int count = (int)reader.ReadUInt(16);
+                var et = type.GetElementType();
+                var array = Array.CreateInstance(et, count);
+                for (int i = 0; i < count; i++)
+                {
+                    array.SetValue(Read(reader, et), i);
+                }
+
+                return array;
+            }
+            if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>))
+            {
+                int count = (int)reader.ReadUInt(16);
+                var et = type.GetGenericArguments()[0];
+                var list = (IList)Activator.CreateInstance(type);
+                for (int i = 0; i < count; i++)
+                {
+                    list.Add(Read(reader, et));
+                }
+
+                return list;
+            }
+            if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Nullable<>))
+            {
+                return reader.ReadBool() ? Read(reader, Nullable.GetUnderlyingType(type)) : null;
+            }
+
+            throw new NetException(
+                "cannot deserialize " + type.FullName + " (implement INetSerializable)"
+            );
         }
 
-        public static void Write<T>(BitWriter w, T v) => Write(w, v, typeof(T));
-        public static T Read<T>(BitReader r) => (T)Read(r, typeof(T));
+        public static void Write<T>(BitWriter writer, T value) => Write(writer, value, typeof(T));
 
-        public static void WriteString(BitWriter w, string s)
+        public static T Read<T>(BitReader reader) => (T)Read(reader, typeof(T));
+
+        public static void WriteString(BitWriter writer, string text)
         {
-            var b = System.Text.Encoding.UTF8.GetBytes(s ?? "");
-            if (b.Length > MaxString) throw new NetException("string too long");
-            w.WriteUInt((ulong)b.Length, 16); w.WriteBytes(b);
+            var bytes = System.Text.Encoding.UTF8.GetBytes(text ?? "");
+            if (bytes.Length > MaxString)
+            {
+                throw new NetException("string too long");
+            }
+
+            writer.WriteUInt((ulong)bytes.Length, 16);
+            writer.WriteBytes(bytes);
         }
 
-        public static string ReadString(BitReader r)
+        public static string ReadString(BitReader reader)
         {
-            int n = (int)r.ReadUInt(16);
-            return System.Text.Encoding.UTF8.GetString(r.ReadBytes(n));
+            int count = (int)reader.ReadUInt(16);
+            return System.Text.Encoding.UTF8.GetString(reader.ReadBytes(count));
         }
 
-        public static bool AreEqual<T>(T a, T b) => EqualityComparer<T>.Default.Equals(a, b);
+        public static bool AreEqual<T>(T left, T right) =>
+            EqualityComparer<T>.Default.Equals(left, right);
     }
 }

@@ -22,10 +22,10 @@ thread_local! {
     static LAST_RAY3: RefCell<[i64; 7]> = const { RefCell::new([0; 7]) };
 }
 
-fn with3<R>(h: u32, f: impl FnOnce(&mut Slot3) -> R) -> Option<R> {
+fn with3<R>(world: u32, f: impl FnOnce(&mut Slot3) -> R) -> Option<R> {
     WORLDS3.with(|w| {
         w.borrow_mut()
-            .get_mut(h as usize)
+            .get_mut(world as usize)
             .and_then(|s| s.as_mut())
             .map(f)
     })
@@ -72,32 +72,32 @@ pub extern "C" fn sim3_world_new(gx: i64, gy: i64, gz: i64, tick_hz: u32) -> u32
 }
 
 #[no_mangle]
-pub extern "C" fn sim3_world_free(h: u32) {
+pub extern "C" fn sim3_world_free(world: u32) {
     WORLDS3.with(|w| {
-        if let Some(s) = w.borrow_mut().get_mut(h as usize) {
+        if let Some(s) = w.borrow_mut().get_mut(world as usize) {
             *s = None;
         }
     });
 }
 
 #[no_mangle]
-pub extern "C" fn sim3_step(h: u32) {
-    with3(h, |s| s.world.step());
+pub extern "C" fn sim3_step(world: u32) {
+    with3(world, |s| s.world.step());
 }
 
 #[no_mangle]
-pub extern "C" fn sim3_tick(h: u32) -> u64 {
-    with3(h, |s| s.world.tick).unwrap_or(0)
+pub extern "C" fn sim3_tick(world: u32) -> u64 {
+    with3(world, |s| s.world.tick).unwrap_or(0)
 }
 
 #[no_mangle]
-pub extern "C" fn sim3_hash(h: u32) -> u64 {
-    with3(h, |s| s.world.hash()).unwrap_or(0)
+pub extern "C" fn sim3_hash(world: u32) -> u64 {
+    with3(world, |s| s.world.hash()).unwrap_or(0)
 }
 
 #[no_mangle]
-pub extern "C" fn sim3_snapshot(h: u32) -> u32 {
-    with3(h, |s| {
+pub extern "C" fn sim3_snapshot(world: u32) -> u32 {
+    with3(world, |s| {
         s.snapshot = s.world.snapshot();
         s.snapshot.len() as u32
     })
@@ -105,24 +105,24 @@ pub extern "C" fn sim3_snapshot(h: u32) -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn sim3_snapshot_byte(h: u32, i: u32) -> u32 {
-    with3(h, |s| {
+pub extern "C" fn sim3_snapshot_byte(world: u32, i: u32) -> u32 {
+    with3(world, |s| {
         s.snapshot.get(i as usize).copied().unwrap_or(0) as u32
     })
     .unwrap_or(0)
 }
 
 #[no_mangle]
-pub extern "C" fn sim3_snapshot_set_len(h: u32, len: u32) {
-    with3(h, |s| {
+pub extern "C" fn sim3_snapshot_set_len(world: u32, len: u32) {
+    with3(world, |s| {
         s.snapshot.clear();
         s.snapshot.resize(len as usize, 0);
     });
 }
 
 #[no_mangle]
-pub extern "C" fn sim3_snapshot_set_byte(h: u32, i: u32, b: u32) {
-    with3(h, |s| {
+pub extern "C" fn sim3_snapshot_set_byte(world: u32, i: u32, b: u32) {
+    with3(world, |s| {
         if let Some(x) = s.snapshot.get_mut(i as usize) {
             *x = b as u8;
         }
@@ -130,8 +130,8 @@ pub extern "C" fn sim3_snapshot_set_byte(h: u32, i: u32, b: u32) {
 }
 
 #[no_mangle]
-pub extern "C" fn sim3_restore(h: u32) -> u32 {
-    with3(h, |s| match World::restore(&s.snapshot) {
+pub extern "C" fn sim3_restore(world: u32) -> u32 {
+    with3(world, |s| match World::restore(&s.snapshot) {
         Some(w) => {
             s.world = w;
             1
@@ -143,7 +143,7 @@ pub extern "C" fn sim3_restore(h: u32) -> u32 {
 
 #[no_mangle]
 pub extern "C" fn sim3_add_sphere(
-    h: u32,
+    world: u32,
     k: u32,
     x: i64,
     y: i64,
@@ -151,7 +151,7 @@ pub extern "C" fn sim3_add_sphere(
     radius: i64,
     density: i64,
 ) -> u32 {
-    with3(h, |s| {
+    with3(world, |s| {
         s.world
             .add(Body::with_density(
                 kind3(k),
@@ -167,7 +167,7 @@ pub extern "C" fn sim3_add_sphere(
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn sim3_add_box(
-    h: u32,
+    world: u32,
     k: u32,
     x: i64,
     y: i64,
@@ -177,7 +177,7 @@ pub extern "C" fn sim3_add_box(
     hz: i64,
     density: i64,
 ) -> u32 {
-    with3(h, |s| {
+    with3(world, |s| {
         s.world
             .add(Body::with_density(
                 kind3(k),
@@ -196,7 +196,7 @@ pub extern "C" fn sim3_add_box(
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn sim3_add_capsule(
-    h: u32,
+    world: u32,
     k: u32,
     x: i64,
     y: i64,
@@ -205,7 +205,7 @@ pub extern "C" fn sim3_add_capsule(
     radius: i64,
     density: i64,
 ) -> u32 {
-    with3(h, |s| {
+    with3(world, |s| {
         s.world
             .add(Body::with_density(
                 kind3(k),
@@ -222,13 +222,19 @@ pub extern "C" fn sim3_add_capsule(
 }
 
 #[no_mangle]
-pub extern "C" fn sim3_remove_body(h: u32, id: u32) -> u32 {
-    with3(h, |s| s.world.remove(BodyId(id)).is_some() as u32).unwrap_or(0)
+pub extern "C" fn sim3_remove_body(world: u32, id: u32) -> u32 {
+    with3(world, |s| s.world.remove(BodyId(id)).is_some() as u32).unwrap_or(0)
 }
 
 #[no_mangle]
-pub extern "C" fn sim3_set_material(h: u32, id: u32, friction: i64, restitution: i64, sensor: u32) {
-    with3(h, |s| {
+pub extern "C" fn sim3_set_material(
+    world: u32,
+    id: u32,
+    friction: i64,
+    restitution: i64,
+    sensor: u32,
+) {
+    with3(world, |s| {
         if let Some(b) = s.world.body_mut(BodyId(id)) {
             b.friction = Fx(friction);
             b.restitution = Fx(restitution);
@@ -238,8 +244,8 @@ pub extern "C" fn sim3_set_material(h: u32, id: u32, friction: i64, restitution:
 }
 
 #[no_mangle]
-pub extern "C" fn sim3_set_layers(h: u32, id: u32, layer: u32, mask: u32) {
-    with3(h, |s| {
+pub extern "C" fn sim3_set_layers(world: u32, id: u32, layer: u32, mask: u32) {
+    with3(world, |s| {
         if let Some(b) = s.world.body_mut(BodyId(id)) {
             b.layer = layer;
             b.mask = mask;
@@ -250,7 +256,7 @@ pub extern "C" fn sim3_set_layers(h: u32, id: u32, layer: u32, mask: u32) {
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn sim3_set_velocity(
-    h: u32,
+    world: u32,
     id: u32,
     vx: i64,
     vy: i64,
@@ -259,7 +265,7 @@ pub extern "C" fn sim3_set_velocity(
     wy: i64,
     wz: i64,
 ) {
-    with3(h, |s| {
+    with3(world, |s| {
         if let Some(b) = s.world.body_mut(BodyId(id)) {
             b.velocity = v3(vx, vy, vz);
             b.angular_velocity = v3(wx, wy, wz);
@@ -268,8 +274,8 @@ pub extern "C" fn sim3_set_velocity(
 }
 
 #[no_mangle]
-pub extern "C" fn sim3_set_position(h: u32, id: u32, x: i64, y: i64, z: i64) {
-    with3(h, |s| {
+pub extern "C" fn sim3_set_position(world: u32, id: u32, x: i64, y: i64, z: i64) {
+    with3(world, |s| {
         if let Some(b) = s.world.body_mut(BodyId(id)) {
             b.position = v3(x, y, z);
         }
@@ -278,8 +284,8 @@ pub extern "C" fn sim3_set_position(h: u32, id: u32, x: i64, y: i64, z: i64) {
 
 /// Set orientation as a quaternion (x, y, z, w), normalised on entry.
 #[no_mangle]
-pub extern "C" fn sim3_set_rotation(h: u32, id: u32, qx: i64, qy: i64, qz: i64, qw: i64) {
-    with3(h, |s| {
+pub extern "C" fn sim3_set_rotation(world: u32, id: u32, qx: i64, qy: i64, qz: i64, qw: i64) {
+    with3(world, |s| {
         if let Some(b) = s.world.body_mut(BodyId(id)) {
             b.rotation = FxQuat::new(Fx(qx), Fx(qy), Fx(qz), Fx(qw)).normalized();
         }
@@ -290,7 +296,7 @@ pub extern "C" fn sim3_set_rotation(h: u32, id: u32, qx: i64, qy: i64, qz: i64, 
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn sim3_apply_impulse(
-    h: u32,
+    world: u32,
     id: u32,
     ix: i64,
     iy: i64,
@@ -300,7 +306,7 @@ pub extern "C" fn sim3_apply_impulse(
     py: i64,
     pz: i64,
 ) {
-    with3(h, |s| {
+    with3(world, |s| {
         s.world.apply_impulse(
             BodyId(id),
             v3(ix, iy, iz),
@@ -311,8 +317,8 @@ pub extern "C" fn sim3_apply_impulse(
 
 /// Body state: 0..=2 position, 3..=6 rotation (x, y, z, w), 7..=9 velocity, 10..=12 angular velocity.
 #[no_mangle]
-pub extern "C" fn sim3_body_get(h: u32, id: u32, field: u32) -> i64 {
-    with3(h, |s| {
+pub extern "C" fn sim3_body_get(world: u32, id: u32, field: u32) -> i64 {
+    with3(world, |s| {
         s.world
             .body(BodyId(id))
             .map(|b| match field {
@@ -339,7 +345,7 @@ pub extern "C" fn sim3_body_get(h: u32, id: u32, field: u32) -> i64 {
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn sim3_raycast(
-    h: u32,
+    world: u32,
     x: i64,
     y: i64,
     z: i64,
@@ -348,7 +354,7 @@ pub extern "C" fn sim3_raycast(
     dz: i64,
     mask: u32,
 ) -> u32 {
-    with3(h, |s| {
+    with3(world, |s| {
         match s.world.raycast(v3(x, y, z), v3(dx, dy, dz), mask) {
             Some(hit) => {
                 LAST_RAY3.with(|r| {
@@ -376,14 +382,14 @@ pub extern "C" fn sim3_ray_get(field: u32) -> i64 {
 }
 
 #[no_mangle]
-pub extern "C" fn sim3_events_len(h: u32) -> u32 {
-    with3(h, |s| s.world.events().len() as u32).unwrap_or(0)
+pub extern "C" fn sim3_events_len(world: u32) -> u32 {
+    with3(world, |s| s.world.events().len() as u32).unwrap_or(0)
 }
 
 /// Event field: 0 = body a, 1 = body b, 2 = begin (1) / end (0).
 #[no_mangle]
-pub extern "C" fn sim3_event_get(h: u32, i: u32, field: u32) -> u32 {
-    with3(h, |s| {
+pub extern "C" fn sim3_event_get(world: u32, i: u32, field: u32) -> u32 {
+    with3(world, |s| {
         s.world
             .events()
             .get(i as usize)
@@ -403,9 +409,9 @@ pub extern "C" fn sim3_event_get(h: u32, i: u32, field: u32) -> u32 {
 pub extern "C" fn sim3_golden_hash() -> u64 {
     let one = Fx::ONE.0;
     let half = Fx::HALF.0;
-    let h = sim3_world_new(0, Fx::from_int(-10).0, 0, 60);
+    let world = sim3_world_new(0, Fx::from_int(-10).0, 0, 60);
     sim3_add_box(
-        h,
+        world,
         0,
         0,
         -half,
@@ -419,11 +425,11 @@ pub extern "C" fn sim3_golden_hash() -> u64 {
         for i in 0..(3 - level) {
             let x = Fx::from_int(2 * i - (2 - level)).0;
             let y = (Fx::HALF + Fx::from_int(level)).0;
-            sim3_add_box(h, 2, x, y, 0, half, half, half, one);
+            sim3_add_box(world, 2, x, y, 0, half, half, half, one);
         }
     }
     let tilted = sim3_add_box(
-        h,
+        world,
         2,
         Fx::from_int(5).0,
         Fx::from_int(3).0,
@@ -437,9 +443,9 @@ pub extern "C" fn sim3_golden_hash() -> u64 {
         FxVec3::new(Fx::ZERO, Fx::ZERO, Fx::ONE),
         Fx::from_ratio(3, 10),
     );
-    sim3_set_rotation(h, tilted, q.x.0, q.y.0, q.z.0, q.w.0);
+    sim3_set_rotation(world, tilted, q.x.0, q.y.0, q.z.0, q.w.0);
     let cap = sim3_add_capsule(
-        h,
+        world,
         2,
         Fx::from_int(-5).0,
         Fx::from_int(3).0,
@@ -449,18 +455,18 @@ pub extern "C" fn sim3_golden_hash() -> u64 {
         one,
     );
     let qc = FxQuat::from_axis_angle(FxVec3::new(Fx::ZERO, Fx::ZERO, Fx::ONE), Fx::HALF_PI);
-    sim3_set_rotation(h, cap, qc.x.0, qc.y.0, qc.z.0, qc.w.0);
-    let bouncy = sim3_add_sphere(h, 2, 0, Fx::from_int(6).0, Fx::from_int(5).0, half, one);
-    sim3_set_material(h, bouncy, half, Fx::from_ratio(8, 10).0, 0);
-    let rolling = sim3_add_sphere(h, 2, 0, half, Fx::from_int(-8).0, half, one);
-    sim3_set_velocity(h, rolling, 0, 0, Fx::from_int(6).0, 0, 0, 0);
+    sim3_set_rotation(world, cap, qc.x.0, qc.y.0, qc.z.0, qc.w.0);
+    let bouncy = sim3_add_sphere(world, 2, 0, Fx::from_int(6).0, Fx::from_int(5).0, half, one);
+    sim3_set_material(world, bouncy, half, Fx::from_ratio(8, 10).0, 0);
+    let rolling = sim3_add_sphere(world, 2, 0, half, Fx::from_int(-8).0, half, one);
+    sim3_set_velocity(world, rolling, 0, 0, Fx::from_int(6).0, 0, 0, 0);
     let mut events = 0u64;
     for _ in 0..240 {
-        sim3_step(h);
-        events += sim3_events_len(h) as u64;
+        sim3_step(world);
+        events += sim3_events_len(world) as u64;
     }
-    let hash = sim3_hash(h) ^ events.wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    sim3_world_free(h);
+    let hash = sim3_hash(world) ^ events.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    sim3_world_free(world);
     hash
 }
 
@@ -469,7 +475,7 @@ pub extern "C" fn sim3_golden_hash() -> u64 {
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn sim3_joint_ball(
-    h: u32,
+    world: u32,
     a: u32,
     b: u32,
     ax: i64,
@@ -479,7 +485,7 @@ pub extern "C" fn sim3_joint_ball(
     by: i64,
     bz: i64,
 ) -> u32 {
-    with3(h, |s| {
+    with3(world, |s| {
         s.world
             .add_joint(Joint::new(
                 BodyId(a),
@@ -497,7 +503,7 @@ pub extern "C" fn sim3_joint_ball(
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn sim3_joint_hinge(
-    h: u32,
+    world: u32,
     a: u32,
     b: u32,
     ax: i64,
@@ -518,7 +524,7 @@ pub extern "C" fn sim3_joint_hinge(
     motor_speed: i64,
     max_torque: i64,
 ) -> u32 {
-    with3(h, |s| {
+    with3(world, |s| {
         s.world
             .add_joint(Joint::new(
                 BodyId(a),
@@ -542,7 +548,7 @@ pub extern "C" fn sim3_joint_hinge(
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn sim3_joint_distance(
-    h: u32,
+    world: u32,
     a: u32,
     b: u32,
     ax: i64,
@@ -554,7 +560,7 @@ pub extern "C" fn sim3_joint_distance(
     len: i64,
     min_len: i64,
 ) -> u32 {
-    with3(h, |s| {
+    with3(world, |s| {
         s.world
             .add_joint(Joint::new(
                 BodyId(a),
@@ -572,13 +578,16 @@ pub extern "C" fn sim3_joint_distance(
 }
 
 #[no_mangle]
-pub extern "C" fn sim3_joint_remove(h: u32, id: u32) -> u32 {
-    with3(h, |s| s.world.remove_joint(JointId(id)).is_some() as u32).unwrap_or(0)
+pub extern "C" fn sim3_joint_remove(world: u32, id: u32) -> u32 {
+    with3(world, |s| {
+        s.world.remove_joint(JointId(id)).is_some() as u32
+    })
+    .unwrap_or(0)
 }
 
 #[no_mangle]
-pub extern "C" fn sim3_joint_motor(h: u32, id: u32, speed: i64, max_torque: i64) {
-    with3(h, |s| {
+pub extern "C" fn sim3_joint_motor(world: u32, id: u32, speed: i64, max_torque: i64) {
+    with3(world, |s| {
         if let Some(j) = s.world.joint_mut(JointId(id)) {
             if let JointKind::Hinge {
                 motor_speed,
@@ -595,8 +604,8 @@ pub extern "C" fn sim3_joint_motor(h: u32, id: u32, speed: i64, max_torque: i64)
 
 /// Hinge angle in radians (raw Fx), 0 for other joints.
 #[no_mangle]
-pub extern "C" fn sim3_hinge_angle(h: u32, id: u32) -> i64 {
-    with3(h, |s| {
+pub extern "C" fn sim3_hinge_angle(world: u32, id: u32) -> i64 {
+    with3(world, |s| {
         s.world.hinge_angle(JointId(id)).map(|a| a.0).unwrap_or(0)
     })
     .unwrap_or(0)
@@ -605,13 +614,13 @@ pub extern "C" fn sim3_hinge_angle(h: u32, id: u32) -> i64 {
 /// Capsule character controller over a kinematic capsule body; returns its index.
 #[no_mangle]
 pub extern "C" fn sim3_kcc_new(
-    h: u32,
+    world: u32,
     body: u32,
     step_height: i64,
     min_ground_ny: i64,
     snap: i64,
 ) -> u32 {
-    with3(h, |s| {
+    with3(world, |s| {
         let mut k = CharacterController::new(BodyId(body));
         k.step_height = Fx(step_height);
         k.min_ground_normal_y = Fx(min_ground_ny);
@@ -624,8 +633,8 @@ pub extern "C" fn sim3_kcc_new(
 
 /// Move the controller by (dx, dy, dz) this tick; returns grounded (1/0). Read the body for position.
 #[no_mangle]
-pub extern "C" fn sim3_kcc_move(h: u32, k: u32, dx: i64, dy: i64, dz: i64) -> u32 {
-    with3(h, |s| {
+pub extern "C" fn sim3_kcc_move(world: u32, k: u32, dx: i64, dy: i64, dz: i64) -> u32 {
+    with3(world, |s| {
         let Some(kcc) = s.kcc.get_mut(k as usize) else {
             return 0;
         };
@@ -637,8 +646,8 @@ pub extern "C" fn sim3_kcc_move(h: u32, k: u32, dx: i64, dy: i64, dz: i64) -> u3
 
 /// Controller state: 0..=2 ground normal, 3..=5 velocity, 6 grounded, 7 ground body (+1, 0 = none).
 #[no_mangle]
-pub extern "C" fn sim3_kcc_get(h: u32, k: u32, field: u32) -> i64 {
-    with3(h, |s| {
+pub extern "C" fn sim3_kcc_get(world: u32, k: u32, field: u32) -> i64 {
+    with3(world, |s| {
         s.kcc
             .get(k as usize)
             .map(|c| match field {
@@ -660,8 +669,8 @@ pub extern "C" fn sim3_kcc_get(h: u32, k: u32, field: u32) -> i64 {
 
 /// Clear the staged hull.
 #[no_mangle]
-pub extern "C" fn sim3_convex_reset(h: u32) {
-    with3(h, |s| {
+pub extern "C" fn sim3_convex_reset(world: u32) {
+    with3(world, |s| {
         s.hull_verts.clear();
         s.hull_faces.clear();
         s.hull_face.clear();
@@ -670,8 +679,8 @@ pub extern "C" fn sim3_convex_reset(h: u32) {
 
 /// Push a body-space vertex (raw Fx); at most 32.
 #[no_mangle]
-pub extern "C" fn sim3_convex_vert(h: u32, x: i64, y: i64, z: i64) -> u32 {
-    with3(h, |s| {
+pub extern "C" fn sim3_convex_vert(world: u32, x: i64, y: i64, z: i64) -> u32 {
+    with3(world, |s| {
         if s.hull_verts.len() < 32 {
             s.hull_verts.push(v3(x, y, z));
         }
@@ -682,8 +691,8 @@ pub extern "C" fn sim3_convex_vert(h: u32, x: i64, y: i64, z: i64) -> u32 {
 
 /// Push a vertex index onto the face being built.
 #[no_mangle]
-pub extern "C" fn sim3_convex_index(h: u32, i: u32) {
-    with3(h, |s| {
+pub extern "C" fn sim3_convex_index(world: u32, i: u32) {
+    with3(world, |s| {
         if s.hull_face.len() < 32 {
             s.hull_face.push(i);
         }
@@ -692,8 +701,8 @@ pub extern "C" fn sim3_convex_index(h: u32, i: u32) {
 
 /// Close the current face (>= 3 indices, any winding); at most 32 faces.
 #[no_mangle]
-pub extern "C" fn sim3_convex_face_end(h: u32) -> u32 {
-    with3(h, |s| {
+pub extern "C" fn sim3_convex_face_end(world: u32) -> u32 {
+    with3(world, |s| {
         let f = std::mem::take(&mut s.hull_face);
         if f.len() >= 3
             && s.hull_faces.len() < 32
@@ -709,8 +718,8 @@ pub extern "C" fn sim3_convex_face_end(h: u32) -> u32 {
 /// Add a convex body from the staged hull (which stays staged for reuse); returns the body id like
 /// `sim3_add_box`, or `u32::MAX` if the hull is invalid (< 4 vertices or faces).
 #[no_mangle]
-pub extern "C" fn sim3_add_convex(h: u32, k: u32, x: i64, y: i64, z: i64, density: i64) -> u32 {
-    with3(h, |s| {
+pub extern "C" fn sim3_add_convex(world: u32, k: u32, x: i64, y: i64, z: i64, density: i64) -> u32 {
+    with3(world, |s| {
         if s.hull_verts.len() < 4 || s.hull_faces.len() < 4 {
             return u32::MAX;
         }
@@ -732,7 +741,7 @@ pub extern "C" fn sim3_add_convex(h: u32, k: u32, x: i64, y: i64, z: i64, densit
 /// Sphere sweep; result fields as `sim3_ray_get`. Returns body id + 1 or 0.
 #[no_mangle]
 pub extern "C" fn sim3_spherecast(
-    h: u32,
+    world: u32,
     x: i64,
     y: i64,
     z: i64,
@@ -742,7 +751,7 @@ pub extern "C" fn sim3_spherecast(
     radius: i64,
     mask: u32,
 ) -> u32 {
-    with3(h, |s| {
+    with3(world, |s| {
         match s
             .world
             .sphere_cast(v3(x, y, z), v3(dx, dy, dz), Fx(radius), mask)
@@ -792,7 +801,7 @@ fn store_ray3(hit: Option<net_sim_physics3d::RayHit>) -> u32 {
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn sim3_capsulecast(
-    h: u32,
+    world: u32,
     x: i64,
     y: i64,
     z: i64,
@@ -807,7 +816,7 @@ pub extern "C" fn sim3_capsulecast(
     dz: i64,
     mask: u32,
 ) -> u32 {
-    with3(h, |s| {
+    with3(world, |s| {
         store_ray3(s.world.capsule_cast(
             v3(x, y, z),
             FxQuat::new(Fx(qx), Fx(qy), Fx(qz), Fx(qw)),
@@ -825,7 +834,7 @@ pub extern "C" fn sim3_capsulecast(
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn sim3_boxcast(
-    h: u32,
+    world: u32,
     x: i64,
     y: i64,
     z: i64,
@@ -841,7 +850,7 @@ pub extern "C" fn sim3_boxcast(
     dz: i64,
     mask: u32,
 ) -> u32 {
-    with3(h, |s| {
+    with3(world, |s| {
         store_ray3(s.world.box_cast(
             v3(x, y, z),
             FxQuat::new(Fx(qx), Fx(qy), Fx(qz), Fx(qw)),
@@ -858,12 +867,12 @@ pub extern "C" fn sim3_boxcast(
 /// 300 ticks.
 #[no_mangle]
 pub extern "C" fn sim3_hull_golden_hash() -> u64 {
-    let h = sim3_world_new(0, Fx::from_int(-10).0, 0, 60);
+    let world = sim3_world_new(0, Fx::from_int(-10).0, 0, 60);
     let one = Fx::ONE.0;
     let half = Fx::HALF.0;
     let q = Fx::from_ratio(1, 4).0;
     sim3_add_box(
-        h,
+        world,
         0,
         0,
         -half,
@@ -873,11 +882,11 @@ pub extern "C" fn sim3_hull_golden_hash() -> u64 {
         Fx::from_int(30).0,
         one,
     );
-    sim3_convex_reset(h);
+    sim3_convex_reset(world);
     for (x, z) in [(-half, -half), (half, -half), (half, half), (-half, half)] {
-        sim3_convex_vert(h, x, -q, z);
+        sim3_convex_vert(world, x, -q, z);
     }
-    sim3_convex_vert(h, 0, Fx::from_ratio(3, 4).0, 0);
+    sim3_convex_vert(world, 0, Fx::from_ratio(3, 4).0, 0);
     for f in [
         [0, 1, 2, 3],
         [0, 1, 4, u32::MAX],
@@ -887,14 +896,14 @@ pub extern "C" fn sim3_hull_golden_hash() -> u64 {
     ] {
         for i in f {
             if i != u32::MAX {
-                sim3_convex_index(h, i);
+                sim3_convex_index(world, i);
             }
         }
-        sim3_convex_face_end(h);
+        sim3_convex_face_end(world);
     }
     for i in 0..3i32 {
         sim3_add_convex(
-            h,
+            world,
             2,
             Fx::from_ratio(i as i64, 20).0,
             Fx::from_int(1 + 2 * i).0,
@@ -902,9 +911,9 @@ pub extern "C" fn sim3_hull_golden_hash() -> u64 {
             one,
         );
     }
-    sim3_add_convex(h, 0, Fx::from_int(6).0, 0, 0, one);
+    sim3_add_convex(world, 0, Fx::from_int(6).0, 0, 0, one);
     sim3_add_box(
-        h,
+        world,
         2,
         Fx::from_ratio(62, 10).0,
         Fx::from_int(2).0,
@@ -914,14 +923,14 @@ pub extern "C" fn sim3_hull_golden_hash() -> u64 {
         q,
         one,
     );
-    let ball = sim3_add_sphere(h, 2, Fx::from_int(-4).0, half, 0, half, one) - 1;
-    sim3_set_velocity(h, ball, Fx::from_int(4).0, 0, 0, 0, 0, 0);
+    let ball = sim3_add_sphere(world, 2, Fx::from_int(-4).0, half, 0, half, one) - 1;
+    sim3_set_velocity(world, ball, Fx::from_int(4).0, 0, 0, 0, 0, 0);
     for _ in 0..300 {
-        sim3_step(h);
+        sim3_step(world);
     }
-    let mut x = sim3_hash(h);
+    let mut x = sim3_hash(world);
     if sim3_spherecast(
-        h,
+        world,
         Fx::from_int(-8).0,
         half,
         0,
@@ -942,7 +951,7 @@ pub extern "C" fn sim3_hull_golden_hash() -> u64 {
         Fx::HALF_PI * Fx::HALF,
     );
     if sim3_capsulecast(
-        h,
+        world,
         Fx::from_int(-8).0,
         Fx::from_int(2).0,
         0,
@@ -963,7 +972,7 @@ pub extern "C" fn sim3_hull_golden_hash() -> u64 {
         }
     }
     if sim3_boxcast(
-        h,
+        world,
         0,
         Fx::from_int(12).0,
         0,
@@ -984,7 +993,7 @@ pub extern "C" fn sim3_hull_golden_hash() -> u64 {
             x ^= (sim3_ray_get(i) as u64).rotate_left(i * 3 + 2);
         }
     }
-    sim3_world_free(h);
+    sim3_world_free(world);
     x
 }
 
@@ -995,16 +1004,16 @@ pub extern "C" fn sim3_joint_golden_hash() -> u64 {
     let one = Fx::ONE.0;
     let half = Fx::HALF.0;
     let f = |v: i32| Fx::from_int(v).0;
-    let h = sim3_world_new(0, f(-10), 0, 60);
-    sim3_add_box(h, 0, 0, -half, 0, f(20), half, f(20), one);
-    let anchor = sim3_add_sphere(h, 0, 0, f(10), 0, Fx::from_ratio(1, 10).0, one);
-    let bob = sim3_add_sphere(h, 2, f(3), f(10), 0, Fx::from_ratio(1, 4).0, one);
-    sim3_joint_ball(h, anchor, bob, 0, 0, 0, f(-3), 0, 0);
-    let anchor2 = sim3_add_sphere(h, 0, f(10), f(10), 0, Fx::from_ratio(1, 10).0, one);
-    let rope_end = sim3_add_sphere(h, 2, f(10), f(9), 0, Fx::from_ratio(1, 4).0, one);
-    sim3_joint_distance(h, anchor2, rope_end, 0, 0, 0, 0, 0, 0, f(3), 0);
+    let world = sim3_world_new(0, f(-10), 0, 60);
+    sim3_add_box(world, 0, 0, -half, 0, f(20), half, f(20), one);
+    let anchor = sim3_add_sphere(world, 0, 0, f(10), 0, Fx::from_ratio(1, 10).0, one);
+    let bob = sim3_add_sphere(world, 2, f(3), f(10), 0, Fx::from_ratio(1, 4).0, one);
+    sim3_joint_ball(world, anchor, bob, 0, 0, 0, f(-3), 0, 0);
+    let anchor2 = sim3_add_sphere(world, 0, f(10), f(10), 0, Fx::from_ratio(1, 10).0, one);
+    let rope_end = sim3_add_sphere(world, 2, f(10), f(9), 0, Fx::from_ratio(1, 4).0, one);
+    sim3_joint_distance(world, anchor2, rope_end, 0, 0, 0, 0, 0, 0, f(3), 0);
     let post = sim3_add_box(
-        h,
+        world,
         0,
         f(-10),
         f(1),
@@ -1015,7 +1024,7 @@ pub extern "C" fn sim3_joint_golden_hash() -> u64 {
         one,
     );
     let door = sim3_add_box(
-        h,
+        world,
         2,
         (Fx::from_int(-10) + Fx::from_ratio(6, 10)).0,
         f(1),
@@ -1026,7 +1035,7 @@ pub extern "C" fn sim3_joint_golden_hash() -> u64 {
         one,
     );
     sim3_joint_hinge(
-        h,
+        world,
         post,
         door,
         Fx::from_ratio(1, 10).0,
@@ -1048,7 +1057,7 @@ pub extern "C" fn sim3_joint_golden_hash() -> u64 {
         0,
     );
     sim3_apply_impulse(
-        h,
+        world,
         door,
         0,
         0,
@@ -1058,10 +1067,10 @@ pub extern "C" fn sim3_joint_golden_hash() -> u64 {
         f(1),
         0,
     );
-    let axle = sim3_add_sphere(h, 0, f(20), f(5), 0, Fx::from_ratio(1, 10).0, one);
-    let wheel = sim3_add_sphere(h, 2, f(20), f(5), 0, one, one);
+    let axle = sim3_add_sphere(world, 0, f(20), f(5), 0, Fx::from_ratio(1, 10).0, one);
+    let wheel = sim3_add_sphere(world, 2, f(20), f(5), 0, one, one);
     sim3_joint_hinge(
-        h,
+        world,
         axle,
         wheel,
         0,
@@ -1083,7 +1092,7 @@ pub extern "C" fn sim3_joint_golden_hash() -> u64 {
         f(50),
     );
     sim3_add_box(
-        h,
+        world,
         0,
         f(4),
         Fx::from_ratio(15, 100).0,
@@ -1094,7 +1103,7 @@ pub extern "C" fn sim3_joint_golden_hash() -> u64 {
         one,
     );
     sim3_add_box(
-        h,
+        world,
         0,
         f(8),
         f(1),
@@ -1105,7 +1114,7 @@ pub extern "C" fn sim3_joint_golden_hash() -> u64 {
         one,
     );
     let hero = sim3_add_capsule(
-        h,
+        world,
         1,
         0,
         Fx::from_ratio(8, 10).0,
@@ -1115,7 +1124,7 @@ pub extern "C" fn sim3_joint_golden_hash() -> u64 {
         one,
     );
     let k = sim3_kcc_new(
-        h,
+        world,
         hero,
         half,
         Fx::from_ratio(7, 10).0,
@@ -1124,16 +1133,17 @@ pub extern "C" fn sim3_joint_golden_hash() -> u64 {
     let dt = Fx::from_ratio(1, 60);
     for _ in 0..300 {
         sim3_kcc_move(
-            h,
+            world,
             k,
             (Fx::from_int(3) * dt).0,
             (Fx::from_int(-10) * dt).0,
             0,
         );
-        sim3_step(h);
+        sim3_step(world);
     }
-    let hash = sim3_hash(h) ^ (sim3_hinge_angle(h, 3) as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    sim3_world_free(h);
+    let hash =
+        sim3_hash(world) ^ (sim3_hinge_angle(world, 3) as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    sim3_world_free(world);
     hash
 }
 
@@ -1153,9 +1163,9 @@ mod tests {
         let a = sim3_golden_hash();
         assert_eq!(a, sim3_golden_hash());
         eprintln!("native 3d golden hash: {a:#x}");
-        let h = sim3_world_new(0, Fx::from_int(-10).0, 0, 60);
+        let world = sim3_world_new(0, Fx::from_int(-10).0, 0, 60);
         sim3_add_box(
-            h,
+            world,
             0,
             0,
             -Fx::HALF.0,
@@ -1165,21 +1175,21 @@ mod tests {
             Fx::from_int(10).0,
             Fx::ONE.0,
         );
-        let ball = sim3_add_sphere(h, 2, 0, Fx::from_int(3).0, 0, Fx::HALF.0, Fx::ONE.0);
+        let ball = sim3_add_sphere(world, 2, 0, Fx::from_int(3).0, 0, Fx::HALF.0, Fx::ONE.0);
         for _ in 0..240 {
-            sim3_step(h);
+            sim3_step(world);
         }
-        assert!((Fx(sim3_body_get(h, ball, 1)) - Fx::HALF).abs() < Fx::from_ratio(3, 100));
-        let n = sim3_snapshot(h);
+        assert!((Fx(sim3_body_get(world, ball, 1)) - Fx::HALF).abs() < Fx::from_ratio(3, 100));
+        let n = sim3_snapshot(world);
         assert!(n > 0);
-        let hash = sim3_hash(h);
-        sim3_set_position(h, ball, 0, Fx::from_int(9).0, 0);
-        assert_ne!(sim3_hash(h), hash);
-        assert_eq!(sim3_restore(h), 1);
-        assert_eq!(sim3_hash(h), hash);
+        let hash = sim3_hash(world);
+        sim3_set_position(world, ball, 0, Fx::from_int(9).0, 0);
+        assert_ne!(sim3_hash(world), hash);
+        assert_eq!(sim3_restore(world), 1);
+        assert_eq!(sim3_hash(world), hash);
         assert_eq!(
             sim3_raycast(
-                h,
+                world,
                 0,
                 Fx::from_int(5).0,
                 0,
@@ -1195,6 +1205,6 @@ mod tests {
             "{}",
             Fx(sim3_ray_get(2))
         );
-        sim3_world_free(h);
+        sim3_world_free(world);
     }
 }

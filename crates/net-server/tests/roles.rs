@@ -35,8 +35,8 @@ async fn ticks_seen(
         sender.flush();
         while let Some(ev) = watcher.try_next_event() {
             if let Event::Data { payload, .. } = ev {
-                for e in watcher_ls.receive(&payload).unwrap_or_default() {
-                    if let LsEvent::Tick { inputs, .. } = e {
+                for event in watcher_ls.receive(&payload).unwrap_or_default() {
+                    if let LsEvent::Tick { inputs, .. } = event {
                         if inputs.get(&actor).is_some_and(|b| b.as_ref() == input) {
                             seen += 1;
                         }
@@ -49,19 +49,19 @@ async fn ticks_seen(
     seen
 }
 
-fn msg(v: serde_json::Value) -> ClientMsg {
-    serde_json::from_value(v).expect("client message")
+fn msg(json: serde_json::Value) -> ClientMsg {
+    serde_json::from_value(json).expect("client message")
 }
 
 #[tokio::test]
 async fn player_joining_again_as_spectator_keeps_sending_inputs() {
     let node = Node::start().await;
-    let p = node.project("roles").await;
+    let project = node.project("roles").await;
     let opts = Options {
         tunnel: true,
         ..Default::default()
     };
-    let ann_grant = p.grant("ann").await;
+    let ann_grant = project.grant("ann").await;
     let mut ann = Client::connect(&node.http, &ann_grant, opts.clone())
         .await
         .expect("ann connects");
@@ -72,7 +72,7 @@ async fn player_joining_again_as_spectator_keeps_sending_inputs() {
         .await
         .expect("ann creates")
         .actor;
-    let mut ben = Client::connect(&node.http, &p.grant("ben").await, opts.clone())
+    let mut ben = Client::connect(&node.http, &project.grant("ben").await, opts.clone())
         .await
         .expect("ben connects");
     ben.join(msg(json!({"t": "join", "name": "duel"})))

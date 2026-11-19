@@ -5,7 +5,15 @@
 import { Channel } from "./packet.js";
 import { SyncWorld } from "./sync.js";
 
-export const LS_INPUT = 0x10, LS_BUNDLE = 0x20, LS_HASH = 0x21, LS_CHECKPOINT = 0x22, LS_CHECKPOINT_REQ = 0x23, LS_CATCHUP = 0x24, LS_INPUT_STATS = 0x25, LS_DUMP_REQ = 0x26, LS_DUMP = 0x27;
+export const LS_INPUT = 0x10;
+export const LS_BUNDLE = 0x20;
+export const LS_HASH = 0x21;
+export const LS_CHECKPOINT = 0x22;
+export const LS_CHECKPOINT_REQ = 0x23;
+export const LS_CATCHUP = 0x24;
+export const LS_INPUT_STATS = 0x25;
+export const LS_DUMP_REQ = 0x26;
+export const LS_DUMP = 0x27;
 const LS_COMMAND = 0x28;
 /** Pseudo-actor whose per-tick input carries the commands. */
 export const COMMAND_ACTOR = 0xffff;
@@ -26,119 +34,298 @@ export class LockstepClient {
 
   private pending = new Map<number, TickInputs>();
   private recentInputs: Uint8Array[] = [];
-  private started = false; private next = 0; private lastInput = 0; private slackStreak = 0;
+  private started = false;
+  private next = 0;
+  private lastInput = 0;
+  private slackStreak = 0;
   /** Next tick to be delivered to onTick. */
-  get confirmedTick(): number { return this.next; }
+  get confirmedTick(): number {
+    return this.next;
+  }
   /** Newest tick the node has bundled (+1). */
   serverTick = 0;
   /** Ticks ahead of the server clock inputs are stamped; tuned between min/max from margin reports when adaptive. */
-  inputDelay = 2; inputDelayMin = 1; inputDelayMax = 8; adaptiveDelay = true;
+  inputDelay = 2;
+  inputDelayMin = 1;
+  inputDelayMax = 8;
+  adaptiveDelay = true;
   /** Inputs repeated per datagram (1..8). */
   inputRedundancy = 3;
-  lastMargin = 0; lateInputs = 0; delivered = 0; catchups = 0; dropped = 0;
+  lastMargin = 0;
+  lateInputs = 0;
+  delivered = 0;
+  catchups = 0;
+  dropped = 0;
 
-  constructor(private readonly send: (channel: Channel, payload: Uint8Array) => void) {}
+  constructor(
+    private readonly send: (channel: Channel, payload: Uint8Array) => void,
+  ) {}
 
   /** Feed every data-path payload from a lockstep room. Returns false when it was not a lockstep frame. */
-  receive(p: Uint8Array): boolean {
-    if (p.length === 0) return false;
-    switch (p[0]) {
+  receive(packet: Uint8Array): boolean {
+    if (packet.length === 0) {
+      return false;
+    }
+    switch (packet[0]) {
       case LS_CATCHUP: {
-        if (p.length < 17) return true;
-        const tick = u32(p, 1), hash = u64(p, 5), len = u32(p, 13);
-        const state = p.slice(17, 17 + Math.min(len, p.length - 17));
-        this.pending.clear(); this.next = tick; this.started = true; this.catchups++;
+        if (packet.length < 17) {
+          return true;
+        }
+        const tick = u32(packet, 1);
+        const hash = u64(packet, 5);
+        const len = u32(packet, 13);
+        const state = packet.slice(17, 17 + Math.min(len, packet.length - 17));
+        this.pending.clear();
+        this.next = tick;
+        this.started = true;
+        this.catchups++;
         this.onRestore?.(tick, hash, state);
         return true;
       }
       case LS_BUNDLE: {
-        if (p.length < 2) return true;
-        const n = p[1]; let o = 2;
-        for (let i = 0; i < n && o + 2 <= p.length; i++) { const len = (p[o] << 8) | p[o + 1]; o += 2; if (o + len > p.length) break; this.decodeBundle(p, o, len); o += len; }
+        if (packet.length < 2) {
+          return true;
+        }
+        const count = packet[1];
+        let offset = 2;
+        for (let i = 0; i < count && offset + 2 <= packet.length; i++) {
+          const len = (packet[offset] << 8) | packet[offset + 1];
+          offset += 2;
+          if (offset + len > packet.length) {
+            break;
+          }
+          this.decodeBundle(packet, offset, len);
+          offset += len;
+        }
         this.drain();
         return true;
       }
-      case LS_CHECKPOINT_REQ: if (p.length >= 5) this.onCheckpointRequested?.(u32(p, 1)); return true;
-      case LS_DUMP_REQ: if (p.length >= 5) this.onDumpRequested?.(u32(p, 1)); return true;
-      case LS_INPUT_STATS: if (p.length >= 7) this.onInputStats((p[5] << 24) >> 24, p[6]); return true;
-      case LS_CHECKPOINT: case LS_HASH: case LS_INPUT: return true;
+      case LS_CHECKPOINT_REQ:
+        if (packet.length >= 5) {
+          this.onCheckpointRequested?.(u32(packet, 1));
+        }
+        return true;
+      case LS_DUMP_REQ:
+        if (packet.length >= 5) {
+          this.onDumpRequested?.(u32(packet, 1));
+        }
+        return true;
+      case LS_INPUT_STATS:
+        if (packet.length >= 7) {
+          this.onInputStats((packet[5] << 24) >> 24, packet[6]);
+        }
+        return true;
+      case LS_CHECKPOINT:
+      case LS_HASH:
+      case LS_INPUT:
+        return true;
     }
     return false;
   }
 
   /** Raises the delay as soon as inputs arrive late; lowers it one tick after three consecutive reports with >= 2 ticks of slack. */
   onInputStats(margin: number, late: number): void {
-    this.lastMargin = margin; this.lateInputs += late;
-    if (!this.adaptiveDelay) return;
-    if (margin < 0) { this.inputDelay = Math.min(this.inputDelayMax, this.inputDelay + Math.min(4, -margin)); this.slackStreak = 0; }
-    else if (margin >= 2) { if (++this.slackStreak >= 3) { this.slackStreak = 0; if (this.inputDelay > this.inputDelayMin) this.inputDelay--; } }
-    else this.slackStreak = 0;
+    this.lastMargin = margin;
+    this.lateInputs += late;
+    if (!this.adaptiveDelay) {
+      return;
+    }
+    if (margin < 0) {
+      this.inputDelay = Math.min(
+        this.inputDelayMax,
+        this.inputDelay + Math.min(4, -margin),
+      );
+      this.slackStreak = 0;
+    } else if (margin >= 2) {
+      if (++this.slackStreak >= 3) {
+        this.slackStreak = 0;
+        if (this.inputDelay > this.inputDelayMin) {
+          this.inputDelay--;
+        }
+      }
+    } else {
+      this.slackStreak = 0;
+    }
   }
 
-  private decodeBundle(b: Uint8Array, o: number, len: number): void {
-    const end = o + len; if (len < 6 || b[o] !== LS_BUNDLE) return;
-    const t = u32(b, o + 1); const k = b[o + 5]; o += 6;
-    if (t + 1 > this.serverTick) this.serverTick = t + 1;
-    if (!this.started) { this.started = true; this.next = t; }
-    if (t < this.next || this.pending.has(t)) return;
+  private decodeBundle(bytes: Uint8Array, offset: number, len: number): void {
+    const end = offset + len;
+    if (len < 6 || bytes[offset] !== LS_BUNDLE) {
+      return;
+    }
+    const tick = u32(bytes, offset + 1);
+    const count = bytes[offset + 5];
+    offset += 6;
+    if (tick + 1 > this.serverTick) {
+      this.serverTick = tick + 1;
+    }
+    if (!this.started) {
+      this.started = true;
+      this.next = tick;
+    }
+    if (tick < this.next || this.pending.has(tick)) {
+      return;
+    }
     const inputs: TickInputs = new Map();
-    for (let i = 0; i < k && o + 3 <= end; i++) { const a = (b[o] << 8) | b[o + 1]; const l = b[o + 2]; o += 3; if (o + l > end) break; inputs.set(a, b.slice(o, o + l)); o += l; }
-    this.pending.set(t, inputs);
+    for (let i = 0; i < count && offset + 3 <= end; i++) {
+      const actor = (bytes[offset] << 8) | bytes[offset + 1];
+      const length = bytes[offset + 2];
+      offset += 3;
+      if (offset + length > end) {
+        break;
+      }
+      inputs.set(actor, bytes.slice(offset, offset + length));
+      offset += length;
+    }
+    this.pending.set(tick, inputs);
   }
 
   private drain(): void {
-    for (;;) { const inputs = this.pending.get(this.next); if (!inputs) break; this.pending.delete(this.next); const t = this.next++; this.delivered++; const cmds = inputs.get(COMMAND_ACTOR); if (cmds) { inputs.delete(COMMAND_ACTOR); this.dispatchCommands(t, cmds); } this.onTick?.(t, inputs); }
-    for (const t of [...this.pending.keys()].sort((a, b) => a - b)) { if (t <= this.next + 600) break; this.pending.delete(t); this.dropped++; }
+    for (;;) {
+      const inputs = this.pending.get(this.next);
+      if (!inputs) {
+        break;
+      }
+      this.pending.delete(this.next);
+      const tick = this.next++;
+      this.delivered++;
+      const cmds = inputs.get(COMMAND_ACTOR);
+      if (cmds) {
+        inputs.delete(COMMAND_ACTOR);
+        this.dispatchCommands(tick, cmds);
+      }
+      this.onTick?.(tick, inputs);
+    }
+    for (const tick of [...this.pending.keys()].sort(
+      (left, right) => left - right,
+    )) {
+      if (tick <= this.next + 600) {
+        break;
+      }
+      this.pending.delete(tick);
+      this.dropped++;
+    }
   }
 
   /** Queues this tick's local input (sent with the previous ones for redundancy); returns the tick it was stamped with. */
   /** Reliable command outside the input stream (buy, surrender, pause): stamped onto the next tick by the server, journaled, replayed, seen by the referee. 1..1024 bytes. */
   sendCommand(data: Uint8Array): void {
-    if (data.length === 0 || data.length > 1024) throw new Error("command: 1..1024 bytes");
-    const b = new Uint8Array(1 + data.length); b[0] = LS_COMMAND; b.set(data, 1);
-    this.send(Channel.Reliable, b);
+    if (data.length === 0 || data.length > 1024) {
+      throw new Error("command: 1..1024 bytes");
+    }
+    const bytes = new Uint8Array(1 + data.length);
+    bytes[0] = LS_COMMAND;
+    bytes.set(data, 1);
+    this.send(Channel.Reliable, bytes);
   }
   private dispatchCommands(tick: number, cmds: Uint8Array): void {
-    let i = 0;
-    while (i + 4 <= cmds.length) {
-      const actor = (cmds[i] << 8) | cmds[i + 1]; const len = (cmds[i + 2] << 8) | cmds[i + 3]; i += 4;
-      if (i + len > cmds.length) break;
-      this.onCommand?.(tick, actor, cmds.slice(i, i + len)); i += len;
+    let offset = 0;
+    while (offset + 4 <= cmds.length) {
+      const actor = (cmds[offset] << 8) | cmds[offset + 1];
+      const len = (cmds[offset + 2] << 8) | cmds[offset + 3];
+      offset += 4;
+      if (offset + len > cmds.length) {
+        break;
+      }
+      this.onCommand?.(tick, actor, cmds.slice(offset, offset + len));
+      offset += len;
     }
   }
   /** Sends this tick's input and returns the tick it is stamped with. The room takes one input per tick:
    *  called more often than that it sends nothing and returns -1, so sample the input again next time. */
   sendInput(input: Uint8Array): number {
-    const tick = Math.max(this.serverTick + this.inputDelay, this.lastInput + 1);
-    if (tick > this.serverTick + this.inputDelay + 1) return -1;
+    const tick = Math.max(
+      this.serverTick + this.inputDelay,
+      this.lastInput + 1,
+    );
+    if (tick > this.serverTick + this.inputDelay + 1) {
+      return -1;
+    }
     this.lastInput = tick;
-    this.recentInputs.push(input); const keep = Math.max(1, Math.min(8, this.inputRedundancy)); while (this.recentInputs.length > keep) this.recentInputs.shift();
-    this.send(Channel.Unreliable, SyncWorld.encodeInput(tick - (this.recentInputs.length - 1), this.recentInputs));
+    this.recentInputs.push(input);
+    const keep = Math.max(1, Math.min(8, this.inputRedundancy));
+    while (this.recentInputs.length > keep) {
+      this.recentInputs.shift();
+    }
+    this.send(
+      Channel.Unreliable,
+      SyncWorld.encodeInput(
+        tick - (this.recentInputs.length - 1),
+        this.recentInputs,
+      ),
+    );
     return tick;
   }
 
-  reportHash(tick: number, hash: bigint): void { const b = new Uint8Array(13); b[0] = LS_HASH; w32(b, 1, tick); w64(b, 5, hash); this.send(Channel.Unreliable, b); }
+  reportHash(tick: number, hash: bigint): void {
+    const bytes = new Uint8Array(13);
+    bytes[0] = LS_HASH;
+    w32(bytes, 1, tick);
+    w64(bytes, 5, hash);
+    this.send(Channel.Unreliable, bytes);
+  }
 
   /** Master only, in answer to onCheckpointRequested: confirmed state at `tick` (<= requested). */
-  sendCheckpoint(tick: number, hash: bigint, state: Uint8Array): void { this.send(Channel.Reliable, frame(LS_CHECKPOINT, tick, hash, state)); }
+  sendCheckpoint(tick: number, hash: bigint, state: Uint8Array): void {
+    this.send(Channel.Reliable, frame(LS_CHECKPOINT, tick, hash, state));
+  }
   /** Answer to onDumpRequested: your state at `tick` (<= 60 KiB), stored by the node for 24 h next to the master's. */
-  sendDump(tick: number, hash: bigint, state: Uint8Array): void { this.send(Channel.Reliable, frame(LS_DUMP, tick, hash, state)); }
+  sendDump(tick: number, hash: bigint, state: Uint8Array): void {
+    this.send(Channel.Reliable, frame(LS_DUMP, tick, hash, state));
+  }
 
   /** FNV-1a 64 over bytes: a simple, portable state hash (same as the managed core). */
-  static fnv1a(data: Uint8Array): bigint { let h = 14695981039346656037n; for (const x of data) { h ^= BigInt(x); h = (h * 1099511628211n) & 0xffffffffffffffffn; } return h; }
+  static fnv1a(data: Uint8Array): bigint {
+    let hash = 14695981039346656037n;
+    for (const x of data) {
+      hash ^= BigInt(x);
+      hash = (hash * 1099511628211n) & 0xffffffffffffffffn;
+    }
+    return hash;
+  }
 }
 
-function frame(kind: number, tick: number, hash: bigint, state: Uint8Array): Uint8Array { const b = new Uint8Array(13 + state.length); b[0] = kind; w32(b, 1, tick); w64(b, 5, hash); b.set(state, 13); return b; }
-function u32(b: Uint8Array, o: number): number { return ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0; }
-function u64(b: Uint8Array, o: number): bigint { return (BigInt(u32(b, o)) << 32n) | BigInt(u32(b, o + 4)); }
-function w32(b: Uint8Array, o: number, v: number): void { b[o] = v >>> 24; b[o + 1] = (v >>> 16) & 255; b[o + 2] = (v >>> 8) & 255; b[o + 3] = v & 255; }
-function w64(b: Uint8Array, o: number, v: bigint): void { w32(b, o, Number(v >> 32n)); w32(b, o + 4, Number(v & 0xffffffffn)); }
+function frame(
+  kind: number,
+  tick: number,
+  hash: bigint,
+  state: Uint8Array,
+): Uint8Array {
+  const bytes = new Uint8Array(13 + state.length);
+  bytes[0] = kind;
+  w32(bytes, 1, tick);
+  w64(bytes, 5, hash);
+  bytes.set(state, 13);
+  return bytes;
+}
+function u32(bytes: Uint8Array, offset: number): number {
+  return (
+    ((bytes[offset] << 24) |
+      (bytes[offset + 1] << 16) |
+      (bytes[offset + 2] << 8) |
+      bytes[offset + 3]) >>>
+    0
+  );
+}
+function u64(bytes: Uint8Array, offset: number): bigint {
+  return (BigInt(u32(bytes, offset)) << 32n) | BigInt(u32(bytes, offset + 4));
+}
+function w32(bytes: Uint8Array, offset: number, value: number): void {
+  bytes[offset] = value >>> 24;
+  bytes[offset + 1] = (value >>> 16) & 255;
+  bytes[offset + 2] = (value >>> 8) & 255;
+  bytes[offset + 3] = value & 255;
+}
+function w64(bytes: Uint8Array, offset: number, value: bigint): void {
+  w32(bytes, offset, Number(value >> 32n));
+  w32(bytes, offset + 4, Number(value & 0xffffffffn));
+}
 
 /** The game's deterministic simulation for LockstepRollback: step one tick, snapshot, restore. */
 export interface Simulation<S = unknown> {
   step(tick: number, inputs: TickInputs): void;
   snapshot(): S;
-  restore(s: S): void;
+  restore(state: S): void;
 }
 
 /**
@@ -148,76 +335,141 @@ export interface Simulation<S = unknown> {
  * the prediction restores the snapshot, re-steps it and re-predicts the ticks after it.
  */
 export class LockstepRollback<S = unknown> {
-  private confirmed: number; private head: number;
+  private confirmed: number;
+  private head: number;
   private history = new Map<number, S>();
   private predicted = new Map<number, TickInputs>();
   private localInputs = new Map<number, Uint8Array>();
   private lastLocal?: Uint8Array;
   private lastKnown: TickInputs = new Map();
-  rollbacks = 0; resimulatedTicks = 0; predictedTicks = 0;
+  rollbacks = 0;
+  resimulatedTicks = 0;
+  predictedTicks = 0;
 
   /** `sim` must be at tick `start` (fresh game, or restored from a catch-up checkpoint). */
-  constructor(private readonly sim: Simulation<S>, private readonly localActor: number, start = 0, public maxPrediction = 8) {
-    this.confirmed = this.head = start; this.history.set(start, sim.snapshot());
+  constructor(
+    private readonly sim: Simulation<S>,
+    private readonly localActor: number,
+    start = 0,
+    public maxPrediction = 8,
+  ) {
+    this.confirmed = this.head = start;
+    this.history.set(start, sim.snapshot());
   }
   /** First tick not yet confirmed by the node. */
-  get confirmedTick(): number { return this.confirmed; }
+  get confirmedTick(): number {
+    return this.confirmed;
+  }
   /** Next tick the simulation will run; head - confirmedTick ticks are predicted. */
-  get headTick(): number { return this.head; }
+  get headTick(): number {
+    return this.head;
+  }
   /** State after the last confirmed tick: hash *this* for reportHash, never the predicted head. */
-  confirmedSnapshot(): S { return this.history.get(this.confirmed) as S; }
+  confirmedSnapshot(): S {
+    return this.history.get(this.confirmed) as S;
+  }
 
   /** After the game restored a catch-up checkpoint at `tick`: forget every prediction. */
   reset(tick: number): void {
-    this.history.clear(); this.history.set(tick, this.sim.snapshot()); this.predicted.clear(); this.localInputs.clear();
+    this.history.clear();
+    this.history.set(tick, this.sim.snapshot());
+    this.predicted.clear();
+    this.localInputs.clear();
     this.confirmed = this.head = tick;
   }
   /** Remember the input sent stamped with `tick` (what LockstepClient.sendInput returned) so our own prediction uses exactly it. */
-  localInput(tick: number, input: Uint8Array): void { this.lastLocal = input; if (tick >= 0) this.localInputs.set(tick, input); }
+  localInput(tick: number, input: Uint8Array): void {
+    this.lastLocal = input;
+    if (tick >= 0) {
+      this.localInputs.set(tick, input);
+    }
+  }
 
   /** Runs the simulation ahead to `target` (exclusive), bounded by maxPrediction. */
   predict(target: number): void {
     target = Math.min(target, this.confirmed + Math.max(1, this.maxPrediction));
     while (this.head < target) {
-      const t = this.head, inputs = this.guess(t);
-      this.sim.step(t, inputs); this.predicted.set(t, inputs); this.head = t + 1; this.history.set(this.head, this.sim.snapshot()); this.predictedTicks++;
+      const tick = this.head;
+      const inputs = this.guess(tick);
+      this.sim.step(tick, inputs);
+      this.predicted.set(tick, inputs);
+      this.head = tick + 1;
+      this.history.set(this.head, this.sim.snapshot());
+      this.predictedTicks++;
     }
   }
   /** Feeds a confirmed tick (LockstepClient.onTick). Returns true when a rollback happened. */
   confirm(tick: number, inputs: TickInputs): boolean {
-    if (tick !== this.confirmed) return false;
-    for (const [a, i] of inputs) this.lastKnown.set(a, i);
+    if (tick !== this.confirmed) {
+      return false;
+    }
+    for (const [actor, input] of inputs) {
+      this.lastKnown.set(actor, input);
+    }
     this.localInputs.delete(tick);
     let rolled = false;
-    if (tick >= this.head) { this.sim.step(tick, inputs); this.head = tick + 1; this.history.set(this.head, this.sim.snapshot()); }
-    else if (!sameInputs(this.predicted.get(tick), inputs)) {
-      rolled = true; this.rollbacks++;
-      this.sim.restore(this.history.get(tick) as S); this.sim.step(tick, inputs); this.history.set(tick + 1, this.sim.snapshot());
-      const oldHead = this.head; this.head = tick + 1;
-      for (const t of [...this.predicted.keys()]) if (t > tick) this.predicted.delete(t);
+    if (tick >= this.head) {
+      this.sim.step(tick, inputs);
+      this.head = tick + 1;
+      this.history.set(this.head, this.sim.snapshot());
+    } else if (!sameInputs(this.predicted.get(tick), inputs)) {
+      rolled = true;
+      this.rollbacks++;
+      this.sim.restore(this.history.get(tick) as S);
+      this.sim.step(tick, inputs);
+      this.history.set(tick + 1, this.sim.snapshot());
+      const oldHead = this.head;
+      this.head = tick + 1;
+      for (const predictedTick of [...this.predicted.keys()]) {
+        if (predictedTick > tick) {
+          this.predicted.delete(predictedTick);
+        }
+      }
       this.resimulatedTicks += oldHead - this.head;
       this.predict(oldHead);
     }
-    this.confirmed = tick + 1; this.predicted.delete(tick); this.history.delete(tick);
+    this.confirmed = tick + 1;
+    this.predicted.delete(tick);
+    this.history.delete(tick);
     return rolled;
   }
 
   private guess(tick: number): TickInputs {
-    const g: TickInputs = new Map(this.lastKnown);
+    const inputs: TickInputs = new Map(this.lastKnown);
     const mine = this.localInputs.get(tick) ?? this.lastLocal;
-    if (mine) g.set(this.localActor, mine); else g.delete(this.localActor);
-    return g;
+    if (mine) {
+      inputs.set(this.localActor, mine);
+    } else {
+      inputs.delete(this.localActor);
+    }
+    return inputs;
   }
 }
 
-function sameInputs(a: TickInputs | undefined, b: TickInputs): boolean {
-  if (!a || a.size !== b.size) return false;
-  for (const [k, v] of a) { const w = b.get(k); if (!w || w.length !== v.length) return false; for (let i = 0; i < v.length; i++) if (v[i] !== w[i]) return false; }
+function sameInputs(left: TickInputs | undefined, right: TickInputs): boolean {
+  if (!left || left.size !== right.size) {
+    return false;
+  }
+  for (const [key, value] of left) {
+    const other = right.get(key);
+    if (!other || other.length !== value.length) {
+      return false;
+    }
+    for (let i = 0; i < value.length; i++) {
+      if (value[i] !== other[i]) {
+        return false;
+      }
+    }
+  }
   return true;
 }
 
 /** What ReplayRing.window hands back: restore `snapshot`, then step `inputs` from `start`. */
-export interface ReplayWindow<S> { start: number; snapshot: S; inputs: TickInputs[] }
+export interface ReplayWindow<S> {
+  start: number;
+  snapshot: S;
+  inputs: TickInputs[];
+}
 
 /**
  * Instant replay (kill cam) buffer: the last `keep` confirmed ticks' inputs plus a snapshot of the
@@ -225,24 +477,78 @@ export interface ReplayWindow<S> { start: number; snapshot: S; inputs: TickInput
  * the confirmed path (after LockstepRollback.confirm, with confirmedSnapshot()).
  */
 export class ReplayRing<S = unknown> {
-  private first = 0; private inputs: TickInputs[] = []; private snaps = new Map<number, S>();
-  constructor(private readonly keep = 300, private readonly every = 10) { this.keep = Math.max(1, keep); this.every = Math.max(1, every); }
+  private first = 0;
+  private inputs: TickInputs[] = [];
+  private snaps = new Map<number, S>();
+  constructor(
+    private readonly keep = 300,
+    private readonly every = 10,
+  ) {
+    this.keep = Math.max(1, keep);
+    this.every = Math.max(1, every);
+  }
 
   /** Records confirmed `tick` with its inputs and the confirmed state *before* it (taken lazily on snapshot boundaries). A gap resets the ring. */
   record(tick: number, inputs: TickInputs, stateBefore: () => S): void {
-    if (this.inputs.length === 0 || this.first + this.inputs.length !== tick) { this.inputs = []; this.snaps.clear(); this.first = tick; }
-    if (this.snaps.size === 0 || tick % this.every === 0) this.snaps.set(tick, stateBefore());
+    if (this.inputs.length === 0 || this.first + this.inputs.length !== tick) {
+      this.inputs = [];
+      this.snaps.clear();
+      this.first = tick;
+    }
+    if (this.snaps.size === 0 || tick % this.every === 0) {
+      this.snaps.set(tick, stateBefore());
+    }
     this.inputs.push(inputs);
-    while (this.inputs.length > this.keep) { this.inputs.shift(); this.first++; }
-    let anchor = -1; for (const k of this.snaps.keys()) if (k <= this.first && k > anchor) anchor = k;
-    if (anchor >= 0) for (const k of [...this.snaps.keys()]) if (k < anchor) this.snaps.delete(k);
+    while (this.inputs.length > this.keep) {
+      this.inputs.shift();
+      this.first++;
+    }
+    let anchor = -1;
+    for (const key of this.snaps.keys()) {
+      if (key <= this.first && key > anchor) {
+        anchor = key;
+      }
+    }
+    if (anchor >= 0) {
+      for (const key of [...this.snaps.keys()]) {
+        if (key < anchor) {
+          this.snaps.delete(key);
+        }
+      }
+    }
   }
   /** Oldest tick that can still be replayed. */
-  get oldest(): number | undefined { if (this.inputs.length === 0) return undefined; let m: number | undefined; for (const k of this.snaps.keys()) if (m === undefined || k < m) m = k; return m; }
+  get oldest(): number | undefined {
+    if (this.inputs.length === 0) {
+      return undefined;
+    }
+    let lowest: number | undefined;
+    for (const key of this.snaps.keys()) {
+      if (lowest === undefined || key < lowest) {
+        lowest = key;
+      }
+    }
+    return lowest;
+  }
   /** Everything needed to re-simulate from the newest snapshot at or before `from` (clamped to what is kept) through the last recorded tick. */
   window(from: number): ReplayWindow<S> | undefined {
-    let start = -1; for (const k of this.snaps.keys()) if (k <= from && k > start) start = k;
-    if (start < 0) { const o = this.oldest; if (o === undefined) return undefined; start = o; }
-    return { start, snapshot: this.snaps.get(start) as S, inputs: this.inputs.slice(Math.max(0, start - this.first)) };
+    let start = -1;
+    for (const key of this.snaps.keys()) {
+      if (key <= from && key > start) {
+        start = key;
+      }
+    }
+    if (start < 0) {
+      const oldest = this.oldest;
+      if (oldest === undefined) {
+        return undefined;
+      }
+      start = oldest;
+    }
+    return {
+      start,
+      snapshot: this.snaps.get(start) as S,
+      inputs: this.inputs.slice(Math.max(0, start - this.first)),
+    };
   }
 }

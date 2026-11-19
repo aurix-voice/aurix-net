@@ -100,34 +100,35 @@ pub enum SchemaError {
     TooMany,
 }
 
-fn ident_ok(s: &str) -> bool {
-    !s.is_empty()
-        && s.chars()
+fn ident_ok(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .chars()
             .next()
             .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn parse_type(spec: &str, line: usize) -> Result<FieldType, SchemaError> {
     let err = |msg: String| SchemaError::Parse { line, msg };
     let (base, attr) = match spec.find('@') {
-        Some(i) => (spec[..i].trim(), Some(spec[i + 1..].trim())),
+        Some(open) => (spec[..open].trim(), Some(spec[open + 1..].trim())),
         None => (spec.trim(), None),
     };
     let range = |attr: Option<&str>| -> Result<(f32, f32, f32), SchemaError> {
-        let a = attr.ok_or_else(|| err(format!("{base} needs @range(min, max, res)")))?;
-        let inner = a
+        let range = attr.ok_or_else(|| err(format!("{base} needs @range(min, max, res)")))?;
+        let inner = range
             .strip_prefix("range(")
             .and_then(|s| s.strip_suffix(')'))
-            .ok_or_else(|| err(format!("bad attribute {a}")))?;
+            .ok_or_else(|| err(format!("bad attribute {range}")))?;
         let parts: Vec<f32> = inner
             .split(',')
             .map(|p| p.trim().parse::<f32>())
             .collect::<Result<_, _>>()
-            .map_err(|_| err(format!("bad range numbers in {a}")))?;
+            .map_err(|_| err(format!("bad range numbers in {range}")))?;
         if parts.len() != 3 || parts[1] <= parts[0] || parts[2] <= 0.0 {
             return Err(err(format!(
-                "range must be (min, max, res) with max>min, res>0: {a}"
+                "range must be (min, max, res) with max>min, res>0: {range}"
             )));
         }
         Ok((parts[0], parts[1], parts[2]))
@@ -137,12 +138,12 @@ fn parse_type(spec: &str, line: usize) -> Result<FieldType, SchemaError> {
             if rest.is_empty() {
                 return Ok(None);
             }
-            let n = rest
+            let bits = rest
                 .strip_prefix('(')
                 .and_then(|s| s.strip_suffix(')'))
                 .and_then(|s| s.trim().parse::<u32>().ok())
                 .ok_or_else(|| err(format!("bad {name} size in {base}")))?;
-            return Ok(Some(n));
+            return Ok(Some(bits));
         }
         Ok(None)
     };
@@ -171,23 +172,23 @@ fn parse_type(spec: &str, line: usize) -> Result<FieldType, SchemaError> {
         }
         "quat" => FieldType::Quat,
         _ => {
-            if let Some(n) = paren("bits")? {
-                if n == 0 || n > 64 {
+            if let Some(bits) = paren("bits")? {
+                if bits == 0 || bits > 64 {
                     return Err(err("bits(n) needs 1..=64".into()));
                 }
-                return Ok(FieldType::UInt { bits: n });
+                return Ok(FieldType::UInt { bits });
             }
             if base.starts_with("bits") {
                 return Err(err(format!("bad bits spec {base}")));
             }
-            if let Some(n) = paren("string")? {
+            if let Some(max) = paren("string")? {
                 return Ok(FieldType::String {
-                    max: n.clamp(1, 65535),
+                    max: max.clamp(1, 65535),
                 });
             }
-            if let Some(n) = paren("bytes")? {
+            if let Some(max) = paren("bytes")? {
                 return Ok(FieldType::Bytes {
-                    max: n.clamp(1, 65535),
+                    max: max.clamp(1, 65535),
                 });
             }
             return Err(err(format!("unknown type {base}")));
@@ -202,15 +203,15 @@ impl Schema {
         let mut canonical = String::new();
         for (i, raw) in text.lines().enumerate() {
             let line = i + 1;
-            let l = match raw.find("//") {
-                Some(p) => &raw[..p],
+            let code = match raw.find("//") {
+                Some(comment) => &raw[..comment],
                 None => raw,
             }
             .trim();
-            if l.is_empty() {
+            if code.is_empty() {
                 continue;
             }
-            if let Some(rest) = l.strip_prefix("component ") {
+            if let Some(rest) = code.strip_prefix("component ") {
                 if cur.is_some() {
                     return Err(SchemaError::Parse {
                         line,
@@ -262,22 +263,22 @@ impl Schema {
                 });
                 continue;
             }
-            if l == "}" {
-                let c = cur.take().ok_or(SchemaError::Parse {
+            if code == "}" {
+                let component = cur.take().ok_or(SchemaError::Parse {
                     line,
                     msg: "unexpected '}'".into(),
                 })?;
                 canonical.push_str("}\n");
-                components.push(c);
+                components.push(component);
                 continue;
             }
-            let c = cur.as_mut().ok_or(SchemaError::Parse {
+            let component = cur.as_mut().ok_or(SchemaError::Parse {
                 line,
                 msg: "field outside component".into(),
             })?;
-            let (name, spec) = l.split_once(':').ok_or(SchemaError::Parse {
+            let (name, spec) = code.split_once(':').ok_or(SchemaError::Parse {
                 line,
-                msg: format!("expected 'name: type', got {l}"),
+                msg: format!("expected 'name: type', got {code}"),
             })?;
             let name = name.trim();
             if !ident_ok(name) {
@@ -286,15 +287,15 @@ impl Schema {
                     msg: format!("bad field name {name}"),
                 });
             }
-            if c.fields.iter().any(|f| f.name == name) {
+            if component.fields.iter().any(|f| f.name == name) {
                 return Err(SchemaError::DuplicateField(
-                    c.name.clone(),
+                    component.name.clone(),
                     name.to_string(),
                 ));
             }
             let ty = parse_type(spec.trim(), line)?;
             canonical.push_str(&format!("  {name}: {ty:?}\n"));
-            c.fields.push(Field {
+            component.fields.push(Field {
                 name: name.to_string(),
                 ty,
             });
@@ -344,11 +345,11 @@ component Health {
 
     #[test]
     fn parses_and_hashes() {
-        let s = Schema::parse(SRC).unwrap();
-        assert_eq!(s.components.len(), 2);
-        assert_eq!(s.component("Health").unwrap().id, 1);
+        let schema = Schema::parse(SRC).unwrap();
+        assert_eq!(schema.components.len(), 2);
+        assert_eq!(schema.component("Health").unwrap().id, 1);
         assert_eq!(
-            s.component("Transform").unwrap().fields[0].ty,
+            schema.component("Transform").unwrap().fields[0].ty,
             FieldType::Vec3 {
                 min: -4096.0,
                 max: 4096.0,
@@ -356,16 +357,16 @@ component Health {
             }
         );
         assert_eq!(
-            s.component("Health").unwrap().fields[3].ty,
+            schema.component("Health").unwrap().fields[3].ty,
             FieldType::UInt { bits: 5 }
         );
         let s2 = Schema::parse(&SRC.replace("hp: u8", "hp: u16")).unwrap();
-        assert_ne!(s.hash, s2.hash);
+        assert_ne!(schema.hash, s2.hash);
         assert_eq!(
             Schema::parse(&format!("{SRC}\n// trailing comment"))
                 .unwrap()
                 .hash,
-            s.hash
+            schema.hash
         );
     }
 
@@ -385,10 +386,14 @@ component Health {
 
     #[test]
     fn component_flags() {
-        let s = Schema::parse("component Inv @owner_only {\n n: u8\n}\ncomponent Score @global {\n s: u16\n}\ncomponent P {\n x: u8\n}").unwrap();
-        assert!(s.component("Inv").unwrap().owner_only && !s.component("Inv").unwrap().global);
-        assert!(s.component("Score").unwrap().global);
-        assert!(!s.component("P").unwrap().owner_only && !s.component("P").unwrap().global);
+        let schema = Schema::parse("component Inv @owner_only {\n n: u8\n}\ncomponent Score @global {\n s: u16\n}\ncomponent P {\n x: u8\n}").unwrap();
+        assert!(
+            schema.component("Inv").unwrap().owner_only && !schema.component("Inv").unwrap().global
+        );
+        assert!(schema.component("Score").unwrap().global);
+        assert!(
+            !schema.component("P").unwrap().owner_only && !schema.component("P").unwrap().global
+        );
         let plain = Schema::parse("component Inv {\n n: u8\n}").unwrap();
         let flagged = Schema::parse("component Inv @owner_only {\n n: u8\n}").unwrap();
         assert_ne!(plain.hash, flagged.hash);
