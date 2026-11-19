@@ -377,6 +377,29 @@ pub unsafe extern "C" fn aurix_net_joined_json(client: *mut AurixNetClient) -> *
         .unwrap_or(std::ptr::null_mut())
 }
 
+/// The player id of the grant the client signed in with: the id the node knows the player by in
+/// rooms, held seats and webhooks. Free with [`aurix_net_string_free`].
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_player_id(client: *mut AurixNetClient) -> *mut c_char {
+    let Some(client) = client.as_ref() else {
+        return std::ptr::null_mut();
+    };
+    CString::new(client.inner.lock().player_id())
+        .map(CString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// The display name of the grant the client signed in with. Free with [`aurix_net_string_free`].
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_player_name(client: *mut AurixNetClient) -> *mut c_char {
+    let Some(client) = client.as_ref() else {
+        return std::ptr::null_mut();
+    };
+    CString::new(client.inner.lock().player_name())
+        .map(CString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
 /// The seed of the lockstep room the client is in: every client and the node start the game
 /// from it. Returns 0, or -1 when the client is not in a lockstep room.
 #[no_mangle]

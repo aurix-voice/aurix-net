@@ -153,6 +153,9 @@ pub struct Client {
     data: Option<Arc<DataPath>>,
     /// The node takes the unsequenced channel (`hello.supports`).
     unsequenced: bool,
+    /// Who the grant says this client is, as the node answered the sign-in.
+    player_id: String,
+    player_name: String,
     opts: Options,
     pub joined: Option<Joined>,
     /// Sync rooms: the entity the room made for this client as its avatar, once the room has
@@ -227,6 +230,8 @@ impl Client {
             events_tx: events_tx.clone(),
             data: None,
             unsequenced: false,
+            player_id: String::new(),
+            player_name: String::new(),
             opts,
             joined: None,
             avatar: None,
@@ -328,7 +333,11 @@ impl Client {
         let mut passed = VecDeque::new();
         loop {
             match client.answer_by(deadline).await? {
-                Event::Control(ServerMsg::Authed { .. }) => break,
+                Event::Control(ServerMsg::Authed { player_id, name }) => {
+                    client.player_id = player_id;
+                    client.player_name = name;
+                    break;
+                }
                 Event::Control(ServerMsg::Hello { supports, .. }) => {
                     client.unsequenced = supports.iter().any(|s| s == UNSEQUENCED);
                 }
@@ -340,6 +349,17 @@ impl Client {
         }
         client.replay = passed;
         Ok(client)
+    }
+
+    /// The player id of the grant this client signed in with: the id the node knows the player
+    /// by in rooms, held seats and webhooks.
+    pub fn player_id(&self) -> &str {
+        &self.player_id
+    }
+
+    /// The display name of the grant this client signed in with.
+    pub fn player_name(&self) -> &str {
+        &self.player_name
     }
 
     /// Sends a control message.

@@ -30,6 +30,7 @@ bool FOnlineSubsystemAurix::Shutdown()
 bool FOnlineSubsystemAurix::Tick(float DeltaTime)
 {
 	if (!FOnlineSubsystemImpl::Tick(DeltaTime)) return false;
+	if (IdentityInterface.IsValid()) IdentityInterface->Tick();
 	if (SessionInterface.IsValid()) SessionInterface->Tick(DeltaTime);
 	return true;
 }

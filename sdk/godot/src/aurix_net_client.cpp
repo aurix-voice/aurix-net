@@ -35,6 +35,8 @@ void AurixNetClient::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_actor"), &AurixNetClient::get_actor);
 	ClassDB::bind_method(D_METHOD("is_connected_to"), &AurixNetClient::is_connected_to);
 	ClassDB::bind_method(D_METHOD("get_joined_json"), &AurixNetClient::get_joined_json);
+	ClassDB::bind_method(D_METHOD("get_player_id"), &AurixNetClient::get_player_id);
+	ClassDB::bind_method(D_METHOD("get_player_name"), &AurixNetClient::get_player_name);
 	ClassDB::bind_method(D_METHOD("get_seed"), &AurixNetClient::get_seed);
 	ClassDB::bind_method(D_METHOD("get_avatar"), &AurixNetClient::get_avatar);
 	ClassDB::bind_method(D_METHOD("get_last_error"), &AurixNetClient::get_last_error);

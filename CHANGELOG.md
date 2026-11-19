@@ -68,6 +68,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   dropped it, so a game on the Rust client could not start from the state the node starts from.
 - C ABI, C++, Godot, C#: the lockstep room's `seed` is there too: `aurix_net_joined_seed()`,
   `aurix::net::Client::seed()`, `AurixNetClient.get_seed()` and `ManagedClient.Seed`.
+- SDKs: a connected client tells the game the player its grant names, the id and the name the
+  node answered the sign-in with: `playerId` / `playerName` in Web, `PlayerId` / `PlayerName` in
+  both C# clients, `aurix_net_player_id()` / `aurix_net_player_name()` in the C ABI,
+  `playerId()` / `playerName()` in C++, `get_player_id()` / `get_player_name()` in Godot,
+  `GetPlayerId` / `GetPlayerName` in the Unreal plugin, `player_id()` / `player_name()` in the
+  Rust client. A game had the id only from the list of players of a room it had joined.
 - C++ and Godot SDKs: `joinOrCreate` / `join_or_create` take `reserved`, the player ids whose
   seats the new room holds (the `players` of a matchmaking ticket), and `joinRandom` /
   `join_random` joins a random open room, as the Web and Unity SDKs do. Without `reserved` a
@@ -99,6 +105,13 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   `npm run format:check`).
 - C++ and Godot SDK: notices and the rehost signal read control messages with the library's JSON
   parser (new C ABI call `aurix_net_json_string`) instead of a hand-written string search.
+- Unreal plugin, identity interface: the unique net id of local user 0 is the player's id on the
+  cell, from the moment the plugin is connected until it is not, and the nickname is the grant's
+  name. It was a random GUID made at startup, which no seat could be held for. Before the
+  connection there is no id; `Login` and `AutoLogin` succeed once connected, `Login` in the
+  editor connects with a development grant, and `Logout` disconnects. The id is written to the
+  local player and its player state when the connection is made and taken away when it is lost,
+  as the engine's own login node does: the Create Session node reads it there.
 - Unreal plugin, session interface: `CreateSession`, `JoinSession` and `StartMatchmaking` no longer
   block the game thread for the round trip to the cell. They return at once and their completion
   delegates fire when the room is joined; until then the session state is `Creating`. Search

@@ -70,6 +70,8 @@ public:
 	int get_actor() const { return client_.actor(); }
 	bool is_connected_to() const { return client_.connected(); }
 	String get_joined_json() const { return String::utf8(client_.joinedJson().c_str()); }
+	String get_player_id() const { return String::utf8(client_.playerId().c_str()); }
+	String get_player_name() const { return String::utf8(client_.playerName().c_str()); }
 	int64_t get_seed() const { return static_cast<int64_t>(client_.seed().value_or(0)); }
 	/// The avatar a sync room made for this client, -1 until the room announces it.
 	int64_t get_avatar() const {

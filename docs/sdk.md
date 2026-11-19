@@ -24,6 +24,19 @@ meets the limit fails ([modes.md](modes.md)). The node applies the same rule to 
 messages: when it gives the link up, the game gets the same `closed` with `link dead`, over QUIC,
 WebTransport and the tunnel alike.
 
+A connected client knows the player its grant names, as the node answered the sign-in: the id
+the node uses for the player in rooms, held seats and webhooks, and the display name.
+
+| SDK | Id and name |
+|---|---|
+| Web | `client.playerId`, `client.playerName` |
+| Unity | `client.PlayerId`, `client.PlayerName`, on the managed and the native client |
+| C | `aurix_net_player_id(client)`, `aurix_net_player_name(client)`, freed with `aurix_net_string_free` |
+| C++ | `client.playerId()`, `client.playerName()` |
+| Godot | `net.get_player_id()`, `net.get_player_name()` |
+| Unreal | `GetPlayerId`, `GetPlayerName`; the id is the unique net id of the session interface |
+| Rust | `client.player_id()`, `client.player_name()` |
+
 `sendEvent` chooses between reliable and unreliable; `sendEventOn` takes the channel, which is how an
 event goes on the unsequenced one (docs/modes.md):
 

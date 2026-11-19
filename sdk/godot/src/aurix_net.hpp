@@ -192,6 +192,15 @@ public:
     }
 
 private:
+    /// The text of a string the library handed over, which is freed here.
+    static std::string taken(char* text) {
+        if (!text) {
+            return "";
+        }
+        std::string result(text);
+        aurix_net_string_free(text);
+        return result;
+    }
     static std::string joinU64(const std::vector<uint64_t>& ids) {
         std::string out = "[";
         for (size_t i = 0; i < ids.size(); ++i) {
@@ -268,15 +277,12 @@ public:
         actor_ = actor;
         return actor;
     }
-    std::string joinedJson() const {
-        char* joined = aurix_net_joined_json(handle_);
-        if (!joined) {
-            return "";
-        }
-        std::string result(joined);
-        aurix_net_string_free(joined);
-        return result;
-    }
+    std::string joinedJson() const { return taken(aurix_net_joined_json(handle_)); }
+    /// The player id of the grant this client signed in with: the id the node knows the player
+    /// by in rooms, held seats and webhooks.
+    std::string playerId() const { return taken(aurix_net_player_id(handle_)); }
+    /// The display name of the grant this client signed in with.
+    std::string playerName() const { return taken(aurix_net_player_name(handle_)); }
     /// The seed of the lockstep room: every client and the node start the game from it.
     std::optional<uint64_t> seed() const {
         uint64_t seed = 0;

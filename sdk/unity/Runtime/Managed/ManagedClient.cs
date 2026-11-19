@@ -41,6 +41,12 @@ namespace Aurix.Net.Managed
 
         public int Actor { get; private set; } = -1;
 
+        /// <summary>The player id of the grant this client signed in with: the id the node knows the player by in rooms, held seats and webhooks.</summary>
+        public string PlayerId { get; private set; }
+
+        /// <summary>The display name of the grant this client signed in with.</summary>
+        public string PlayerName { get; private set; }
+
         /// <summary>URL given to ConnectAsync, the grant and the last join message: what RejoinAsync needs.</summary>
         public string EntryUrl { get; private set; }
         public string Grant { get; private set; }
@@ -130,7 +136,9 @@ namespace Aurix.Net.Managed
                         + Json.Str(grant)
                         + ",\"supports\":[\"unsequenced\"]}"
                 );
-                await client.WaitForAsync("authed", timeoutMs);
+                var authed = await client.WaitForAsync("authed", timeoutMs);
+                client.PlayerId = Json.Str(authed, "player_id");
+                client.PlayerName = Json.Str(authed, "name");
                 return client;
             }
             catch

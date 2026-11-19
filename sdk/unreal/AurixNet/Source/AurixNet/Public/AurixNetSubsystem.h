@@ -154,6 +154,10 @@ public:
 	bool SendControl(const FString& Json);
 
 	UFUNCTION(BlueprintPure, Category = "Aurix Net") EAurixNetState GetState() const { return State; }
+	/** The player id of the grant this client signed in with: the id the node knows the player by in rooms, held seats and webhooks. Empty until connected. */
+	UFUNCTION(BlueprintPure, Category = "Aurix Net") FString GetPlayerId() const { return OwnPlayerId; }
+	/** The display name of the grant this client signed in with. Empty until connected. */
+	UFUNCTION(BlueprintPure, Category = "Aurix Net") FString GetPlayerName() const { return OwnPlayerName; }
 	UFUNCTION(BlueprintPure, Category = "Aurix Net") const FAurixNetRoomInfo& GetRoom() const { return Room; }
 	UFUNCTION(BlueprintPure, Category = "Aurix Net") bool IsMaster() const { return Room.Actor >= 0 && Room.Actor == Room.Master; }
 	/** The seed of the lockstep room we are in; false in other rooms and outside a room. */
@@ -200,6 +204,7 @@ public:
 private:
 	int32 JoinJson(const FString& Json);
 	void ReadJoined();
+	void ReadPlayer();
 	void HandleControl(const FString& Json);
 	void SetState(EAurixNetState S);
 	void DestroyClient();
@@ -215,6 +220,8 @@ private:
 	int32 LastStatsPlayers = -1;
 	int32 NextRpcId = 1;
 	FString RoomPropsJson;
+	FString OwnPlayerId;
+	FString OwnPlayerName;
 	TMap<int32, FString> PlayerProps;
 	void FinishJoin();
 	EAurixNetState State = EAurixNetState::Disconnected;

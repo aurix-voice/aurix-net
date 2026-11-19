@@ -57,6 +57,9 @@ func _ready() -> void:
 	# the room as the node described it at the join: its size, props and who was in it, the joiner too
 	var facts: Dictionary = JSON.parse_string(b.get_joined_json())
 	if int(facts.get("max_players", 0)) != 8 or facts.get("props", {}).get("map") != room or facts.get("players", []).size() != 2: fail("joined: " + b.get_joined_json()); return
+	# each client knows the player its grant names, the one the room lists it as
+	var ids: Array = facts.get("players", []).map(func(player): return player.get("player_id"))
+	if a.get_player_id() == "" or a.get_player_name() == "" or a.get_player_id() == b.get_player_id() or not ids.has(a.get_player_id()) or not ids.has(b.get_player_id()): fail("player: a %s, b %s, room %s" % [a.get_player_id(), b.get_player_id(), ids]); return
 	b.event.connect(func(code, from, payload): 
 		print("b got event code=%d from=%d payload=%s" % [code, from, payload.get_string_from_utf8()])
 		got = true)

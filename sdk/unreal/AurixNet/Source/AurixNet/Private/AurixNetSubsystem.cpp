@@ -178,6 +178,7 @@ bool UAurixNetSubsystem::Connect(const FString& CellUrl, const FString& Grant, b
 		OnError.Broadcast(TEXT("connect"), GetLastError());
 		return false;
 	}
+	ReadPlayer();
 	SetState(EAurixNetState::Connected);
 	return true;
 }
@@ -276,6 +277,7 @@ void UAurixNetSubsystem::ConnectAsync(const FString& CellUrl, const FString& Gra
 			}
 			if (!C) { Self->SetState(EAurixNetState::Disconnected); Self->OnError.Broadcast(TEXT("connect"), Err); Done.ExecuteIfBound(-1, Code, Err); return; }
 			Self->Client = C;
+			Self->ReadPlayer();
 			Self->SetState(EAurixNetState::Connected);
 			Done.ExecuteIfBound(0, EAurixNetError::None, FString());
 		});
@@ -452,6 +454,16 @@ int32 UAurixNetSubsystem::JoinRandom(const FString& FilterJson, const FString& E
 	return JoinJson(JoinRandomJson(FilterJson, Expr));
 }
 
+void UAurixNetSubsystem::ReadPlayer()
+{
+	char* Id = aurix_net_player_id(Client);
+	OwnPlayerId = Id ? FString(UTF8_TO_TCHAR(Id)) : FString();
+	aurix_net_string_free(Id);
+	char* Name = aurix_net_player_name(Client);
+	OwnPlayerName = Name ? FString(UTF8_TO_TCHAR(Name)) : FString();
+	aurix_net_string_free(Name);
+}
+
 void UAurixNetSubsystem::ReadJoined()
 {
 	Room = FAurixNetRoomInfo();
@@ -499,6 +511,8 @@ void UAurixNetSubsystem::DestroyClient()
 		aurix_net_destroy(Client);
 	}
 	Client = nullptr;
+	OwnPlayerId.Reset();
+	OwnPlayerName.Reset();
 	++ConnectSerial;
 	Room = FAurixNetRoomInfo();
 }

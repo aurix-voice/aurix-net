@@ -5,8 +5,8 @@
 
 class FOnlineSubsystemAurix;
 
-/** Local-only identity: one id per local user so session nodes have a valid FUniqueNetId. The real
- *  player identity is the grant your backend minted; read it from UAurixNetSubsystem::GetRoom(). */
+/** The identity of the node connection: the first local user is the player the grant names, by the
+ *  id the node knows it by, from the moment the plugin is connected until it is not. */
 class FOnlineIdentityAurix : public IOnlineIdentity
 {
 public:
@@ -31,8 +31,15 @@ public:
 	virtual FPlatformUserId GetPlatformUserIdFromUniqueNetId(const FUniqueNetId& UniqueNetId) const override;
 	virtual FString GetAuthType() const override { return TEXT("aurix"); }
 
+	/** Tells the login status delegates of a connection made or lost since the last call. */
+	void Tick();
+
 private:
+	FString PlayerId(int32 LocalUserNum) const;
+	/** The engine reads a player's id from the local player and its player state, and writes it there only when the controller logs in. */
+	void WritePlayerId() const;
+
 	FOnlineSubsystemAurix* Subsystem;
-	/** Logged-in local users. */
-	TMap<int32, FUniqueNetIdRef> Ids;
+	/** The player id the login status delegates were last told of; empty when not logged in. */
+	FString Announced;
 };

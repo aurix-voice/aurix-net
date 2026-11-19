@@ -9,6 +9,7 @@ int main() {
     const char* key = std::getenv("NET_API_KEY"); if (!key) { std::fprintf(stderr, "NET_API_KEY missing\n"); return 2; }
     const char* env = std::getenv("NET_HTTP"); std::string http = env ? env : "http://127.0.0.1:8090";
     Client a, b0; a.connect(http, Client::issueGrant(http, key, "cpp-a", "A")); b0.connect(http, Client::issueGrant(http, key, "cpp-b", "B"), true);
+    if (a.playerId() != "cpp-a" || a.playerName() != "A" || b0.playerId() != "cpp-b") { std::printf("cpp player: id=%s name=%s -> FAIL\n", a.playerId().c_str(), a.playerName().c_str()); return 1; }
     int hello = 0, ticks = 0, unsequenced = 0;
     b0.onData = [&](Channel channel, uint16_t, const uint8_t* d, size_t n) { EventFrame f; if (EventFrame::decode(d, n, f)) { if (f.code == 1) hello++; else if (f.code == 2) ticks++; else if (f.code == 6 && channel == Channel::UnreliableUnsequenced) unsequenced++; } };
     Client b(std::move(b0)); // a moved client keeps its callbacks

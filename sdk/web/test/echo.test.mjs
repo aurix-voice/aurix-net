@@ -20,6 +20,7 @@ test("relay echo over ws tunnel", { skip: !key }, async (t) => {
   t.after(() => a.close());
   const b = await Client.connect(http, await grant("web-b"));
   t.after(() => b.close());
+  assert.deepEqual([a.playerId, a.playerName, b.playerId], ["web-a", "web-a", "web-b"]);
   const room = `web-echo-${process.pid}`;
   const ja = await a.joinOrCreate(room, "relay", 4);
   const jb = await b.joinOrCreate(room, "relay", 4);

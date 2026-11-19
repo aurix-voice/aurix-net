@@ -59,6 +59,12 @@ namespace Aurix.Net
         public static extern IntPtr aurix_net_joined_json(IntPtr handle);
 
         [DllImport(Lib)]
+        public static extern IntPtr aurix_net_player_id(IntPtr handle);
+
+        [DllImport(Lib)]
+        public static extern IntPtr aurix_net_player_name(IntPtr handle);
+
+        [DllImport(Lib)]
         public static extern int aurix_net_send_data(
             IntPtr handle,
             byte channel,

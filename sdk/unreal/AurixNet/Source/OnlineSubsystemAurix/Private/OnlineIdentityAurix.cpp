@@ -2,53 +2,110 @@
 #include "OnlineSubsystemAurix.h"
 #include "OnlineSubsystemTypes.h"
 #include "OnlineError.h"
-#include "Misc/Guid.h"
+#include "AurixNetSubsystem.h"
+#include "Engine/GameInstance.h"
+#include "Engine/LocalPlayer.h"
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/PlayerState.h"
 
 FOnlineIdentityAurix::FOnlineIdentityAurix(FOnlineSubsystemAurix* InSubsystem)
 	: Subsystem(InSubsystem)
 {
-	// The session nodes need an id for the first local player before any login call.
-	Login(0, FOnlineAccountCredentials());
 }
 
-bool FOnlineIdentityAurix::Login(int32 LocalUserNum, const FOnlineAccountCredentials&)
+FString FOnlineIdentityAurix::PlayerId(int32 LocalUserNum) const
 {
-	if (LocalUserNum < 0 || LocalUserNum >= MAX_LOCAL_PLAYERS)
+	const UAurixNetSubsystem* N = LocalUserNum == 0 && Subsystem ? Subsystem->GetNetSubsystem() : nullptr;
+	return N ? N->GetPlayerId() : FString();
+}
+
+void FOnlineIdentityAurix::WritePlayerId() const
+{
+	const UAurixNetSubsystem* N = Subsystem ? Subsystem->GetNetSubsystem() : nullptr;
+	const UGameInstance* Game = N ? N->GetGameInstance() : nullptr;
+	ULocalPlayer* Player = Game ? Game->FindLocalPlayerFromControllerId(0) : nullptr;
+	if (!Player) return;
+	const FUniqueNetIdRepl Repl(GetUniquePlayerId(0));
+	Player->SetCachedUniqueNetId(Repl);
+	APlayerController* Controller = Player->PlayerController;
+	if (Controller && Controller->PlayerState) Controller->PlayerState->SetUniqueId(Repl);
+}
+
+void FOnlineIdentityAurix::Tick()
+{
+	const FString Now = PlayerId(0);
+	if (Now == Announced) return;
+	const FString Was = Announced;
+	Announced = Now;
+	WritePlayerId();
+	if (!Was.IsEmpty())
 	{
-		TriggerOnLoginCompleteDelegates(LocalUserNum, false, *FUniqueNetIdString::EmptyId(), FString::Printf(TEXT("Invalid LocalUserNum=%d"), LocalUserNum));
+		TriggerOnLoginStatusChangedDelegates(0, ELoginStatus::LoggedIn, ELoginStatus::NotLoggedIn, *FUniqueNetIdString::Create(Was, AURIX_SUBSYSTEM));
+	}
+	if (!Now.IsEmpty())
+	{
+		TriggerOnLoginStatusChangedDelegates(0, ELoginStatus::NotLoggedIn, ELoginStatus::LoggedIn, *FUniqueNetIdString::Create(Now, AURIX_SUBSYSTEM));
+	}
+}
+
+bool FOnlineIdentityAurix::Login(int32 LocalUserNum, const FOnlineAccountCredentials& AccountCredentials)
+{
+	if (LocalUserNum != 0)
+	{
+		TriggerOnLoginCompleteDelegates(LocalUserNum, false, *FUniqueNetIdString::EmptyId(), TEXT("the node connection carries one player, local user 0"));
 		return false;
 	}
-	if (const FUniqueNetIdRef* Existing = Ids.Find(LocalUserNum))
+	Tick();
+	if (const FUniqueNetIdPtr Id = GetUniquePlayerId(LocalUserNum))
 	{
-		TriggerOnLoginCompleteDelegates(LocalUserNum, true, **Existing, FString());
+		TriggerOnLoginCompleteDelegates(LocalUserNum, true, *Id, FString());
 		return true;
 	}
-	const FUniqueNetIdRef Id = FUniqueNetIdString::Create(FGuid::NewGuid().ToString(EGuidFormats::Digits), AURIX_SUBSYSTEM);
-	Ids.Add(LocalUserNum, Id);
-	TriggerOnLoginCompleteDelegates(LocalUserNum, true, *Id, FString());
-	TriggerOnLoginStatusChangedDelegates(LocalUserNum, ELoginStatus::NotLoggedIn, ELoginStatus::LoggedIn, *Id);
-	return true;
+#if WITH_EDITOR
+	if (UAurixNetSubsystem* N = Subsystem ? Subsystem->GetNetSubsystem() : nullptr)
+	{
+		const TWeakPtr<IOnlineIdentity, ESPMode::ThreadSafe> Alive = Subsystem->GetIdentityInterface();
+		N->ConnectWithDevGrantAsync(AccountCredentials.Id, FAurixNetAsyncResult::CreateLambda([this, Alive, LocalUserNum](int32 Result, EAurixNetError, const FString& Error)
+		{
+			if (!Alive.IsValid()) return;
+			Tick();
+			const FUniqueNetIdPtr Id = Result < 0 ? FUniqueNetIdPtr() : GetUniquePlayerId(LocalUserNum);
+			TriggerOnLoginCompleteDelegates(LocalUserNum, Id.IsValid(), Id.IsValid() ? *Id : *FUniqueNetIdString::EmptyId(), Error);
+		}));
+		return true;
+	}
+#endif
+	TriggerOnLoginCompleteDelegates(LocalUserNum, false, *FUniqueNetIdString::EmptyId(), TEXT("Aurix Net is not connected (call Connect with a grant first)"));
+	return false;
 }
 
 bool FOnlineIdentityAurix::Logout(int32 LocalUserNum)
 {
-	FUniqueNetIdRef Id = FUniqueNetIdString::EmptyId();
-	const bool bWasLoggedIn = Ids.RemoveAndCopyValue(LocalUserNum, Id);
-	TriggerOnLogoutCompleteDelegates(LocalUserNum, bWasLoggedIn);
+	UAurixNetSubsystem* N = Subsystem ? Subsystem->GetNetSubsystem() : nullptr;
+	const bool bWasLoggedIn = N && !PlayerId(LocalUserNum).IsEmpty();
 	if (bWasLoggedIn)
 	{
-		TriggerOnLoginStatusChangedDelegates(LocalUserNum, ELoginStatus::LoggedIn, ELoginStatus::NotLoggedIn, *Id);
+		N->Disconnect();
+		Tick();
 	}
+	TriggerOnLogoutCompleteDelegates(LocalUserNum, bWasLoggedIn);
 	return bWasLoggedIn;
 }
 
-bool FOnlineIdentityAurix::AutoLogin(int32 LocalUserNum) { return Login(LocalUserNum, FOnlineAccountCredentials()); }
+bool FOnlineIdentityAurix::AutoLogin(int32 LocalUserNum)
+{
+	// the engine calls this itself when a networked game starts: it tells of the connection the game made, and makes none
+	Tick();
+	const FUniqueNetIdPtr Id = GetUniquePlayerId(LocalUserNum);
+	TriggerOnLoginCompleteDelegates(LocalUserNum, Id.IsValid(), Id.IsValid() ? *Id : *FUniqueNetIdString::EmptyId(), Id.IsValid() ? FString() : TEXT("Aurix Net is not connected (call Connect with a grant first)"));
+	return Id.IsValid();
+}
 TSharedPtr<FUserOnlineAccount> FOnlineIdentityAurix::GetUserAccount(const FUniqueNetId&) const { return nullptr; }
 TArray<TSharedPtr<FUserOnlineAccount>> FOnlineIdentityAurix::GetAllUserAccounts() const { return {}; }
 FUniqueNetIdPtr FOnlineIdentityAurix::GetUniquePlayerId(int32 LocalUserNum) const
 {
-	const FUniqueNetIdRef* Found = Ids.Find(LocalUserNum);
-	return Found ? FUniqueNetIdPtr(*Found) : FUniqueNetIdPtr();
+	const FString Id = PlayerId(LocalUserNum);
+	return Id.IsEmpty() ? FUniqueNetIdPtr() : FUniqueNetIdPtr(FUniqueNetIdString::Create(Id, AURIX_SUBSYSTEM));
 }
 FUniqueNetIdPtr FOnlineIdentityAurix::CreateUniquePlayerId(uint8* Bytes, int32 Size)
 {
@@ -56,20 +113,29 @@ FUniqueNetIdPtr FOnlineIdentityAurix::CreateUniquePlayerId(uint8* Bytes, int32 S
 	return FUniqueNetIdString::Create(FString::ConstructFromPtrSize(reinterpret_cast<const ANSICHAR*>(Bytes), Size), AURIX_SUBSYSTEM);
 }
 FUniqueNetIdPtr FOnlineIdentityAurix::CreateUniquePlayerId(const FString& Str) { return FUniqueNetIdString::Create(Str, AURIX_SUBSYSTEM); }
-ELoginStatus::Type FOnlineIdentityAurix::GetLoginStatus(int32 LocalUserNum) const { return Ids.Contains(LocalUserNum) ? ELoginStatus::LoggedIn : ELoginStatus::NotLoggedIn; }
+ELoginStatus::Type FOnlineIdentityAurix::GetLoginStatus(int32 LocalUserNum) const { return PlayerId(LocalUserNum).IsEmpty() ? ELoginStatus::NotLoggedIn : ELoginStatus::LoggedIn; }
 ELoginStatus::Type FOnlineIdentityAurix::GetLoginStatus(const FUniqueNetId& UserId) const
 {
-	for (const TPair<int32, FUniqueNetIdRef>& User : Ids)
-	{
-		if (*User.Value == UserId)
-		{
-			return ELoginStatus::LoggedIn;
-		}
-	}
-	return ELoginStatus::NotLoggedIn;
+	const FString Id = PlayerId(0);
+	return !Id.IsEmpty() && Id == UserId.ToString() ? ELoginStatus::LoggedIn : ELoginStatus::NotLoggedIn;
 }
-FString FOnlineIdentityAurix::GetPlayerNickname(int32 LocalUserNum) const { return FString::Printf(TEXT("Player%d"), LocalUserNum); }
-FString FOnlineIdentityAurix::GetPlayerNickname(const FUniqueNetId& UserId) const { return UserId.ToString().Left(8); }
+FString FOnlineIdentityAurix::GetPlayerNickname(int32 LocalUserNum) const
+{
+	const UAurixNetSubsystem* N = LocalUserNum == 0 && Subsystem ? Subsystem->GetNetSubsystem() : nullptr;
+	return N ? N->GetPlayerName() : FString();
+}
+FString FOnlineIdentityAurix::GetPlayerNickname(const FUniqueNetId& UserId) const
+{
+	const UAurixNetSubsystem* N = Subsystem ? Subsystem->GetNetSubsystem() : nullptr;
+	if (!N) return FString();
+	const FString Id = UserId.ToString();
+	if (Id == N->GetPlayerId()) return N->GetPlayerName();
+	for (const FAurixNetPlayer& Player : N->GetRoom().Players)
+	{
+		if (Player.PlayerId == Id) return Player.Name;
+	}
+	return FString();
+}
 FString FOnlineIdentityAurix::GetAuthToken(int32) const { return FString(); }
 void FOnlineIdentityAurix::RevokeAuthToken(const FUniqueNetId& LocalUserId, const FOnRevokeAuthTokenCompleteDelegate& Delegate) { Delegate.ExecuteIfBound(LocalUserId, FOnlineError(true)); }
 void FOnlineIdentityAurix::GetUserPrivilege(const FUniqueNetId& LocalUserId, EUserPrivileges::Type Privilege, const FOnGetUserPrivilegeCompleteDelegate& Delegate, EShowPrivilegeResolveUI)
@@ -78,12 +144,5 @@ void FOnlineIdentityAurix::GetUserPrivilege(const FUniqueNetId& LocalUserId, EUs
 }
 FPlatformUserId FOnlineIdentityAurix::GetPlatformUserIdFromUniqueNetId(const FUniqueNetId& UniqueNetId) const
 {
-	for (const TPair<int32, FUniqueNetIdRef>& User : Ids)
-	{
-		if (*User.Value == UniqueNetId)
-		{
-			return GetPlatformUserIdFromLocalUserNum(User.Key);
-		}
-	}
-	return PLATFORMUSERID_NONE;
+	return GetLoginStatus(UniqueNetId) == ELoginStatus::LoggedIn ? GetPlatformUserIdFromLocalUserNum(0) : PLATFORMUSERID_NONE;
 }

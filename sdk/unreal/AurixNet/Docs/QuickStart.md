@@ -101,6 +101,15 @@ cell, Join Session joins one; the resolved connect string is `<room>.aurix`, whi
 AurixNetDriver understands, so `Client Travel` after Join works unchanged. Friends, invites
 and presence are not implemented (return false).
 
+The player of the sessions is the player the grant names. While the plugin is connected the
+unique net id of local user 0 is the player's id on the cell (`GetPlayerId` of the subsystem)
+and the nickname is the grant's name; before that there is no id and the login status is
+`NotLoggedIn`. The plugin writes the id to the local player and its player state when the
+connection is made and takes it away when it is lost, so the Create Session node finds it
+whether the game connected before or after the map loaded. Login and AutoLogin succeed once
+connected; in the editor Login connects with a development grant first, and AutoLogin, which the
+engine calls itself when a networked game starts, never connects. Logout disconnects.
+
 Session settings and search params reach the room:
 
 - A setting advertised via the online service (`ViaOnlineService`, `ViaOnlineServiceAndPing`)

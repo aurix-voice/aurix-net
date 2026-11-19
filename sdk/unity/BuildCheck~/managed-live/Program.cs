@@ -119,6 +119,7 @@ class P
         var room = "cs-" + DateTime.UtcNow.Ticks;
         var a = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-a"));
         var b = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-b"));
+        if (a.PlayerId != "cs-a" || a.PlayerName != "cs-a" || b.PlayerId != "cs-b") throw new Exception("player: id " + a.PlayerId + ", name " + a.PlayerName);
         int rel = 0, unrel = 0, big = 0, bigLen = 0; string ctl = "";
         b.OnEvent += f => { if (f.Code == 1) rel++; else if (f.Code == 2) unrel++; else if (f.Code == 3) { big++; bigLen = f.Payload.Count; } };
         b.OnControl += j => { if (j.Contains("player_joined")) ctl += "J"; };
@@ -369,6 +370,7 @@ class P
             try
             {
                 using var core = Client.Connect(plain, await Grant(h, key, "cs-plain-c"));
+                if (core.PlayerId != "cs-plain-c" || core.PlayerName != "cs-plain-c") throw new Exception("native player: id " + core.PlayerId + ", name " + core.PlayerName);
                 core.Join(room + "-plain");
                 viaCore = await Sent(12, code => { core.SendEventOn(Channel.UnreliableUnsequenced, code, one); core.Flush(); }, () => core.Poll());
                 using var direct = Client.Connect("http://127.0.0.1:8090", await Grant(h, key, "cs-plain-d"));

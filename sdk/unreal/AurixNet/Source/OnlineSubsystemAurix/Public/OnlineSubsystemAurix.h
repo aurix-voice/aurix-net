@@ -14,7 +14,7 @@ typedef TSharedPtr<FOnlineIdentityAurix, ESPMode::ThreadSafe> FOnlineIdentityAur
 /**
  * Online Subsystem over Aurix Net rooms: Create Session = create / join a relay room, Find Sessions =
  * list rooms, Join Session = join a room; the resolved connect string is `<room>.aurix` for the
- * AurixNetDriver. Identity is a thin local id so the standard session nodes work.
+ * AurixNetDriver. The identity of local user 0 is the player of the node connection.
  */
 class ONLINESUBSYSTEMAURIX_API FOnlineSubsystemAurix : public FOnlineSubsystemImpl
 {

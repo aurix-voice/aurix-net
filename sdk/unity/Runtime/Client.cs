@@ -101,6 +101,12 @@ namespace Aurix.Net
         public int Actor { get; private set; } = -1;
         public string JoinedJson { get; private set; }
 
+        /// <summary>The player id of the grant this client signed in with: the id the node knows the player by in rooms, held seats and webhooks.</summary>
+        public string PlayerId { get; private set; }
+
+        /// <summary>The display name of the grant this client signed in with.</summary>
+        public string PlayerName { get; private set; }
+
         /// <summary>Server control message as JSON (joined, player_joined, player_left, desync, ...).</summary>
         public event Action<string> OnControl;
 
@@ -134,7 +140,19 @@ namespace Aurix.Net
                 throw new NetException(Native.LastError());
             }
 
-            return new Client { _h = handle };
+            return new Client
+            {
+                _h = handle,
+                PlayerId = Taken(Native.aurix_net_player_id(handle)),
+                PlayerName = Taken(Native.aurix_net_player_name(handle)),
+            };
+        }
+
+        static string Taken(IntPtr pointer)
+        {
+            var text = Native.Utf8(pointer);
+            Native.aurix_net_string_free(pointer);
+            return text;
         }
 
         public void SendControl(string json)

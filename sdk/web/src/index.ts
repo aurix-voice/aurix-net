@@ -142,6 +142,11 @@ export class Client {
   private requestSeq = 0;
   joined?: Joined;
   actor = -1;
+  /** The player id of the grant this client signed in with: the id the node knows the player by
+   *  in rooms, held seats and webhooks. */
+  playerId = "";
+  /** The display name of the grant this client signed in with. */
+  playerName = "";
   /** Sync rooms: the entity the room made for this client as its avatar, once the room has
    *  announced it. Kept from the join on, whether or not anything listens to `data`. */
   avatar?: number;
@@ -257,7 +262,12 @@ export class Client {
     client.ws.onclose = () => client.controlClosed();
     client.send({ t: "auth", grant, supports: SUPPORTS });
     try {
-      await client.waitFor((message) => message.t === "authed", refuses);
+      const authed = await client.waitFor<{ player_id: string; name: string }>(
+        (message) => message.t === "authed",
+        refuses,
+      );
+      client.playerId = authed.player_id;
+      client.playerName = authed.name;
     } catch (error) {
       client.close();
       throw error;

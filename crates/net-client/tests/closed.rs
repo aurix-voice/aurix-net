@@ -86,6 +86,7 @@ async fn in_a_room(node: &str) -> Client {
         ..Options::default()
     };
     let mut client = Client::connect(node, "grant", options).await.unwrap();
+    assert_eq!((client.player_id(), client.player_name()), ("ann", "Ann"));
     let join = ClientMsg::Join {
         name: "room".into(),
         player_props: Default::default(),
