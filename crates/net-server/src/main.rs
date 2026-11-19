@@ -449,32 +449,26 @@ async fn fleet_listen_once(st: &Arc<AppState>, redis: &RedisConfig) -> anyhow::R
                 .and_then(|r| r.as_str())
                 .unwrap_or("")
                 .to_string();
-            st.host.notify_lobby(
-                pid,
-                ServerMsg::LobbyUpdate {
-                    room: net_rooms::protocol::RoomSummary {
-                        id,
-                        name: String::new(),
-                        mode: net_common::RoomMode::Relay,
-                        players: 0,
-                        max_players: 0,
-                        open: false,
-                        props: Default::default(),
-                    },
-                    removed: true,
+            let gone = ServerMsg::LobbyUpdate {
+                room: net_rooms::protocol::RoomSummary {
+                    id,
+                    name: String::new(),
+                    mode: net_common::RoomMode::Relay,
+                    players: 0,
+                    max_players: 0,
+                    open: false,
+                    props: Default::default(),
                 },
-            );
+                removed: true,
+            };
+            st.host.notify_lobby(pid, |_| gone.clone());
         } else if let Ok(live) =
             serde_json::from_value::<net_control::redis_store::LiveRoom>(change)
         {
-            let listed = live.visible && live.open && live.players < live.max_players;
-            st.host.notify_lobby(
-                pid,
-                ServerMsg::LobbyUpdate {
-                    room: net_api::ws::live_to_summary(live),
-                    removed: !listed,
-                },
-            );
+            st.host.notify_lobby(pid, |player| ServerMsg::LobbyUpdate {
+                removed: !live.is_listed_for(player),
+                room: net_api::ws::live_to_summary(live.clone()),
+            });
         }
     }
     anyhow::bail!("the connection closed")

@@ -402,7 +402,9 @@ export class Client {
   }
   /** `reserved`: player ids whose seats are held for 60 s when this call creates the room (a party
    *  arriving together: pass the `players` list from a matchmaking ticket). `lobbyProps`: names of
-   *  the room props that room listings show and `expr` filters match. */
+   *  the room props that room listings show and `expr` filters match. `visible: false` keeps the
+   *  room out of room listings and random joins, `open: false` lets nobody else in. All of these
+   *  shape the room only when this call creates it. */
   async joinOrCreate(
     name: string,
     mode: RoomMode = "relay",
@@ -410,12 +412,16 @@ export class Client {
     props: Record<string, unknown> = {},
     reserved: string[] = [],
     lobbyProps: string[] = [],
+    visible = true,
+    open = true,
   ): Promise<Joined> {
     return this.join({
       t: "join_or_create",
       name,
       mode,
       max_players: maxPlayers,
+      visible,
+      open,
       props,
       reserved,
       lobby_props: lobbyProps,

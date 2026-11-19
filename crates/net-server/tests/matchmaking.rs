@@ -112,6 +112,33 @@ async fn match_found_names_every_player_seated_in_a_running_room() {
 }
 
 #[tokio::test]
+async fn running_room_whose_last_seat_is_held_is_filled_by_its_player_alone() {
+    let node = Node::start().await;
+    let project = node.project("mm-held").await;
+    let mut host = project.player("host").await;
+    let held = json!({"t": "create", "name": "a-held", "max_players": 2, "reserved": ["friend"]});
+    joined(&host.call(held).await);
+    let mut other = project.player("other").await;
+    let open = json!({"t": "create", "name": "b-open", "max_players": 2});
+    joined(&other.call(open).await);
+
+    // Of two rooms with one player each, the first by name is filled.
+    let ann = file(
+        &project,
+        json!({"player_id": "ann", "max_players": 2, "fill_existing": true}),
+    )
+    .await;
+    assert_eq!(matched(&project, &ann).await, "b-open");
+
+    let friend = file(
+        &project,
+        json!({"player_id": "friend", "max_players": 2, "fill_existing": true}),
+    )
+    .await;
+    assert_eq!(matched(&project, &friend).await, "a-held");
+}
+
+#[tokio::test]
 async fn cancel_holds_against_a_matching_pass_already_running() {
     let node = Node::start_with(&[
         ("NET__LIMITS__HTTP_RPS_PER_IP", "100000"),

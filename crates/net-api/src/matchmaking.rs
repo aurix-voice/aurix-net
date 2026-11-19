@@ -180,7 +180,8 @@ pub fn fill_existing(
                 r.open
                     && r.visible
                     && r.mode == mode
-                    && r.players + extra < r.max_players
+                    && r.seats_taken_for(&ticket.req.player_id) + usize::from(extra)
+                        < usize::from(r.max_players)
                     && filter
                         .as_ref()
                         .is_none_or(|f| r.props.as_object().is_some_and(|p| f.matches(p)))
@@ -801,6 +802,7 @@ mod tests {
             name: name.into(),
             mode: "relay".into(),
             players,
+            held_for: Vec::new(),
             max_players: 4,
             open: true,
             visible: true,

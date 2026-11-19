@@ -41,6 +41,16 @@ func _ready() -> void:
 	if a.join_or_create(room + "-held", AurixNetClient.MODE_RELAY, 2, "", PackedStringArray(), PackedStringArray(["godot-awaited"])) < 0: fail("a join: " + a.get_last_error()); return
 	if b.join(room + "-held") >= 0 or b.get_last_error_code() != AurixNetClient.ERROR_ROOM_FULL: fail("b took a held seat: " + b.get_last_error()); return
 	a.leave()
+	# a hidden room is not offered to a random join and is entered by its name
+	if a.join_or_create(room + "-hidden", AurixNetClient.MODE_RELAY, 4, JSON.stringify({"map": room + "-hidden"}), PackedStringArray(["map"]), PackedStringArray(), false) < 0: fail("a hidden room: " + a.get_last_error()); return
+	if b.join_random("", "map = '%s-hidden'" % room) >= 0 or b.get_last_error_code() != AurixNetClient.ERROR_NOT_FOUND: fail("b was offered a hidden room: " + b.get_last_error()); return
+	if b.join(room + "-hidden") < 0: fail("b hidden room by name: " + b.get_last_error()); return
+	a.leave(); b.leave()
+	# a closed room lets its creator in and nobody else
+	if a.join_or_create(room + "-closed", AurixNetClient.MODE_RELAY, 4, "", PackedStringArray(), PackedStringArray(), true, false) < 0: fail("a closed room: " + a.get_last_error()); return
+	if b.join(room + "-closed") >= 0 or b.get_last_error_code() != AurixNetClient.ERROR_ROOM_CLOSED: fail("b joined a closed room: " + b.get_last_error()); return
+	if b.join_or_create(room + "-closed") >= 0 or b.get_last_error_code() != AurixNetClient.ERROR_ROOM_CLOSED: fail("b joined a closed room by join_or_create: " + b.get_last_error()); return
+	a.leave()
 	# a random join finds a room by the props it publishes
 	if a.join_or_create(room, AurixNetClient.MODE_RELAY, 8, JSON.stringify({"map": room}), PackedStringArray(["map"])) < 0: fail("a join: " + a.get_last_error()); return
 	if b.join_random("", "map = '%s'" % room) < 0: fail("b random join: " + b.get_last_error()); return

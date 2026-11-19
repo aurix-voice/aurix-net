@@ -22,6 +22,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   `CHANNEL_UNRELIABLE_UNSEQUENCED`). The Web and managed C# clients list `unsequenced` in `auth`
   and send on channel 0 to a node that does not list it. In Unreal `SendEventEx` takes
   `EAurixNetChannel::UnreliableUnsequenced`.
+- SDKs: `joinOrCreate` takes `visible` and `open`, which the node applies to the room the call
+  creates: Web `joinOrCreate`, Unity `JoinOrCreateAsync` and `JoinOrCreate` (and
+  `JoinOrCreateAsync` of `NetRunner`), C++ `joinOrCreate`, Godot `join_or_create`. Only the
+  Unreal plugin sent them before; from the other SDKs a hidden or closed room could be made by
+  a raw message alone.
 - Control channel: `stats`, `find_friends` and `get_rooms` take an optional `id`, which the node
   repeats in the answer (`stats`, `friends`, `rooms`) and in the `error` that refuses that
   request; an `error` that refuses an `rpc` carries its `id` too. Two lookups in flight at once
@@ -113,9 +118,29 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   that wait for the window (`RELIABLE_BACKLOG_BYTES`); a sender that outruns its peer by more
   loses the link with `LinkError::Backlog`. `Link::new` takes the idle timeout of its carrier.
   `LinkStats::retransmits` counted first sends that had waited for the window as repeats.
+- Rooms: a room whose last free seat was held for a party member stayed in the room list
+  and in `join_random` and `fill_existing`, so a stranger was sent there to get `room_full`.
+  A held seat counts as taken for everybody but the player it is held for, until he arrives
+  or the hold lapses.
 - Data path: over WebTransport the node acknowledged a packet of a player it had taken out
   of the room and dropped it, so his client took a reliable message sent after a kick for
   delivered. Such a packet is not acknowledged, over QUIC either.
+- Lobby: while Redis was unreachable, the node announced every changed room to the lobby
+  watchers, a hidden or a closed one too. They are told of a room the list offers them.
+- Rooms: a room whose creator was refused on the way in (player properties over the limit,
+  for one) stayed empty under its name until the empty-room timeout. It is taken down at once.
+- Rooms: `join_or_create` dropped `visible` and `open`, so a room meant to be hidden was
+  listed and handed out by `join_random`. Both apply when the call creates the room.
+- Rooms: `create` with `open: false` over the control channel refused its own caller with
+  `room_closed` and left an empty closed room behind. The player whose call creates the room
+  is let in; everybody else is still refused.
+- Rooms: a room that was taken down after another one had been brought up under its name
+  took that name with it, and the node stopped finding the new room among those it hosts.
+- Multi-node: two players who came back to a handed-over room at the same moment lost it. One
+  join adopted the room; the other had read its row a moment earlier, did not find the room
+  hosted, took the row for a leftover and closed it. That player got `not_found`, and the next
+  heartbeat threw the first one out with `left` (`rehost`). The join now takes the room the
+  node has just brought up.
 - Data path: the frames a client had sent over the tunnel before it read `left` were answered
   with errors: a kicked player got `conflict: session_replaced` and then `unauthorized: bad
   data ticket` for every frame. They are dropped now, and so is a control message for the room

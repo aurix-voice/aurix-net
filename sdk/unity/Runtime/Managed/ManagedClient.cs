@@ -187,13 +187,19 @@ namespace Aurix.Net.Managed
             }
         }
 
+        /// <summary>Joins the room of this name, creating it when there is none. The arguments
+        /// after the name shape the room only when this call creates it: a hidden room
+        /// (<paramref name="visible"/> false) is out of room listings and random joins, a closed one
+        /// (<paramref name="open"/> false) lets nobody else in.</summary>
         public Task<int> JoinOrCreateAsync(
             string name,
             string mode = "relay",
             int maxPlayers = 8,
             string propsJson = null,
             string[] reserved = null,
-            string[] lobbyProps = null
+            string[] lobbyProps = null,
+            bool visible = true,
+            bool open = true
         )
         {
             var sb = new StringBuilder("{\"t\":\"join_or_create\",\"name\":")
@@ -201,7 +207,11 @@ namespace Aurix.Net.Managed
                 .Append(",\"mode\":\"")
                 .Append(mode)
                 .Append("\",\"max_players\":")
-                .Append(maxPlayers);
+                .Append(maxPlayers)
+                .Append(",\"visible\":")
+                .Append(visible ? "true" : "false")
+                .Append(",\"open\":")
+                .Append(open ? "true" : "false");
             if (!string.IsNullOrEmpty(propsJson))
             {
                 sb.Append(",\"props\":").Append(propsJson);

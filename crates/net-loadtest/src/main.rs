@@ -403,6 +403,8 @@ async fn player(
         name: room_name,
         mode: cli.mode.parse().unwrap_or_default(),
         max_players: Some(cli.players as u16 + u16::from(cli.late_join_secs > 0)),
+        visible: true,
+        open: true,
         props: {
             let mut props: serde_json::Map<String, serde_json::Value> =
                 serde_json::from_str(&cli.props_json).unwrap_or_default();

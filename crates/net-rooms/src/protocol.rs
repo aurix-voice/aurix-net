@@ -62,6 +62,11 @@ pub enum ClientMsg {
         mode: RoomMode,
         #[serde(default)]
         max_players: Option<u16>,
+        /// `visible` and `open` shape the room when this call creates it.
+        #[serde(default = "default_true")]
+        visible: bool,
+        #[serde(default = "default_true")]
+        open: bool,
         #[serde(default)]
         props: serde_json::Map<String, serde_json::Value>,
         #[serde(default)]

@@ -11,10 +11,12 @@ int main(void) {
     if (!key) { fprintf(stderr, "NET_API_KEY missing\n"); return 2; }
     char *ga = aurix_net_issue_grant(http, key, "c-alice", "Alice");
     char *gb = aurix_net_issue_grant(http, key, "c-bob", "Bob");
-    if (!ga || !gb) { fprintf(stderr, "grant: %s\n", aurix_net_last_error()); return 1; }
+    char *gc = aurix_net_issue_grant(http, key, "c-carol", "Carol");
+    if (!ga || !gb || !gc) { fprintf(stderr, "grant: %s\n", aurix_net_last_error()); return 1; }
     AurixNetClient *a = aurix_net_connect(http, ga, 0);
     AurixNetClient *b = aurix_net_connect(http, gb, 1);
-    if (!a || !b) { fprintf(stderr, "connect: %s\n", aurix_net_last_error()); return 1; }
+    AurixNetClient *c = aurix_net_connect(http, gc, 0);
+    if (!a || !b || !c) { fprintf(stderr, "connect: %s\n", aurix_net_last_error()); return 1; }
     char join[256];
     /* a refused join says why in aurix_net_last_error_code() */
     snprintf(join, sizeof join, "{\"t\":\"join\",\"name\":\"c-missing-%d\"}", (int)getpid());
@@ -23,9 +25,22 @@ int main(void) {
     if (aurix_net_join(a, join) < 0) { fprintf(stderr, "join: %s\n", aurix_net_last_error()); return 1; }
     if (aurix_net_join(b, join) >= 0 || aurix_net_last_error_code() != AURIX_NET_ERR_ROOM_FULL) { fprintf(stderr, "full room: code %d (%s)\n", (int)aurix_net_last_error_code(), aurix_net_last_error()); return 1; }
     aurix_net_leave(a);
-    snprintf(join, sizeof join, "{\"t\":\"join_or_create\",\"name\":\"c-echo-%d\",\"max_players\":4}", (int)getpid());
-    int aa = aurix_net_join(a, join), ab = aurix_net_join(b, join);
-    if (aa < 0 || ab < 0) { fprintf(stderr, "join: %s\n", aurix_net_last_error()); return 1; }
+    /* a closed room lets its creator in and nobody else */
+    snprintf(join, sizeof join, "{\"t\":\"join_or_create\",\"name\":\"c-closed-%d\",\"open\":false}", (int)getpid());
+    if (aurix_net_join(c, join) < 0) { fprintf(stderr, "closed room: %s\n", aurix_net_last_error()); return 1; }
+    if (aurix_net_join(b, join) >= 0 || aurix_net_last_error_code() != AURIX_NET_ERR_ROOM_CLOSED) { fprintf(stderr, "join_or_create of a closed room: code %d (%s)\n", (int)aurix_net_last_error_code(), aurix_net_last_error()); return 1; }
+    snprintf(join, sizeof join, "{\"t\":\"join\",\"name\":\"c-closed-%d\"}", (int)getpid());
+    if (aurix_net_join(b, join) >= 0 || aurix_net_last_error_code() != AURIX_NET_ERR_ROOM_CLOSED) { fprintf(stderr, "join of a closed room: code %d (%s)\n", (int)aurix_net_last_error_code(), aurix_net_last_error()); return 1; }
+    /* the room of the echo is hidden: a random join is not offered it, a join by its name enters it */
+    snprintf(join, sizeof join, "{\"t\":\"join_or_create\",\"name\":\"c-echo-%d\",\"max_players\":4,\"visible\":false,\"props\":{\"map\":\"c-echo-%d\"},\"lobby_props\":[\"map\"]}", (int)getpid(), (int)getpid());
+    int aa = aurix_net_join(a, join);
+    if (aa < 0) { fprintf(stderr, "join: %s\n", aurix_net_last_error()); return 1; }
+    char random[128];
+    snprintf(random, sizeof random, "{\"t\":\"join_random\",\"expr\":\"map = 'c-echo-%d'\"}", (int)getpid());
+    if (aurix_net_join(b, random) >= 0 || aurix_net_last_error_code() != AURIX_NET_ERR_NOT_FOUND) { fprintf(stderr, "random join of a hidden room: code %d (%s)\n", (int)aurix_net_last_error_code(), aurix_net_last_error()); return 1; }
+    snprintf(join, sizeof join, "{\"t\":\"join\",\"name\":\"c-echo-%d\"}", (int)getpid());
+    int ab = aurix_net_join(b, join);
+    if (ab < 0) { fprintf(stderr, "hidden room by name: %s\n", aurix_net_last_error()); return 1; }
     char *jj = aurix_net_joined_json(b);
     printf("alice=%d bob=%d joined=%s\n", aa, ab, jj);
     aurix_net_string_free(jj);
@@ -48,7 +63,7 @@ int main(void) {
         usleep(10000);
     }
     printf("bob got hello=%d ticks=%d/10\n", got_hello, ticks);
-    aurix_net_leave(a); aurix_net_destroy(a); aurix_net_destroy(b);
-    aurix_net_string_free(ga); aurix_net_string_free(gb);
+    aurix_net_leave(a); aurix_net_destroy(a); aurix_net_destroy(b); aurix_net_destroy(c);
+    aurix_net_string_free(ga); aurix_net_string_free(gb); aurix_net_string_free(gc);
     return (got_hello && ticks == 10) ? 0 : 1;
 }

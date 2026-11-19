@@ -426,6 +426,27 @@ class P
                 await managed.JoinRandomAsync(null, "map = '" + room + "'");
                 if (ManagedClientTestHooks.Str(managed.JoinedJson, "name") != room + "-map") throw new Exception("random join: not the room the native client published");
                 core.Leave(); await managed.LeaveAsync();
+                // a hidden room is not offered to a random join and is entered by its name; a closed room lets its creator in and nobody else
+                async Task<string> Refused(Func<Task> join) { try { await join(); return "joined"; } catch (NetException error) { return error.Message; } }
+                using (var hider = Client.Connect("http://127.0.0.1:8090", await Grant(h, key, "cs-hider")))
+                using (var closer = Client.Connect("http://127.0.0.1:8090", await Grant(h, key, "cs-closer")))
+                {
+                    hider.JoinOrCreate(room + "-hidden", RoomMode.Relay, 4, "{\"map\":\"" + room + "-hidden\"}", null, new[] { "map" }, visible: false);
+                    closer.JoinOrCreate(room + "-closed", RoomMode.Relay, 4, open: false);
+                    string offered = await Refused(() => managed.JoinRandomAsync(null, "map = '" + room + "-hidden'"));
+                    string closed = await Refused(() => managed.JoinAsync(room + "-closed")) + " / " + await Refused(() => managed.JoinOrCreateAsync(room + "-closed", "relay", 4));
+                    await managed.JoinAsync(room + "-hidden");
+                    await managed.LeaveAsync();
+                    await managed.JoinOrCreateAsync(room + "-hidden-m", "relay", 4, "{\"map\":\"" + room + "-hidden-m\"}", null, new[] { "map" }, visible: false);
+                    string offeredCore = Refusal(() => core.JoinRandom(null, "map = '" + room + "-hidden-m'"));
+                    await managed.LeaveAsync();
+                    await managed.JoinOrCreateAsync(room + "-closed-m", "relay", 4, open: false);
+                    string closedCore = Refusal(() => core.Join(room + "-closed-m")) + " / " + Refusal(() => core.JoinOrCreate(room + "-closed-m", RoomMode.Relay, 4));
+                    await managed.LeaveAsync();
+                    Console.WriteLine($"hidden room: random join '{offered}' and '{offeredCore}'; closed room: '{closed}' and '{closedCore}'");
+                    if (!offered.Contains("not_found") || !offeredCore.Contains("not_found")) throw new Exception("hidden room: a random join was offered it");
+                    if (closed.Split("room_closed").Length != 3 || closedCore.Split("room_closed").Length != 3) throw new Exception("closed room: a join was not refused as room_closed");
+                }
                 await managed.JoinOrCreateAsync(room + "-lost", "relay", 4);
                 core.Join(room + "-lost");
             }

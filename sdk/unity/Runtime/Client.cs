@@ -145,14 +145,19 @@ namespace Aurix.Net
             }
         }
 
-        /// <summary>Joins or creates a room and opens the data path. Returns the actor id.</summary>
+        /// <summary>Joins or creates a room and opens the data path. Returns the actor id. The
+        /// arguments after the name shape the room only when this call creates it: a hidden room
+        /// (<paramref name="visible"/> false) is out of room listings and random joins, a closed one
+        /// (<paramref name="open"/> false) lets nobody else in.</summary>
         public int JoinOrCreate(
             string name,
             RoomMode mode = RoomMode.Relay,
             int maxPlayers = 8,
             string propsJson = null,
             string[] reserved = null,
-            string[] lobbyProps = null
+            string[] lobbyProps = null,
+            bool visible = true,
+            bool open = true
         )
         {
             var sb = new StringBuilder("{\"t\":\"join_or_create\",\"name\":")
@@ -160,7 +165,11 @@ namespace Aurix.Net
                 .Append(",\"mode\":\"")
                 .Append(mode.ToString().ToLowerInvariant())
                 .Append("\",\"max_players\":")
-                .Append(maxPlayers);
+                .Append(maxPlayers)
+                .Append(",\"visible\":")
+                .Append(visible ? "true" : "false")
+                .Append(",\"open\":")
+                .Append(open ? "true" : "false");
             if (!string.IsNullOrEmpty(propsJson))
             {
                 sb.Append(",\"props\":").Append(propsJson);

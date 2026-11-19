@@ -12,6 +12,8 @@ async fn main() -> anyhow::Result<()> {
         name: room.clone(),
         mode: net_common::types::RoomMode::Lockstep,
         max_players: Some(4),
+        visible: true,
+        open: true,
         props: serde_json::from_str(r#"{"tick_hz":60}"#)?,
         lobby_props: vec![],
         region: None,

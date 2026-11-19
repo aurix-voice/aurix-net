@@ -13,10 +13,30 @@ pub struct LiveRoom {
     pub name: String,
     pub mode: String,
     pub players: u16,
+    /// Players a seat is held for who have not arrived yet.
+    #[serde(default)]
+    pub held_for: Vec<String>,
     pub max_players: u16,
     pub open: bool,
     pub visible: bool,
     pub props: serde_json::Value,
+}
+
+impl LiveRoom {
+    /// Seats `player` cannot have: the taken ones and, unless one is held for him, the held.
+    pub fn seats_taken_for(&self, player: &str) -> usize {
+        let held = if self.held_for.iter().any(|p| p == player) {
+            0
+        } else {
+            self.held_for.len()
+        };
+        usize::from(self.players) + held
+    }
+
+    /// Whether the room list and a random join offer the room to `player`.
+    pub fn is_listed_for(&self, player: &str) -> bool {
+        self.visible && self.open && self.seats_taken_for(player) < usize::from(self.max_players)
+    }
 }
 
 #[derive(Clone)]
@@ -454,5 +474,20 @@ mod redact_tests {
         );
         assert_eq!(super::redact_url("redis://h:6379/"), "redis://h:6379/");
         assert!(!super::redact_url("h:6379 secret").contains("secret"));
+    }
+}
+
+#[cfg(test)]
+mod live_room_tests {
+    use super::LiveRoom;
+
+    #[test]
+    fn record_without_held_seats_reads_as_none_held() {
+        let record = r#"{"room":"01a1f3bd-3dd9-709b-9189-6479ce3b7b20","node":"n",
+            "name":"arena","mode":"relay","players":1,"max_players":2,"open":true,
+            "visible":true,"props":{}}"#;
+        let room: LiveRoom = serde_json::from_str(record).expect("record");
+        assert!(room.held_for.is_empty());
+        assert!(room.is_listed_for("anyone"));
     }
 }

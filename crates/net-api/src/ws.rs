@@ -323,7 +323,7 @@ impl Session {
                 self.lookup_budget()?;
                 let limit = usize::from(limit.unwrap_or(100).clamp(1, 500));
                 let rooms = self
-                    .lobby_rooms(grant.project)
+                    .lobby_rooms(grant.project, &grant.player_id)
                     .await
                     .into_iter()
                     .filter(|r| filter.as_ref().is_none_or(|f| f.matches(&r.props)))
@@ -408,7 +408,7 @@ impl Session {
                         reserved,
                     )
                     .await?;
-                self.join_hosted(handle, player_props, None, false).await
+                self.join_created(handle, player_props).await
             }
             ClientMsg::Join {
                 name,
@@ -445,13 +445,15 @@ impl Session {
                         }
                     }
                 }
-                self.join_hosted(handle, player_props, rejoin_actor, spectator)
+                self.join_hosted(handle, player_props, rejoin_actor, spectator, false)
                     .await
             }
             ClientMsg::JoinOrCreate {
                 name,
                 mode,
                 max_players,
+                visible,
+                open,
                 props,
                 lobby_props,
                 region,
@@ -464,7 +466,7 @@ impl Session {
                 // Several players may race to create the same room; whoever loses the DB
                 // uniqueness race joins the winner's room.
                 let mut attempt = 0;
-                let handle = loop {
+                let (handle, created) = loop {
                     match self.find_room(grant.project, &name).await {
                         Ok(found) => {
                             let existing = found.lock().room.cfg.mode;
@@ -473,7 +475,7 @@ impl Session {
                                     "room exists in {existing:?} mode, requested {mode:?}"
                                 )));
                             }
-                            break found;
+                            break (found, false);
                         }
                         Err(NetError::NotFound(_)) => {}
                         Err(NetError::Conflict(ref m)) if m == "room_pending" && attempt < 200 => {
@@ -489,8 +491,8 @@ impl Session {
                             name.clone(),
                             mode,
                             max_players,
-                            true,
-                            true,
+                            visible,
+                            open,
                             props.clone(),
                             lobby_props.clone(),
                             region.clone(),
@@ -498,7 +500,7 @@ impl Session {
                         )
                         .await
                     {
-                        Ok(created) => break created,
+                        Ok(created) => break (created, true),
                         Err(NetError::Conflict(_)) if attempt < 30 => {
                             attempt += 1;
                             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -506,7 +508,12 @@ impl Session {
                         Err(e) => return Err(e),
                     }
                 };
-                self.join_hosted(handle, player_props, None, false).await
+                if created {
+                    self.join_created(handle, player_props).await
+                } else {
+                    self.join_hosted(handle, player_props, None, false, false)
+                        .await
+                }
             }
             ClientMsg::JoinRandom {
                 filter,
@@ -534,7 +541,7 @@ impl Session {
                 for handle in self.st.host.all() {
                     let hosted = handle.lock();
                     if hosted.project != grant.project
-                        || !hosted.room.is_listed()
+                        || !hosted.room.is_listed_for(&grant.player_id, Instant::now())
                         || !in_scope(&hosted.room.cfg.name)
                     {
                         continue;
@@ -548,6 +555,7 @@ impl Session {
                             name: hosted.room.cfg.name.clone(),
                             mode: hosted.room.cfg.mode.to_string(),
                             players: hosted.room.players().count() as u16,
+                            held_for: Vec::new(),
                             max_players: hosted.room.cfg.max_players,
                             open: true,
                             visible: true,
@@ -562,7 +570,9 @@ impl Session {
                         .host
                         .by_name(grant.project, &pick.name)
                         .ok_or_else(|| NetError::NotFound("no matching room".into()))?;
-                    return self.join_hosted(handle, player_props, None, false).await;
+                    return self
+                        .join_hosted(handle, player_props, None, false, false)
+                        .await;
                 }
                 let me = self.st.node_id.to_string();
                 let remote: Vec<net_control::LiveRoom> = self
@@ -574,9 +584,7 @@ impl Session {
                     .into_iter()
                     .filter(|r| {
                         r.node != me
-                            && r.open
-                            && r.visible
-                            && r.players < r.max_players
+                            && r.is_listed_for(&grant.player_id)
                             && in_scope(&r.name)
                             && filter.is_empty()
                             && expr
@@ -745,7 +753,7 @@ impl Session {
                 self.lookup_budget()?;
                 let rooms: Vec<RoomSummary> = match self.st.redis.list_rooms(grant.project).await {
                     Ok(live) => live.into_iter().map(live_to_summary).collect(),
-                    Err(_) => self.st.host.listed(grant.project),
+                    Err(_) => self.st.host.listed(grant.project, &grant.player_id),
                 };
                 let (rooms, players, lobbies) = crate::presence::lobby_stats(&rooms);
                 let _ = self.ctl.try_send(ServerMsg::Stats {
@@ -778,9 +786,9 @@ impl Session {
                 if subscribe {
                     self.st
                         .host
-                        .subscribe_lobby(grant.project, self.ctl.clone());
+                        .subscribe_lobby(grant.project, &grant.player_id, self.ctl.clone());
                     self.lobby = Some(grant.project);
-                    let rooms = self.lobby_rooms(grant.project).await;
+                    let rooms = self.lobby_rooms(grant.project, &grant.player_id).await;
                     let _ = self.ctl.try_send(ServerMsg::LobbyRooms { rooms });
                 } else if let Some(lobby) = self.lobby.take() {
                     self.st.host.unsubscribe_lobby(lobby, &self.ctl);
@@ -863,8 +871,9 @@ impl Session {
         Ok(project)
     }
 
-    async fn lobby_rooms(&self, project: ProjectId) -> Vec<RoomSummary> {
-        lobby_rooms(&self.st, project).await
+    async fn lobby_rooms(&self, project: ProjectId, player: &str) -> Vec<RoomSummary> {
+        let live = self.st.redis.list_rooms(project).await;
+        rooms_for(&self.st, project, &live, player)
     }
 
     async fn find_room(&self, project: ProjectId, name: &str) -> Result<Arc<Mutex<HostedRoom>>> {
@@ -892,22 +901,27 @@ impl Session {
                     _ if self.st.adopting.lock().contains(&row.id) => {
                         Err(NetError::Conflict("room_pending".into()))
                     }
-                    // Row exists for this node but the room is not hosted yet: creation in
-                    // progress on another session, or a row left over from a crash.
-                    _ if row.node_id == Some(self.st.node_id.0)
-                        && (net_db::Timestamp::now() - row.created_at).whole_seconds() < 10 =>
-                    {
-                        Err(NetError::Conflict("room_pending".into()))
-                    }
-                    // The host is gone and its peers have not reaped it yet; once they do the
-                    // room is adopted by the next join.
-                    _ if host.is_some_and(|n| n != self.st.node_id) => {
-                        Err(NetError::Conflict("room_pending".into()))
-                    }
-                    _ => {
-                        let _ = queries::close_room(&self.st.pool, row.id).await;
-                        Err(NetError::NotFound(format!("room {name}")))
-                    }
+                    _ => match self.st.host.get(RoomId(row.id)) {
+                        // Another session of this node brought the room up while the row
+                        // was read.
+                        Some(handle) => Ok(handle),
+                        // Row exists for this node but the room is not hosted yet: creation
+                        // in progress on another session, or a row left over from a crash.
+                        None if row.node_id == Some(self.st.node_id.0)
+                            && (net_db::Timestamp::now() - row.created_at).whole_seconds() < 10 =>
+                        {
+                            Err(NetError::Conflict("room_pending".into()))
+                        }
+                        // The host is gone and its peers have not reaped it yet; once they
+                        // do the room is adopted by the next join.
+                        None if host.is_some_and(|n| n != self.st.node_id) => {
+                            Err(NetError::Conflict("room_pending".into()))
+                        }
+                        None => {
+                            let _ = queries::close_room(&self.st.pool, row.id).await;
+                            Err(NetError::NotFound(format!("room {name}")))
+                        }
+                    },
                 }
             }
         }
@@ -1066,12 +1080,35 @@ impl Session {
         Ok(handle)
     }
 
+    /// Joins the room this call has just created. A room its creator did not get into is
+    /// taken down.
+    async fn join_created(
+        &mut self,
+        handle: Arc<Mutex<HostedRoom>>,
+        player_props: Map<String, Value>,
+    ) -> Result<()> {
+        let joined = self
+            .join_hosted(handle.clone(), player_props, None, false, true)
+            .await;
+        if joined.is_err() {
+            let (empty, project, id) = {
+                let hosted = handle.lock();
+                (hosted.room.is_empty(), hosted.project, hosted.room.id())
+            };
+            if empty {
+                close_room(&self.st, project, id).await;
+            }
+        }
+        joined
+    }
+
     async fn join_hosted(
         &mut self,
         handle: Arc<Mutex<HostedRoom>>,
         player_props: Map<String, Value>,
         rejoin: Option<ActorId>,
         spectator: bool,
+        created: bool,
     ) -> Result<()> {
         let grant = self.grant()?.clone();
         let project = self.admit(&grant).await?;
@@ -1152,22 +1189,26 @@ impl Session {
                     });
                 }
             }
-            let (actor, out) = hr
-                .room
-                .join(
+            let now = Instant::now();
+            let admitted = if created {
+                hr.room
+                    .join_created(&grant.player_id, &grant.name, player_props, now)
+            } else {
+                hr.room.join(
                     &grant.player_id,
                     &grant.name,
                     player_props,
                     rejoin,
                     spectator,
-                    Instant::now(),
+                    now,
                 )
-                .map_err(|e| {
-                    if matches!(e, RoomError::Full { .. }) {
-                        crate::rest::reject(&self.st, grant.project, "room_full");
-                    }
-                    room_err(e)
-                })?;
+            };
+            let (actor, out) = admitted.map_err(|e| {
+                if matches!(e, RoomError::Full { .. }) {
+                    crate::rest::reject(&self.st, grant.project, "room_full");
+                }
+                room_err(e)
+            })?;
             hr.sessions.insert(
                 actor,
                 Attached {
@@ -2120,14 +2161,21 @@ pub async fn flusher(st: Shared) {
     }
 }
 
-async fn lobby_rooms(st: &Shared, project: ProjectId) -> Vec<RoomSummary> {
-    match st.redis.list_rooms(project).await {
+/// The rooms the list offers `player`, out of the project's records in Redis.
+fn rooms_for(
+    st: &Shared,
+    project: ProjectId,
+    live: &Result<Vec<LiveRoom>>,
+    player: &str,
+) -> Vec<RoomSummary> {
+    match live {
         Ok(live) => live
-            .into_iter()
-            .filter(|r| r.visible && r.open && r.players < r.max_players)
+            .iter()
+            .filter(|room| room.is_listed_for(player))
+            .cloned()
             .map(live_to_summary)
             .collect(),
-        Err(_) => st.host.listed(project),
+        Err(_) => st.host.listed(project, player),
     }
 }
 
@@ -2143,9 +2191,11 @@ pub async fn resync_lobby(st: &Shared) {
         publish_room(st, &handle).await;
     }
     for project in st.host.lobby_projects() {
-        let rooms = lobby_rooms(st, project).await;
+        let live = st.redis.list_rooms(project).await;
         st.host
-            .notify_lobby(project, ServerMsg::LobbyRooms { rooms });
+            .notify_lobby(project, |player| ServerMsg::LobbyRooms {
+                rooms: rooms_for(st, project, &live, player),
+            });
     }
 }
 
@@ -2190,6 +2240,12 @@ pub async fn publish_room(st: &Shared, handle: &Arc<Mutex<HostedRoom>>) {
                 name: hosted.room.cfg.name.clone(),
                 mode: hosted.room.cfg.mode.to_string(),
                 players: hosted.room.players().count() as u16,
+                held_for: hosted
+                    .room
+                    .held_for(Instant::now())
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
                 max_players: hosted.room.cfg.max_players,
                 open: hosted.room.cfg.open,
                 visible: hosted.room.cfg.visible,
@@ -2206,13 +2262,11 @@ pub async fn publish_room(st: &Shared, handle: &Arc<Mutex<HostedRoom>>) {
     };
     if let Err(e) = st.redis.put_room(project, &live).await {
         tracing::warn!(error = %e, "redis put_room failed");
-        st.host.notify_lobby(
-            project,
-            ServerMsg::LobbyUpdate {
-                room: live_to_summary(live),
-                removed: false,
-            },
-        );
+        st.host
+            .notify_lobby(project, |player| ServerMsg::LobbyUpdate {
+                removed: !live.is_listed_for(player),
+                room: live_to_summary(live.clone()),
+            });
     }
 }
 
@@ -2514,21 +2568,19 @@ pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {
     if let Err(e) = st.redis.remove_room(project, id).await {
         tracing::warn!(error = %e, room = %id, "close_room redis");
         st.host.unlisted(project, id);
-        st.host.notify_lobby(
-            project,
-            ServerMsg::LobbyUpdate {
-                room: RoomSummary {
-                    id: id.to_string(),
-                    name: String::new(),
-                    mode: RoomMode::Relay,
-                    players: 0,
-                    max_players: 0,
-                    open: false,
-                    props: Map::new(),
-                },
-                removed: true,
+        let gone = ServerMsg::LobbyUpdate {
+            room: RoomSummary {
+                id: id.to_string(),
+                name: String::new(),
+                mode: RoomMode::Relay,
+                players: 0,
+                max_players: 0,
+                open: false,
+                props: Map::new(),
             },
-        );
+            removed: true,
+        };
+        st.host.notify_lobby(project, |_| gone.clone());
     }
 }
 
@@ -2592,8 +2644,9 @@ pub async fn reaper(st: Shared) {
         for handle in st.host.all() {
             let (close, project, id, changed) = {
                 let mut hosted = handle.lock();
-                let out = hosted.room.expire(Instant::now());
-                let changed = !out.is_empty();
+                let now = Instant::now();
+                let out = hosted.room.expire(now);
+                let changed = hosted.room.release_reserved(now) || !out.is_empty();
                 // `PlayerLeft` goes to every player who stays, so the first field of `Control`
                 // is a recipient. The player whose slot expired is the `actor` of the message.
                 let mut expired = Vec::new();

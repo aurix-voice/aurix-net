@@ -182,7 +182,16 @@ namespace Aurix.Net.Unity
 
         public Task JoinOrCreateAsync(string room) => JoinOrCreateAsync(room, Settings.DefaultMode);
 
-        public async Task JoinOrCreateAsync(string room, RoomMode mode, int maxPlayers = 0)
+        /// <summary>Joins the room, creating it when there is none. Hidden
+        /// (<paramref name="visible"/> false) and closed (<paramref name="open"/> false) are for
+        /// the room this call creates.</summary>
+        public async Task JoinOrCreateAsync(
+            string room,
+            RoomMode mode,
+            int maxPlayers = 0,
+            bool visible = true,
+            bool open = true
+        )
         {
             Mode = mode;
             var props = new StringBuilder("{\"tick_hz\":").Append(Settings.TickHz);
@@ -196,7 +205,9 @@ namespace Aurix.Net.Unity
                 room,
                 mode.ToString().ToLowerInvariant(),
                 maxPlayers > 0 ? maxPlayers : Settings.MaxPlayers,
-                props.ToString()
+                props.ToString(),
+                visible: visible,
+                open: open
             );
             AfterJoin();
         }

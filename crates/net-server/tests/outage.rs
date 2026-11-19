@@ -507,3 +507,44 @@ async fn rooms_changed_during_a_redis_outage_reach_subscribers_on_another_node()
     let heard = ann.drain(Duration::from_secs(5)).await;
     assert_eq!(listed_after(vec![old], &heard), vec![new["room"].clone()]);
 }
+
+// The relay has to keep running while the node deletes its project on drop.
+#[tokio::test(flavor = "multi_thread")]
+async fn hidden_and_closed_rooms_stay_out_of_the_lobby_during_a_redis_outage() {
+    let relay = Relay::redis().await;
+    let node = Node::start_with(&[("NET__REDIS__URL", &relay.url)]).await;
+    let project = node.project("outage-hidden").await;
+    let mut ann = project.player("ann").await;
+    ann.send(json!({"t": "lobby", "subscribe": true})).await;
+    ann.until("lobby_rooms").await;
+    let mut hosts = Vec::new();
+    for (name, visible, open) in [
+        ("plain", true, true),
+        ("hidden", false, true),
+        ("closed", true, false),
+    ] {
+        let mut host = project.player(name).await;
+        let create = json!({"t": "create", "name": name, "visible": visible, "open": open});
+        joined(&host.call(create).await);
+        hosts.push(host);
+    }
+    ann.drain(Duration::from_secs(1)).await;
+
+    relay.set(false);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    for host in &mut hosts {
+        host.send(json!({"t": "set_room_props", "props": {"map": "dust"}}))
+            .await;
+    }
+
+    // The node gives up on Redis after a few seconds and tells the watchers itself.
+    let mut heard = vec![ann.until("lobby_update").await];
+    heard.extend(ann.drain(Duration::from_secs(2)).await);
+    relay.set(true);
+    let offered: Vec<_> = heard
+        .into_iter()
+        .filter(|msg| msg["t"] == "lobby_update" && msg["removed"] == false)
+        .map(|msg| msg["room"]["name"].clone())
+        .collect();
+    assert_eq!(offered, ["plain"]);
+}

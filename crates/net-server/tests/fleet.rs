@@ -149,3 +149,72 @@ async fn kick_through_another_node_keeps_the_reason() {
     assert_eq!(status, 204, "{reply}");
     assert_eq!(bob.until("left").await["reason"], "afk too long");
 }
+
+#[tokio::test]
+async fn players_who_return_together_after_a_rehost_keep_their_room() {
+    const ROOMS: usize = 16;
+    let mut node_a = Node::start_with(FAST).await;
+    let node_b = Node::start_with(FAST).await;
+    let pa = node_a.project("return").await;
+    let pb = node_b.same_project(&pa);
+    let mut hosts = Vec::new();
+    for room in 0..ROOMS {
+        let mut host = pa.player(&format!("host-{room}")).await;
+        joined(
+            &host
+                .call(json!({"t": "create", "name": format!("arena-{room}")}))
+                .await,
+        );
+        hosts.push(host);
+    }
+    // A row younger than this is taken for a room that is still being created.
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    node_a.terminate();
+
+    let mut players = Vec::new();
+    for room in 0..ROOMS {
+        for name in ["ann", "bob"] {
+            let player = pb.player(&format!("{name}-{room}")).await;
+            players.push((room, player));
+        }
+    }
+    for (room, player) in &mut players {
+        player
+            .send(json!({"t": "join", "name": format!("arena-{room}")}))
+            .await;
+    }
+    for (_, player) in &mut players {
+        joined(&player.next().await);
+    }
+    // long enough for B to reconcile its rooms with the database
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    for (room, player) in &mut players {
+        let heard = player.drain(Duration::from_millis(50)).await;
+        let left: Vec<_> = heard.iter().filter(|m| m["t"] == "left").collect();
+        assert!(left.is_empty(), "arena-{room}: {left:?}");
+    }
+}
+
+#[tokio::test]
+async fn room_on_another_node_whose_last_seat_is_held_is_offered_to_its_player_alone() {
+    let node_a = Node::start().await;
+    let node_b = Node::start().await;
+    let pa = node_a.project("held-elsewhere").await;
+    let pb = node_b.same_project(&pa);
+    let mut host = pa.player("host").await;
+    let create = json!({"t": "create", "name": "party", "max_players": 2, "reserved": ["friend"]});
+    joined(&host.call(create).await);
+
+    let mut ann = pb.player("ann").await;
+    refused(&ann.call(json!({"t": "join_random"})).await, "not_found");
+
+    let mut friend = pb.player("friend").await;
+    let reply = friend.call(json!({"t": "join_random"})).await;
+    refused(&reply, "conflict");
+    let elsewhere = format!("room_elsewhere:{}#party", node_a.http);
+    assert_eq!(
+        reply["message"],
+        format!("conflict: {elsewhere}"),
+        "{reply}"
+    );
+}

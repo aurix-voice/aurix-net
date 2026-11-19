@@ -319,20 +319,45 @@ impl Room {
         }
     }
 
-    /// Reserved slots whose player has not arrived yet (0 once the hold expired).
-    pub fn pending_reserved(&self, now: Instant) -> usize {
+    /// Players a seat is held for who have not arrived yet (none once the hold expired).
+    pub fn held_for(&self, now: Instant) -> Vec<&str> {
         if !self.cfg.reserved_until.is_some_and(|u| now < u) {
-            return 0;
+            return Vec::new();
         }
         self.cfg
             .reserved
             .iter()
             .filter(|r| !self.by_player.contains_key(r.as_str()))
-            .count()
+            .map(String::as_str)
+            .collect()
     }
 
-    pub fn is_listed(&self) -> bool {
-        self.cfg.visible && self.cfg.open && self.player_count() < self.cfg.max_players as usize
+    /// Reserved slots whose player has not arrived yet (0 once the hold expired).
+    pub fn pending_reserved(&self, now: Instant) -> usize {
+        self.held_for(now).len()
+    }
+
+    /// True once, when the hold on the reserved seats has lapsed.
+    pub fn release_reserved(&mut self, now: Instant) -> bool {
+        let lapsed = self.cfg.reserved_until.is_some_and(|until| now >= until);
+        if lapsed {
+            self.cfg.reserved_until = None;
+        }
+        lapsed
+    }
+
+    /// Whether the room list and a random join offer the room to `player`: a seat held for
+    /// somebody else is not free.
+    pub fn is_listed_for(&self, player: &str, now: Instant) -> bool {
+        let held_for = self.held_for(now);
+        let held = if held_for.contains(&player) {
+            0
+        } else {
+            held_for.len()
+        };
+        self.cfg.visible
+            && self.cfg.open
+            && self.player_count() + held < self.cfg.max_players as usize
     }
 
     /// Admits a player. Returns the actor id, the player list to send them, cached events,
@@ -344,6 +369,31 @@ impl Room {
         props: Map<String, Value>,
         rejoin: Option<ActorId>,
         spectator: bool,
+        now: Instant,
+    ) -> Result<(ActorId, Vec<Outgoing>), RoomError> {
+        self.admit(player_id, name, props, rejoin, spectator, false, now)
+    }
+
+    /// Admits the player whose call created the room: a room created closed takes him too.
+    pub fn join_created(
+        &mut self,
+        player_id: &str,
+        name: &str,
+        props: Map<String, Value>,
+        now: Instant,
+    ) -> Result<(ActorId, Vec<Outgoing>), RoomError> {
+        self.admit(player_id, name, props, None, false, true, now)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit(
+        &mut self,
+        player_id: &str,
+        name: &str,
+        props: Map<String, Value>,
+        rejoin: Option<ActorId>,
+        spectator: bool,
+        created: bool,
         now: Instant,
     ) -> Result<(ActorId, Vec<Outgoing>), RoomError> {
         if props_len(&props) > self.cfg.max_player_props_bytes {
@@ -377,7 +427,7 @@ impl Room {
                 return Ok((a, out));
             }
         }
-        if !self.cfg.open {
+        if !self.cfg.open && !created {
             return Err(RoomError::Closed);
         }
         if !spectator {
@@ -1180,7 +1230,7 @@ mod tests {
         room.set_room_props(alice, del, None, Some(false), None)
             .unwrap();
         assert!(room.cfg.props.is_empty());
-        assert!(!room.is_listed());
+        assert!(!room.is_listed_for("anyone", now));
     }
 
     #[test]
@@ -1237,6 +1287,8 @@ mod tests {
             Err(RoomError::Full { max: 2 })
         ));
         assert_eq!(room.pending_reserved(t0), 1);
+        assert!(!room.is_listed_for("stranger", t0));
+        assert!(room.is_listed_for("p2", t0));
         room.join("p2", "p2", Map::new(), None, false, t0).unwrap();
         assert_eq!(room.pending_reserved(t0), 0);
         // hold lapsed: a stranger may take an unclaimed reserved seat
@@ -1246,7 +1298,11 @@ mod tests {
         config.reserved_until = Some(t0 + Duration::from_secs(60));
         let mut room = Room::new(config, t0);
         room.join("p1", "p1", Map::new(), None, false, t0).unwrap();
+        assert!(!room.release_reserved(t0));
         let later = t0 + Duration::from_secs(61);
+        assert!(room.is_listed_for("stranger", later));
+        assert!(room.release_reserved(later));
+        assert!(!room.release_reserved(later));
         room.join("stranger", "s", Map::new(), None, false, later)
             .unwrap();
     }

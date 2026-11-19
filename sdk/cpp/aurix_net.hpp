@@ -213,13 +213,18 @@ private:
 public:
     /// `lobbyProps` names the room props that room listings show and `expr` filters match.
     /// `reserved`: player ids whose seats are held for 60 s when this call creates the room (the
-    /// `players` of a matchmaking ticket).
+    /// `players` of a matchmaking ticket). A room with `visible` false is out of room listings and
+    /// random joins, one with `open` false lets nobody else in. All of these shape the room only
+    /// when this call creates it.
     int joinOrCreate(const std::string& name, Mode mode = Mode::Relay, int maxPlayers = 8,
                      const std::string& propsJson = "",
                      const std::vector<std::string>& lobbyProps = {},
-                     const std::vector<std::string>& reserved = {}) {
+                     const std::vector<std::string>& reserved = {}, bool visible = true,
+                     bool open = true) {
         std::string message = "{\"t\":\"join_or_create\",\"name\":" + quote(name) + ",\"mode\":\"" +
-                              modeName(mode) + "\",\"max_players\":" + std::to_string(maxPlayers);
+                              modeName(mode) + "\",\"max_players\":" + std::to_string(maxPlayers) +
+                              ",\"visible\":" + (visible ? "true" : "false") +
+                              ",\"open\":" + (open ? "true" : "false");
         if (!propsJson.empty()) {
             message += ",\"props\":" + propsJson;
         }

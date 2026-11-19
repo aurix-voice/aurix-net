@@ -201,7 +201,7 @@ pub struct RoomHost {
     rooms: DashMap<RoomId, Arc<Mutex<HostedRoom>>>,
     by_name: DashMap<(ProjectId, String), RoomId>,
     /// Lobby subscribers per project on this node.
-    lobby: DashMap<ProjectId, Vec<mpsc::Sender<ServerMsg>>>,
+    lobby: DashMap<ProjectId, Vec<(String, mpsc::Sender<ServerMsg>)>>,
     /// Authenticated control sessions per (project, player): presence for `find_friends`.
     presence: DashMap<(ProjectId, String), u32>,
     /// Rooms closed here that Redis still lists: it could not be reached to take them out.
@@ -276,7 +276,8 @@ impl RoomHost {
             let hosted = handle.lock();
             (hosted.project, hosted.room.cfg.name.clone())
         };
-        self.by_name.remove(&(project, name));
+        self.by_name
+            .remove_if(&(project, name), |_, held| *held == id);
         Some(handle)
     }
 
@@ -361,12 +362,17 @@ impl RoomHost {
         self.rooms.iter().map(|r| r.clone()).collect()
     }
 
-    pub fn listed(&self, project: ProjectId) -> Vec<net_rooms::protocol::RoomSummary> {
+    pub fn listed(
+        &self,
+        project: ProjectId,
+        player: &str,
+    ) -> Vec<net_rooms::protocol::RoomSummary> {
+        let now = Instant::now();
         self.rooms
             .iter()
             .filter_map(|r| {
                 let hosted = r.lock();
-                (hosted.project == project && hosted.room.is_listed())
+                (hosted.project == project && hosted.room.is_listed_for(player, now))
                     .then(|| hosted.room.summary())
             })
             .collect()
@@ -400,16 +406,19 @@ impl RoomHost {
             .is_some_and(|n| *n > 0)
     }
 
-    pub fn subscribe_lobby(&self, project: ProjectId, tx: mpsc::Sender<ServerMsg>) {
+    pub fn subscribe_lobby(&self, project: ProjectId, player: &str, tx: mpsc::Sender<ServerMsg>) {
         let mut watchers = self.lobby.entry(project).or_default();
-        if !watchers.iter().any(|watcher| watcher.same_channel(&tx)) {
-            watchers.push(tx);
+        if !watchers
+            .iter()
+            .any(|(_, watcher)| watcher.same_channel(&tx))
+        {
+            watchers.push((player.to_string(), tx));
         }
     }
 
     pub fn unsubscribe_lobby(&self, project: ProjectId, tx: &mpsc::Sender<ServerMsg>) {
         if let Some(mut watchers) = self.lobby.get_mut(&project) {
-            watchers.retain(|t| !t.same_channel(tx));
+            watchers.retain(|(_, t)| !t.same_channel(tx));
         }
     }
 
@@ -431,11 +440,12 @@ impl RoomHost {
             .collect()
     }
 
-    pub fn notify_lobby(&self, project: ProjectId, msg: ServerMsg) {
+    /// Sends every watcher of the project's lobby the message `for_player` makes for him.
+    pub fn notify_lobby(&self, project: ProjectId, for_player: impl Fn(&str) -> ServerMsg) {
         if let Some(mut watchers) = self.lobby.get_mut(&project) {
-            watchers.retain(|t| !t.is_closed());
-            for watcher in watchers.iter() {
-                let _ = watcher.try_send(msg.clone());
+            watchers.retain(|(_, t)| !t.is_closed());
+            for (player, watcher) in watchers.iter() {
+                let _ = watcher.try_send(for_player(player));
             }
         }
     }
@@ -559,4 +569,65 @@ fn route_data_frame(
         .map_err(crate::ws::room_err)?;
     dispatch(hosted, out, metrics);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use net_common::RoomMode;
+    use net_rooms::RoomConfig;
+    use std::time::Duration;
+
+    fn room(project: ProjectId, name: &str) -> Room {
+        let cfg = RoomConfig {
+            id: RoomId::new(),
+            project,
+            name: name.into(),
+            mode: RoomMode::Relay,
+            max_players: 2,
+            visible: true,
+            open: true,
+            props: serde_json::Map::new(),
+            lobby_props: Vec::new(),
+            reserved: Vec::new(),
+            reserved_until: None,
+            cleanup_cache_on_leave: true,
+            publish_user_id: true,
+            suppress_room_events: false,
+            suppress_player_info: false,
+            broadcast_props_to_all: true,
+            max_events_per_sec: 10,
+            max_events_per_sec_per_player: 10,
+            max_event_bytes: 100,
+            max_props_bytes: 100,
+            max_player_props_bytes: 100,
+            max_cached_events: 1,
+            offline_ttl: Duration::from_secs(30),
+            empty_ttl: Duration::from_secs(30),
+        };
+        Room::new(cfg, Instant::now())
+    }
+
+    #[test]
+    fn removing_a_room_keeps_the_name_of_the_one_that_took_its_place() {
+        let host = RoomHost::default();
+        let project = ProjectId::new();
+        let old = host
+            .insert(project, room(project, "arena"))
+            .lock()
+            .room
+            .id();
+        let new = host
+            .insert(project, room(project, "arena"))
+            .lock()
+            .room
+            .id();
+
+        host.remove(old);
+
+        let found = host.by_name(project, "arena").expect("the new room");
+        assert_eq!(found.lock().room.id(), new);
+        host.remove(new);
+        assert!(host.by_name(project, "arena").is_none());
+    }
 }

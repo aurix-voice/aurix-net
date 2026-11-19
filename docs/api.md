@@ -101,7 +101,7 @@ with the route or the message type and the project.
 
 JSON messages, `"t"` is the type (snake_case). Client → server: `auth{grant, supports?}`,
 `create{...}`, `join{name, player_props, rejoin_actor?, schema_hash?, spectator?}`,
-`join_or_create{name, mode, max_players, props, lobby_props, region, player_props}`,
+`join_or_create{name, mode, max_players, visible, open, props, lobby_props, region, player_props}`,
 `join_random{...}`, `leave`, `set_room_props{props, expected?, visible?, open?}`,
 `set_player_props{props, expected?}`, `event{code, data(base64), target, channel, cache, group}` (`target` is `{"kind": "all" | "others" | "master"}` or `{"kind": "actors", "actors": [..]}`, default others; `channel` is `unreliable_sequenced`, `reliable_ordered` (default), `reliable_unordered` or `unreliable_unsequenced`),
 `set_groups{join, leave}`, `cache_slice{op, index?}` (relay event-cache slices), `set_view{viewpoints, interest}` (sync AOI: extra viewpoints, forced entities),
@@ -265,8 +265,18 @@ and report the empty seats". When every member of a group agreed, the ticket sta
 `match.found` webhook carry `bots: <seats>`; the game (room master or WASM logic) spawns that many
 AI players — the service never fakes players itself.
 
+`join_or_create` takes the room fields of `create`, `visible` and `open` among them. They shape
+the room only when the call creates it: a room that already exists stays as it is.
+
+The room list, `get_rooms`, `join_random` and `fill_existing` offer a room only while it is
+`visible`, `open` and has a free seat. A room with `visible: false` is still entered by its
+name; a room with `open: false` takes no new player at all. The player whose call creates a
+closed room is in it all the same, and a player who lost the connection returns to the seat
+that is kept for him.
+
 Party slots: `reserved: ["p2","p3"]` on room creation (REST, `create`, `join_or_create`) holds those seats
-for 60 s — other players see the room as full until the party has arrived or the hold lapses. Matchmaking
+for 60 s — other players see the room as full until the party has arrived or the hold lapses: a held
+seat is not a free one, so a room with no other seat left is offered to the party alone. Matchmaking
 results carry the `players` list; pass it as `reserved` when the first of them creates the room.
 
 Tickets live in Redis (`net:mm:*`), so a ticket filed on any node of the region matches

@@ -16,6 +16,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         name: name.to_string(),
         mode: RoomMode::Relay,
         max_players: Some(4),
+        visible: true,
+        open: true,
         props: Default::default(),
         lobby_props: vec![],
         region: None,

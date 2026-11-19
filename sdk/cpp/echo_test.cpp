@@ -54,6 +54,18 @@ int main() {
     int awaited = e.join(room + "-party");
     std::printf("cpp random join: actor=%d; held seat: another player code=%d, the awaited one actor=%d\n", random, taken, awaited);
     bool matched = random == 2 && taken == AURIX_NET_ERR_ROOM_FULL && awaited == 2;
+    // a hidden room is not offered to a random join and is entered by its name; a closed room lets its creator in and nobody else
+    Client hider, closer, guest;
+    hider.connect(http, Client::issueGrant(http, key, "cpp-hider", "Hider")); closer.connect(http, Client::issueGrant(http, key, "cpp-closer", "Closer")); guest.connect(http, Client::issueGrant(http, key, "cpp-guest", "Guest"));
+    int offered = 0, closedJoin = 0, closedCreate = 0;
+    hider.joinOrCreate(room + "-hidden", Mode::Relay, 4, "{\"map\":" + Client::quote(room + "-hidden") + "}", {"map"}, {}, false);
+    closer.joinOrCreate(room + "-closed", Mode::Relay, 4, "", {}, {}, true, false);
+    try { guest.joinRandom("", "map = '" + room + "-hidden'"); } catch (const Error& error) { offered = error.code; }
+    try { guest.join(room + "-closed"); } catch (const Error& error) { closedJoin = error.code; }
+    try { guest.joinOrCreate(room + "-closed", Mode::Relay, 4); } catch (const Error& error) { closedCreate = error.code; }
+    int byName = guest.join(room + "-hidden");
+    std::printf("cpp hidden room: random join code=%d, by name actor=%d; closed room: join code=%d, join_or_create code=%d\n", offered, byName, closedJoin, closedCreate);
+    bool shaped = offered == AURIX_NET_ERR_NOT_FOUND && byName == 2 && closedJoin == AURIX_NET_ERR_ROOM_CLOSED && closedCreate == AURIX_NET_ERR_ROOM_CLOSED;
     // over a slow link (NET_SLOW_HTTP, see README): a client that left a room joins another one
     bool rejoined = true;
     if (const char* slow = std::getenv("NET_SLOW_HTTP")) {
@@ -75,5 +87,5 @@ int main() {
         std::printf("cpp slow link: skipped (NET_SLOW_HTTP not set)\n");
         rejoined = !std::getenv("NET_LIVE_REQUIRED");
     }
-    a.leave(); return (hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && refused && matched && rejoined) ? 0 : 1;
+    a.leave(); return (hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && refused && matched && shaped && rejoined) ? 0 : 1;
 }

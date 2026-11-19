@@ -95,6 +95,15 @@ Other room props stay private unless the room publishes them: `joinOrCreate` tak
 player ids whose seats the new room holds for 60 s: the `players` of a matchmaking ticket
 (docs/api.md → Matchmaking flow).
 
+`joinOrCreate` takes `visible` and `open` last, both true unless given: Web, C++ and Unity
+(`JoinOrCreateAsync`, `JoinOrCreate`, and `JoinOrCreateAsync` of `NetRunner`), Godot
+`join_or_create`, Unreal `Join Or Create` (`bVisible`, `bOpen`); in C they are fields of the
+`join_or_create` message given to `aurix_net_join`. A room with `visible: false` is out of room
+listings and random joins and is entered by its name. A room with `open: false` lets in the
+player whose call created it and nobody after: `join` and `joinOrCreate` are refused with
+`room_closed`. Like the mode, the size and the props, the two shape the room only when the call
+creates it: a room that already exists stays as it is, whatever the call says.
+
 ## Lockstep rooms from Rust, C++ and Godot
 
 `net_client::lockstep::LockstepClient` is the same core the C# and Web SDKs use, as pure logic: feed

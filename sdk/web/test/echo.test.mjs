@@ -236,6 +236,33 @@ test("rooms(expr) finds a room by the lobby props joinOrCreate published", { ski
   }
 });
 
+test("a hidden room is out of the room list and random joins and is entered by its name", { skip: !key }, async (t) => {
+  const a = await Client.connect(http, await grant("web-hidden-a"));
+  t.after(() => a.close());
+  const b = await Client.connect(http, await grant("web-hidden-b"));
+  t.after(() => b.close());
+  const room = `web-hidden-${process.pid}`;
+  await a.joinOrCreate(room, "relay", 4, { map: room }, [], ["map"], false);
+  assert.deepEqual(await b.rooms(`map = '${room}'`), []);
+  await assert.rejects(b.joinRandom({}, `map = '${room}'`), { code: "not_found" });
+  // the room exists: the same call with `visible: true` enters it and leaves it hidden
+  assert.equal((await b.joinOrCreate(room, "relay", 4, {}, [], [], true)).name, room);
+  const c = await Client.connect(http, await grant("web-hidden-c"));
+  t.after(() => c.close());
+  assert.deepEqual(await c.rooms(`map = '${room}'`), []);
+});
+
+test("a closed room lets its creator in and nobody else", { skip: !key }, async (t) => {
+  const a = await Client.connect(http, await grant("web-closed-a"));
+  t.after(() => a.close());
+  const b = await Client.connect(http, await grant("web-closed-b"));
+  t.after(() => b.close());
+  const room = `web-closed-${process.pid}`;
+  assert.equal((await a.joinOrCreate(room, "relay", 4, {}, [], [], true, false)).name, room);
+  await assert.rejects(b.joinOrCreate(room, "relay", 4), { code: "room_closed" });
+  await assert.rejects(b.join({ t: "join", name: room }), { code: "room_closed" });
+});
+
 test("events on the unsequenced channel arrive on it", { skip: !key }, async (t) => {
   const a = await Client.connect(http, await grant("web-unseq-a"));
   t.after(() => a.close());
