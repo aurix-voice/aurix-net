@@ -52,11 +52,11 @@ bool AurixNetSync::setup(const String &schema, int tick_hz, int interpolation_ti
 }
 
 bool AurixNetSync::receive(AurixNetClient *client, const PackedByteArray &payload) {
-	if (!sync_ || !client) {
+	if (!sync_) {
 		return false;
 	}
 	bool delta = false;
-	AURIX_TRY(false, delta = sync_->receive(client->raw(), payload.ptr(), payload.size()));
+	AURIX_TRY(false, delta = client ? sync_->receive(client->raw(), payload.ptr(), payload.size()) : sync_->receive(payload.ptr(), payload.size()));
 	if (!delta) {
 		return false;
 	}

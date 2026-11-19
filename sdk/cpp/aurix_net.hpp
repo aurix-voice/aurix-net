@@ -549,21 +549,18 @@ public:
     /// and events wait in poll(); an input margin report moves the lead of the next inputs.
     bool receive(Client& client, const uint8_t* data, size_t len) {
         uint8_t ack[9];
-        int result = aurix_net_sync_receive(sync_, data, len, ack);
-        if (result < 0) {
-            throw Error::last();
-        }
+        int result = apply(data, len, ack);
         if (result != 1) {
             return result != 0;
         }
         client.sendData(Channel::Unreliable, ack, sizeof ack);
         aurix_net_sync_pump(sync_, client.handle());
-        double lag = double(serverTick()) - interp_;
-        if (lag > renderTick_) {
-            renderTick_ = lag;
-        }
-        gotDelta_ = true;
         return true;
+    }
+    /// A frame of a room's replay: applied like a delta, with no room to acknowledge it to.
+    bool receive(const uint8_t* data, size_t len) {
+        uint8_t ack[9];
+        return apply(data, len, ack) != 0;
     }
     Event poll() {
         AurixNetSyncEvent event{};
@@ -694,6 +691,20 @@ private:
         if (result != 0) {
             throw Error::last();
         }
+    }
+    int apply(const uint8_t* data, size_t len, uint8_t ack[9]) {
+        int result = aurix_net_sync_receive(sync_, data, len, ack);
+        if (result < 0) {
+            throw Error::last();
+        }
+        if (result == 1) {
+            double lag = double(serverTick()) - interp_;
+            if (lag > renderTick_) {
+                renderTick_ = lag;
+            }
+            gotDelta_ = true;
+        }
+        return result;
     }
     AurixNetSync* sync_;
     int tickHz_;

@@ -9,7 +9,7 @@ const SCHEMA := "component Transform {\n  pos: vec3 @range(-4096, 4096, 0.01)\n 
 var grant_c := ""; var grant_d := ""; var net_http := ""; var ls_room := ""
 var c: AurixNetClient; var d: AurixNetClient
 var wc: AurixNetSync; var wd: AurixNetSync
-var sync_on := false; var acc := 0.0; var writes := 0; var updates := 0; var x := 0.0; var last := Vector3.ZERO; var drain := 0; var spawn_tag := -1; var spawned := -1
+var sync_on := false; var acc := 0.0; var writes := 0; var updates := 0; var x := 0.0; var last := Vector3.ZERO; var drain := 0; var spawn_tag := -1; var spawned := -1; var first := PackedByteArray()
 var lc: AurixNetLockstep; var ld: AurixNetLockstep
 var ls_on := false; var ls_frames := 0; var ticks_c := 0; var ticks_d := 0; var actors := {}; var stray := 0
 
@@ -83,8 +83,10 @@ func _start_sync() -> void:
 		if ls_on: lc.receive(c, payload)
 		else: wc.receive(c, payload))
 	d.data.connect(func(_ch, _tick, payload):
-		if ls_on: ld.receive(d, payload)
-		else: wd.receive(d, payload))
+		if ls_on: ld.receive(d, payload); return
+		var empty := wd.get_server_tick() == 0
+		wd.receive(d, payload)
+		if empty and wd.get_server_tick() != 0: first = payload)
 	# sync and lockstep frames are not relay events: the event signal must stay quiet in both rooms
 	c.event.connect(func(_code, _from, _payload): stray += 1)
 	d.event.connect(func(_code, _from, _payload): stray += 1)
@@ -118,6 +120,11 @@ func _sync_step(dt: float) -> void:
 	if spawned < 0 or c.get_avatar() < 0 or c.get_avatar() == spawned or not wc.get_entities().has(spawned):
 		fail("spawn answer: tag=%d entity=%d avatar=%d" % [spawn_tag, spawned, c.get_avatar()]); return
 	if stray > 0: fail("%d event signals from sync frames" % stray); return
+	# a replay: the room's first delta again, to a world with no client behind it
+	var cam := AurixNetSync.new(); var shown := []
+	cam.spawn.connect(func(entity, _owner): shown.append(entity))
+	if not cam.setup(SCHEMA, 20, 2) or not cam.receive(null, first) or shown.is_empty():
+		fail("replay: %d entities from a frame with no client" % shown.size()); return
 	_start_lockstep()
 
 func _start_lockstep() -> void:

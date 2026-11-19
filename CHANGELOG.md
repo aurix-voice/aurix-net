@@ -162,6 +162,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   list of the players already in the room and no room size or props: in Unreal `GetRoom().Players`
   was empty for the one who joined second and `MaxPlayers` was 0. It now carries `max_players`,
   `props`, `players`, `tick`, `seed` and `next_spawn_tag` as well.
+- C++ and Godot SDKs: a sync world took a frame only through a client that was in a sync room,
+  so a room's replay could not be played without one: `Sync::receive` threw `disconnected` on
+  every frame, and `AurixNetSync.receive` raised no `spawn` or `change`. `Sync::receive(data,
+  len)` and `receive(null, frame)` apply a frame with no client.
 - Unity SDK (native client): `Client.JoinOrCreate` had no `lobbyProps`, so a room it created
   published no props, and neither a room list nor a random join with an `expr` found it. It
   takes them as the managed client does.

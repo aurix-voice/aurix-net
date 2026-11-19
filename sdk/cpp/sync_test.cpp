@@ -1,12 +1,14 @@
 // Live check of aurix::net::Sync: two clients in an owner-authoritative sync room, A writes its
 // Transform every tick, B receives the replicated entity. NET_API_KEY (+ NET_HTTP) required.
 #include "aurix_net.hpp"
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 using namespace aurix::net;
 int main() {
     const char* key = std::getenv("NET_API_KEY"); if (!key) { std::fprintf(stderr, "NET_API_KEY missing\n"); return 2; }
@@ -21,7 +23,16 @@ int main() {
     Sync sa(SCHEMA), sb(SCHEMA);
     int tr = sa.component("Transform"), pos = sa.field(tr, "pos"), rot = sa.field(tr, "rot");
     a.onData = [&](Channel, uint16_t, const uint8_t* d, size_t n) { sa.receive(a, d, n); };
-    b.onData = [&](Channel, uint16_t, const uint8_t* d, size_t n) { sb.receive(b, d, n); };
+    std::vector<uint8_t> first;
+    uint32_t firstTick = 0;
+    b.onData = [&](Channel, uint16_t, const uint8_t* d, size_t n) {
+        bool empty = sb.serverTick() == 0;
+        sb.receive(b, d, n);
+        if (empty && sb.serverTick() != 0) {
+            first.assign(d, d + n);
+            firstTick = sb.serverTick();
+        }
+    };
     // sent before the first delta: it has to wait for the room's tick
     int64_t tag = sa.spawn(a);
     uint64_t spawned = 0;
@@ -54,6 +65,16 @@ int main() {
     bool ok = sb.serverTick() > 30 && sb.gaps() == 0 && updates >= 20 && std::fabs(last[0] - x) < 3 && std::fabs(last[1] - 1) < 0.02 && std::fabs(last[2] + 2) < 0.02 && own == 2 && told
               && sb.renderTick() > 0 && sb.renderTick() <= sb.serverTick();
     std::printf("cpp sync: serverTick=%u gaps=%llu updates=%d last=(%.2f %.2f %.2f) x=%.1f own=%d told=%d renderTick=%.1f -> %s\n", sb.serverTick(), (unsigned long long)sb.gaps(), updates, last[0], last[1], last[2], x, own, int(told), sb.renderTick(), ok ? "ok" : "FAIL");
+    // a replay: the room's first delta again, to a world with no client behind it. Its render tick
+    // stands still before the frame, is 2 ticks behind the frame's after it, not below 0, and runs
+    // with time from there
+    Sync cam(SCHEMA);
+    bool still = cam.advance(0.5) == 0;
+    bool replayed = still && cam.receive(first.data(), first.size()) && cam.entityCount() > 0 && cam.serverTick() == firstTick;
+    double behind = cam.renderTick();
+    replayed = replayed && behind == std::max(0.0, double(firstTick) - 2) && cam.advance(0.5) == behind + 30;
+    std::printf("cpp sync, replay: entities=%d serverTick=%u renderTick=%.1f then %.1f -> %s\n", cam.entityCount(), cam.serverTick(), behind, cam.renderTick(), replayed ? "ok" : "FAIL");
+    ok = ok && replayed;
     // over a link that loses data frames (NET_LOSSY_HTTP, see README): a write with nothing after it still arrives
     if (const char* lossy = std::getenv("NET_LOSSY_HTTP")) {
         Client c; c.connect(lossy, Client::issueGrant(http, key, "cpp-sync-c", "C"), true);
