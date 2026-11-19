@@ -157,6 +157,8 @@ static_assert((int32)EAurixNetError::InvalidArgument == AURIX_NET_ERR_INVALID_AR
 	"EAurixNetError must match AURIX_NET_ERR_*");
 
 static EAurixNetError LastErrorCode() { return static_cast<EAurixNetError>(aurix_net_last_error_code()); }
+/** The native error is kept per thread: an async call fails on a worker thread and reports it on the game thread. */
+static void CarryError(EAurixNetError Code, const FString& Text) { aurix_net_set_last_error(static_cast<int32>(Code), TCHAR_TO_UTF8(*Text)); }
 EAurixNetError UAurixNetSubsystem::GetLastErrorCode() const { return LastErrorCode(); }
 
 void UAurixNetSubsystem::SetState(EAurixNetState S) { if (State != S) { State = S; OnStateChanged.Broadcast(S); } }
@@ -275,7 +277,7 @@ void UAurixNetSubsystem::ConnectAsync(const FString& CellUrl, const FString& Gra
 				Done.ExecuteIfBound(-1, EAurixNetError::Disconnected, TEXT("disconnected while connecting"));
 				return;
 			}
-			if (!C) { Self->SetState(EAurixNetState::Disconnected); Self->OnError.Broadcast(TEXT("connect"), Err); Done.ExecuteIfBound(-1, Code, Err); return; }
+			if (!C) { CarryError(Code, Err); Self->SetState(EAurixNetState::Disconnected); Self->OnError.Broadcast(TEXT("connect"), Err); Done.ExecuteIfBound(-1, Code, Err); return; }
 			Self->Client = C;
 			Self->ReadPlayer();
 			Self->SetState(EAurixNetState::Connected);
@@ -312,7 +314,7 @@ void UAurixNetSubsystem::JoinAsync(const FString& JoinJson, FAurixNetAsyncResult
 				Done.ExecuteIfBound(-1, EAurixNetError::Disconnected, TEXT("disconnected while joining"));
 				return;
 			}
-			if (Actor < 0) { Self->OnError.Broadcast(TEXT("join"), Err); Done.ExecuteIfBound(-1, Code, Err); return; }
+			if (Actor < 0) { CarryError(Code, Err); Self->OnError.Broadcast(TEXT("join"), Err); Done.ExecuteIfBound(-1, Code, Err); return; }
 			Self->FinishJoin();
 			Done.ExecuteIfBound(Actor, EAurixNetError::None, FString());
 		});
@@ -341,7 +343,7 @@ void UAurixNetSubsystem::ConnectWithDevGrantAsync(const FString& PlayerName, FAu
 		AsyncTask(ENamedThreads::GameThread, [Self, Url, Grant, bTunnel, Code, Err, Done]()
 		{
 			if (!Self.IsValid()) return;
-			if (Grant.IsEmpty()) { Done.ExecuteIfBound(-1, Code, Err); return; }
+			if (Grant.IsEmpty()) { CarryError(Code, Err); Done.ExecuteIfBound(-1, Code, Err); return; }
 			Self->ConnectAsync(Url, Grant, bTunnel, Done);
 		});
 	});

@@ -103,6 +103,8 @@ private:
 	FDelegateHandle RoomsHandle;
 	double SearchStartedAt = 0.0;
 	int32 SearchMinSlots = 0;
+	/** The Near params of the search in flight, the first one weighing the most: the value each asks the results to be near. */
+	TArray<TPair<FName, double>> SearchNear;
 };
 
 typedef TSharedPtr<FOnlineSessionAurix, ESPMode::ThreadSafe> FOnlineSessionAurixPtr;

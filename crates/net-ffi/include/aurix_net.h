@@ -65,6 +65,7 @@ enum {
 const char *aurix_net_version(void);
 const char *aurix_net_last_error(void);
 int32_t aurix_net_last_error_code(void);
+void aurix_net_set_last_error(int32_t code, const char *message); /* the last error of this thread, for a wrapper that reports on one thread the failure of a call it ran on another */
 
 /* backend/tooling only */
 char *aurix_net_issue_grant(const char *http, const char *api_key, const char *player_id, const char *name);

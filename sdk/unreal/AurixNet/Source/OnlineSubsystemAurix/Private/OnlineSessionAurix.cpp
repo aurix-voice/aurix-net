@@ -149,11 +149,37 @@ namespace
 		}
 	}
 
-	/** The search params as the filter expression of a room list or a random join; false when the node cannot evaluate one of them. */
-	bool ExprOf(const FOnlineSearchSettings& Query, FString& Expr, int32& MinSlots)
+	bool NumberOf(const FVariantData& Data, double& Out)
+	{
+		switch (Data.GetType())
+		{
+		case EOnlineKeyValuePairDataType::Int32: { int32 Value = 0; Data.GetValue(Value); Out = Value; return true; }
+		case EOnlineKeyValuePairDataType::UInt32: { uint32 Value = 0; Data.GetValue(Value); Out = Value; return true; }
+		case EOnlineKeyValuePairDataType::Int64: { int64 Value = 0; Data.GetValue(Value); Out = static_cast<double>(Value); return true; }
+		case EOnlineKeyValuePairDataType::UInt64: { uint64 Value = 0; Data.GetValue(Value); Out = static_cast<double>(Value); return true; }
+		case EOnlineKeyValuePairDataType::Float: { float Value = 0.f; Data.GetValue(Value); Out = Value; return FMath::IsFinite(Value); }
+		case EOnlineKeyValuePairDataType::Double: { Data.GetValue(Out); return FMath::IsFinite(Out); }
+		default: return false;
+		}
+	}
+
+	/** How far a room's value of a Near param is from the value asked for; a room without that number is the farthest. */
+	double NearDistance(const FOnlineSessionSettings& Settings, const TPair<FName, double>& Near)
+	{
+		const FOnlineSessionSetting* Setting = Settings.Settings.Find(Near.Key);
+		double Value = 0.0;
+		return Setting && NumberOf(Setting->Data, Value) ? FMath::Abs(Value - Near.Value) : TNumericLimits<double>::Max();
+	}
+
+	/**
+	 * The search params as the filter expression of a room list or a random join; false when the node cannot evaluate one of them.
+	 * A Near param filters nothing: it goes to Near, by which the results are ordered.
+	 */
+	bool ExprOf(const FOnlineSearchSettings& Query, FString& Expr, int32& MinSlots, TArray<TPair<FName, double>>& Near)
 	{
 		constexpr int32 MaxLength = 256, MaxTerms = 16;
 		Expr.Reset();
+		Near.Reset();
 		MinSlots = 0;
 		int32 Terms = 0;
 		for (const TPair<FName, FOnlineSessionSearchParam>& Param : Query.SearchParams)
@@ -163,6 +189,12 @@ namespace
 				Param.Value.Data.GetValue(MinSlots);
 			}
 			if (IsSearchOption(Param.Key)) continue;
+			double Target = 0.0;
+			if (Param.Value.ComparisonOp == EOnlineComparisonOp::Near && NumberOf(Param.Value.Data, Target))
+			{
+				Near.Emplace(Param.Key, Target);
+				continue;
+			}
 			const FString Name = PropName(Param.Key);
 			const TCHAR* Operator = ExprOperator(Param.Value.ComparisonOp);
 			FString Literal;
@@ -395,7 +427,8 @@ bool FOnlineSessionAurix::StartMatchmaking(const TArray<FSessionMatchmakingUser>
 	UAurixNetSubsystem* N = Net();
 	FString Expr;
 	int32 MinSlots = 0;
-	if (GetNamedSession(SessionName) || !N || !N->HasClient() || N->IsBusy() || !ExprOf(Search->QuerySettings, Expr, MinSlots))
+	TArray<TPair<FName, double>> Near;
+	if (GetNamedSession(SessionName) || !N || !N->HasClient() || N->IsBusy() || !ExprOf(Search->QuerySettings, Expr, MinSlots, Near))
 	{
 		Done.ExecuteIfBound(SessionName, FOnlineError(false), {});
 		return false;
@@ -465,7 +498,7 @@ bool FOnlineSessionAurix::FindSessions(int32, const TSharedRef<FOnlineSessionSea
 {
 	UAurixNetSubsystem* N = Net();
 	FString Expr;
-	if (!N || !N->HasClient() || CurrentSearch.IsValid() || !ExprOf(Search->QuerySettings, Expr, SearchMinSlots)) { Search->SearchState = EOnlineAsyncTaskState::Failed; TriggerOnFindSessionsCompleteDelegates(false); return false; }
+	if (!N || !N->HasClient() || CurrentSearch.IsValid() || !ExprOf(Search->QuerySettings, Expr, SearchMinSlots, SearchNear)) { Search->SearchState = EOnlineAsyncTaskState::Failed; TriggerOnFindSessionsCompleteDelegates(false); return false; }
 	CurrentSearch = Search;
 	Search->SearchState = EOnlineAsyncTaskState::InProgress;
 	Search->SearchResults.Reset();
@@ -493,6 +526,16 @@ void FOnlineSessionAurix::OnRooms(const TArray<FAurixNetRoomSummary>& Rooms)
 		Res.Session.OwningUserName = R.Name;
 		Res.PingInMs = 0;
 	}
+	CurrentSearch->SearchResults.StableSort([this](const FOnlineSessionSearchResult& A, const FOnlineSessionSearchResult& B)
+	{
+		for (const TPair<FName, double>& Near : SearchNear)
+		{
+			const double DistanceA = NearDistance(A.Session.SessionSettings, Near);
+			const double DistanceB = NearDistance(B.Session.SessionSettings, Near);
+			if (DistanceA != DistanceB) return DistanceA < DistanceB;
+		}
+		return false;
+	});
 	FinishSearch(true);
 }
 void FOnlineSessionAurix::FinishSearch(bool bOk)
@@ -565,6 +608,10 @@ void FOnlineSessionAurix::OnSessionJoined(int32 Actor, EAurixNetError Code, cons
 	}
 	if (Actor < 0 || !N)
 	{
+		if (Actor < 0)
+		{
+			UE_LOG(LogOnlineAurix, Warning, TEXT("JoinSession: room '%s' %s"), *Room, *Error);
+		}
 		const EOnJoinSessionCompleteResult::Type Result = Code == EAurixNetError::RoomFull ? EOnJoinSessionCompleteResult::SessionIsFull
 			: Code == EAurixNetError::NotFound ? EOnJoinSessionCompleteResult::SessionDoesNotExist
 			: EOnJoinSessionCompleteResult::UnknownError;

@@ -34,7 +34,7 @@ fn rt() -> &'static tokio::runtime::Runtime {
 
 thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
-    static LAST_CODE: Cell<ErrorCode> = const { Cell::new(ErrorCode::Ok) };
+    static LAST_CODE: Cell<i32> = const { Cell::new(ErrorCode::Ok as i32) };
 }
 
 /// Why a call failed: the `AURIX_NET_ERR_*` constants of `aurix_net.h`.
@@ -90,7 +90,7 @@ impl From<&ClientError> for ErrorCode {
 pub(crate) fn set_error(code: ErrorCode, error: impl std::fmt::Display) {
     let text = CString::new(error.to_string().replace('\0', " ")).unwrap_or_default();
     LAST_ERROR.with(|last| *last.borrow_mut() = text);
-    LAST_CODE.with(|last| last.set(code));
+    LAST_CODE.with(|last| last.set(code as i32));
 }
 
 pub(crate) fn set_client_error(error: &ClientError) {
@@ -174,7 +174,17 @@ pub extern "C" fn aurix_net_last_error() -> *const c_char {
 /// succeeds leaves both as they were.
 #[no_mangle]
 pub extern "C" fn aurix_net_last_error_code() -> i32 {
-    LAST_CODE.with(|last| last.get()) as i32
+    LAST_CODE.with(|last| last.get())
+}
+
+/// Makes `code` and `message` the last error of the calling thread. The error is kept per
+/// thread, so a wrapper that runs a call on a worker thread and reports its failure on another
+/// carries it over with this. A NULL `message` leaves an empty text.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_set_last_error(code: i32, message: *const c_char) {
+    let text = CString::new(cstr(message).unwrap_or_default()).unwrap_or_default();
+    LAST_ERROR.with(|last| *last.borrow_mut() = text);
+    LAST_CODE.with(|last| last.set(code));
 }
 
 /// Backend/tooling helper: issues a grant with an API key. Returns a malloc'd string to free

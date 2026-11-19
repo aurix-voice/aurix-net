@@ -165,8 +165,9 @@ public:
 	/** The seed of the lockstep room we are in; false in other rooms and outside a room. */
 	UFUNCTION(BlueprintPure, Category = "Aurix Net|Lockstep") bool GetSeed(int64& Seed) const;
 	UFUNCTION(BlueprintPure, Category = "Aurix Net") static FString GetNativeVersion();
+	/** The text of the last failed call on the game thread: a blocking call, or an async one once it has reported its result. */
 	UFUNCTION(BlueprintPure, Category = "Aurix Net") FString GetLastError() const;
-	/** The reason of the last failed blocking call on the game thread. */
+	/** The reason of that call. */
 	UFUNCTION(BlueprintPure, Category = "Aurix Net") EAurixNetError GetLastErrorCode() const;
 
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetStateChanged OnStateChanged;

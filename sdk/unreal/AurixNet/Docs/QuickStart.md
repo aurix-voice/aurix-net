@@ -128,8 +128,18 @@ Session settings and search params reach the room:
 - Search params with the comparisons equals, not equals, greater and less (with or without
   equals) become the room filter of Find Sessions and of the random join of matchmaking.
   `SEARCH_MINSLOTSAVAILABLE` is applied to the results; the other search options of the engine
-  are ignored. A param the filter cannot express (`Near`, `In`, `NotIn`, a name outside
-  letters, digits, `_` and `.`) fails the search, with the reason in the log.
+  are ignored. A param the filter cannot express (`In`, `NotIn`, a name outside letters,
+  digits, `_` and `.`) fails the search, with the reason in the log.
+- A `Near` param on a number filters nothing, as in the Steam and EOS subsystems of the engine:
+  Find Sessions returns the rooms whose value is nearest to it first, the first `Near` param
+  weighing the most, and a room without that number last. The order is made among the rooms
+  the cell returned, `MaxSearchResults` of them at most, so narrow the search with the other
+  params when rooms are many. The random join of matchmaking has no order and takes no notice
+  of `Near`. `Near` on a string or a boolean fails the search.
+- Join Session into a room that is closed completes with `UnknownError`: the result of the
+  engine has a value for a full session and for one that is gone, and none for a closed one.
+  The reason is in the log and in the subsystem, where `Get Last Error Code` is `Room Closed`
+  and `Get Last Error` is the text of the cell, and `OnError` carries the same text.
 - Seats are held for the player ids listed, comma separated, in the `AURIXRESERVED` setting,
   and for the users passed to Start Matchmaking after the first, when this session creates the
   room. The ids are the players' ids on the cell.

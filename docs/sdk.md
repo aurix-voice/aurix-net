@@ -74,7 +74,9 @@ thread: `aurix_net_last_error()` has the text and `aurix_net_last_error_code()` 
 `AURIX_NET_ERR_*` constants of `aurix_net.h`, so a refused join is told apart without reading the
 text (`AURIX_NET_ERR_NOT_FOUND`, `AURIX_NET_ERR_ROOM_FULL`, `AURIX_NET_ERR_ROOM_CLOSED`, ...). The
 C++ wrapper throws `aurix::net::Error` with the same value in `code`; the Godot nodes return it
-from `get_last_error_code()` (`AurixNetClient.ERROR_*`).
+from `get_last_error_code()` (`AurixNetClient.ERROR_*`). A wrapper that runs a call on a worker
+thread and reports its failure on another carries the two over with
+`aurix_net_set_last_error(code, message)`, as the Unreal plugin does for its async calls.
 
 ## Rehost
 

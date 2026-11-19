@@ -34,6 +34,9 @@ int main(void) {
     if (aurix_net_join(b, join) >= 0 || aurix_net_last_error_code() != AURIX_NET_ERR_ROOM_CLOSED) { fprintf(stderr, "join_or_create of a closed room: code %d (%s)\n", (int)aurix_net_last_error_code(), aurix_net_last_error()); return 1; }
     snprintf(join, sizeof join, "{\"t\":\"join\",\"name\":\"c-closed-%d\"}", (int)getpid());
     if (aurix_net_join(b, join) >= 0 || aurix_net_last_error_code() != AURIX_NET_ERR_ROOM_CLOSED) { fprintf(stderr, "join of a closed room: code %d (%s)\n", (int)aurix_net_last_error_code(), aurix_net_last_error()); return 1; }
+    /* an error carried over from another thread reads as the last one of this thread */
+    aurix_net_set_last_error(AURIX_NET_ERR_TIMEOUT, "carried over");
+    if (aurix_net_last_error_code() != AURIX_NET_ERR_TIMEOUT || strcmp(aurix_net_last_error(), "carried over") != 0) { fprintf(stderr, "set_last_error: code %d (%s)\n", (int)aurix_net_last_error_code(), aurix_net_last_error()); return 1; }
     /* the room of the echo is hidden: a random join is not offered it, a join by its name enters it */
     snprintf(join, sizeof join, "{\"t\":\"join_or_create\",\"name\":\"c-echo-%d\",\"max_players\":4,\"visible\":false,\"props\":{\"map\":\"c-echo-%d\"},\"lobby_props\":[\"map\"]}", (int)getpid(), (int)getpid());
     int aa = aurix_net_join(a, join);

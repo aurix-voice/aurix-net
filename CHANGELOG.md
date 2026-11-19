@@ -27,6 +27,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   `JoinOrCreateAsync` of `NetRunner`), C++ `joinOrCreate`, Godot `join_or_create`. Only the
   Unreal plugin sent them before; from the other SDKs a hidden or closed room could be made by
   a raw message alone.
+- C ABI: `aurix_net_set_last_error` makes an error the last one of the calling thread. The
+  error is kept per thread, and a wrapper that runs a call on a worker thread reports its
+  failure on another.
+- Unreal sessions: a `Near` search param on a number orders the results of Find Sessions by how
+  near the room's value is, as it does in the Steam and EOS subsystems of the engine. It failed
+  the search before.
 - Control channel: `stats`, `find_friends` and `get_rooms` take an optional `id`, which the node
   repeats in the answer (`stats`, `friends`, `rooms`) and in the `error` that refuses that
   request; an `error` that refuses an `rpc` carries its `id` too. Two lookups in flight at once
@@ -212,6 +218,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   open, left the player in the room on the node, and its late `joined` was taken for the answer
   to the next join. The client now leaves after such a join and passes over what the node
   answers before it answers that leave.
+- Unreal plugin: after an async call failed, `JoinSession` into a closed room among them,
+  `Get Last Error` was empty and `Get Last Error Code` was `None`: the call fails on a worker
+  thread and the error is kept per thread. Both now tell the reason on the game thread, and
+  `JoinSession` writes it to the log.
 - Data path: a player who stopped acknowledging over the WebSocket tunnel kept its link for
   good, and the node queued every reliable message for it: 100 events a second of 60 000 bytes
   grew the node by about 1 MB a second. Over QUIC and WebTransport a link was given up after 20
