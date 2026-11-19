@@ -285,6 +285,9 @@ pub enum ServerMsg {
     },
     Left {
         reason: String,
+        /// The room the session is out of, as in `joined.room`; absent when it was in none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        room: Option<String>,
     },
     PlayerJoined {
         player: PlayerInfo,

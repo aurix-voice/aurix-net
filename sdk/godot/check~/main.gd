@@ -3,7 +3,7 @@ extends Node
 var got := false
 var t0 := 0
 const SCHEMA := "component Transform {\n  pos: vec3 @range(-4096, 4096, 0.01)\n  rot: quat\n}\n"
-var grant_c := ""; var grant_d := ""; var net_http := ""
+var grant_c := ""; var grant_d := ""; var net_http := ""; var ls_room := ""
 var c: AurixNetClient; var d: AurixNetClient
 var wc: AurixNetSync; var wd: AurixNetSync
 var sync_on := false; var acc := 0.0; var writes := 0; var updates := 0; var x := 0.0; var last := Vector3.ZERO; var drain := 0
@@ -99,7 +99,9 @@ func _sync_step(dt: float) -> void:
 
 func _start_lockstep() -> void:
 	c.leave(); d.leave()
-	var room := "godot-ls-%d" % (Time.get_ticks_msec() % 100000)
+	if c.get_actor() != -1 or c.get_joined_json() != "": fail("leave: the client still describes the room it left"); return
+	ls_room = "godot-ls-%d" % (Time.get_ticks_msec() % 100000)
+	var room := ls_room
 	var props := JSON.stringify({"tick_hz": 30})
 	if c.join_or_create(room, AurixNetClient.MODE_LOCKSTEP, 4, props) < 0: fail("c lockstep join: " + c.get_last_error()); return
 	if d.join_or_create(room, AurixNetClient.MODE_LOCKSTEP, 4, props) < 0: fail("d lockstep join: " + d.get_last_error()); return
@@ -124,8 +126,18 @@ func _lockstep_step() -> void:
 	var ok: bool = ticks_c > 20 and ticks_d > 20 and actors.size() == 2 and stray == 0 and ahead < 10
 	print("godot lockstep: ticks=%d/%d actors=%d event signals=%d confirmed=%d server=%d -> %s" % [ticks_c, ticks_d, actors.size(), stray, lc.get_confirmed_tick(), lc.get_server_tick(), "ok" if ok else "FAIL"])
 	if not ok: fail("lockstep"); return
+	if not await _replaced(): fail("replaced: the client still describes the room"); return
 	if await _slow_link(): print("GODOT OK"); get_tree().quit(0)
 	else: fail("slow link")
+
+# The same player joins from a second connection: the node takes the first one out of the room.
+func _replaced() -> bool:
+	var second := AurixNetClient.new(); add_child(second)
+	if not second.connect_to(net_http, grant_d, true) or second.join(ls_room) < 0: return false
+	for i in 100:
+		if d.get_actor() == -1: break
+		await get_tree().create_timer(0.01).timeout
+	return d.get_actor() == -1 and d.get_joined_json() == "" and d.get_seed() == 0
 
 # Over a slow link (NET_SLOW_HTTP with GRANT_E and GRANT_F, see README): a client that left a room joins another one.
 func _slow_link() -> bool:

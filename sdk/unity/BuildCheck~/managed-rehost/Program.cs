@@ -39,6 +39,7 @@ class P
         }
         if (!rehost) { Console.WriteLine("CS_REHOST_FAIL no rehost within 60 s"); return 1; }
         Console.WriteLine($"cs: got rehost after {frames} data frames");
+        if (a.Actor != -1 || a.JoinedJson != null) { Console.WriteLine("CS_REHOST_FAIL still describes the room the node handed off"); return 1; }
         var a2 = await a.RejoinAsync(B);
         Console.WriteLine($"cs: rejoined actor={a2.Actor} (same actor: {a2.Actor == actor1})");
         string got = null;

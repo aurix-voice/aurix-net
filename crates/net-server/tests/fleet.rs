@@ -46,7 +46,8 @@ async fn stalled_node_lets_go_of_a_room_adopted_elsewhere() {
     let pa = node_a.project("adopted").await;
     let pb = node_b.same_project(&pa);
     let mut alice = pa.player("alice").await;
-    joined(&alice.call(json!({"t": "create", "name": "arena"})).await);
+    let created = alice.call(json!({"t": "create", "name": "arena"})).await;
+    joined(&created);
 
     // While A is silent a player reaches the room through B, which adopts it.
     let frozen = node_a.freeze(Duration::from_secs(8));
@@ -59,7 +60,9 @@ async fn stalled_node_lets_go_of_a_room_adopted_elsewhere() {
     let (_, _bob) = tokio::join!(frozen, adopt);
 
     // Back on its feet, A drops its copy and sends its players to the node that has the room.
-    assert_eq!(alice.until("left").await["reason"], "rehost");
+    let left = alice.until("left").await;
+    assert_eq!(left["reason"], "rehost");
+    assert_eq!(left["room"], created["room"]);
     let reply = alice.call(json!({"t": "join", "name": "arena"})).await;
     refused(&reply, "conflict");
     let message = reply["message"].as_str().unwrap_or_default();

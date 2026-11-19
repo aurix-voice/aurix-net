@@ -44,6 +44,26 @@ test("relay echo over ws tunnel", { skip: !key }, async (t) => {
   a.leave();
 });
 
+test("a client the node took out of its room no longer describes it", { skip: !key }, async (t) => {
+  const a = await Client.connect(http, await grant("web-out"));
+  t.after(() => a.close());
+  const lefts = [];
+  a.on("control", (message) => { if (message.t === "left") lefts.push(message.reason); });
+  const remove = (path) => fetch(`${http}/v1/rooms/${path}`, { method: "DELETE", headers: { authorization: `Bearer ${key}` } });
+  for (const how of ["kicked", "room closed", "idle too long"]) {
+    const joined = await a.joinOrCreate(`web-out-${process.pid}-${how.length}`, "lockstep", 4);
+    a.onMessage(JSON.stringify({ t: "left", reason: how, room: "a-room-left-earlier" }));
+    assert.equal(lefts.pop(), how);
+    assert.ok(a.joined === joined && a.actor === joined.actor, `${how}: a late message about another room took the room away`);
+    const kick = `${joined.room}/players/${joined.actor}`;
+    const answer = await remove({ kicked: kick, "room closed": joined.room }[how] ?? `${kick}?reason=${encodeURIComponent(how)}`);
+    assert.equal(answer.status, 204);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(lefts.pop(), how);
+    assert.ok(a.joined === undefined && a.actor === -1, `${how}: the client still describes the room`);
+  }
+});
+
 test("leave and join another room on the same client", { skip: !key }, async (t) => {
   const a = await Client.connect(http, await grant("web-a"));
   t.after(() => a.close());
@@ -53,6 +73,7 @@ test("leave and join another room on the same client", { skip: !key }, async (t)
   for (let i = 0; i < 5; i++) a.sendEvent(1, new Uint8Array([i]), "all", true);
   await new Promise((r) => setTimeout(r, 300));
   a.leave();
+  assert.ok(a.joined === undefined && a.actor === -1, "the client still describes the room it left");
   await new Promise((r) => setTimeout(r, 300));
   const room = `web-second-${process.pid}`;
   await a.joinOrCreate(room, "relay", 4);

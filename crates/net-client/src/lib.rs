@@ -622,7 +622,11 @@ impl Client {
         loop {
             let event = match self.replay.pop_front() {
                 Some(event) => event,
-                None => self.events.recv().await?,
+                None => {
+                    let event = self.events.recv().await?;
+                    self.forget_room_on_left(&event);
+                    event
+                }
             };
             if self.reports(&event) {
                 return Some(event);
@@ -633,13 +637,30 @@ impl Client {
     /// Non-blocking poll for engines with their own loop.
     pub fn try_next_event(&mut self) -> Option<Event> {
         loop {
-            let event = self
-                .replay
-                .pop_front()
-                .or_else(|| self.events.try_recv().ok())?;
+            let event = match self.replay.pop_front() {
+                Some(event) => event,
+                None => {
+                    let event = self.events.try_recv().ok()?;
+                    self.forget_room_on_left(&event);
+                    event
+                }
+            };
             if self.reports(&event) {
                 return Some(event);
             }
+        }
+    }
+
+    /// The node took the client out of its room (kick, room closed, rehost). `left` names the
+    /// room: one about a room left earlier, or the answer to the client's own `leave`, changes
+    /// nothing.
+    fn forget_room_on_left(&mut self, event: &Event) {
+        let Event::Control(ServerMsg::Left { reason, room }) = event else {
+            return;
+        };
+        let current = self.joined.as_ref().map(|joined| &joined.room);
+        if reason != "left" && current.is_some() && current == room.as_ref() {
+            self.joined = None;
         }
     }
 
@@ -658,6 +679,7 @@ impl Client {
 
     pub async fn leave(&mut self) -> Result<()> {
         self.close_data();
+        self.joined = None;
         self.send(ClientMsg::Leave).await
     }
 

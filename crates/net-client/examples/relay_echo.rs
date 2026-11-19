@@ -1,4 +1,5 @@
-//! Two clients join one relay room; A sends an event, B receives it.
+//! Two clients join one relay room; A sends an event, B receives it. Then A leaves and the node
+//! kicks B: neither describes the room afterwards.
 //! `NET_API_KEY=an_... cargo run -p net-client --example relay_echo`
 
 use bytes::Bytes;
@@ -79,7 +80,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "bob got hello={got_hello} ticks={ticks}/10 stats={:?}",
         bob.link_stats()
     );
-    alice.leave().await?;
     assert!(got_hello && ticks == 10, "echo failed");
+
+    alice.leave().await?;
+    assert!(alice.joined.is_none(), "alice still describes the room");
+
+    reqwest::Client::new()
+        .delete(format!(
+            "{http}/v1/rooms/{}/players/{}",
+            bob_joined.room, bob_joined.actor.0
+        ))
+        .bearer_auth(&key)
+        .send()
+        .await?
+        .error_for_status()?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    while let Ok(Some(ev)) = tokio::time::timeout_at(deadline, bob.next_event()).await {
+        if let Event::Control(ServerMsg::Left { reason, .. }) = ev {
+            println!("bob is out: {reason}");
+            break;
+        }
+    }
+    assert!(bob.joined.is_none(), "bob still describes the room");
     Ok(())
 }

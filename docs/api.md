@@ -109,11 +109,16 @@ JSON messages, `"t"` is the type (snake_case). Client → server: `auth{grant}`,
 
 Server → client: `hello{session, version, region}`, `authed{player_id, name}`,
 `joined{room, name, mode, actor, master, max_players, props, players, data, cached, schema_hash?, tick_hz?}`,
-`left{reason}`, `player_joined{player}`, `player_left{actor, reason}`, `room_props`,
+`left{reason, room?}`, `player_joined{player}`, `player_left{actor, reason}`, `room_props`,
 `player_props`, `event{code, from, data}` (control fallback), `master_changed{actor}`,
 `lobby_rooms{rooms}`, `lobby_update{room, removed}`, `stats{rooms, players, lobbies[{lobby, rooms, players}]}`,
 `friends{friends[{player, online, room?{id, name, mode, node}}]}`, `rooms{rooms[{id, name, mode, players, max_players, open, props}]}`, `rpc_result{id, ok, status?, body, error?}`, `pong{ts, server_ms}`,
 `notice{text, level}`, `error{code, message}`, `desync{tick, actor, strikes, untrusted}`.
+
+`left.room` is the id from `joined.room` of the room the session is out of, whatever the reason
+(`left`, `kicked` or the reason a kick gave, `room closed`, `session_replaced`, `rehost`). A
+`left` can reach a client that has already joined another room; it then names the earlier one.
+It is absent only in the answer to `leave` from a session that was in no room.
 
 `joined.data` = `{host, port, cert_sha256, ticket(base64), ws_tunnel, webtransport_url?}`: connect QUIC
 (ALPN `aurix-net/1`, pin `cert_sha256`), send the ticket as a datagram, wait for the

@@ -27,10 +27,13 @@ async fn main() -> anyhow::Result<()> {
     let mut bundles = 0u32;
     loop {
         match client.next_event().await {
-            Some(Event::Control(ServerMsg::Left { reason })) => {
+            Some(Event::Control(ServerMsg::Left { reason, .. })) => {
                 println!("left: {reason} after {bundles} bundles");
                 if reason != "rehost" {
                     anyhow::bail!("unexpected leave");
+                }
+                if client.joined.is_some() {
+                    anyhow::bail!("still describes the room the node handed off");
                 }
                 let (mut rejoined_client, rejoined) = client.rejoin(&[fallback.as_str()]).await?;
                 println!(

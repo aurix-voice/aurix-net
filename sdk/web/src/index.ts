@@ -251,6 +251,14 @@ export class Client {
         this.rttMs = this.rttMs ? 0.875 * this.rttMs + 0.125 * sample : sample;
         return;
       }
+      if (
+        message.t === "left" &&
+        message.reason !== "left" &&
+        this.joined &&
+        message.room === this.joined.room
+      ) {
+        this.forgetRoom();
+      }
       this.emit("control", message);
       if (message.t === "left" && message.reason === "rehost") {
         this.emit("rehost");
@@ -267,6 +275,12 @@ export class Client {
       this.onDatagram(new Uint8Array(data as ArrayBuffer));
     }
   }
+  /** The client is out of its room: by `leave`, or the node took it out (kick, room closed). */
+  private forgetRoom() {
+    this.joined = undefined;
+    this.actor = -1;
+  }
+
   private waitFor<T = ControlMessage>(
     ok: (message: ControlMessage) => boolean,
     fail?: (message: ControlMessage) => boolean,
@@ -583,6 +597,7 @@ export class Client {
 
   leave() {
     this.closePath();
+    this.forgetRoom();
     this.send({ t: "leave" });
   }
   /** Project-wide room/player counts per lobby (lobby statistics); at most one per second. */

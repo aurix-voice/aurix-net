@@ -539,9 +539,14 @@ impl Session {
                 )))
             }
             ClientMsg::Leave => {
+                let room = self
+                    .room
+                    .as_ref()
+                    .map(|joined| joined.hosted.lock().room.id().to_string());
                 self.leave(false).await;
                 let _ = self.ctl.try_send(ServerMsg::Left {
                     reason: "left".into(),
+                    room,
                 });
                 Ok(())
             }
@@ -1083,6 +1088,7 @@ impl Session {
                 if let Some(session) = hr.sessions.get(&old) {
                     let _ = session.control.try_send(ServerMsg::Left {
                         reason: "session_replaced".into(),
+                        room: Some(hr.room.id().to_string()),
                     });
                 }
             }
@@ -2123,6 +2129,7 @@ pub async fn handoff_all(st: &Shared) -> usize {
         for session in sessions {
             let _ = session.try_send(ServerMsg::Left {
                 reason: "rehost".into(),
+                room: Some(id.to_string()),
             });
         }
     }
@@ -2156,6 +2163,7 @@ pub async fn reconcile_rooms(st: &Shared) -> Result<(u64, usize)> {
         for session in sessions {
             let _ = session.try_send(ServerMsg::Left {
                 reason: "rehost".into(),
+                room: Some(id.to_string()),
             });
         }
     }
@@ -2268,6 +2276,7 @@ pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {
         for session in sessions {
             let _ = session.try_send(ServerMsg::Left {
                 reason: "room closed".into(),
+                room: Some(id.to_string()),
             });
         }
     }

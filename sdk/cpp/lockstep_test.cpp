@@ -39,7 +39,12 @@ int main() {
         common++; same += other->second == line; both += line.find(',') != line.rfind(',');
     }
     auto seedA = a.client.seed(), seedB = b.client.seed();
-    bool ok = common >= 60 && same == common && both >= 30 && !a.gap && !b.gap && a.desyncs + b.desyncs == 0 && seedA && seedA == seedB;
-    std::printf("cpp lockstep: ticks=%zu/%zu common=%d same=%d with both inputs=%d gaps=%d desyncs=%d seed=%s -> %s\n", a.ticks.size(), b.ticks.size(), common, same, both, a.gap + b.gap, a.desyncs + b.desyncs, seedA && seedA == seedB ? "same" : "differs", ok ? "ok" : "FAILED");
+    a.client.leave(); bool left = !a.client.seed() && a.client.joinedJson().empty() && a.client.actor() == -1;
+    // the same player joins from a second connection: the node takes the first one out of the room
+    Client second; second.connect(http, Client::issueGrant(http, key, "cpp-lb", "cpp-lb")); second.join(room);
+    for (int i = 0; i < 100 && b.client.actor() != -1; i++) { b.client.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+    bool replaced = !b.client.seed() && b.client.joinedJson().empty() && b.client.actor() == -1;
+    bool ok = left && replaced && common >= 60 && same == common && both >= 30 && !a.gap && !b.gap && a.desyncs + b.desyncs == 0 && seedA && seedA == seedB;
+    std::printf("cpp lockstep: ticks=%zu/%zu common=%d same=%d with both inputs=%d gaps=%d desyncs=%d seed=%s left=%d replaced=%d -> %s\n", a.ticks.size(), b.ticks.size(), common, same, both, a.gap + b.gap, a.desyncs + b.desyncs, seedA && seedA == seedB ? "same" : "differs", left, replaced, ok ? "ok" : "FAILED");
     return ok ? 0 : 1;
 }

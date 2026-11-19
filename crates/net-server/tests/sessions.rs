@@ -4,7 +4,7 @@
 mod common;
 
 use common::{joined, refused, Node, Sink};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::time::Duration;
 
 const QUIET: Duration = Duration::from_millis(300);
@@ -180,6 +180,48 @@ async fn kicked_player_can_create_a_room_at_once() {
     assert_eq!(left["reason"], "afk");
 
     joined(&bob.call(json!({"t": "create", "name": "bobs-room"})).await);
+}
+
+#[tokio::test]
+async fn left_names_the_room_it_is_about() {
+    let node = Node::start().await;
+    let project = node.project("left-room").await;
+    let mut alice = project.player("alice").await;
+    let created = alice.call(json!({"t": "create", "name": "arena"})).await;
+    joined(&created);
+    let room = created["room"].as_str().expect("room id");
+    let join = json!({"t": "join", "name": "arena"});
+    let told = |left: Value| (left["reason"].clone(), left["room"].clone());
+
+    let mut bob = project.player("bob").await;
+    joined(&bob.call(join.clone()).await);
+    bob.send(json!({"t": "leave"})).await;
+    assert_eq!(told(bob.until("left").await), (json!("left"), json!(room)));
+    // Outside a room there is nothing to name.
+    bob.send(json!({"t": "leave"})).await;
+    assert_eq!(told(bob.until("left").await), (json!("left"), Value::Null));
+
+    let actor = joined(&bob.call(join.clone()).await);
+    alice.send(json!({"t": "kick", "actor": actor})).await;
+    assert_eq!(
+        told(bob.until("left").await),
+        (json!("kicked"), json!(room))
+    );
+
+    joined(&bob.call(join.clone()).await);
+    let mut second = project.player("bob").await;
+    joined(&second.call(join).await);
+    assert_eq!(
+        told(bob.until("left").await),
+        (json!("session_replaced"), json!(room))
+    );
+
+    let (status, body) = project.api.delete(&format!("/v1/rooms/{room}")).await;
+    assert_eq!(status, 204, "close room: {body}");
+    assert_eq!(
+        told(second.until("left").await),
+        (json!("room closed"), json!(room))
+    );
 }
 
 #[tokio::test]

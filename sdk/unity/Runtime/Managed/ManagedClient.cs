@@ -423,6 +423,15 @@ namespace Aurix.Net.Managed
                             RttMs = RttMs > 0f ? 0.875f * RttMs + 0.125f * sample : sample;
                             break;
                         }
+                        if (
+                            Json.Str(text.Json, "t") == "left"
+                            && Json.Str(text.Json, "reason") != "left"
+                            && JoinedJson != null
+                            && Json.Str(text.Json, "room") == Json.Str(JoinedJson, "room")
+                        )
+                        {
+                            ForgetRoom();
+                        }
                         OnControl?.Invoke(text.Json);
                         if (
                             Json.Str(text.Json, "t") == "left"
@@ -487,9 +496,19 @@ namespace Aurix.Net.Managed
             return count;
         }
 
+        /// <summary>The client is out of its room: by LeaveAsync, or the node took it out (kick, room closed).</summary>
+        void ForgetRoom()
+        {
+            Actor = -1;
+            JoinedJson = null;
+            RoomMode = null;
+            Seed = null;
+        }
+
         public Task LeaveAsync()
         {
             _dataOpen = false;
+            ForgetRoom();
             return SendControlAsync("{\"t\":\"leave\"}");
         }
 

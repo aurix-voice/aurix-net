@@ -119,12 +119,23 @@ class P
         for (int i = 0; i < 5; i++) ra.SendEvent(1, new byte[] { (byte)i }, Target.All, reliable: true);
         until = DateTime.UtcNow.AddMilliseconds(300); while (DateTime.UtcNow < until) { ra.Poll(); await Task.Delay(5); }
         await ra.LeaveAsync();
+        if (ra.Actor != -1 || ra.JoinedJson != null || ra.RoomMode != null || ra.Seed != null) throw new Exception("leave: the client still describes the room it left");
         until = DateTime.UtcNow.AddMilliseconds(300); while (DateTime.UtcNow < until) { ra.Poll(); await Task.Delay(5); }
         int again = 0; rb.OnEvent += f => { if (f.Code == 2) again++; };
         await ra.JoinOrCreateAsync(room + "-second", "relay", 8); await rb.JoinAsync(room + "-second");
         for (int i = 0; i < 5; i++) ra.SendEvent(2, new byte[] { (byte)i }, Target.Others, reliable: true);
         until = DateTime.UtcNow.AddSeconds(3); while (DateTime.UtcNow < until && again < 5) { ra.Poll(); rb.Poll(); await Task.Delay(5); }
         Console.WriteLine($"second room on the same client: reliable={again}/5");
+        // the node takes a client out of its room: the client no longer describes it
+        var gone = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-gone"));
+        await gone.JoinOrCreateAsync(room + "-gone", "lockstep", 8);
+        string why = null; gone.OnControl += json => { if (ManagedClientTestHooks.Str(json, "t") == "left") why = ManagedClientTestHooks.Str(json, "reason"); };
+        var kick = new HttpRequestMessage(HttpMethod.Delete, "http://127.0.0.1:8090/v1/rooms/" + ManagedClientTestHooks.Str(gone.JoinedJson, "room") + "/players/" + gone.Actor + "?reason=idle%20too%20long");
+        kick.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+        if (!(await h.SendAsync(kick)).IsSuccessStatusCode) throw new Exception("kick refused");
+        until = DateTime.UtcNow.AddSeconds(3); while (DateTime.UtcNow < until && gone.JoinedJson != null) { gone.Poll(); await Task.Delay(5); }
+        if (gone.Actor != -1 || gone.JoinedJson != null || gone.RoomMode != null || gone.Seed != null) throw new Exception("kick: the client still describes the room");
+        if (why != "idle too long") throw new Exception("kick: the reason came as " + why);
         // a late joiner gets the cached events, and the chat history once it joins the channel
         var chatA = new ChatClient(ra); await chatA.JoinAsync(1);
         ra.SendEvent(3, new byte[] { 7 }, Target.Others, reliable: true, cache: CacheOp.Add); chatA.Send(1, "hello");

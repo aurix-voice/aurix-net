@@ -269,10 +269,13 @@ public:
             switch (ev.kind) {
                 case AURIX_NET_EVENT_CONTROL: {
                     std::string message = ev.json ? ev.json : "";
+                    std::string type = jsonStr(message, "t");
+                    if (type == "left" && joinedJson().empty()) {
+                        actor_ = -1;
+                    }
                     if (onControl) {
                         onControl(message);
                     }
-                    std::string type = jsonStr(message, "t");
                     if (type == "notice" && onNotice) {
                         onNotice(jsonStr(message, "text"), jsonStr(message, "level"));
                     }
@@ -308,6 +311,7 @@ public:
         if (handle_) {
             aurix_net_leave(handle_);
         }
+        actor_ = -1;
     }
     void destroy() {
         if (handle_) {

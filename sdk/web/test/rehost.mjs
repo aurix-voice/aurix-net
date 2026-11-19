@@ -21,6 +21,7 @@ const timer = setInterval(() => { a.sendEvent(1, new Uint8Array([1]), "others", 
 await Promise.race([rehost, new Promise((_, rej) => setTimeout(() => rej(new Error("no rehost within 60 s")), 60000))]);
 clearInterval(timer);
 console.log(`web: got rehost after ${frames} data frames`);
+if (a.joined !== undefined || a.actor !== -1) { console.log("WEB_REHOST_FAIL still describes the room the node handed off"); process.exit(1); }
 const { client: a2, joined: j2 } = await a.rejoin([B]);
 console.log(`web: rejoined actor=${j2.actor} (same actor: ${j2.actor === j1.actor})`);
 const got = []; a2.on("event", (f) => got.push(f));

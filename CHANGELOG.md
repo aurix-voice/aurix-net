@@ -8,6 +8,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 ## [Unreleased]
 
 ### Added
+- Rooms: `left` names the room it is about (`room`, the id from `joined.room`) for every reason:
+  own leave, kick, closed room, `session_replaced`, `rehost`. A `left` that arrived after the
+  client had joined another room could not be told from one about the new room. Clients that
+  ignore the field work as before.
 - Sync: the room reports to each client how early or late its inputs arrive, with the frame
   lockstep rooms already send (`0x25`: tick, least margin in ticks, late frames; every 30 ticks
   to a client that sent input). A client had only its ping to guess the lead from and was told
@@ -157,6 +161,14 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   of 40; C++: 4 of 30, now 0 of 20. The refused input also raised the input lead to its limit:
   a Web client that wrote from the moment it joined a room 3 s old had its inputs applied a
   second late for 2.5 s; now they stay 3 to 5 ticks ahead.
+- All SDKs: a client went on describing the room it had left. After `leave` the actor id, the
+  room facts (`joined`, `aurix_net_joined_json()`, `JoinedJson`, `RoomMode`) and the seed were
+  still those of the old room, though the C header promises NULL outside a room. They are
+  cleared on `leave` now: actor -1, no room facts, no seed.
+- All SDKs: a client the node took out of its room (kick, room closed, the same player joining
+  from a second connection, rehost) went on describing that room. `left` names the room now, and
+  a client clears its actor id, room facts and seed when `left` is about the room it is in. A
+  late `left` about a room it left earlier changes nothing.
 - Unity `LockstepDuel` sample: the state hash went out under the number of the next tick, not
   of the tick it was computed after, which is the rule `docs/sdk.md` gives and the other
   clients follow, so the sample and a client of another SDK reported one state under two
