@@ -194,3 +194,53 @@ async fn key_writes_are_cut_off_past_the_burst_and_come_back() {
     }
     assert_eq!(status, 200, "writes did not come back");
 }
+
+#[tokio::test]
+async fn tickets_filed_at_once_by_one_player_leave_one_waiting() {
+    let node = Node::start().await;
+    let project = &node.project("mm-twice").await;
+    let filed = join_all((0..20).map(|_| {
+        file(
+            project,
+            json!({"player_id": "ann", "max_players": 2, "min_players": 2}),
+        )
+    }))
+    .await;
+    let states = join_all(filed.iter().map(|ticket| state(project, ticket))).await;
+    let count = |name: &str| states.iter().filter(|s| s["state"] == name).count();
+    assert_eq!(
+        (count("searching"), count("cancelled")),
+        (1, 19),
+        "{states:?}"
+    );
+}
+
+#[tokio::test]
+async fn filing_holds_while_thousands_wait_in_the_project() {
+    let node = Node::start_with(&[
+        ("NET__LIMITS__HTTP_RPS_PER_IP", "100000"),
+        ("NET__LIMITS__WRITES_PER_SEC_PER_KEY", "100000"),
+    ])
+    .await;
+    let project = &node.project("mm-crowd").await;
+    let mut tickets = Vec::new();
+    for batch in 0..30 {
+        // A map of its own keeps every ticket waiting.
+        let filed = join_all((0..100).map(|i| {
+            let player = batch * 100 + i;
+            let props = json!({"map": player});
+            let request =
+                json!({"player_id": format!("p{player}"), "max_players": 2, "props": props});
+            file(project, request)
+        }))
+        .await;
+        tickets.extend(filed);
+    }
+    for batch in tickets.chunks(100) {
+        join_all(batch.iter().map(|ticket| async move {
+            let path = format!("/v1/matchmaking/tickets/{ticket}");
+            project.api.delete(&path).await
+        }))
+        .await;
+    }
+}

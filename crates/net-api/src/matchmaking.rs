@@ -320,13 +320,24 @@ pub fn match_tickets(tickets: &mut [Ticket], now_ms: u64) -> (Vec<Uuid>, Vec<Str
     (changed, rooms)
 }
 
-fn ticket_key(id: Uuid) -> String {
-    format!("net:mm:t:{id}")
+// The keys of one project carry its id as a Redis Cluster hash tag, so they share a slot and a
+// script may touch several of them.
+fn ticket_key(project: ProjectId, id: impl std::fmt::Display) -> String {
+    format!("net:mm:{{{}}}:t:{id}", project.0)
 }
-const SEARCHING_SET: &str = "net:mm:searching";
+/// Ids of the tickets one project has waiting.
+fn searching_key(project: ProjectId) -> String {
+    format!("net:mm:{{{}}}:searching", project.0)
+}
+/// The id of the ticket a player filed last.
+fn player_key(project: ProjectId, player: &str) -> String {
+    format!("net:mm:{{{}}}:player:{player}", project.0)
+}
+/// Projects that have tickets waiting.
+const PROJECTS_SET: &str = "net:mm:projects";
 const LEADER_KEY: &str = "net:mm:leader";
 
-/// `KEYS`: the searching set, then one ticket key each. `ARGV` per ticket: id, body, TTL in
+/// `KEYS`: the searching set of the project, then one ticket key each. `ARGV` per ticket: id, body, TTL in
 /// seconds, 1 if it stays searching.
 static REPLACE_SEARCHING: LazyLock<redis::Script> = LazyLock::new(|| {
     redis::Script::new(
@@ -348,8 +359,30 @@ return 1
     )
 });
 
+/// Files a ticket in place of the one its player filed before, unless another took that place
+/// meanwhile. `KEYS`: the player key, the searching set of the project, the key of the new
+/// ticket, the key of the one before. `ARGV`: the id of the one before (empty if none), the new
+/// id, its body and TTL, the one before as cancelled (empty if it is not waiting) and its TTL.
+static FILE_TICKET: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+if (redis.call('GET', KEYS[1]) or '') ~= ARGV[1] then
+  return 0
+end
+if ARGV[5] ~= '' and redis.call('SISMEMBER', KEYS[2], ARGV[1]) == 1 and redis.call('EXISTS', KEYS[4]) == 1 then
+  redis.call('SET', KEYS[4], ARGV[5], 'EX', ARGV[6])
+  redis.call('SREM', KEYS[2], ARGV[1])
+end
+redis.call('SET', KEYS[3], ARGV[3], 'EX', ARGV[4])
+redis.call('SADD', KEYS[2], ARGV[2])
+redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[4])
+return 1
+",
+    )
+});
+
 fn stats_key(project: ProjectId, hour: u64) -> String {
-    format!("net:mm:stats:{}:{hour}", project.0)
+    format!("net:mm:{{{}}}:stats:{hour}", project.0)
 }
 
 fn rerr(e: redis::RedisError) -> NetError {
@@ -361,31 +394,14 @@ fn rerr(e: redis::RedisError) -> NetError {
 pub struct Matchmaker;
 
 impl Matchmaker {
-    async fn put(&self, redis: &RedisStore, ticket: &Ticket) -> Result<()> {
-        let mut conn = redis.raw();
-        let body = serde_json::to_vec(ticket).map_err(|e| NetError::Internal(e.to_string()))?;
-        let ttl = if ticket.searching() {
-            SEARCH_TTL_SECS
-        } else {
-            RESULT_TTL_SECS
-        };
-        let mut pipe = redis::pipe();
-        pipe.atomic()
-            .set_ex(ticket_key(ticket.id), body, ttl)
-            .ignore();
-        if ticket.searching() {
-            pipe.sadd(SEARCHING_SET, ticket.id.to_string()).ignore();
-        } else {
-            pipe.srem(SEARCHING_SET, ticket.id.to_string()).ignore();
-        }
-        pipe.query_async::<()>(&mut conn).await.map_err(rerr)
-    }
-
-    /// Writes `tickets` over their stored copies if every one of them is still searching there,
-    /// and none of them otherwise. A cancel and the matching cycle both read a ticket before
+    /// Writes `tickets`, all of one project, over their stored copies if every one of them is
+    /// still searching there, and none of them otherwise. A cancel and the matching cycle both read a ticket before
     /// they change it; this is what keeps the later of the two from undoing the earlier.
     async fn replace_searching(&self, redis: &RedisStore, tickets: &[&Ticket]) -> Result<bool> {
-        let mut call = REPLACE_SEARCHING.key(SEARCHING_SET);
+        let Some(first) = tickets.first() else {
+            return Ok(true);
+        };
+        let mut call = REPLACE_SEARCHING.key(searching_key(first.project));
         for ticket in tickets {
             let body = serde_json::to_vec(ticket).map_err(|e| NetError::Internal(e.to_string()))?;
             let ttl = if ticket.searching() {
@@ -393,7 +409,7 @@ impl Matchmaker {
             } else {
                 RESULT_TTL_SECS
             };
-            call.key(ticket_key(ticket.id))
+            call.key(ticket_key(ticket.project, ticket.id))
                 .arg(ticket.id.to_string())
                 .arg(body)
                 .arg(ttl)
@@ -403,34 +419,49 @@ impl Matchmaker {
         call.invoke_async(&mut conn).await.map_err(rerr)
     }
 
-    async fn load_many(&self, redis: &RedisStore, ids: &[String]) -> Result<Vec<Ticket>> {
-        if ids.is_empty() {
+    /// The tickets waiting in `projects`.
+    async fn waiting(&self, redis: &RedisStore, projects: &[ProjectId]) -> Result<Vec<Ticket>> {
+        if projects.is_empty() {
             return Ok(Vec::new());
         }
         let mut conn = redis.raw();
-        let keys: Vec<String> = ids
+        let mut sets = redis::pipe();
+        for project in projects {
+            sets.smembers(searching_key(*project));
+        }
+        let sets: Vec<Vec<String>> = sets.query_async(&mut conn).await.map_err(rerr)?;
+        let sets: Vec<(ProjectId, Vec<String>)> = projects
             .iter()
-            .filter_map(|s| s.parse::<Uuid>().ok())
-            .map(ticket_key)
+            .copied()
+            .zip(sets)
+            .filter(|(_, ids)| !ids.is_empty())
             .collect();
-        let bodies: Vec<Option<Vec<u8>>> = conn.mget(&keys).await.map_err(rerr)?;
-        let mut out = Vec::with_capacity(bodies.len());
-        let mut stale = Vec::new();
-        for (id, body) in ids.iter().zip(bodies) {
-            match body.and_then(|b| serde_json::from_slice::<Ticket>(&b).ok()) {
-                Some(ticket) => out.push(ticket),
-                None => stale.push(id.clone()),
+        if sets.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut bodies = redis::pipe();
+        for (project, ids) in &sets {
+            let keys: Vec<String> = ids.iter().map(|id| ticket_key(*project, id)).collect();
+            bodies.cmd("MGET").arg(keys);
+        }
+        let bodies: Vec<Vec<Option<Vec<u8>>>> =
+            bodies.query_async(&mut conn).await.map_err(rerr)?;
+        let mut out = Vec::new();
+        let mut stale = redis::pipe();
+        for ((project, ids), bodies) in sets.into_iter().zip(bodies) {
+            for (id, body) in ids.into_iter().zip(bodies) {
+                match body.and_then(|body| serde_json::from_slice::<Ticket>(&body).ok()) {
+                    Some(ticket) => out.push(ticket),
+                    None => {
+                        stale.srem(searching_key(project), id).ignore();
+                    }
+                }
             }
         }
         if !stale.is_empty() {
-            let _: () = conn.srem(SEARCHING_SET, stale).await.map_err(rerr)?;
+            stale.query_async::<()>(&mut conn).await.map_err(rerr)?;
         }
         Ok(out)
-    }
-
-    async fn searching_ids(&self, redis: &RedisStore) -> Result<Vec<String>> {
-        let mut conn = redis.raw();
-        conn.smembers(SEARCHING_SET).await.map_err(rerr)
     }
 
     /// Files a ticket; a player's earlier searching ticket in the same project is cancelled.
@@ -451,16 +482,6 @@ impl Matchmaker {
         {
             return Err(NetError::Invalid("attrs larger than 1 KiB".into()));
         }
-        let ids = self.searching_ids(redis).await?;
-        for mut ticket in self.load_many(redis, &ids).await? {
-            if ticket.project == project
-                && ticket.req.player_id == req.player_id
-                && ticket.searching()
-            {
-                ticket.state = TicketState::Cancelled;
-                self.replace_searching(redis, &[&ticket]).await?;
-            }
-        }
         let ticket = Ticket {
             id: Uuid::now_v7(),
             project,
@@ -468,7 +489,43 @@ impl Matchmaker {
             created_ms: now_ms(),
             state: TicketState::Searching { waiting: 1 },
         };
-        self.put(redis, &ticket).await?;
+        let body = serde_json::to_vec(&ticket).map_err(|e| NetError::Internal(e.to_string()))?;
+        let player = player_key(project, &ticket.req.player_id);
+        let mut conn = redis.raw();
+        loop {
+            let earlier: Option<String> = conn.get(&player).await.map_err(rerr)?;
+            let earlier = earlier.unwrap_or_default();
+            let mut cancelled = Vec::new();
+            if let Ok(id) = earlier.parse::<Uuid>() {
+                if let Some(mut earlier) = self.get(redis, project, id).await? {
+                    if earlier.searching() {
+                        earlier.state = TicketState::Cancelled;
+                        cancelled = serde_json::to_vec(&earlier)
+                            .map_err(|e| NetError::Internal(e.to_string()))?;
+                    }
+                }
+            }
+            let filed: bool = FILE_TICKET
+                .key(&player)
+                .key(searching_key(project))
+                .key(ticket_key(project, ticket.id))
+                .key(ticket_key(project, &earlier))
+                .arg(&earlier)
+                .arg(ticket.id.to_string())
+                .arg(&body)
+                .arg(SEARCH_TTL_SECS)
+                .arg(cancelled)
+                .arg(RESULT_TTL_SECS)
+                .invoke_async(&mut conn)
+                .await
+                .map_err(rerr)?;
+            if filed {
+                break;
+            }
+        }
+        conn.sadd::<_, _, ()>(PROJECTS_SET, project.0.to_string())
+            .await
+            .map_err(rerr)?;
         Ok(ticket)
     }
 
@@ -479,7 +536,7 @@ impl Matchmaker {
         id: Uuid,
     ) -> Result<Option<Ticket>> {
         let mut conn = redis.raw();
-        let body: Option<Vec<u8>> = conn.get(ticket_key(id)).await.map_err(rerr)?;
+        let body: Option<Vec<u8>> = conn.get(ticket_key(project, id)).await.map_err(rerr)?;
         Ok(body
             .and_then(|b| serde_json::from_slice::<Ticket>(&b).ok())
             .filter(|t| t.project == project))
@@ -515,8 +572,28 @@ impl Matchmaker {
                 return Ok(Vec::new());
             }
         }
-        let ids = self.searching_ids(redis).await?;
-        let mut tickets = self.load_many(redis, &ids).await?;
+        let projects: Vec<String> = conn.smembers(PROJECTS_SET).await.map_err(rerr)?;
+        let projects: Vec<ProjectId> = projects
+            .iter()
+            .filter_map(|id| id.parse().ok().map(ProjectId))
+            .collect();
+        let mut tickets = self.waiting(redis, &projects).await?;
+        let busy: std::collections::HashSet<ProjectId> =
+            tickets.iter().map(|ticket| ticket.project).collect();
+        for project in projects.iter().filter(|project| !busy.contains(project)) {
+            // A filing adds its project after its ticket, so a ticket filed meanwhile either
+            // shows in the count or puts the project back itself.
+            let name = project.0.to_string();
+            conn.srem::<_, _, ()>(PROJECTS_SET, &name)
+                .await
+                .map_err(rerr)?;
+            let left: u64 = conn.scard(searching_key(*project)).await.map_err(rerr)?;
+            if left > 0 {
+                conn.sadd::<_, _, ()>(PROJECTS_SET, &name)
+                    .await
+                    .map_err(rerr)?;
+            }
+        }
         let now = now_ms();
         tickets.retain(|t| t.searching() && t.age_secs(now) < SEARCH_TTL_SECS);
         let mut live: HashMap<ProjectId, Vec<LiveRoom>> = HashMap::new();
@@ -613,13 +690,12 @@ impl Matchmaker {
         redis: &RedisStore,
         project: ProjectId,
     ) -> Result<Vec<Ticket>> {
-        let ids = self.searching_ids(redis).await?;
         let now = now_ms();
         let mut out: Vec<Ticket> = self
-            .load_many(redis, &ids)
+            .waiting(redis, &[project])
             .await?
             .into_iter()
-            .filter(|t| t.project == project && t.searching() && t.age_secs(now) < SEARCH_TTL_SECS)
+            .filter(|t| t.searching() && t.age_secs(now) < SEARCH_TTL_SECS)
             .collect();
         out.sort_by_key(|t| t.created_ms);
         Ok(out)
@@ -638,11 +714,6 @@ impl Matchmaker {
         let last_hour = vals.first().copied().flatten().unwrap_or(0);
         let day: i64 = vals.iter().map(|v| v.unwrap_or(0)).sum();
         Ok((last_hour, day))
-    }
-
-    pub async fn searching(&self, redis: &RedisStore) -> Result<usize> {
-        let mut conn = redis.raw();
-        conn.scard(SEARCHING_SET).await.map_err(rerr)
     }
 }
 

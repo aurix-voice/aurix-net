@@ -115,6 +115,8 @@ verified by the same node within seconds, so rotation needs no grace period for 
 Postgres holds everything durable (projects, keys, room history, usage, audit, modules);
 Redis holds live state (room index, checkpoints of orphaned rooms, rate-limit windows) and is
 `appendonly yes` in the reference compose, so a Redis restart alone loses nothing.
+A node talks to one Redis, the one at `redis.url`: a single instance, or a replicated one
+behind one address. Redis Cluster is not supported.
 `scripts/backup.sh [out-dir]` takes a consistent `pg_dump` (single transaction, plain SQL,
 gzip) plus a point-in-time Redis RDB (`BGSAVE`, waits for `LASTSAVE` to move) and writes a
 manifest with sizes and SHA-256; restore steps are in the script header. Run it from cron on
