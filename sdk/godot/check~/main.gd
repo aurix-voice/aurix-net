@@ -134,8 +134,9 @@ func _lockstep_step() -> void:
 	print("godot lockstep: ticks=%d/%d actors=%d event signals=%d confirmed=%d server=%d -> %s" % [ticks_c, ticks_d, actors.size(), stray, lc.get_confirmed_tick(), lc.get_server_tick(), "ok" if ok else "FAIL"])
 	if not ok: fail("lockstep"); return
 	if not await _replaced(): fail("replaced: the client still describes the room"); return
-	if await _slow_link(): print("GODOT OK"); get_tree().quit(0)
-	else: fail("slow link")
+	if not await _slow_link(): fail("slow link"); return
+	if await _rehost(): print("GODOT OK"); get_tree().quit(0)
+	else: fail("rehost")
 
 # The same player joins from a second connection: the node takes the first one out of the room.
 func _replaced() -> bool:
@@ -173,3 +174,28 @@ func _slow_link() -> bool:
 		while Time.get_ticks_msec() < until and next[0] < 5: await get_tree().process_frame
 	print("godot slow link: joined=%s errors after leave=%d reliable events in the next room=%d/5" % [joined, errors[0], next[0]])
 	return joined and errors[0] == 0 and next[0] == 5
+
+# Two nodes (NET_REHOST_HTTP is the second one, GRANT_G and GRANT_H, see README): the first node shuts down and hands the room over.
+func _rehost() -> bool:
+	var other := OS.get_environment("NET_REHOST_HTTP")
+	if other == "":
+		print("godot rehost: skipped (NET_REHOST_HTTP not set)"); return true
+	var grant := OS.get_environment("GRANT_G")
+	var g := AurixNetClient.new(); add_child(g)
+	if not g.connect_to(OS.get_environment("NET_HTTP"), grant): return false
+	var room := OS.get_environment("NET_REHOST_ROOM")
+	var actor := g.join_or_create(room, AurixNetClient.MODE_RELAY, 8)
+	# a client that asks the second node for the room is sent to the node that hosts it
+	var o := AurixNetClient.new(); add_child(o)
+	var there := o.connect_and_join(other, OS.get_environment("GRANT_H"), JSON.stringify({"t": "join", "name": room}))
+	o.disconnect_from()
+	var moved := [false]
+	g.rehost.connect(func(): moved[0] = true)
+	var until := Time.get_ticks_msec() + 60000
+	while Time.get_ticks_msec() < until and not moved[0]: await get_tree().process_frame
+	var forgot := g.get_actor() == -1 and g.get_joined_json() == ""
+	g.disconnect_from()
+	var again := -1
+	if g.connect_to(other, grant): again = g.join(room)
+	print("godot rehost: asked the other node=%d moved=%s forgot the room=%s actor=%d rejoined as %d" % [there, moved[0], forgot, actor, again])
+	return there > 0 and there != actor and moved[0] and forgot and actor > 0 and again == actor

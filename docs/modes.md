@@ -33,7 +33,7 @@ covers four of them on one protocol and one SDK surface:
 
 **Dedicated server with a public IP.** Rooms live on the node a backend connects to: there is no
 separate placement step, and a client that asks another node for the room by name is redirected
-(`room_elsewhere`) - every SDK follows that transparently. So the dedicated topology is one rule:
+(`room_elsewhere`) - the connect-and-join call of every SDK follows that (docs/api.md). So the dedicated topology is one rule:
 run a node next to the game server and let the server create its room through the local node
 (`http://127.0.0.1:8090`); players use the project's usual URL and end up connected straight to
 your machine. The node is part of your cell (`aurix-net-agent install` on that host, or the

@@ -55,8 +55,12 @@ to node A; expected output ends with `rejoined ... (same actor: true)` and `REHO
 SDK side of the same handoff: `NET_API_KEY=... scripts/sdk-rehost-test.sh` puts a Web client and a
 pure-C# client in one relay room on A, sends A SIGTERM and expects both to see `left{reason:"rehost"}`,
 to stop describing the room, to `rejoin()` / `RejoinAsync()` onto B with the same actor id, and to
-receive an event from a client that joins on B afterwards (`WEB_REHOST_OK`, `CS_REHOST_OK`). The Rust
-client has the same check as `cargo run -p net-client --example rehost`.
+receive an event from a client that joins on B afterwards (`WEB_REHOST_OK`, `CS_REHOST_OK`). A C++
+client (`sdk/cpp/rehost_test.cpp`) does the same in a room of its own by connecting to B and joining
+again (`CPP_REHOST_OK`); a C one (`crates/net-ffi/ctest/rehost.c`) stops at the same actor id after
+joining again (`C_REHOST_OK`). The Rust client has the same check as
+`cargo run -p net-client --example rehost`, the Godot one is part of `sdk/godot/check~` (see
+`sdk/godot/README.md`).
 
 ## Redis outage (chaos)
 

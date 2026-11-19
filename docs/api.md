@@ -171,8 +171,10 @@ Every node adds per project and hour: `room_minutes`, `player_minutes`, `bytes_i
 node-hours plus included traffic, never peak CCU. `GET /v1/regions` lists live regions with
 `endpoints` (node HTTP URLs) so clients
 pick the closest node; a room lookup on another node answers `conflict room_elsewhere:<url>`.
-`Client::connect_and_join` (Rust) and `Client.connectAndJoin` (Web) follow that redirect
-automatically; the C ABI returns the error and the caller reconnects to the URL.
+One call connects, joins and follows that redirect: `Client::connect_and_join` (Rust),
+`Client.connectAndJoin` (Web), `ManagedClient.ConnectAndJoinAsync` (C#),
+`aurix_net_connect_and_join` (C), `Client::connectAndJoin` (C++), `connect_and_join` (Godot).
+A plain `join` returns the error.
 
 ## Webhooks
 

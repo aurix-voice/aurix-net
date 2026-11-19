@@ -262,6 +262,48 @@ pub unsafe extern "C" fn aurix_net_connect(
     }
 }
 
+/// `aurix_net_connect` and `aurix_net_join` in one call that follows the node's answer when the
+/// room lives on another node of the region: the client it returns is connected to that node
+/// and is in the room. `actor` (may be NULL) receives the actor id. NULL on failure.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_connect_and_join(
+    http: *const c_char,
+    grant: *const c_char,
+    tunnel: i32,
+    json: *const c_char,
+    actor: *mut i32,
+) -> *mut AurixNetClient {
+    let (Some(http), Some(grant), Some(json)) = (cstr(http), cstr(grant), cstr(json)) else {
+        set_error(ErrorCode::InvalidArgument, "null or non-utf8 argument");
+        return std::ptr::null_mut();
+    };
+    let msg: ClientMsg = match serde_json::from_str(json) {
+        Ok(msg) => msg,
+        Err(error) => {
+            set_error(ErrorCode::InvalidArgument, error);
+            return std::ptr::null_mut();
+        }
+    };
+    let opts = Options {
+        tunnel: tunnel != 0,
+        ..Default::default()
+    };
+    match rt().block_on(Client::connect_and_join(http, grant, opts, msg)) {
+        Ok((inner, joined)) => {
+            if let Some(actor) = actor.as_mut() {
+                *actor = joined.actor.0 as i32;
+            }
+            Box::into_raw(Box::new(AurixNetClient {
+                inner: Mutex::new(inner),
+            }))
+        }
+        Err(error) => {
+            set_client_error(&error);
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// Sends a control message given as protocol JSON (`{"t":"set_room_props",...}`). 0 on success.
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_send_control(

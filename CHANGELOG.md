@@ -74,6 +74,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- C, C++ and Godot SDKs: a client that asked one node of a region for a room hosted on another
+  got `room_elsewhere` and had no call to follow it, unlike Rust, Web and C#.
+  `aurix_net_connect_and_join`, `Client::connectAndJoin` and `connect_and_join` connect, join
+  and move to the room's node in one call.
 - Sync: a room continued from a checkpoint started its logic module with seed 0
   (`aurix_init(0)`) instead of the seed the room was created with. The seed is in the checkpoint
   now.

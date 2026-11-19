@@ -129,6 +129,20 @@ public:
             throw Error::last();
         }
     }
+    /// connect + join in one call (`json` is the join message, as for `joinJson`). When the room
+    /// lives on another node of the region, the client ends up connected to that node.
+    int connectAndJoin(const std::string& http, const std::string& grant, const std::string& json,
+                       bool tunnel = false) {
+        destroy();
+        int actor = -1;
+        handle_ = aurix_net_connect_and_join(http.c_str(), grant.c_str(), tunnel ? 1 : 0,
+                                             json.c_str(), &actor);
+        if (!handle_) {
+            throw Error::last();
+        }
+        actor_ = actor;
+        return actor;
+    }
     bool connected() const { return handle_ != nullptr; }
     AurixNetClient* handle() const { return handle_; }
     int actor() const { return actor_; }

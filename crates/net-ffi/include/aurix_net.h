@@ -67,6 +67,9 @@ void aurix_net_string_free(char *string);
 AurixNetClient *aurix_net_connect(const char *http, const char *grant, int32_t tunnel);
 int32_t aurix_net_send_control(AurixNetClient *client, const char *json);
 int32_t aurix_net_join(AurixNetClient *client, const char *json);          /* returns actor id or -1 */
+/* connect + join in one call; when the room lives on another node of the region the returned client is
+ * connected to that node. *actor (may be NULL) gets the actor id. NULL on failure. */
+AurixNetClient *aurix_net_connect_and_join(const char *http, const char *grant, int32_t tunnel, const char *json, int32_t *actor);
 char *aurix_net_joined_json(AurixNetClient *client);
 int32_t aurix_net_joined_seed(AurixNetClient *client, uint64_t *seed);     /* seed of the lockstep room; 0, or -1 when not in one */
 int32_t aurix_net_avatar(AurixNetClient *client, uint64_t *entity); /* sync rooms: 1 = the avatar the room made for this client, kept from the join on; 0 = not announced yet */

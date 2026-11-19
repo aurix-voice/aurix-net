@@ -25,5 +25,9 @@ at a delaying proxy in front of the node: `node sdk/web/test/slow-link.mjs 100 8
 way), then `NET_SLOW_HTTP=http://127.0.0.1:8197`. The managed C# and Godot checks take the same
 variable.
 
+`rehost_test.cpp` and the plain C `ctest/rehost.c` need two nodes and are built and run by
+`scripts/sdk-rehost-test.sh`: the node hands the room over, the client forgets it and joins it again
+through the other node.
+
 API walk-through: [docs/sdk.md](../../docs/sdk.md) (sections "Lockstep rooms from Rust, C++ and Godot",
 "Sync rooms from C++ and Godot", "aurix-sim from C / C++ / Godot").

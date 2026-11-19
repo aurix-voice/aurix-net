@@ -17,6 +17,7 @@ static PackedByteArray to_pba(const uint8_t *data, size_t len) {
 
 void AurixNetClient::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("connect_to", "http_url", "grant", "force_tunnel"), &AurixNetClient::connect_to, DEFVAL(false));
+	ClassDB::bind_method(D_METHOD("connect_and_join", "http_url", "grant", "join_json", "force_tunnel"), &AurixNetClient::connect_and_join, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("join_or_create", "room", "mode", "max_players", "props_json", "lobby_props"), &AurixNetClient::join_or_create, DEFVAL(MODE_RELAY), DEFVAL(8), DEFVAL(""), DEFVAL(PackedStringArray()));
 	ClassDB::bind_method(D_METHOD("join", "room", "schema_hash"), &AurixNetClient::join, DEFVAL(""));
 	ClassDB::bind_method(D_METHOD("send_control", "json"), &AurixNetClient::send_control);
@@ -99,6 +100,9 @@ void AurixNetClient::hook() {
 
 bool AurixNetClient::connect_to(const String &http_url, const String &grant, bool force_tunnel) {
 	AURIX_TRY(client_.connect(to_std(http_url), to_std(grant), force_tunnel); hook(); return true, false);
+}
+int AurixNetClient::connect_and_join(const String &http_url, const String &grant, const String &join_json, bool force_tunnel) {
+	AURIX_TRY(const int actor = client_.connectAndJoin(to_std(http_url), to_std(grant), to_std(join_json), force_tunnel); hook(); note_mode(); return actor, -1);
 }
 void AurixNetClient::note_mode() {
 	const std::string mode = aurix::net::Client::jsonStr(client_.joinedJson(), "mode");
