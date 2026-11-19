@@ -201,7 +201,7 @@ Two ways to rewind a lockstep match:
   `from` and the inputs to step from it:
 
   ```ts
-  const ring = new ReplayRing(300, 10);           // 10 s at 30 Hz, snapshot every 10 ticks
+  const ring = new ReplayRing<State>(300, 10);    // 10 s at 30 Hz, snapshot every 10 ticks; State: the type of rb's snapshots
   ls.onTick = (t, inputs) => { const before = rb.confirmedSnapshot(); rb.confirm(t, inputs); ring.record(t, inputs, () => before); };
   // kill cam: last 3 s
   const w = ring.window(rb.confirmedTick - 90);

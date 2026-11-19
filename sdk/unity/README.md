@@ -53,8 +53,8 @@ server state arrives:
 ```csharp
 var pred = new Predictor<Vector3>(transform.position, (pos, input) => Move(pos, input), (a, b) => (a - b).sqrMagnitude > 0.0001f);
 pred.OnCorrected += (was, now) => _visualError += was - now;   // decay _visualError over a few frames
-Runner.OnOwnEntityUpdated += (view, entity, tick) => { if (view == View) pred.Reconcile(tick, ReadPos(entity)); };
-void Tick(byte[] input) { uint t = Runner.SendInput(input); transform.position = pred.Record(t, input) + _visualError; }
+View.Runner.OnOwnEntityUpdated += (view, entity, tick) => { if (view == View) pred.Reconcile(tick, ReadPos(entity)); };
+void Tick(byte[] input) { uint t = View.Runner.SendInput(input); transform.position = pred.Record(t, input) + _visualError; }
 ```
 
 `Move` must be the rule your WASM logic applies for one tick of that input (same fixed-point/float math); a
@@ -106,7 +106,7 @@ public class Player : NetworkBehaviour
     public SyncList<int> inventory = new SyncList<int>(ownerAuth: true);
     public SyncDictionary<string, int> stats = new SyncDictionary<string, int>();
 
-    [ServerRpc] void CmdHit(int dmg, RpcInfo info) { health.value -= dmg; }   // owner → server
+    [ServerRpc] void CmdHit(int dmg, RpcInfo info = default) { health.value -= dmg; } // owner → server
     [ObserversRpc(bufferLast: true)] void RpcShout(string s) { ... }         // server → everyone (late joiners get the last one)
     [TargetRpc] void RpcWhisper(string s) { ... }                            // server → one player
 
