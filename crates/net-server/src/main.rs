@@ -19,9 +19,6 @@ use tracing::{error, info, warn};
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// How long a stopping node keeps delivering the webhooks it still owes.
-const WEBHOOK_FLUSH: Duration = Duration::from_secs(4);
-
 #[derive(Parser)]
 #[command(name = "aurix-net-server", version, about = "Aurix Net node")]
 struct Cli {
@@ -276,12 +273,16 @@ async fn main() -> anyhow::Result<()> {
             &cfg.server.environment,
         ));
     info!(addr = %http_addr, node = %node_id, "control plane listening");
+    // What a stopping node is busy with, for the log when its time runs out.
+    let (doing, unfinished) = tokio::sync::watch::channel("");
     let shutdown = {
         let st = st.clone();
         let http_url = http_url.clone();
+        let doing = doing.clone();
         async move {
             wait_for_signal().await;
             info!("shutdown: draining");
+            doing.send_replace("rooms still not handed off");
             st.draining
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             if let Err(e) = heartbeat(&st, &http_url, true).await {
@@ -295,16 +296,31 @@ async fn main() -> anyhow::Result<()> {
             if let Err(e) = queries::delete_node(&st.pool, st.node_id.0).await {
                 error!(error = %e, "delete node row");
             }
+            doing.send_replace("requests still under way");
         }
     };
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown)
-    .await?;
-    if !st.webhooks.flush(WEBHOOK_FLUSH).await {
-        warn!("shutdown: webhooks still undelivered");
+    let stop = async {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown)
+        .await?;
+        doing.send_replace("webhooks still undelivered");
+        st.webhooks.flush().await;
+        std::io::Result::Ok(())
+    };
+    let out_of_time = {
+        let mut asked = unfinished.clone();
+        let within = Duration::from_secs(cfg.server.shutdown_secs);
+        async move {
+            let _ = asked.wait_for(|doing| !doing.is_empty()).await;
+            tokio::time::sleep(within).await;
+        }
+    };
+    tokio::select! {
+        stopped = stop => stopped?,
+        () = out_of_time => warn!("shutdown: {}", *unfinished.borrow()),
     }
     Ok(())
 }

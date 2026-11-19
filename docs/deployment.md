@@ -52,9 +52,13 @@ not be baked into images or committed; use your orchestrator's secret store.
 - Run as an unprivileged user; raise `nofile` (one fd per connection, ≥ 65536).
 - Send `SIGTERM` to stop. The node marks itself draining (new joins refused, `/healthz` 503),
   checkpoints every room to Redis and marks them `orphaned`; the next node a player reaches
-  adopts the room. It stops matchmaking and, before it exits, delivers the webhooks it still
-  owes, for up to 4 s. Give it ≥ 10 s before `SIGKILL`. Rolling deploys with ≥ 2 nodes per region
-  therefore do not end matches.
+  adopts the room. It stops matchmaking, lets the requests under way finish and delivers the
+  webhooks it still owes. All of this has `server.shutdown_secs` (default 8) from the signal;
+  when they run out the node logs what was left (`shutdown: rooms still not handed off`,
+  `requests still under way` or `webhooks still undelivered`) and exits. Send `SIGKILL` later
+  than that: the 10 s Docker waits by default fit the default, and a larger `shutdown_secs`
+  needs a larger `stop_grace_period`. Rolling deploys with ≥ 2 nodes per region therefore do not
+  end matches.
 - Readiness probe: `GET /healthz` (200 = serving, 503 = draining). Liveness: TCP on the HTTP
   port.
 
@@ -130,7 +134,8 @@ treat it like the database itself.
 no shell/package manager; the previous bookworm-slim base carried ~46 unfixed HIGH CVEs in packages the node
 never used), runs as uid 65532, `HEALTHCHECK` is the binary itself (`aurix-net-server --healthcheck` probes
 its own `/healthz`), `STOPSIGNAL SIGTERM`
-(the node drains and hands rooms off; give it `stop_grace_period: 30s`), container healthcheck on
+(the node drains and hands rooms off; `stop_grace_period` must be longer than
+`server.shutdown_secs`, the reference layout sets 30 s), container healthcheck on
 `/healthz` (503 while draining, so orchestrators stop routing to it). Ports: 8090/tcp (HTTP/WS),
 7000/udp (QUIC), 7443/udp (WebTransport). Configure with `NET__SECTION__KEY` env vars
 (`NET__AUTH__GRANT_SECRET`, `NET__AUTH__ADMIN_TOKEN`, `NET__DATABASE__URL`, `NET__REDIS__URL`,

@@ -226,8 +226,36 @@ async fn request_that_ends_after_the_node_stopped_listening_has_its_webhook_deli
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn receiver_that_does_not_answer_holds_the_node_for_its_flush_time_only() {
-    let mut node = Node::start().await;
+async fn request_that_never_ends_does_not_hold_the_node_past_its_shutdown_time() {
+    use tokio::io::AsyncWriteExt;
+
+    let mut node = Node::start_with(&[("NET__SERVER__SHUTDOWN_SECS", "2")]).await;
+    let address = node.http.trim_start_matches("http://");
+    let mut request = tokio::net::TcpStream::connect(address)
+        .await
+        .expect("connects");
+    let head = format!(
+        "POST /v1/operator/projects HTTP/1.1\r\nhost: {address}\r\n\
+         content-type: application/json\r\ncontent-length: 2\r\n\r\n"
+    );
+    request.write_all(head.as_bytes()).await.expect("head");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let asked = Instant::now();
+    node.terminate();
+    let took = asked.elapsed();
+    assert!(took < Duration::from_secs(6), "the node took {took:?}");
+    assert!(
+        node.log_tail()
+            .contains("shutdown: requests still under way"),
+        "{}",
+        node.log_tail()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn receiver_that_does_not_answer_does_not_hold_the_node_past_its_shutdown_time() {
+    let mut node = Node::start_with(&[("NET__SERVER__SHUTDOWN_SECS", "2")]).await;
     let project = node.project("hooks-hang").await;
     let app = axum::Router::new().fallback(axum::routing::post(|| async {
         tokio::time::sleep(Duration::from_secs(60)).await;
@@ -261,7 +289,7 @@ async fn receiver_that_does_not_answer_holds_the_node_for_its_flush_time_only() 
         "{}",
         node.log_tail()
     );
-    assert!(took < Duration::from_secs(8), "the node took {took:?}");
+    assert!(took < Duration::from_secs(6), "the node took {took:?}");
 }
 
 /// The log entry of the one `test` delivery to a webhook at `url`.

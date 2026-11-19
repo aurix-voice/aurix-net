@@ -114,6 +114,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - A node that was stopped exited without the webhooks it still owed: an event queued moments
   before, or a delivery waiting for its retry, was lost. A match made by a node about to stop
   could reach nobody's backend. The node now finishes the matchmaking cycle under way, makes no
+  further matches, and delivers what it owes before it exits.
+- A node told to stop waited without limit for the requests under way: one that never ended
+  held it until it was killed. Stopping now has one limit, `server.shutdown_secs` (default 8),
+  for the requests under way, handing the rooms off and the webhooks owed; when it runs out
+  the node logs what was left and exits.
 - Sync: the room checkpoint did not say which entity was a player's avatar. A room continued on
   another node took the first entity the player owned, which could be one the player had
   spawned. The avatars are in the checkpoint now.

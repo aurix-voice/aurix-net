@@ -13,6 +13,9 @@ case "${1:-start}" in
       /tmp/aurix-net-B >/tmp/aurix-net-B.log 2>&1 &
     for p in 8090 8091; do for _ in $(seq 1 30); do curl -sf 127.0.0.1:$p/healthz >/dev/null && break; sleep 1; done; done
     echo "A and B up (logs /tmp/aurix-net-{A,B}.log)";;
-  stop) pkill -f '^/tmp/aurix-net-[AB]' || true;;
+  stop)
+    pkill -f '^/tmp/aurix-net-[AB]' || true
+    # a node takes up to server.shutdown_secs to exit
+    while pgrep -f '^/tmp/aurix-net-[AB]' >/dev/null; do sleep 0.2; done;;
   kill-a) kill -9 "$(pgrep -f '^/tmp/aurix-net-A')";;
 esac

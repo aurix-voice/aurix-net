@@ -69,6 +69,9 @@ pub struct ServerConfig {
     #[serde(default)]
     pub public_url: Option<String>,
     pub heartbeat_secs: u64,
+    /// How long a node told to stop may take over the requests under way, handing its rooms
+    /// off and the webhooks it owes, before it exits with the rest undone.
+    pub shutdown_secs: u64,
     /// Reverse proxies whose `X-Forwarded-For` is trusted (IPs or CIDRs). Empty = use the
     /// TCP peer address for every per-IP limit.
     #[serde(default)]
@@ -188,6 +191,7 @@ region = "local"
 http_addr = "127.0.0.1:8090"
 public_host = "127.0.0.1"
 heartbeat_secs = 30
+shutdown_secs = 8
 trusted_proxies = []
 metrics_token = ""
 allowed_origins = []

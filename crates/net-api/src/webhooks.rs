@@ -430,18 +430,14 @@ impl Dispatcher {
         }));
     }
 
-    /// Waits until every event emitted so far is delivered or given up on, `within` at most.
-    /// False when that time ran out.
-    pub async fn flush(&self, within: Duration) -> bool {
-        let delivered = async {
-            let (reached, queue_empty) = oneshot::channel();
-            if self.tx.send(Queued::Flush(reached)).await.is_ok() {
-                let _ = queue_empty.await;
-            }
-            self.deliveries.close();
-            self.deliveries.wait().await;
-        };
-        tokio::time::timeout(within, delivered).await.is_ok()
+    /// Waits until every event emitted so far is delivered or given up on.
+    pub async fn flush(&self) {
+        let (reached, queue_empty) = oneshot::channel();
+        if self.tx.send(Queued::Flush(reached)).await.is_ok() {
+            let _ = queue_empty.await;
+        }
+        self.deliveries.close();
+        self.deliveries.wait().await;
     }
 
     /// Fleet-level alert: delivered to operator webhooks, `project` is null in the body.

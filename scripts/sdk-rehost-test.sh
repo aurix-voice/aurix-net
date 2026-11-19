@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 DOTNET="${DOTNET:-dotnet}"
 g++ -std=c++17 sdk/cpp/rehost_test.cpp -Isdk/cpp -Ltarget/release -laurix_net -Wl,-rpath,"$PWD/target/release" -o /tmp/cpp-rehost || exit 1
 gcc -std=c11 -Wall -Wextra -Werror crates/net-ffi/ctest/rehost.c -Ltarget/release -laurix_net -Wl,-rpath,"$PWD/target/release" -o /tmp/c-rehost || exit 1
-scripts/two-nodes.sh stop >/dev/null 2>&1; sleep 1; scripts/two-nodes.sh start
+scripts/two-nodes.sh stop >/dev/null 2>&1; scripts/two-nodes.sh start
 ROOM="sdk-rehost-$(date +%s)"
 (cd sdk/web && node test/rehost.mjs "$ROOM" > /tmp/web-rehost.log 2>&1; echo "web exit $?" >> /tmp/web-rehost.log) &
 (/tmp/cpp-rehost "$ROOM-cpp" > /tmp/cpp-rehost.log 2>&1; echo "cpp exit $?" >> /tmp/cpp-rehost.log) &
