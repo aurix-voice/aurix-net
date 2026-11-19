@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Channel, Client, Chat, LEAVE_WAIT, encodeEvent } from "../dist/index.js";
 import WebSocket, { WebSocketServer } from "ws";
+import { Link } from "../dist/link.js";
 import { slowLink } from "./slow-link.mjs";
 import { key } from "./live.mjs";
 if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket; // Node < 22
@@ -493,4 +494,62 @@ test("a client that left a room over a 200 ms round trip joins another one", { s
   } finally {
     clearInterval(chatter); a.close(); b.close(); link.close();
   }
+});
+
+/** Collects what listeners threw, as the global error handler of a page would get it. */
+function reported(t) {
+  const errors = [];
+  const before = globalThis.reportError;
+  globalThis.reportError = (error) => errors.push(error.message);
+  t.after(() => { globalThis.reportError = before; });
+  return errors;
+}
+
+test("a listener that throws keeps the event from no other listener", { skip: !key }, async (t) => {
+  const errors = reported(t);
+  const a = await Client.connect(http, await grant("web-throw-a"));
+  const b = await Client.connect(http, await grant("web-throw-b"));
+  t.after(() => { a.close(); b.close(); });
+  const room = `web-throw-${process.pid}`;
+  await a.joinOrCreate(room, "relay", 4); await b.joinOrCreate(room, "relay", 4);
+  const got = [];
+  a.on("event", (frame) => { if (frame.code === 1 && frame.payload[0] === 0) throw new TypeError("a bug in the game"); });
+  a.on("event", (frame) => { if (frame.code === 1) got.push(frame.payload[0]); });
+  const chatA = new Chat(a), chatB = new Chat(b);
+  chatA.join(1); chatB.join(1);
+  chatA.onMessage(() => { throw new TypeError("a bug in the chat"); });
+  chatA.onMessage((message) => got.push(message.text));
+  for (const n of [0, 1]) b.sendEvent(1, Uint8Array.of(n), "others", true);
+  chatB.send(1, "hello");
+  for (let i = 0; i < 100 && got.length < 3; i++) await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual([got, errors], [[0, 1, "hello"], ["a bug in the game", "a bug in the chat"]]);
+});
+
+test("a listener that throws does not stop the data path over WebTransport", { skip: !key }, async (t) => {
+  const errors = reported(t);
+  // stands in for the browser's WebTransport; the node's end of the link is held here
+  const far = new Link();
+  let feed;
+  const send = () => { for (const bytes of far.drain()) feed.enqueue(bytes); };
+  globalThis.WebTransport = class {
+    ready = Promise.resolve();
+    closed = new Promise(() => {});
+    datagrams = {
+      readable: new ReadableStream({ start: (controller) => { feed = controller; } }),
+      writable: new WritableStream({ write: (bytes) => { far.receive(bytes); send(); } }),
+    };
+    close() {}
+  };
+  t.after(() => { delete globalThis.WebTransport; });
+  const a = await Client.connect(http, await grant("web-throw-wt"));
+  t.after(() => a.close());
+  const joining = a.joinOrCreate(`web-throw-wt-${process.pid}`, "relay", 4);
+  // the node answers the ticket with an empty message
+  const answer = setInterval(() => { if (feed) { clearInterval(answer); far.send(Channel.Reliable, new Uint8Array(0)); send(); } }, 50);
+  await joining;
+  const got = [];
+  a.on("data", (channel, tick, payload) => { if (payload[0] === 0) throw new TypeError("a bug in the game"); got.push(payload[0]); });
+  for (const n of [0, 1, 2]) { far.send(Channel.Reliable, Uint8Array.of(n)); send(); await new Promise((r) => setTimeout(r, 20)); }
+  for (let i = 0; i < 100 && got.length < 2; i++) await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual([got, errors], [[1, 2], ["a bug in the game"]]);
 });

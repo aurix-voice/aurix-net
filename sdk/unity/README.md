@@ -97,7 +97,8 @@ void Update() { c.Poll(); }  void LateUpdate() { c.Flush(); }
 
 `Poll` raises the events on the thread that calls it. The link itself does not wait for it: the
 client reads, acknowledges and resends off the game thread, so a frame that takes seconds does
-not cost the room.
+not cost the room. An exception a handler throws leaves `Poll` (or the join that raised the
+event); the messages after the one it threw on come with the next `Poll`.
 
 A Web build has one thread. There the client acknowledges a packet as the socket brings it, and
 the browser's timer resends, also while the page draws no frame. A browser cannot stop reading a

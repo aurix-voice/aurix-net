@@ -240,7 +240,7 @@ jobs:
       - name: C++ and C SDK
         run: |
           for t in echo_test sync_test lockstep_test; do
-            g++ -std=c++17 sdk/cpp/$t.cpp -Isdk/cpp -Ltarget/release -laurix_net -Wl,-rpath,$PWD/target/release -o /tmp/$t
+            g++ -std=c++17 -fsanitize=address,undefined sdk/cpp/$t.cpp -Isdk/cpp -Ltarget/release -laurix_net -Wl,-rpath,$PWD/target/release -o /tmp/$t
             /tmp/$t
           done
           gcc -std=c11 -Wall -Wextra -Werror crates/net-ffi/ctest/echo.c -Ltarget/release -laurix_net -Wl,-rpath,$PWD/target/release -o /tmp/c-echo

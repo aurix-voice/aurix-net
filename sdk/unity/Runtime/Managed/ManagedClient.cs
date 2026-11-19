@@ -52,6 +52,8 @@ namespace Aurix.Net.Managed
         public const int EventBacklog = 4096;
         internal int Waiting => _inbox.Count;
         bool _dataReady;
+        Got _unfinished;
+        Queue<EventFrame> _history = new Queue<EventFrame>();
 
         // The reason the node took the client out of a room its join had not entered yet.
         string _turnedOut;
@@ -134,6 +136,9 @@ namespace Aurix.Net.Managed
         {
             public int Epoch;
             public List<Received> Items;
+
+            /// <summary>The first message the game has not been given yet.</summary>
+            public int Next;
         }
 
         /// <summary>Opens the control channel and authenticates with a grant.</summary>
@@ -568,8 +573,14 @@ namespace Aurix.Net.Managed
         public int Poll(int max = 256)
         {
             int count = 0;
-            while (count < max && _inbox.TryDequeue(out var message))
+            while (count < max)
             {
+                object message = _unfinished;
+                if (message == null && !_inbox.TryDequeue(out message))
+                {
+                    break;
+                }
+
                 count++;
                 switch (message)
                 {
@@ -614,14 +625,20 @@ namespace Aurix.Net.Managed
                             _nodeRepeatsJoinIds = Json.Lists(text.Json, "supports", "join_id");
                         }
 
-                        OnControl?.Invoke(text.Json);
-                        if (
-                            Json.Str(text.Json, "t") == "error"
-                            && Json.Str(text.Json, "code") == "transport"
-                        )
+                        try
                         {
-                            // the node gave the data path up and will take nothing more over it
-                            Lose("link dead");
+                            OnControl?.Invoke(text.Json);
+                        }
+                        finally
+                        {
+                            if (
+                                Json.Str(text.Json, "t") == "error"
+                                && Json.Str(text.Json, "code") == "transport"
+                            )
+                            {
+                                // the node gave the data path up and will take nothing more over it
+                                Lose("link dead");
+                            }
                         }
 
                         if (
@@ -642,27 +659,38 @@ namespace Aurix.Net.Managed
 
                         break;
                     case Got got:
-                        _socket.Release(got.Items.Count);
+                        // A handler that throws leaves Poll in the middle of the datagram: it is
+                        // kept, and the next Poll goes on with the message after that one.
+                        if (_unfinished != got)
+                        {
+                            _socket.Release(got.Items.Count);
+                            _unfinished = got;
+                        }
                         if (got.Epoch != _epoch)
                         {
+                            _unfinished = null;
                             break;
                         }
 
-                        foreach (var received in got.Items)
+                        while (got.Next < got.Items.Count)
                         {
+                            var received = got.Items[got.Next];
                             if (received.Payload.Length == 0)
                             {
                                 if (!_dataReady)
                                 {
                                     _dataReady = true;
+                                    _history = new Queue<EventFrame>(Cached);
                                     OnDataReady?.Invoke();
-                                    foreach (var frame in Cached)
-                                    {
-                                        OnEvent?.Invoke(frame);
-                                    }
                                 }
+                                while (_history.Count > 0)
+                                {
+                                    OnEvent?.Invoke(_history.Dequeue());
+                                }
+                                got.Next++;
                                 continue;
                             }
+                            got.Next++;
                             if (
                                 SyncWorld.ReadSpawnAnswer(received.Payload) is SpawnAnswer answer
                                 && answer.Tag == 0
@@ -684,6 +712,7 @@ namespace Aurix.Net.Managed
                                 }
                             }
                         }
+                        _unfinished = null;
                         break;
                     case Closed closed:
                         _controlClosed |= closed.Control;

@@ -776,6 +776,52 @@ public class ManagedCoreTests
         Assert.That(notices, Is.EqualTo(Enumerable.Range(0, count).Select(i => i.ToString())));
     }
 
+    // A node that signs the client in and, on its next message, gives the data path up.
+    static async Task GiveTheDataPathUp(HttpListener listener)
+    {
+        var socket = (await (await listener.GetContextAsync()).AcceptWebSocketAsync(null)).WebSocket;
+        var buffer = new byte[4096];
+        Task Say(string json) => socket.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(json)), WebSocketMessageType.Text, true, CancellationToken.None);
+        // the client sends probes of its own between the messages of the test
+        async Task Hear(string type)
+        {
+            while (!Encoding.UTF8.GetString(buffer, 0, (await socket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None)).Count).Contains("\"t\":\"" + type + "\"")) { }
+        }
+        try
+        {
+            await Hear("auth");
+            await Say("{\"t\":\"authed\",\"player_id\":\"ann\",\"name\":\"Ann\"}");
+            await Hear("go");
+            await Say("{\"t\":\"error\",\"code\":\"transport\",\"message\":\"\"}");
+            while ((await socket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None)).MessageType != WebSocketMessageType.Close) { }
+        }
+        catch (WebSocketException) { }
+    }
+
+    [Test]
+    public async Task AHandlerThatThrowsOnTheErrorOfTheDataPathDoesNotHideItsLoss()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+        using var listener = new HttpListener();
+        listener.Prefixes.Add("http://127.0.0.1:" + port + "/"); listener.Start();
+        _ = GiveTheDataPathUp(listener);
+        using var client = await ManagedClient.ConnectAsync("http://127.0.0.1:" + port, "grant");
+        var closed = new List<string>(); int thrown = 0;
+        client.OnControl += json => throw new InvalidOperationException("a bug in the game");
+        client.OnClosed += closed.Add;
+        await client.SendControlAsync("{\"t\":\"go\"}");
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (closed.Count == 0 && clock.ElapsedMilliseconds < 5000)
+        {
+            try { client.Poll(); } catch (InvalidOperationException) { thrown++; }
+            await Task.Delay(10);
+        }
+        Assert.That(thrown, Is.EqualTo(1));
+        Assert.That(closed, Is.EqualTo(new[] { "link dead" }));
+    }
+
     // A node that answers a ping only when the next one arrives, as a link slower than the probes would.
     static async Task AnswerLate(HttpListener listener)
     {

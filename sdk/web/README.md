@@ -16,6 +16,10 @@ sync inputs / lockstep frames; raw frames arrive on `"data"`. Build: `npm i && n
 test against a local node: `NET_API_KEY=an_... npm test` (the `sim wasm` tests need
 `cargo build --release --target wasm32-unknown-unknown -p net-sim-wasm` first and are skipped without it).
 
+A listener given to `on` that throws is treated as a listener of an `EventTarget` is: the error
+goes to the global error handler (`reportError`), the other listeners still get the event, and
+the client goes on.
+
 ## Sync rooms
 
 `SyncSession` turns a joined sync-room client into a replicated world (same wire format as the Unity

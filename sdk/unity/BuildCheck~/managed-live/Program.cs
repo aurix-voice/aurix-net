@@ -417,6 +417,27 @@ class P
         try { chatC.Send(6000, "hello"); throw new Exception("chat: channel 6000 was taken"); }
         catch (ArgumentOutOfRangeException) { }
         ra.Dispose(); rb.Dispose(); rc.Dispose();
+        // a handler that throws loses neither the rest of the history nor the events that came in the same datagram
+        var ta = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-ta"));
+        var tb = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-tb"));
+        await ta.JoinOrCreateAsync(room + "-throw", "relay", 4);
+        for (byte i = 0; i < 3; i++) ta.SendEvent(6, new[] { i }, Target.Others, reliable: true, cache: CacheOp.Add);
+        until = DateTime.UtcNow.AddMilliseconds(300); while (DateTime.UtcNow < until) { ta.Poll(); await Task.Delay(5); }
+        var kept = new List<int>(); int thrown = 0;
+        tb.OnEvent += f =>
+        {
+            if (f.Code != 6 && f.Code != 7) return;
+            if (f.Payload[0] == 0) throw new InvalidOperationException("a bug in the game");
+            kept.Add(f.Code * 10 + f.Payload[0]);
+        };
+        try { await tb.JoinAsync(room + "-throw"); } catch (InvalidOperationException) { thrown++; }
+        for (byte i = 0; i < 10; i++) ta.SendEvent(7, new[] { i });
+        ta.Flush();
+        until = DateTime.UtcNow.AddMilliseconds(500);
+        while (DateTime.UtcNow < until) { ta.Poll(); try { tb.Poll(); } catch (InvalidOperationException) { thrown++; } await Task.Delay(5); }
+        Console.WriteLine($"handler that throws: thrown={thrown}/2 kept=[{string.Join(",", kept)}]");
+        bool throwOk = thrown == 2 && kept.SequenceEqual(new[] { 61, 62, 71, 72, 73, 74, 75, 76, 77, 78, 79 });
+        ta.Dispose(); tb.Dispose();
         // over a slow link (NET_SLOW_HTTP, see README): a client that left a room joins another one
         bool rejoined = true, toldApart = true; var slow = Environment.GetEnvironmentVariable("NET_SLOW_HTTP");
         if (slow != null)
@@ -834,7 +855,7 @@ class P
             stallOk = stallGot == stallSent && stallReasons.Count == 0;
             talker.Dispose();
         }
-        bool ok = wayBack && stallOk && busyOk && givenUpOk && undeliveredOk && refused && lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && failedFast && runnerOk;
+        bool ok = throwOk && wayBack && stallOk && busyOk && givenUpOk && undeliveredOk && refused && lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && failedFast && runnerOk;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");
         return ok ? 0 : 1;
     }

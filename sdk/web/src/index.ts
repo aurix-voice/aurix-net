@@ -1,5 +1,6 @@
 import { Channel } from "./packet.js";
 import { Link, LEAVE_WAIT, type Received } from "./link.js";
+import { report } from "./report.js";
 import {
   encodeEvent,
   decodeEvent,
@@ -205,7 +206,12 @@ export class Client {
       ...parameters: Parameters<ClientEvents[K]>
     ) => void)[];
     for (const listener of listeners) {
-      listener(...args);
+      // as with an EventTarget: a listener that throws stops neither the others nor the client
+      try {
+        listener(...args);
+      } catch (error) {
+        report(error);
+      }
     }
   }
 
@@ -680,17 +686,13 @@ export class Client {
         // the ticket is a datagram: it is repeated until the node's first one arrives
         const again = setInterval(() => send(ticket), TICKET_RESEND_MS);
         void (async () => {
-          try {
-            for (;;) {
-              const { value, done } = await reader.read();
-              if (done) {
-                break;
-              }
-              clearInterval(again);
-              this.onDatagram(value);
+          for (;;) {
+            const read = await reader.read().catch(() => undefined);
+            if (!read || read.done) {
+              break;
             }
-          } catch {
-            /* closed */
+            clearInterval(again);
+            this.onDatagram(read.value);
           }
         })();
         const path: DataPath = {

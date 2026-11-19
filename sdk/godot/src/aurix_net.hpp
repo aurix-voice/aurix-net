@@ -361,6 +361,11 @@ public:
         int count = 0;
         AurixNetEvent ev;
         while (count < maxEvents && aurix_net_poll(handle_, &ev) == 1) {
+            // freed when a callback throws out of here too
+            struct Held {
+                AurixNetEvent& event;
+                ~Held() { aurix_net_event_free(&event); }
+            } held{ev};
             ++count;
             switch (ev.kind) {
                 case AURIX_NET_EVENT_CONTROL: {
@@ -416,7 +421,6 @@ public:
                 default:
                     break;
             }
-            aurix_net_event_free(&ev);
         }
         return count;
     }

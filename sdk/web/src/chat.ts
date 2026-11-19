@@ -1,5 +1,6 @@
 import type { Client } from "./index.js";
 import type { EventFrame } from "./event.js";
+import { report } from "./report.js";
 
 /** A chat message as delivered to `onMessage`: `channel` is undefined for whispers. */
 export interface ChatMessage {
@@ -114,7 +115,11 @@ export class Chat {
       return;
     }
     for (const handler of this.handlers) {
-      handler(message);
+      try {
+        handler(message);
+      } catch (error) {
+        report(error);
+      }
     }
   }
 }

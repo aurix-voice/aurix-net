@@ -194,6 +194,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- C++: a callback that threw out of `Client::poll` left the event it was handed unfreed, a
+  leak for every such event. The event is now freed on any way out of the callback.
 - Sync and lockstep rooms, every client: an input longer than 255 bytes was cut to 255 without
   a word. The writes of a tick cut this way were dropped by the room, so an entity with long
   strings stopped changing for the other players; a lockstep input reached everybody cut. The
@@ -217,6 +219,17 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   player the entity, the C ABI took the nearest actor or policy it knew. And for a chat channel
   whose group, `groupBase + channel`, is past 65535: C# and C++ moved it onto a group of the
   game, channel 6000 onto group 464.
+- Web: a listener that threw once stopped the client over WebTransport for good. The loop
+  that reads datagrams took the error for a closed path and ended without a word: the client
+  stayed in the room and received nothing more, with no `closed`, and the error was not
+  reported anywhere. Over the WebSocket tunnel the listeners added after the one that threw
+  missed that event. A listener that throws now stops neither the other listeners nor the
+  client, and its error goes to the global error handler, as with an `EventTarget`.
+- Unity, managed client: a handler that threw lost the messages that had come in the same
+  datagram, and at a join the rest of the cached events of the room. The exception still
+  leaves `Poll`; the next `Poll` now goes on with the message after the one it threw on. A
+  handler of `OnControl` that throws on the node's `transport` error no longer keeps the
+  client from reporting `OnClosed`.
 - C ABI and the clients built on it (C++, Godot, the native Unity client, Unreal): a panic
   inside the library ended the process of the game. Every function of the C ABI now catches
   it and fails with the new `AURIX_NET_ERR_PANIC` (`ERROR_PANIC` in Godot,
