@@ -337,3 +337,19 @@ async fn address_ban_stops_the_next_player_from_that_address() {
     let reply = zed.call(json!({"t": "create", "name": "other"})).await;
     refused(&reply, "forbidden");
 }
+
+#[tokio::test]
+async fn full_room_refusal_names_the_room_size() {
+    let node = Node::start().await;
+    let project = node.project("full").await;
+    let mut alice = project.player("alice").await;
+    joined(
+        &alice
+            .call(json!({"t": "create", "name": "duel", "max_players": 1}))
+            .await,
+    );
+    let mut bob = project.player("bob").await;
+    let reply = bob.call(json!({"t": "join", "name": "duel"})).await;
+    refused(&reply, "room_full");
+    assert_eq!(reply["message"], "room is full (max_players is 1)");
+}

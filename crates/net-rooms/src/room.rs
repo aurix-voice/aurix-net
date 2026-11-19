@@ -167,7 +167,7 @@ pub enum Outgoing {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RoomError {
     #[error("room is full")]
-    Full,
+    Full { max: u16 },
     #[error("room is closed")]
     Closed,
     #[error("not in room")]
@@ -387,7 +387,9 @@ impl Room {
                 self.pending_reserved(now)
             };
             if self.player_count() + held >= self.cfg.max_players as usize {
-                return Err(RoomError::Full);
+                return Err(RoomError::Full {
+                    max: self.cfg.max_players,
+                });
             }
         }
         let actor = ActorId(self.next_actor);
@@ -985,7 +987,7 @@ mod tests {
         assert_eq!(
             room.join("p3", "C", Map::new(), None, false, now)
                 .unwrap_err(),
-            RoomError::Full
+            RoomError::Full { max: 2 }
         );
         // same player again: takes over the slot silently
         let (b2, out) = room.join("p2", "B", Map::new(), None, false, now).unwrap();
@@ -1194,7 +1196,7 @@ mod tests {
         assert_eq!(
             room.join("p3", "C", Map::new(), None, false, now)
                 .unwrap_err(),
-            RoomError::Full
+            RoomError::Full { max: 2 }
         );
         assert!(room
             .join("watch2", "W2", Map::new(), None, true, now)
@@ -1231,7 +1233,7 @@ mod tests {
         // the only free seat is held for p2
         assert!(matches!(
             room.join("stranger", "s", Map::new(), None, false, t0),
-            Err(RoomError::Full)
+            Err(RoomError::Full { max: 2 })
         ));
         assert_eq!(room.pending_reserved(t0), 1);
         room.join("p2", "p2", Map::new(), None, false, t0).unwrap();

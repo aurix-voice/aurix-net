@@ -13,7 +13,7 @@ pub enum NetError {
     Conflict(String),
     #[error("invalid request: {0}")]
     Invalid(String),
-    #[error("room is full ({max} players)")]
+    #[error("room is full (max_players is {max})")]
     RoomFull { max: u16 },
     #[error("room is closed")]
     RoomClosed,

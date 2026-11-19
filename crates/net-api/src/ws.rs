@@ -12,7 +12,6 @@ use futures::{SinkExt, StreamExt};
 use net_auth::Grant;
 use net_common::{ActorId, NetError, ProjectId, Result, RoomId, RoomMode, SessionId};
 use net_control::redis_store::LiveRoom;
-use net_control::ProjectLimits;
 use net_db::queries;
 use net_rooms::protocol::{ClientMsg, DataEndpoint, RoomSummary, ServerMsg};
 use net_rooms::{EventFrame, Room, RoomConfig, RoomError};
@@ -918,7 +917,7 @@ impl Session {
             }
         }
         let project = self.admit(grant).await?;
-        let limits = ProjectLimits::from_json(&project.limits).effective(&self.st.cfg.limits);
+        let limits = crate::rest::project_limits(&self.st, &project)?;
         if let Some(allowed) = &limits.allowed_regions {
             if !allowed.iter().any(|r| r == self.st.region.as_str()) {
                 crate::rest::reject(&self.st, grant.project, "region");
@@ -1061,7 +1060,7 @@ impl Session {
             }
         }
         if !returning && !spectator {
-            let limits = ProjectLimits::from_json(&project.limits).effective(&self.st.cfg.limits);
+            let limits = crate::rest::project_limits(&self.st, &project)?;
             if let Some(cap) = limits.max_concurrent_players {
                 let online: u64 = self
                     .st
@@ -1104,7 +1103,7 @@ impl Session {
                     Instant::now(),
                 )
                 .map_err(|e| {
-                    if matches!(e, RoomError::Full) {
+                    if matches!(e, RoomError::Full { .. }) {
                         crate::rest::reject(&self.st, grant.project, "room_full");
                     }
                     room_err(e)
@@ -1863,7 +1862,7 @@ pub async fn adopt_room(
         }
     };
     let proj = queries::get_project(&st.pool, row.project_id).await?;
-    let limits = ProjectLimits::from_json(&proj.limits).effective(&st.cfg.limits);
+    let limits = crate::rest::project_limits(st, &proj)?;
     let mode = row.mode.parse().unwrap_or_default();
     let props = row.props.as_object().cloned().unwrap_or_default();
     let cfg = RoomConfig {
@@ -2314,7 +2313,7 @@ pub fn live_to_summary(live: LiveRoom) -> RoomSummary {
 
 pub(crate) fn room_err(e: RoomError) -> NetError {
     match e {
-        RoomError::Full => NetError::RoomFull { max: 0 },
+        RoomError::Full { max } => NetError::RoomFull { max },
         RoomError::Closed => NetError::RoomClosed,
         RoomError::NotMember | RoomError::NoActor => NetError::NotFound(e.to_string()),
         RoomError::NotMaster | RoomError::Spectator | RoomError::SpectatorMaster => {

@@ -5,6 +5,7 @@ use net_common::config::LimitsConfig;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectLimits {
     #[serde(default)]
     pub max_rooms: Option<u32>,
@@ -46,9 +47,14 @@ pub struct EffectiveLimits {
     pub max_concurrent_players: Option<u32>,
 }
 
+/// Why stored or submitted limits do not parse; names the field at fault.
+pub type LimitsError = serde_path_to_error::Error<serde_json::Error>;
+
 impl ProjectLimits {
-    pub fn from_json(json: &serde_json::Value) -> Self {
-        serde_json::from_value(json.clone()).unwrap_or_default()
+    /// The limits stored for a project. A row that does not parse is an error and not "no
+    /// limits": the caller has to refuse what the limits would have governed.
+    pub fn from_json(json: &serde_json::Value) -> Result<Self, LimitsError> {
+        serde_path_to_error::deserialize(json)
     }
 
     pub fn effective(&self, node: &LimitsConfig) -> EffectiveLimits {
@@ -103,7 +109,8 @@ mod tests {
         };
         let limits = ProjectLimits::from_json(
             &serde_json::json!({"max_players_per_room": 1000, "max_rooms": 5}),
-        );
+        )
+        .unwrap();
         let effective = limits.effective(&node);
         assert_eq!(effective.max_players_per_room, 128);
         assert_eq!(effective.max_rooms, 5);

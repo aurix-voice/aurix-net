@@ -49,6 +49,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 ### Fixed
 - Console: a chart covering one to two days labelled its time axis with the time alone, so the
   same hour appeared twice with no date; the labels carry the date now (`Nov 17, 04:00 PM`).
+- Limits: a refused value did not say which limit it belonged to (``invalid value: integer
+  `100000`, expected u16``); the message names the field now, for the limits form and for
+  limits already stored that the node cannot read.
 - Console: the project page counted a megabyte as 1 000 000 bytes and the rest of the console as
   1 048 576, so the month's traffic read 196 MB there and 186.5 MB in billing.
 - Console: the matchmaking page crashed as soon as a ticket was filed; it took the ticket state
@@ -71,6 +74,15 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   of a late join, and a client that drops a `Catchup` behind its own ticks never recovered. It
   is now a frame of its own, `Restore` (`0x2A`), with the same layout. Clients have to handle
   `0x2A`; one that does not skips it and stays desynced.
+- Limits: a project whose stored limits did not parse ran with no limits at all. The node now
+  refuses its new rooms and joins with `quota_exceeded` until an operator sets the limits
+  again, lists the project under `invalid_limits` in `GET /v1/operator/attention`, and returns
+  `limits_error` in the project detail. Rooms that are already running keep running.
+- Operator API: `POST /v1/operator/projects/:id/limits` stored any body and answered 204. One
+  value of the wrong type or out of range, such as `max_players_per_room: 100000`, made the
+  whole object unreadable, and the project then ran with no limits at all, the monthly caps
+  included. Such a body, and one with an unknown field, is now refused with `invalid` and the
+  limits stay as they were; an unknown project answers 404 instead of 204.
 - Billing: `rooms_created` in `GET /v1/operator/billing` was counted from the rooms table,
   where a closed room's row is deleted after `closed_rooms_days` (7 by default), so the report
   for a finished month showed only the rooms closed in the last week. A created room is now
@@ -107,6 +119,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   ticks every input reached the server after its tick and was dropped: behind 100 ms each way
   the server missed 87 inputs of 90 and the object never moved. The lead is now the measured
   round trip (`statistics.ping`) plus `inputLeadTicks` of slack: 0 missed, server and owner agree.
+- Rooms: the refusal for a full room read `room is full (0 players)` whatever the room's size.
+  It now names the limit: `room is full (max_players is 4)`. The code is `room_full` as before.
 - Lockstep: when an input frame arrived late, the room put the oldest input it repeated into the
   next bundle instead of the newest, so the fresh input was lost and one the room had already
   confirmed could be confirmed again. With 50 ms of delay each way a client that sent 594 inputs

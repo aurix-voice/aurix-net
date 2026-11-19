@@ -35,14 +35,19 @@ pub async fn list_projects(pool: &DbPool) -> Result<Vec<ProjectRow>> {
     .map_err(db_err)
 }
 
-pub async fn set_project_limits(pool: &DbPool, id: Uuid, limits: &serde_json::Value) -> Result<()> {
-    sqlx::query("UPDATE projects SET limits = $2 WHERE id = $1")
+/// False when there is no such project.
+pub async fn set_project_limits(
+    pool: &DbPool,
+    id: Uuid,
+    limits: &serde_json::Value,
+) -> Result<bool> {
+    let done = sqlx::query("UPDATE projects SET limits = $2 WHERE id = $1")
         .bind(id)
         .bind(limits)
         .execute(pool)
         .await
         .map_err(db_err)?;
-    Ok(())
+    Ok(done.rows_affected() == 1)
 }
 
 // ---------- api keys ----------

@@ -517,7 +517,7 @@ async fn op_billing(
         if used.is_empty() && project.deleted_at.is_some() {
             continue;
         }
-        let limits = net_control::ProjectLimits::from_json(&project.limits);
+        let limits = net_control::ProjectLimits::from_json(&project.limits).unwrap_or_default();
         for metric in ["player_minutes", "room_minutes", "bytes_in", "bytes_out"] {
             *total.entry(metric).or_default() += get(&used, metric);
         }
@@ -717,6 +717,24 @@ pub(crate) async fn check_usage_cap(
 
 /// Records why a project's player/key was turned away (hourly Redis buckets, see
 /// `RedisStore::incr_rejection`). Off the request path; failures are only logged.
+/// The limits in force for a project. Limits that do not parse refuse the call instead of
+/// leaving the project with none.
+pub(crate) fn project_limits(
+    st: &Shared,
+    project: &net_db::models::ProjectRow,
+) -> Result<net_control::quotas::EffectiveLimits> {
+    match net_control::ProjectLimits::from_json(&project.limits) {
+        Ok(limits) => Ok(limits.effective(&st.cfg.limits)),
+        Err(e) => {
+            tracing::warn!(project = %project.id, error = %e, "stored project limits do not parse");
+            reject(st, ProjectId::from_uuid(project.id), "quota");
+            Err(NetError::QuotaExceeded(
+                "the project's limits are unreadable; an operator has to set them again".into(),
+            ))
+        }
+    }
+}
+
 pub(crate) fn reject(st: &Shared, project: ProjectId, reason: &'static str) {
     let redis = st.redis.clone();
     tokio::spawn(async move {
@@ -1020,7 +1038,7 @@ async fn create_room(
         return Err(NetError::Conflict("room name already in use".into()).into());
     }
     let prow = queries::get_project(&st.pool, key.project_id).await?;
-    let limits = net_control::ProjectLimits::from_json(&prow.limits).effective(&st.cfg.limits);
+    let limits = project_limits(&st, &prow)?;
     let open_rooms = queries::count_open_rooms(&st.pool, key.project_id).await?;
     if open_rooms >= limits.max_rooms as i64 {
         reject(&st, project, "quota");
@@ -2476,8 +2494,11 @@ async fn op_set_limits(
     Json(limits): Json<Value>,
 ) -> ApiResult<StatusCode> {
     let op = operator(&st, &headers).await?;
-    let _ = net_control::ProjectLimits::from_json(&limits);
-    queries::set_project_limits(&st.pool, id, &limits).await?;
+    net_control::ProjectLimits::from_json(&limits)
+        .map_err(|e| NetError::Invalid(format!("limits: {e}")))?;
+    if !queries::set_project_limits(&st.pool, id, &limits).await? {
+        return Err(NetError::NotFound("project not found".into()).into());
+    }
     audit_log(
         &st,
         Some(id),
@@ -3279,8 +3300,15 @@ pub(crate) async fn attention_value(st: &Shared) -> Result<Value> {
     rejections.sort_by_key(|r| -r["total"].as_i64().unwrap_or(0));
     rejections.truncate(20);
     let mut usage_caps: Vec<Value> = Vec::new();
+    let mut invalid_limits: Vec<Value> = Vec::new();
     for project in projects.iter().filter(|p| p.deleted_at.is_none()) {
-        let limits = net_control::ProjectLimits::from_json(&project.limits);
+        let limits = match net_control::ProjectLimits::from_json(&project.limits) {
+            Ok(limits) => limits,
+            Err(e) => {
+                invalid_limits.push(json!({"project_id": project.id, "project_name": project.name, "error": e.to_string()}));
+                continue;
+            }
+        };
         if limits.monthly_player_minutes.is_none() && limits.monthly_bytes.is_none() {
             continue;
         }
@@ -3303,6 +3331,7 @@ pub(crate) async fn attention_value(st: &Shared) -> Result<Value> {
         "failing_webhooks": failing_webhooks,
         "rejections": rejections,
         "usage_caps": usage_caps,
+        "invalid_limits": invalid_limits,
     }))
 }
 
@@ -3761,9 +3790,11 @@ async fn op_project(
         .unwrap_or_default();
     let (wh_failed, wh_total) = queries::webhook_delivery_stats_last_hour(&st.pool, id).await?;
     let (mtd_minutes, mtd_bytes) = usage_month(&st, id).await?;
+    let limits = net_control::ProjectLimits::from_json(&project.limits);
     Ok(Json(json!({
         "project": project,
-        "effective_limits": net_control::ProjectLimits::from_json(&project.limits).effective(&st.cfg.limits),
+        "effective_limits": limits.as_ref().map_or_else(|_| json!({}), |limits| json!(limits.effective(&st.cfg.limits))),
+        "limits_error": limits.as_ref().err().map(|e| e.to_string()),
         "keys": keys,
         "webhooks": webhooks,
         "modules": modules,
