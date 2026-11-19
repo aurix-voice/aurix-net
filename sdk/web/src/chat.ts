@@ -28,7 +28,7 @@ export class Chat {
       history?: boolean;
     } = {},
   ) {
-    client.on("event", (frame: EventFrame) => this.onEvent(frame, false));
+    client.on("event", (frame: EventFrame) => this.onEvent(frame));
   }
   get code(): number {
     return this.opts.code ?? 240;
@@ -41,6 +41,15 @@ export class Chat {
     if (!this.joined.has(channel)) {
       this.joined.add(channel);
       this.client.setGroups([this.group(channel)], []);
+      for (const frame of this.client.cached) {
+        if (
+          frame.code === this.code &&
+          frame.payload[0] === 0 &&
+          ((frame.payload[1] << 8) | frame.payload[2]) === channel
+        ) {
+          this.onEvent(frame);
+        }
+      }
     }
   }
   leave(channel: number): void {
@@ -82,7 +91,8 @@ export class Chat {
     payload.set(encoded, 3);
     return payload;
   }
-  private onEvent(frame: EventFrame, cached: boolean): void {
+  private onEvent(frame: EventFrame): void {
+    const cached = frame.cached === true;
     if (frame.code !== this.code || frame.payload.length < 3) {
       return;
     }

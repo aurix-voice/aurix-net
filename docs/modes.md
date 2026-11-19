@@ -61,9 +61,12 @@ joiner no longer needs). Late joiners receive the remaining slices in original o
 
 Room flags (room props): `publish_user_id` (default true; false hides other players' `player_id` from clients — actor numbers, names and props only; operators still see ids), `suppress_room_events` (default false; true drops `player_joined` / `player_left` broadcasts for very large rooms — master changes still go out), `suppress_player_info` (default false; true sends a joiner only their own roster entry), `broadcast_props_to_all` (default true; false skips the setter when a props change is broadcast). `CheckUserOnJoin` is always on: one session per player id per room is enforced by the grant.
 
-Rate limits: a room takes `max_events_per_sec_per_room` events (default 2000) and each player
-`max_events_per_sec_per_player` (default 60, burst of 2 s worth); over the limit the event is
-dropped with `rate_limited`. Both are project quotas (`/v1/operator/projects/:id/limits`).
+Rate limits: a room takes `max_events_per_sec_per_room` events (default 4000). A player may send
+`max_events_per_sec_per_player` events (default 120, burst of 2 s worth) to each receiver he
+names (`actors`, `master`) and as many again to the room as a whole (`all`, `others`), so a host
+that relays a game engine's packets to every client is held to the same rate per client as a
+client is towards the host. Over the limit the event is dropped with `rate_limited`. Both are
+project quotas (`/v1/operator/projects/:id/limits`).
 
 ### Lobby statistics and presence
 

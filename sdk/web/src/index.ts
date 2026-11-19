@@ -53,6 +53,8 @@ export interface Joined {
   master: number;
   tick_hz?: number;
   schema_hash?: string;
+  /** Relay events the room kept for late joiners: `[code, from, base64 payload]`, oldest first. */
+  cached?: [number, number, string][];
   data: {
     host: string;
     port: number;
@@ -108,6 +110,7 @@ export class Client {
   private timer?: ReturnType<typeof setInterval>;
   private path?: DataPath;
   private onReady?: () => void;
+  private isLost = false;
   forceTunnel = false;
   /** Which data path is in use after join(). */
   get dataPath() {
@@ -140,6 +143,8 @@ export class Client {
   entryUrl = "";
   grant = "";
   lastJoin: object | null = null;
+  /** Events the room kept for late joiners, as received by the last join; also emitted as `event`. */
+  cached: EventFrame[] = [];
   private opts: { timeoutMs?: number } = {};
   /** Region list and best-region ping: reads `/v1/regions` from the catalog (or any node), probes every
    *  live endpoint's `/healthz` and returns the fastest; pass `endpoint` to `connect`. */
@@ -222,10 +227,7 @@ export class Client {
       };
     });
     client.ws.onmessage = (event) => client.onMessage(event.data);
-    client.ws.onclose = () => {
-      client.stop();
-      client.emit("closed", "control channel closed");
-    };
+    client.ws.onclose = () => client.lost("control channel closed");
     client.send({ t: "auth", grant });
     await client.waitFor(
       (message) => message.t === "authed",
@@ -292,19 +294,30 @@ export class Client {
     msg: object,
     opts: { timeoutMs?: number } = {},
   ): Promise<{ client: Client; joined: Joined }> {
-    const client = await Client.connect(httpUrl, grant, opts);
     try {
-      return { client: client, joined: await client.join(msg) };
+      return await Client.joinOrClose(
+        await Client.connect(httpUrl, grant, opts),
+        msg,
+      );
     } catch (error) {
       const text = String((error as Error).message ?? error);
       const index = text.indexOf("room_elsewhere:");
       if (index < 0) {
         throw error;
       }
-      client.close();
       const url = text.slice(index + "room_elsewhere:".length).trim();
-      const c2 = await Client.connect(url, grant, opts);
-      return { client: c2, joined: await c2.join(msg) };
+      return Client.joinOrClose(await Client.connect(url, grant, opts), msg);
+    }
+  }
+  private static async joinOrClose(
+    client: Client,
+    msg: object,
+  ): Promise<{ client: Client; joined: Joined }> {
+    try {
+      return { client, joined: await client.join(msg) };
+    } catch (error) {
+      client.close();
+      throw error;
     }
   }
   /** `reserved`: player ids whose seats are held for 60 s when this call creates the room (a party
@@ -377,6 +390,7 @@ export class Client {
     this.path = undefined;
     old?.close();
     this.link = new Link();
+    this.isLost = false;
     const ready = new Promise<void>((res, rej) => {
       const timer = setTimeout(() => {
         this.onReady = undefined;
@@ -391,12 +405,21 @@ export class Client {
     this.path.send(ticket);
     this.timer = setInterval(() => {
       if (!this.link.poll()) {
-        this.stop();
-        this.emit("closed", "link dead");
+        this.lost("link dead");
       }
       this.flushLink();
     }, 5);
     await ready;
+    this.cached = (joined.cached ?? []).map(([code, from, data]) => ({
+      code,
+      from,
+      target: "others",
+      payload: Uint8Array.from(atob(data), (char) => char.charCodeAt(0)),
+      cached: true,
+    }));
+    for (const frame of this.cached) {
+      this.emit("event", frame);
+    }
     return joined;
   }
 
@@ -463,8 +486,7 @@ export class Client {
         };
         const gone = (why: string) => {
           if (this.path === path) {
-            this.stop();
-            this.emit("closed", why);
+            this.lost(why);
           }
         };
         wt.closed.then(
@@ -594,6 +616,16 @@ export class Client {
     this.stop();
     this.path?.close();
     this.ws.close();
+  }
+  // One lost connection is reported once, whichever of the link, the data path and the control channel
+  // notices it first, and closing the client afterwards does not report it again.
+  private lost(why: string) {
+    if (this.isLost) {
+      return;
+    }
+    this.isLost = true;
+    this.stop();
+    this.emit("closed", why);
   }
   private stop() {
     if (this.timer) {

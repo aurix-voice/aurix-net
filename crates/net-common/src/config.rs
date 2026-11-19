@@ -216,8 +216,8 @@ admin_token = ""
 [limits]
 max_players_per_room = 128
 max_rooms_per_node = 2000
-max_events_per_sec_per_room = 2000
-max_events_per_sec_per_player = 60
+max_events_per_sec_per_room = 4000
+max_events_per_sec_per_player = 120
 max_event_bytes = 65536
 max_props_bytes = 16384
 max_player_props_bytes = 4096

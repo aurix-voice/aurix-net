@@ -148,8 +148,9 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
             }
             Message::Text(text) => match serde_json::from_str::<ClientMsg>(&text) {
                 Ok(msg) => {
+                    let auth = matches!(msg, ClientMsg::Auth { .. });
                     if let Err(e) = sess.handle(msg).await {
-                        let fatal = matches!(e, NetError::RateLimited);
+                        let fatal = auth && matches!(e, NetError::RateLimited);
                         sess.error(e);
                         if fatal {
                             break;
@@ -2297,7 +2298,7 @@ pub fn live_to_summary(live: LiveRoom) -> RoomSummary {
     }
 }
 
-fn room_err(e: RoomError) -> NetError {
+pub(crate) fn room_err(e: RoomError) -> NetError {
     match e {
         RoomError::Full => NetError::RoomFull { max: 0 },
         RoomError::Closed => NetError::RoomClosed,

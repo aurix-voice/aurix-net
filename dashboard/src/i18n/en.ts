@@ -138,7 +138,7 @@ export const en = {
   "projects.limit.max_rooms": "Max open rooms",
   "projects.limit.max_players_per_room": "Max players per room",
   "projects.limit.max_events_per_sec_per_room": "Events / s per room",
-  "projects.limit.max_events_per_sec_per_player": "Events / s per player",
+  "projects.limit.max_events_per_sec_per_player": "Events / s per player, to each receiver",
   "projects.limit.max_event_bytes": "Max event bytes",
   "projects.limit.allowed_regions": "Allowed regions (comma-separated)",
   "projects.issueKey": "Issue key",

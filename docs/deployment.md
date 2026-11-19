@@ -61,8 +61,8 @@ not be baked into images or committed; use your orchestrator's secret store.
 
 `limits.*` in the config are node-wide ceilings; per-project quotas are set with the operator
 API. Defaults: 512 sessions per IP, 200 HTTP rps per IP, 600 WS connects/min per IP, 20 auth
-failures/min per IP, 20 writes/s and 500 grants/s per API key, 2000 events/s per room, 60 per
-player.
+failures/min per IP, 20 writes/s and 500 grants/s per API key, 4000 events/s per room, 120 per
+player and receiver.
 
 ## Upgrades
 

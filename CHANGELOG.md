@@ -23,6 +23,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - Limits: a rate limit of `0` (`http_rps_per_ip`, `ws_connects_per_min_per_ip`,
   `auth_failures_per_min_per_ip`, `writes_per_sec_per_key`, `grants_per_sec_per_key`) is refused
   at start. It used to start a node that refused every request of that kind.
+- Event limits: `max_events_per_sec_per_player` is counted for each receiver a player names
+  (`actors`, `master`) and once more for events to the whole room (`all`, `others`); it used to
+  be one count for everything a player sent. The defaults are 120 per player (was 60) and 4000
+  per room (was 2000). A project quota or a node `[limits]` value set by hand keeps its number
+  under the new meaning.
 - Web SDK: `Client.on` is typed per event (`ClientEvents`), so a listener gets the right argument
   types instead of `any`; control messages are `ControlMessage`, and `StateMachine.fromJSON` takes
   `StateMachineJson`. The sources follow Prettier and typescript-eslint (`npm run lint`,
@@ -39,6 +44,15 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   for a string, and the node sends an object.
 - Console: the matchmaking page filed every ticket for 8 players whatever size the form showed;
   it sent the size in a field the node does not read.
+- Web SDK: a late joiner got neither the cached relay events nor the chat history. The node sends
+  them in `joined.cached`, and the client dropped that field. They are now emitted as `event` after
+  the join (`cached: true`, also kept in `Client.cached`), and `Chat.join` delivers the history of
+- Web and Unity SDKs: one lost connection was reported more than once. The Web client fired
+  `closed` up to three times (the link, the WebTransport session, then the control channel), so a
+  handler that rejoins opened three connections for one player; the managed C# client raised
+  `OnClosed` on every `Poll` once the link was dead. It is now reported once per connection.
+- Web and Unity SDKs: `connectAndJoin` and `rejoin` left the control connection open when the join
+  failed, and the game had no way to close it. It is now closed before the error is returned.
 - SDKs, lockstep rooms: an input was confirmed more than once when the game did not send one every
   tick (5 inputs sent 200 ms apart in a 30 Hz room came back as 12). Earlier inputs were resent
   under new tick numbers; they are now resent only when the ticks follow each other.
@@ -50,6 +64,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   client). A spawn, despawn or ownership op could also be applied twice: earlier inputs were
   resent under new tick numbers when the ticks were not consecutive. They are now resent only
   under their own ticks.
+- Relay: a host that sends every client its own events (the Unreal driver sends one per engine
+  packet) ran into the per-player event limit with two or three clients, and the node dropped
+  the rest. The limit is now counted per receiver, see Changed.
+- Relay: an event over the limit sent as a JSON `event` message closed the player's connection,
+  and one sent on the data path was answered with `invalid`. Both are dropped with
+  `rate_limited` and the connection stays, as documented.
 - Unity SDK: a room named `actor` gave every player the actor id -2147483648, and a player whose
   display name is `data` could not join and blocked the room for everyone after him. The managed
   client searched the control message text for a field name and took the first match, even inside

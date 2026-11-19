@@ -6,6 +6,8 @@ export interface EventFrame {
   target: Target;
   group?: number;
   payload: Uint8Array;
+  /** Set on events the room kept for late joiners, replayed after a join. */
+  cached?: boolean;
 }
 
 /** Event cache flag: `add` keeps the event for late joiners (current cache slice), `remove` drops your earlier cached events with the same code. */

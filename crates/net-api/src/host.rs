@@ -411,7 +411,7 @@ pub fn handle_data_frame(
     let out = hosted
         .room
         .raise_event(actor, frame, channel, Instant::now())
-        .map_err(|e| NetError::Invalid(e.to_string()))?;
+        .map_err(crate::ws::room_err)?;
     dispatch(hosted, out, metrics);
     Ok(())
 }

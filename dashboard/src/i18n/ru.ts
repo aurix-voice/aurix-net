@@ -130,7 +130,7 @@ export const ru: Messages = {
   "projects.limit.max_rooms": "Макс. открытых комнат",
   "projects.limit.max_players_per_room": "Макс. игроков в комнате",
   "projects.limit.max_events_per_sec_per_room": "Событий/с на комнату",
-  "projects.limit.max_events_per_sec_per_player": "Событий/с на игрока",
+  "projects.limit.max_events_per_sec_per_player": "Событий/с от игрока каждому получателю",
   "projects.limit.max_event_bytes": "Макс. байт события",
   "projects.limit.allowed_regions": "Разрешённые регионы (через запятую)",
   "projects.issueKey": "Выдать ключ",

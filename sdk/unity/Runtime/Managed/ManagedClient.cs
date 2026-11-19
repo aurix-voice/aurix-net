@@ -27,6 +27,9 @@ namespace Aurix.Net.Managed
     {
         ClientWebSocket _ws;
         Link _link = new Link();
+
+        // One lost connection is reported once, whichever of the link and the control channel notices it first.
+        bool _lost;
         readonly ConcurrentQueue<object> _inbox = new ConcurrentQueue<object>();
         readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
         CancellationTokenSource _cts;
@@ -115,21 +118,42 @@ namespace Aurix.Net.Managed
             int timeoutMs = 10000
         )
         {
-            var client = await ConnectAsync(httpUrl, grant, timeoutMs);
+            try
+            {
+                return await JoinOrDisposeAsync(
+                    await ConnectAsync(httpUrl, grant, timeoutMs),
+                    joinJson,
+                    timeoutMs
+                );
+            }
+            catch (NetException error) when (error.Message.Contains("room_elsewhere:"))
+            {
+                var url = error
+                    .Message.Substring(error.Message.IndexOf("room_elsewhere:") + 15)
+                    .Trim();
+                return await JoinOrDisposeAsync(
+                    await ConnectAsync(url, grant, timeoutMs),
+                    joinJson,
+                    timeoutMs
+                );
+            }
+        }
+
+        static async Task<ManagedClient> JoinOrDisposeAsync(
+            ManagedClient client,
+            string joinJson,
+            int timeoutMs
+        )
+        {
             try
             {
                 await client.JoinRawAsync(joinJson, timeoutMs);
                 return client;
             }
-            catch (NetException error) when (error.Message.Contains("room_elsewhere:"))
+            catch
             {
                 client.Dispose();
-                var url = error
-                    .Message.Substring(error.Message.IndexOf("room_elsewhere:") + 15)
-                    .Trim();
-                var c2 = await ConnectAsync(url, grant, timeoutMs);
-                await c2.JoinRawAsync(joinJson, timeoutMs);
-                return c2;
+                throw;
             }
         }
 
@@ -249,6 +273,7 @@ namespace Aurix.Net.Managed
             RoomMode = Json.Str(joined, "mode");
             // Every join gets its own data path, and the node starts a fresh link on it.
             _link = new Link();
+            _lost = false;
             _dataReady = false;
             var data = Json.Obj(joined, "data");
             if (Json.Bool(data, "ws_tunnel") == false)
@@ -352,7 +377,7 @@ namespace Aurix.Net.Managed
                 _lastPingMs = now;
                 _ = SendControlAsync("{\"t\":\"ping\",\"ts\":" + now + "}");
             }
-            if (!_link.Poll())
+            if (!_link.Poll() && !_lost)
             {
                 _inbox.Enqueue(new Closed { Reason = "link dead" });
             }
@@ -415,7 +440,11 @@ namespace Aurix.Net.Managed
                         FlushLink();
                         break;
                     case Closed closed:
-                        OnClosed?.Invoke(closed.Reason);
+                        if (!_lost)
+                        {
+                            _lost = true;
+                            OnClosed?.Invoke(closed.Reason);
+                        }
                         break;
                 }
             }

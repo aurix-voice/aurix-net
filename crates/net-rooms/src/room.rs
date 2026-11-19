@@ -50,6 +50,36 @@ pub struct RoomConfig {
     pub empty_ttl: Duration,
 }
 
+/// Token bucket on the caller's clock.
+#[derive(Debug, Clone)]
+struct Bucket {
+    tokens: f64,
+    refilled: Instant,
+}
+
+impl Bucket {
+    fn full(burst: f64, now: Instant) -> Self {
+        Self {
+            tokens: burst,
+            refilled: now,
+        }
+    }
+
+    fn refill(&mut self, rate: f64, burst: f64, now: Instant) {
+        let elapsed = now.duration_since(self.refilled).as_secs_f64();
+        self.refilled = now;
+        self.tokens = (self.tokens + elapsed * rate).min(burst);
+    }
+
+    fn has_token(&self) -> bool {
+        self.tokens >= 1.0
+    }
+
+    fn take(&mut self) {
+        self.tokens -= 1.0;
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Player {
     pub actor: ActorId,
@@ -60,8 +90,10 @@ pub struct Player {
     pub offline_since: Option<Instant>,
     pub groups: HashSet<u16>,
     pub spectator: bool,
-    tokens: f64,
-    last_refill: Instant,
+    /// Events to the room as a whole.
+    broadcasts: Bucket,
+    /// Events addressed to one receiver, by receiver.
+    flows: HashMap<ActorId, Bucket>,
     joined_at: Instant,
     events_in: u64,
     bytes_in: u64,
@@ -185,9 +217,7 @@ pub struct Room {
     cache: VecDeque<CachedEvent>,
     /// Slice newly cached events are stamped with (see `ClientMsg::CacheSlice`).
     cache_slice: u16,
-    /// Token bucket for events.
-    tokens: f64,
-    last_refill: Instant,
+    events: Bucket,
     pub created: Instant,
     empty_since: Option<Instant>,
     /// Map player_id -> actor for rejoin.
@@ -196,7 +226,7 @@ pub struct Room {
 
 impl Room {
     pub fn new(cfg: RoomConfig, now: Instant) -> Self {
-        let tokens = cfg.max_events_per_sec as f64;
+        let events = Bucket::full(cfg.max_events_per_sec as f64, now);
         Self {
             cfg,
             players: BTreeMap::new(),
@@ -204,8 +234,7 @@ impl Room {
             next_actor: 1,
             cache: VecDeque::new(),
             cache_slice: 0,
-            tokens,
-            last_refill: now,
+            events,
             created: now,
             empty_since: Some(now),
             by_player: HashMap::new(),
@@ -372,8 +401,8 @@ impl Room {
             offline_since: None,
             groups: HashSet::new(),
             spectator,
-            tokens: 2.0 * self.cfg.max_events_per_sec_per_player as f64,
-            last_refill: now,
+            broadcasts: Bucket::full(self.player_burst(), now),
+            flows: HashMap::new(),
             joined_at: now,
             events_in: 0,
             bytes_in: 0,
@@ -417,8 +446,8 @@ impl Room {
                     offline_since: Some(now),
                     groups: HashSet::new(),
                     spectator: false,
-                    tokens: 2.0 * self.cfg.max_events_per_sec_per_player as f64,
-                    last_refill: now,
+                    broadcasts: Bucket::full(self.player_burst(), now),
+                    flows: HashMap::new(),
                     joined_at: now,
                     events_in: 0,
                     bytes_in: 0,
@@ -535,6 +564,9 @@ impl Room {
                 return out;
             };
             self.by_player.remove(&player.player_id);
+            for other in self.players.values_mut() {
+                other.flows.remove(&actor);
+            }
             if self.cfg.cleanup_cache_on_leave {
                 self.cache.retain(|c| c.from != actor);
             }
@@ -737,11 +769,8 @@ impl Room {
         Ok(out)
     }
 
-    fn refill(&mut self, now: Instant) {
-        let dt = now.duration_since(self.last_refill).as_secs_f64();
-        self.last_refill = now;
-        let max = self.cfg.max_events_per_sec as f64;
-        self.tokens = (self.tokens + dt * max).min(max);
+    fn player_burst(&self) -> f64 {
+        2.0 * self.cfg.max_events_per_sec_per_player as f64
     }
 
     /// Routes an event from `from`. `frame.from` is overwritten with the real sender.
@@ -761,23 +790,38 @@ impl Room {
         if frame.payload.len() > self.cfg.max_event_bytes {
             return Err(RoomError::EventTooLarge);
         }
-        self.refill(now);
-        if self.tokens < 1.0 {
+        let room_rate = self.cfg.max_events_per_sec as f64;
+        self.events.refill(room_rate, room_rate, now);
+        if !self.events.has_token() {
             return Err(RoomError::EventRate);
         }
-        {
-            let rate = self.cfg.max_events_per_sec_per_player as f64;
-            let sender = self.players.get_mut(&from).unwrap();
-            let dt = now.duration_since(sender.last_refill).as_secs_f64();
-            sender.last_refill = now;
-            sender.tokens = (sender.tokens + dt * rate).min(2.0 * rate);
-            if sender.tokens < 1.0 {
+        let receivers = self.addressed(&frame.target);
+        let rate = self.cfg.max_events_per_sec_per_player as f64;
+        let burst = self.player_burst();
+        let sender = self.players.get_mut(&from).unwrap();
+        if receivers.is_empty() {
+            sender.broadcasts.refill(rate, burst, now);
+            if !sender.broadcasts.has_token() {
                 return Err(RoomError::PlayerEventRate);
             }
-            sender.tokens -= 1.0;
-            sender.count_event(frame.payload.len(), now);
+            sender.broadcasts.take();
+        } else {
+            for receiver in &receivers {
+                sender
+                    .flows
+                    .entry(*receiver)
+                    .or_insert_with(|| Bucket::full(burst, now))
+                    .refill(rate, burst, now);
+            }
+            if receivers.iter().any(|r| !sender.flows[r].has_token()) {
+                return Err(RoomError::PlayerEventRate);
+            }
+            for receiver in &receivers {
+                sender.flows.get_mut(receiver).unwrap().take();
+            }
         }
-        self.tokens -= 1.0;
+        sender.count_event(frame.payload.len(), now);
+        self.events.take();
         frame.from = from;
 
         match frame.cache {
@@ -832,6 +876,22 @@ impl Room {
             .map(|a| Outgoing::Data(a, channel, frame.clone()))
             .collect();
         Ok(out)
+    }
+
+    /// The members an event names one by one; empty for an event to the room as a whole.
+    fn addressed(&self, target: &EventTarget) -> Vec<ActorId> {
+        let mut receivers: Vec<ActorId> = match target {
+            EventTarget::All | EventTarget::Others => Vec::new(),
+            EventTarget::Master => self.master.into_iter().collect(),
+            EventTarget::Actors(list) => list
+                .iter()
+                .copied()
+                .filter(|actor| self.players.contains_key(actor))
+                .collect(),
+        };
+        receivers.sort_unstable();
+        receivers.dedup();
+        receivers
     }
 
     fn broadcast_all(&self, msg: ServerMsg) -> Vec<Outgoing> {
@@ -1036,6 +1096,57 @@ mod tests {
         assert_eq!(room.cached_for_join()[0].0, 4);
         room.leave(alice, false, t2);
         assert!(room.cached_for_join().is_empty());
+    }
+
+    #[test]
+    fn player_limit_is_counted_for_each_receiver_apart() {
+        let now = Instant::now();
+        let mut room = Room::new(
+            RoomConfig {
+                max_players: 3,
+                max_events_per_sec: 100,
+                ..cfg()
+            },
+            now,
+        );
+        let (host, _) = room.join("p1", "A", Map::new(), None, false, now).unwrap();
+        let (bob, _) = room.join("p2", "B", Map::new(), None, false, now).unwrap();
+        let (cat, _) = room.join("p3", "C", Map::new(), None, false, now).unwrap();
+        let send = |room: &mut Room, target: EventTarget| {
+            room.raise_event(
+                host,
+                ev(1, target, CacheOp::None),
+                Channel::ReliableOrdered,
+                now,
+            )
+        };
+        // Two seconds' worth to one receiver, then that receiver is closed to the sender.
+        for _ in 0..6 {
+            send(&mut room, EventTarget::Actors(vec![bob])).unwrap();
+        }
+        assert_eq!(
+            send(&mut room, EventTarget::Actors(vec![bob])).unwrap_err(),
+            RoomError::PlayerEventRate
+        );
+        assert_eq!(
+            send(&mut room, EventTarget::Actors(vec![bob, cat])).unwrap_err(),
+            RoomError::PlayerEventRate
+        );
+        for _ in 0..6 {
+            send(&mut room, EventTarget::Actors(vec![cat])).unwrap();
+        }
+        for _ in 0..6 {
+            send(&mut room, EventTarget::Others).unwrap();
+        }
+        assert_eq!(
+            send(&mut room, EventTarget::Others).unwrap_err(),
+            RoomError::PlayerEventRate
+        );
+        // A list naming nobody in the room is charged like an event to the room.
+        assert_eq!(
+            send(&mut room, EventTarget::Actors(vec![ActorId(99)])).unwrap_err(),
+            RoomError::PlayerEventRate
+        );
     }
 
     #[test]
