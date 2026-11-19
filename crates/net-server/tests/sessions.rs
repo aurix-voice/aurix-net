@@ -226,6 +226,48 @@ async fn left_names_the_room_it_is_about() {
 }
 
 #[tokio::test]
+async fn id_of_a_join_or_a_leave_comes_back_in_its_answer() {
+    let node = Node::start().await;
+    let project = node.project("join-id").await;
+    let mut alice = project.player("alice").await;
+    let answered = |answer: &Value| (answer["t"].clone(), answer["id"].clone());
+
+    let created = alice
+        .call(json!({"t": "create", "name": "arena", "max_players": 1, "id": 1}))
+        .await;
+    assert_eq!(answered(&created), (json!("joined"), json!(1)));
+    alice.send(json!({"t": "leave", "id": 2})).await;
+    assert_eq!(
+        answered(&alice.until("left").await),
+        (json!("left"), json!(2))
+    );
+    let entered = alice
+        .call(json!({"t": "join_or_create", "name": "arena", "max_players": 1, "id": 3}))
+        .await;
+    assert_eq!(answered(&entered), (json!("joined"), json!(3)));
+
+    let mut bob = project.player("bob").await;
+    for (id, join) in [
+        json!({"t": "join", "name": "arena"}),
+        json!({"t": "join_or_create", "name": "arena"}),
+        json!({"t": "join_random", "filter": {"map": "none"}}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut join = join;
+        join["id"] = json!(id);
+        assert_eq!(answered(&bob.call(join).await), (json!("error"), json!(id)));
+    }
+
+    // A request without an id is answered without one.
+    let refused = bob.call(json!({"t": "join", "name": "arena"})).await;
+    assert_eq!(answered(&refused), (json!("error"), Value::Null));
+    bob.send(json!({"t": "leave"})).await;
+    assert_eq!(bob.until("left").await.get("id"), None);
+}
+
+#[tokio::test]
 async fn closed_room_frees_its_players_and_stays_closed() {
     let node = Node::start().await;
     let project = node.project("close").await;

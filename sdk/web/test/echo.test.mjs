@@ -102,6 +102,29 @@ function mutableLink() {
   return { url: `http://127.0.0.1:${server.address().port}`, mute: () => { muted = true; }, gag: (on) => { gagged = on; }, close: () => server.close() };
 }
 
+test("a joined that repeats the id of another join does not answer this one", { skip: !key }, async (t) => {
+  // ahead of the node's answer to a join, this proxy sends the answer to a join the client gave up
+  const server = new WebSocketServer({ port: 0 });
+  t.after(() => server.close());
+  server.on("connection", (near, request) => {
+    const far = new WebSocket(http.replace(/^http/, "ws") + request.url);
+    const opened = new Promise((resolve) => far.on("open", resolve));
+    near.on("message", async (data, binary) => { await opened; far.send(binary ? data : data.toString()); });
+    far.on("message", (data, binary) => {
+      const message = binary ? undefined : JSON.parse(data.toString());
+      if (message?.t === "joined") near.send(JSON.stringify({ ...message, name: "given-up", id: message.id + 1 }));
+      near.send(binary ? data : data.toString());
+    });
+    far.on("close", () => near.close()); near.on("close", () => far.close());
+  });
+  const a = await Client.connect(`http://127.0.0.1:${server.address().port}`, await grant("web-join-id"));
+  t.after(() => a.close());
+  const room = `web-join-id-${process.pid}`;
+  assert.equal((await a.joinOrCreate(room, "relay", 4)).name, room);
+  a.leave();
+  assert.equal((await a.joinRandom({}, `map = '${room}'`).catch((error) => error)).code, "not_found");
+});
+
 test("a lost connection is reported once, also when the handler closes the client", { skip: !key }, async () => {
   const link = mutableLink();
   const a = await Client.connect(link.url, await grant("web-lost"));

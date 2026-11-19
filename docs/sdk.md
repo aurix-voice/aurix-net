@@ -111,7 +111,8 @@ session, both fan out across the fleet):
   the JSON answers (`Json.Str/Num/Obj` helpers read them).
 - Rust: `client.stats(id).await?` / `client.find_friends(id, vec![...]).await?`; the answers arrive as
   `Event::Control(ServerMsg::Stats { id, .. })` / `ServerMsg::Friends { id, .. }`, a refusal as
-  `ServerMsg::Error { id, .. }`, each with the `id` of its request.
+  `ServerMsg::Error { id, .. }`, each with the `id` of its request. The ids from 2^31 up
+  (`OWN_IDS`) are the client's own, for its joins and leaves; a game numbers its requests below.
 - One-shot room list and WebRPC: Web `await client.rooms("map = 'dust'")` / `await client.rpc("inventory.get", {slot: 3})`
   → `{ok, status, body, error?}`; Unity `RoomsAsync(expr)` / `RpcAsync(name, bodyJson)`; Rust
   `client.rpc(id, name, body)` with the answer as `ServerMsg::RpcResult { id, .. }`. `rpc` reaches the

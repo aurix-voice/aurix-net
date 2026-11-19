@@ -510,11 +510,25 @@ export class Client {
     throw err;
   }
   async join(msg: object): Promise<Joined> {
-    this.send(msg);
-    const joined = await this.waitFor<Joined>(
-      (message) => message.t === "joined",
-      refuses,
-    );
+    // a node that repeats the id of a join answers this one and no other with it
+    const id = this.joinId();
+    this.send(id === undefined ? msg : { ...msg, id });
+    let joined: Joined;
+    try {
+      joined = await this.waitFor<Joined>(
+        (reply) => reply.t === "joined" && reply.id === id,
+        (reply) => refuses(reply, id),
+      );
+    } catch (error) {
+      if (
+        (error as { code?: string }).code === undefined &&
+        this.ws.readyState === this.ws.OPEN
+      ) {
+        // the node may have let the client in, or may yet: the client is in no room after this
+        this.leave();
+      }
+      throw error;
+    }
     this.lastJoin = wayBack(msg as Record<string, unknown>, joined.name);
     this.joined = joined;
     this.actor = joined.actor;
@@ -755,12 +769,18 @@ export class Client {
   leave() {
     this.closePath();
     this.forgetRoom();
-    this.send({ t: "leave" });
+    this.send({ t: "leave", id: this.joinId() });
+  }
+  private joinId(): number | undefined {
+    return this.nodeSupports.has("join_id") ? this.nextId() : undefined;
+  }
+  private nextId(): number {
+    return (this.requestSeq = (this.requestSeq + 1) >>> 0);
   }
   /** Sends `message` under an id of its own and waits for the `answer` or the `error` that
    *  repeats it. A node that repeats no ids answers without one, and that answer is taken. */
   private request<T>(message: object, answer: string): Promise<T> {
-    const id = (this.requestSeq = (this.requestSeq + 1) >>> 0);
+    const id = this.nextId();
     this.send({ ...message, id });
     return this.waitFor<T>(
       (reply) =>

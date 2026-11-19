@@ -15,7 +15,7 @@ use net_auth::Grant;
 use net_common::{ActorId, NetError, ProjectId, Result, RoomId, RoomMode, SessionId};
 use net_control::redis_store::LiveRoom;
 use net_db::queries;
-use net_rooms::protocol::{ClientMsg, DataEndpoint, RoomSummary, ServerMsg, UNSEQUENCED};
+use net_rooms::protocol::{ClientMsg, DataEndpoint, RoomSummary, ServerMsg, JOIN_ID, UNSEQUENCED};
 use net_rooms::{EventFrame, Room, RoomConfig, RoomError};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -168,7 +168,7 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
         session: sess.id.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         region: st.region.to_string(),
-        supports: vec![UNSEQUENCED.to_string()],
+        supports: vec![UNSEQUENCED.to_string(), JOIN_ID.to_string()],
     });
 
     let mut overrun = false;
@@ -435,6 +435,7 @@ impl Session {
                 region,
                 player_props,
                 reserved,
+                id,
             } => {
                 let grant = self.grant()?.clone();
                 self.ensure_not_in_room()?;
@@ -454,7 +455,7 @@ impl Session {
                         reserved,
                     )
                     .await?;
-                self.join_created(handle, player_props).await
+                self.join_created(handle, player_props, id).await
             }
             ClientMsg::Join {
                 name,
@@ -462,6 +463,7 @@ impl Session {
                 rejoin_actor,
                 schema_hash,
                 spectator,
+                id,
             } => {
                 let grant = self.grant()?.clone();
                 self.ensure_not_in_room()?;
@@ -491,7 +493,7 @@ impl Session {
                         }
                     }
                 }
-                self.join_hosted(handle, player_props, rejoin_actor, spectator, false)
+                self.join_hosted(handle, player_props, rejoin_actor, spectator, false, id)
                     .await
             }
             ClientMsg::JoinOrCreate {
@@ -505,6 +507,7 @@ impl Session {
                 region,
                 player_props,
                 reserved,
+                id,
             } => {
                 let grant = self.grant()?.clone();
                 self.ensure_not_in_room()?;
@@ -555,9 +558,9 @@ impl Session {
                     }
                 };
                 if created {
-                    self.join_created(handle, player_props).await
+                    self.join_created(handle, player_props, id).await
                 } else {
-                    self.join_hosted(handle, player_props, None, false, false)
+                    self.join_hosted(handle, player_props, None, false, false, id)
                         .await
                 }
             }
@@ -566,6 +569,7 @@ impl Session {
                 expr,
                 match_type,
                 player_props,
+                id,
             } => {
                 let grant = self.grant()?.clone();
                 self.ensure_not_in_room()?;
@@ -624,7 +628,7 @@ impl Session {
                         .by_name(grant.project, &pick.name)
                         .ok_or_else(|| NetError::NotFound("no matching room".into()))?;
                     return self
-                        .join_hosted(handle, player_props, None, false, false)
+                        .join_hosted(handle, player_props, None, false, false, id)
                         .await;
                 }
                 let me = self.st.node_id.to_string();
@@ -656,7 +660,7 @@ impl Session {
                     node.http_url, pick.name
                 )))
             }
-            ClientMsg::Leave => {
+            ClientMsg::Leave { id } => {
                 let room = self
                     .room
                     .as_ref()
@@ -665,6 +669,7 @@ impl Session {
                 self.ctl.send(ServerMsg::Left {
                     reason: "left".into(),
                     room,
+                    id,
                 });
                 Ok(())
             }
@@ -1157,9 +1162,10 @@ impl Session {
         &mut self,
         handle: Arc<Mutex<HostedRoom>>,
         player_props: Map<String, Value>,
+        asked: Option<u32>,
     ) -> Result<()> {
         let joined = self
-            .join_hosted(handle.clone(), player_props, None, false, true)
+            .join_hosted(handle.clone(), player_props, None, false, true, asked)
             .await;
         if joined.is_err() {
             let (empty, project, id) = {
@@ -1180,6 +1186,7 @@ impl Session {
         rejoin: Option<ActorId>,
         spectator: bool,
         created: bool,
+        asked: Option<u32>,
     ) -> Result<()> {
         let grant = self.grant()?.clone();
         let project = self.admit(&grant).await?;
@@ -1257,6 +1264,7 @@ impl Session {
                     session.control.send(ServerMsg::Left {
                         reason: "session_replaced".into(),
                         room: Some(hr.room.id().to_string()),
+                        id: None,
                     });
                 }
             }
@@ -1338,6 +1346,7 @@ impl Session {
                 tick: hr.lockstep.as_ref().map(|l| l.tick.0),
                 seed: hr.lockstep.as_ref().map(|l| l.seed),
                 next_spawn_tag: hr.sync.as_ref().and_then(|s| s.next_spawn_tag(actor)),
+                id: asked,
             }
         };
         let (id, actor) = match &joined {
@@ -2483,6 +2492,7 @@ pub async fn handoff_all(st: &Shared, settle_until: tokio::time::Instant) -> usi
             session.send(ServerMsg::Left {
                 reason: "rehost".into(),
                 room: Some(id.to_string()),
+                id: None,
             });
         }
     }
@@ -2540,6 +2550,7 @@ pub async fn reconcile_rooms(st: &Shared) -> Result<(u64, usize)> {
             session.send(ServerMsg::Left {
                 reason: "rehost".into(),
                 room: Some(id.to_string()),
+                id: None,
             });
         }
     }
@@ -2653,6 +2664,7 @@ pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {
             session.send(ServerMsg::Left {
                 reason: "room closed".into(),
                 room: Some(id.to_string()),
+                id: None,
             });
         }
     }

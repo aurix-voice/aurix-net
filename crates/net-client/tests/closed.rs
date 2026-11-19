@@ -57,6 +57,7 @@ async fn node(left: Option<ServerMsg>) -> String {
                         tick: None,
                         seed: None,
                         next_spawn_tag: None,
+                        id: None,
                     };
                     ws.send(text(&joined)).await.unwrap();
                 }
@@ -93,6 +94,7 @@ async fn in_a_room(node: &str) -> Client {
         rejoin_actor: None,
         schema_hash: None,
         spectator: false,
+        id: None,
     };
     client.join(join).await.unwrap();
     client
@@ -115,6 +117,7 @@ async fn a_client_the_node_took_out_of_its_room_refuses_what_is_sent() {
     let kicked = ServerMsg::Left {
         reason: "kicked".into(),
         room: Some("id".into()),
+        id: None,
     };
     let mut client = in_a_room(&node(Some(kicked)).await).await;
     while let Some(event) = client.next_event().await {

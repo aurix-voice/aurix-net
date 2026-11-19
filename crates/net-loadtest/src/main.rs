@@ -417,6 +417,7 @@ async fn player(
         region: None,
         player_props: Default::default(),
         reserved: Vec::new(),
+        id: None,
     }))
     .await?;
 

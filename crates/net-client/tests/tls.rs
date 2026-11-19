@@ -43,6 +43,7 @@ fn joined() -> ServerMsg {
         tick: None,
         seed: None,
         next_spawn_tag: None,
+        id: None,
     }
 }
 
@@ -127,6 +128,7 @@ async fn a_client_joins_and_sends_through_a_node_behind_tls() {
         rejoin_actor: None,
         schema_hash: None,
         spectator: false,
+        id: None,
     };
     client.join(join).await.unwrap();
     client

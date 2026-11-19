@@ -813,4 +813,70 @@ public class ManagedCoreTests
         Assert.That(pongs, Is.EqualTo(new[] { 987654321d }));
         Assert.That(client.RttMs, Is.GreaterThan(0f));
     }
+
+    // A node that repeats the id of a join: ahead of its refusal of one it sends the `joined` of a join
+    // the client gave up. It does not answer a join into the room `silent`.
+    static async Task AnswerAJoinGivenUp(HttpListener listener, List<string> asked)
+    {
+        var socket = (await (await listener.GetContextAsync()).AcceptWebSocketAsync(null)).WebSocket;
+        var buffer = new byte[4096];
+        Task Say(string json) => socket.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(json)), WebSocketMessageType.Text, true, CancellationToken.None);
+        await Say("{\"t\":\"hello\",\"session\":\"s\",\"version\":\"0\",\"region\":\"local\",\"supports\":[\"join_id\"]}");
+        try
+        {
+            while (true)
+            {
+                var read = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                if (read.MessageType == WebSocketMessageType.Close) break;
+                string json = Encoding.UTF8.GetString(buffer, 0, read.Count);
+                string type = ManagedClientTestHooks.Str(json, "t");
+                if (type == "auth") await Say("{\"t\":\"authed\",\"player_id\":\"ann\",\"name\":\"Ann\"}");
+                if (type != "join" && type != "leave") continue;
+                asked.Add(json);
+                ulong id = ManagedClientTestHooks.ULong(json, "id") ?? 0;
+                if (type == "leave") { await Say("{\"t\":\"left\",\"reason\":\"left\",\"id\":" + id + "}"); continue; }
+                if (ManagedClientTestHooks.Str(json, "name") == "silent") continue;
+                await Say("{\"t\":\"joined\",\"room\":\"r\",\"name\":\"given-up\",\"mode\":\"relay\",\"actor\":1,\"master\":1,\"max_players\":4,\"props\":{},\"players\":[],\"data\":{\"host\":\"\",\"port\":0,\"cert_sha256\":\"\",\"ticket\":\"\",\"ws_tunnel\":true},\"cached\":[],\"id\":" + (id + 1) + "}");
+                await Say("{\"t\":\"error\",\"code\":\"room_closed\",\"message\":\"\",\"id\":" + id + "}");
+            }
+        }
+        catch (WebSocketException) { }
+    }
+
+    [Test]
+    public async Task AJoinedThatRepeatsTheIdOfAnotherJoinDoesNotAnswerThisOne()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+        using var listener = new HttpListener();
+        listener.Prefixes.Add("http://127.0.0.1:" + port + "/"); listener.Start();
+        var asked = new List<string>();
+        _ = AnswerAJoinGivenUp(listener, asked);
+        using var client = await ManagedClient.ConnectAsync("http://127.0.0.1:" + port, "grant");
+
+        var refused = Assert.ThrowsAsync<NetException>(() => client.JoinRawAsync("{\"t\":\"join\",\"name\":\"room\"}", 2000));
+        Assert.That(refused.Message, Does.StartWith("room_closed"));
+        await client.LeaveAsync();
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (asked.Count < 2 && clock.ElapsedMilliseconds < 2000) await Task.Delay(10);
+        Assert.That(asked.Select(json => ManagedClientTestHooks.ULong(json, "id")), Is.EqualTo(new ulong?[] { 1, 2 }));
+    }
+
+    [Test]
+    public async Task ClientLeavesAfterAJoinTheNodeDidNotAnswerInTime()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+        using var listener = new HttpListener();
+        listener.Prefixes.Add("http://127.0.0.1:" + port + "/"); listener.Start();
+        var asked = new List<string>();
+        _ = AnswerAJoinGivenUp(listener, asked);
+        using var client = await ManagedClient.ConnectAsync("http://127.0.0.1:" + port, "grant");
+
+        var late = Assert.ThrowsAsync<NetException>(() => client.JoinRawAsync("{\"t\":\"join\",\"name\":\"silent\"}", 300));
+        Assert.That(late.Message, Is.EqualTo("timeout waiting for joined"));
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (asked.Count < 2 && clock.ElapsedMilliseconds < 2000) await Task.Delay(10);
+        Assert.That(asked.Select(json => ManagedClientTestHooks.Str(json, "t")), Is.EqualTo(new[] { "join", "leave" }));
+    }
 }

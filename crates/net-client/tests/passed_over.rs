@@ -45,6 +45,7 @@ async fn node() -> String {
                     let left = ServerMsg::Left {
                         reason: "left".into(),
                         room: Some("before".into()),
+                        id: None,
                     };
                     ws.send(text(&left)).await.unwrap();
                     ws.send(text(&notice("before joined"))).await.unwrap();
@@ -72,6 +73,7 @@ async fn node() -> String {
                         tick: None,
                         seed: None,
                         next_spawn_tag: None,
+                        id: None,
                     };
                     ws.send(text(&joined)).await.unwrap();
                 }
@@ -110,6 +112,7 @@ async fn what_the_node_says_during_a_join_reaches_the_game_in_order() {
         rejoin_actor: None,
         schema_hash: None,
         spectator: false,
+        id: None,
     };
     client.join(join).await.unwrap();
 
@@ -118,7 +121,7 @@ async fn what_the_node_says_during_a_join_reaches_the_game_in_order() {
         let event = tokio::time::timeout(Duration::from_secs(2), client.next_event()).await;
         match event {
             Ok(Some(Event::Control(ServerMsg::Notice { text, .. }))) => heard.push(text),
-            Ok(Some(Event::Control(ServerMsg::Left { reason, room }))) => {
+            Ok(Some(Event::Control(ServerMsg::Left { reason, room, .. }))) => {
                 heard.push(format!("left: {reason} {}", room.unwrap_or_default()))
             }
             Ok(Some(Event::Data { .. })) => heard.push("cached event".into()),

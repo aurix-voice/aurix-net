@@ -1,11 +1,11 @@
 //! A client that left a room hears nothing more of it, and a join it gave up does not answer
-//! the next one.
+//! the next one, nor does an answer the node lost fail it.
 
 use base64::Engine;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use net_client::net_common::{ActorId, Channel, RoomMode};
-use net_client::protocol::{ClientMsg, DataEndpoint, ServerMsg};
+use net_client::protocol::{ClientMsg, DataEndpoint, ServerMsg, JOIN_ID};
 use net_client::{Client, ClientError, Event, Options};
 use net_transport::{quic, Link};
 use std::time::{Duration, Instant};
@@ -23,7 +23,16 @@ fn authed() -> Message {
     })
 }
 
-fn joined(name: &str, data: DataEndpoint) -> Message {
+fn hello() -> Message {
+    text(&ServerMsg::Hello {
+        session: "session".into(),
+        version: "0".into(),
+        region: "local".into(),
+        supports: vec![JOIN_ID.into()],
+    })
+}
+
+fn joined(name: &str, data: DataEndpoint, id: Option<u32>) -> Message {
     text(&ServerMsg::Joined {
         room: name.into(),
         name: name.into(),
@@ -40,13 +49,15 @@ fn joined(name: &str, data: DataEndpoint) -> Message {
         tick: None,
         seed: None,
         next_spawn_tag: None,
+        id,
     })
 }
 
-fn left() -> Message {
+fn left(id: Option<u32>) -> Message {
     text(&ServerMsg::Left {
         reason: "left".into(),
         room: None,
+        id,
     })
 }
 
@@ -57,6 +68,7 @@ fn join(name: &str) -> ClientMsg {
         rejoin_actor: None,
         schema_hash: None,
         spectator: false,
+        id: None,
     }
 }
 
@@ -110,8 +122,8 @@ async fn busy_node() -> String {
         while let Some(Ok(Message::Text(request))) = ws.next().await {
             let answer = match serde_json::from_str(&request).unwrap() {
                 ClientMsg::Auth { .. } => authed(),
-                ClientMsg::Join { name, .. } => joined(&name, data.clone()),
-                ClientMsg::Leave => left(),
+                ClientMsg::Join { name, id, .. } => joined(&name, data.clone(), id),
+                ClientMsg::Leave { id } => left(id),
                 _ => continue,
             };
             ws.send(answer).await.unwrap();
@@ -138,64 +150,119 @@ async fn a_data_path_the_client_closed_says_nothing_of_its_end() {
     }
 }
 
-/// A node over the WebSocket tunnel that answers the first join later than the client waits.
-async fn late_node(wait: Duration) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let data = DataEndpoint {
-        host: "127.0.0.1".into(),
-        port: 0,
-        cert_sha256: String::new(),
-        ticket: base64::engine::general_purpose::STANDARD.encode(b"ticket"),
-        ws_tunnel: true,
-        webtransport_url: None,
-    };
-    tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
-        let mut late = Some(wait * 2);
-        while let Some(Ok(message)) = ws.next().await {
-            match message {
-                Message::Text(request) => {
-                    let answer = match serde_json::from_str(&request).unwrap() {
-                        ClientMsg::Auth { .. } => authed(),
-                        ClientMsg::Join { name, .. } => {
-                            if let Some(late) = late.take() {
-                                tokio::time::sleep(late).await;
-                            }
-                            joined(&name, data.clone())
-                        }
-                        ClientMsg::Leave => left(),
-                        _ => continue,
-                    };
-                    ws.send(answer).await.unwrap();
-                }
-                Message::Binary(_) => {
-                    for frame in first_frames() {
-                        ws.send(Message::Binary(frame)).await.unwrap();
-                    }
-                }
-                _ => {}
+/// What a node over the WebSocket tunnel does other than answer every request at once.
+#[derive(Clone, Copy, Default)]
+struct Node {
+    /// Lists [`JOIN_ID`] and repeats the `id` of a request in its answer.
+    join_ids: bool,
+    /// Answers the first join this much later.
+    late: Option<Duration>,
+    /// Loses its answer to the first leave.
+    loses_left: bool,
+}
+
+impl Node {
+    async fn listen(mut self) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let data = DataEndpoint {
+            host: "127.0.0.1".into(),
+            port: 0,
+            cert_sha256: String::new(),
+            ticket: base64::engine::general_purpose::STANDARD.encode(b"ticket"),
+            ws_tunnel: true,
+            webtransport_url: None,
+        };
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            if self.join_ids {
+                ws.send(hello()).await.unwrap();
             }
-        }
-    });
-    url
+            while let Some(Ok(message)) = ws.next().await {
+                match message {
+                    Message::Text(request) => {
+                        let answer = match serde_json::from_str(&request).unwrap() {
+                            ClientMsg::Auth { .. } => authed(),
+                            ClientMsg::Join { name, id, .. } => {
+                                if let Some(late) = self.late.take() {
+                                    tokio::time::sleep(late).await;
+                                }
+                                joined(&name, data.clone(), id.filter(|_| self.join_ids))
+                            }
+                            ClientMsg::Leave { .. } if std::mem::take(&mut self.loses_left) => {
+                                continue
+                            }
+                            ClientMsg::Leave { id } => left(id.filter(|_| self.join_ids)),
+                            _ => continue,
+                        };
+                        ws.send(answer).await.unwrap();
+                    }
+                    Message::Binary(_) => {
+                        for frame in first_frames() {
+                            ws.send(Message::Binary(frame)).await.unwrap();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+        url
+    }
+}
+
+const WAIT: Duration = Duration::from_millis(200);
+
+async fn client_of(node: Node) -> Client {
+    let options = Options {
+        tunnel: true,
+        connect_timeout: WAIT,
+        ..Options::default()
+    };
+    Client::connect(&node.listen().await, "grant", options)
+        .await
+        .unwrap()
+}
+
+async fn a_join_after_one_the_client_gave_up(node: Node) {
+    let mut client = client_of(Node {
+        late: Some(WAIT * 2),
+        ..node
+    })
+    .await;
+    let first = client.join(join("first")).await;
+    assert!(matches!(first, Err(ClientError::Timeout)), "{first:?}");
+    tokio::time::sleep(WAIT * 2).await;
+    let second = client.join(join("second")).await.unwrap();
+    assert_eq!(second.name, "second");
 }
 
 #[tokio::test]
 async fn the_answer_to_a_join_the_client_gave_up_is_not_the_answer_to_the_next() {
-    let wait = Duration::from_millis(200);
-    let options = Options {
-        tunnel: true,
-        connect_timeout: wait,
-        ..Options::default()
-    };
-    let mut client = Client::connect(&late_node(wait).await, "grant", options)
-        .await
-        .unwrap();
-    let first = client.join(join("first")).await;
-    assert!(matches!(first, Err(ClientError::Timeout)), "{first:?}");
-    tokio::time::sleep(wait * 2).await;
-    let second = client.join(join("second")).await.unwrap();
-    assert_eq!(second.name, "second");
+    a_join_after_one_the_client_gave_up(Node {
+        join_ids: true,
+        ..Node::default()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_node_that_repeats_no_id_answers_in_the_order_it_was_asked() {
+    a_join_after_one_the_client_gave_up(Node::default()).await;
+}
+
+#[tokio::test]
+async fn an_answer_to_a_leave_the_node_lost_fails_no_join_after_it() {
+    let mut client = client_of(Node {
+        join_ids: true,
+        loses_left: true,
+        ..Node::default()
+    })
+    .await;
+    client.join(join("first")).await.unwrap();
+    client.leave().await.unwrap();
+    for name in ["second", "third"] {
+        assert_eq!(client.join(join(name)).await.unwrap().name, name);
+        client.leave().await.unwrap();
+    }
 }

@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 
 /// In `supports` of `hello` and `auth`: the side takes [`Channel::UnreliableUnsequenced`].
 pub const UNSEQUENCED: &str = "unsequenced";
+/// In `supports` of `hello`: `create`, `join`, `join_or_create`, `join_random` and `leave` take
+/// an `id`, and the node repeats it in the `joined`, `left` or `error` that answers them.
+pub const JOIN_ID: &str = "join_id";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "t", rename_all = "snake_case", deny_unknown_fields)]
@@ -39,6 +42,9 @@ pub enum ClientMsg {
         /// Player ids whose seats are held for a short while (party slots).
         #[serde(default)]
         reserved: Vec<String>,
+        /// Comes back in the answer to this request, see [`JOIN_ID`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u32>,
     },
     Join {
         name: String,
@@ -54,6 +60,8 @@ pub enum ClientMsg {
         /// inputs; sync sends the whole world, lockstep delays the input stream.
         #[serde(default)]
         spectator: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u32>,
     },
     /// Join by name, create with these settings if absent.
     JoinOrCreate {
@@ -78,6 +86,8 @@ pub enum ClientMsg {
         /// Player ids whose slots are held for 60 s when this call creates the room (party join).
         #[serde(default)]
         reserved: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u32>,
     },
     /// Any open, visible room with a free slot, optionally filtered by lobby props.
     JoinRandom {
@@ -91,8 +101,13 @@ pub enum ClientMsg {
         /// `fill` (default: most players first), `serial` (fewest players first), `random`.
         #[serde(default)]
         match_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u32>,
     },
-    Leave,
+    Leave {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u32>,
+    },
     SetRoomProps {
         props: serde_json::Map<String, serde_json::Value>,
         /// Only apply if the current values match (compare-and-swap).
@@ -271,7 +286,12 @@ impl ClientMsg {
     /// The id a request carries for its answer, if it is one that can.
     pub fn request_id(&self) -> Option<u32> {
         match self {
-            ClientMsg::Stats { id }
+            ClientMsg::Create { id, .. }
+            | ClientMsg::Join { id, .. }
+            | ClientMsg::JoinOrCreate { id, .. }
+            | ClientMsg::JoinRandom { id, .. }
+            | ClientMsg::Leave { id }
+            | ClientMsg::Stats { id }
             | ClientMsg::FindFriends { id, .. }
             | ClientMsg::GetRooms { id, .. } => *id,
             ClientMsg::Rpc { id, .. } => Some(*id),
@@ -321,12 +341,18 @@ pub enum ServerMsg {
         /// Sync rooms that take tagged spawns only: the first spawn tag the player has not used.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next_spawn_tag: Option<u32>,
+        /// The `id` of the request this answers, when it carried one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u32>,
     },
     Left {
         reason: String,
         /// The room the session is out of, as in `joined.room`; absent when it was in none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         room: Option<String>,
+        /// The `id` of the `leave` this answers, when it carried one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u32>,
     },
     PlayerJoined {
         player: PlayerInfo,
@@ -402,7 +428,7 @@ pub enum ServerMsg {
         server_ms: u64,
     },
     /// `id`: the request this refuses, when that request carried one (`stats`, `find_friends`,
-    /// `get_rooms`, `rpc`).
+    /// `get_rooms`, `rpc`, a join, `leave`).
     Error {
         code: String,
         message: String,
@@ -438,6 +464,15 @@ mod tests {
     }
 
     #[test]
+    fn leave_takes_an_id_and_goes_without_one() {
+        let leave: ClientMsg = serde_json::from_str(r#"{"t":"leave"}"#).unwrap();
+        assert_eq!(leave, ClientMsg::Leave { id: None });
+        assert_eq!(serde_json::to_string(&leave).unwrap(), r#"{"t":"leave"}"#);
+        let leave: ClientMsg = serde_json::from_str(r#"{"t":"leave","id":7}"#).unwrap();
+        assert_eq!(leave.request_id(), Some(7));
+    }
+
+    #[test]
     fn client_json_shapes() {
         let msg: ClientMsg = serde_json::from_str(r#"{"t":"join","name":"lobby"}"#).unwrap();
         assert_eq!(
@@ -448,6 +483,7 @@ mod tests {
                 player_props: Default::default(),
                 rejoin_actor: None,
                 schema_hash: None,
+                id: None,
             }
         );
         let msg: ClientMsg = serde_json::from_str(

@@ -343,8 +343,17 @@ namespace Aurix.Net.Managed
         /// <summary>Any join-like control message; opens the data path (ticket first) and waits for the server's ack.</summary>
         public async Task<int> JoinRawAsync(string json, int timeoutMs = 10000)
         {
-            await SendControlAsync(json);
-            var joined = await WaitForAsync("joined", timeoutMs);
+            // A node that repeats the id of a join answers this one and no other with it.
+            uint? id = _nodeRepeatsJoinIds ? NextRequestId() : (uint?)null;
+            await SendControlAsync(WithId(json, id));
+            var joined = await AnswerAsync("joined", timeoutMs, id);
+            if (joined == null)
+            {
+                // The node may have let the client in, or may yet: the client is in no room after this.
+                await LeaveAsync();
+                throw new NetException("timeout waiting for joined");
+            }
+
             JoinedJson = joined;
             LastJoinJson = Json.WayBack(json, Json.Str(joined, "name"));
             Actor = (int)Json.Num(joined, "actor");
@@ -568,6 +577,7 @@ namespace Aurix.Net.Managed
                                 "supports",
                                 "unsequenced"
                             );
+                            _nodeRepeatsJoinIds = Json.Lists(text.Json, "supports", "join_id");
                         }
 
                         OnControl?.Invoke(text.Json);
@@ -710,8 +720,13 @@ namespace Aurix.Net.Managed
         public Task LeaveAsync()
         {
             ForgetRoom();
-            return SendControlAsync("{\"t\":\"leave\"}");
+            return SendControlAsync(
+                WithId("{\"t\":\"leave\"}", _nodeRepeatsJoinIds ? NextRequestId() : (uint?)null)
+            );
         }
+
+        static string WithId(string json, uint? id) =>
+            id == null ? json : json.Substring(0, json.LastIndexOf('}')) + ",\"id\":" + id + "}";
 
         /// <summary>Project-wide live rooms/players grouped by the room prop "lobby" (JSON: {rooms, players, lobbies:[{lobby, rooms, players}]}); one per second.</summary>
         public async Task<string> StatsAsync(int timeoutMs = 10000)
@@ -763,8 +778,9 @@ namespace Aurix.Net.Managed
 
         int _requestSeq;
         bool _nodeTakesUnsequenced;
+        bool _nodeRepeatsJoinIds;
 
-        // `stats`, `find_friends`, `get_rooms` and `rpc` share the ids: an `error` repeats only the number.
+        // Every request with an id shares the ids: an `error` repeats only the number.
         uint NextRequestId() => (uint)System.Threading.Interlocked.Increment(ref _requestSeq);
 
         /// <summary>Call your backend through the node (WebRPC): the project's webhook subscribed to "rpc" is POSTed {name, player_id, actor?, room?, body}; returns the raw rpc_result JSON {id, ok, status?, body, error?}. bodyJson is a JSON literal (≤ 8 KiB); 5 calls/s.</summary>
@@ -847,7 +863,12 @@ namespace Aurix.Net.Managed
         /// <summary>Waits for a control message of type `type`, polling the inbox (other messages are dispatched
         /// normally). With `id`, the request's own: an answer or `error` that repeats another id is not this
         /// request's. One without an id is taken, as a node that repeats no ids sends it.</summary>
-        async Task<string> WaitForAsync(string type, int timeoutMs, uint? id = null)
+        async Task<string> WaitForAsync(string type, int timeoutMs, uint? id = null) =>
+            await AnswerAsync(type, timeoutMs, id)
+            ?? throw new NetException("timeout waiting for " + type);
+
+        /// <summary>`WaitForAsync` that returns null when the answer did not come in time.</summary>
+        async Task<string> AnswerAsync(string type, int timeoutMs, uint? id)
         {
             var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
             string got = null,
@@ -872,7 +893,7 @@ namespace Aurix.Net.Managed
                 {
                     if (DateTime.UtcNow > deadline)
                     {
-                        throw new NetException("timeout waiting for " + type);
+                        return null;
                     }
 
                     Poll();

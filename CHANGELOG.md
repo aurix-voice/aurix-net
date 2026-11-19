@@ -243,6 +243,18 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   open, left the player in the room on the node, and its late `joined` was taken for the answer
   to the next join. The client now leaves after such a join and passes over what the node
   answers before it answers that leave.
+- Joins and leaves: a client told the node's answers apart by their order alone, and where the
+  node's answer to a `leave` was lost, the Rust client passed over the answer to every join
+  after it until it reconnected. `create`, `join`, `join_or_create`, `join_random` and `leave`
+  now take an `id` that the node repeats in its `joined`, `left` or `error`, announced as
+  `join_id` in `supports` of `hello`. The Rust client numbers its joins and leaves for a node
+  that lists it and takes only the answer with its number; with a node that does not, it works
+  as before. Its numbers go from 2^31 up (`OWN_IDS`), so a game numbers its `stats`,
+  `find_friends` and `rpc` below that.
+- Web and managed C# clients: the late `joined` of a join the client gave up was taken for the
+  answer to the next join, and the player stayed in that room on the node. Both now send the
+  `id` of a join and of a leave to a node that lists `join_id` and take only the answer that
+  repeats it, and leave after a join that got no answer in time.
 - Unreal plugin: after an async call failed, `JoinSession` into a closed room among them,
   `Get Last Error` was empty and `Get Last Error Code` was `None`: the call fails on a worker
   thread and the error is kept per thread. Both now tell the reason on the game thread, and

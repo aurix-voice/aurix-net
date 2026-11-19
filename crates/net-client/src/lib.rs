@@ -10,7 +10,7 @@ use base64::Engine;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use net_common::{Channel, RoomMode};
-use net_rooms::protocol::{ClientMsg, DataEndpoint, ServerMsg, UNSEQUENCED};
+use net_rooms::protocol::{ClientMsg, DataEndpoint, ServerMsg, JOIN_ID, UNSEQUENCED};
 use net_transport::{quic, Link};
 use parking_lot::Mutex;
 use rustls::pki_types::CertificateDer;
@@ -154,6 +154,9 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 const LINK_DEAD_CLOSE: u32 = 4;
 const PING_EVERY: Duration = Duration::from_secs(1);
 const TICKET_RESEND: Duration = Duration::from_millis(100);
+/// The ids the client gives its own joins and leaves start here; the ids a game gives its
+/// requests (`stats`, `find_friends`, `rpc`) stay below.
+pub const OWN_IDS: u32 = 1 << 31;
 
 pub struct Client {
     ctl: mpsc::Sender<Message>,
@@ -181,8 +184,12 @@ pub struct Client {
     data_tasks: Vec<tokio::task::JoinHandle<()>>,
     /// Cancelled when the client closes the current data path.
     data_stop: CancellationToken,
-    /// Leaves the node has not answered yet. It answers in the order it was asked, so what
-    /// comes before the answer to a leave was asked before that leave.
+    /// The node repeats the `id` of a join and of a leave in its answer (`hello.supports`).
+    join_ids: bool,
+    /// The last id of [`OWN_IDS`] this client gave a request.
+    asked: u32,
+    /// Leaves a node without [`JOIN_ID`] has not answered yet. It answers in the order it was
+    /// asked, so what comes before the answer to a leave was asked before that leave.
     leaves_unanswered: u32,
     tunnel_slot: Option<Arc<Mutex<Option<Arc<DataPath>>>>>,
     /// What `rejoin` needs after a rehost: the URL given to `connect`, the grant, the last join.
@@ -278,6 +285,8 @@ impl Client {
             tasks: vec![writer],
             data_tasks: Vec::new(),
             data_stop: CancellationToken::new(),
+            join_ids: false,
+            asked: 0,
             leaves_unanswered: 0,
             tunnel_slot: None,
             entry_url: http_url.to_string(),
@@ -382,6 +391,7 @@ impl Client {
                 }
                 Event::Control(ServerMsg::Hello { supports, .. }) => {
                     client.unsequenced = supports.iter().any(|s| s == UNSEQUENCED);
+                    client.join_ids = supports.iter().any(|s| s == JOIN_ID);
                 }
                 Event::Control(ServerMsg::Error { code, message, .. }) => {
                     return Err(ClientError::Server { code, message })
@@ -483,15 +493,16 @@ impl Client {
         self.replay
             .retain(|event| !matches!(event, Event::Data { .. }));
         self.lost = false;
-        self.send(msg).await?;
+        let id = self.own_id();
+        self.send(with_id(msg, id)).await?;
         let deadline = tokio::time::Instant::now() + self.opts.connect_timeout;
         let mut passed = VecDeque::new();
         let answer = loop {
             match self.answer_by(deadline).await {
                 // the answer to a join the client gave up: it left right after
                 Ok(Event::Control(
-                    ServerMsg::Joined { .. } | ServerMsg::Error { id: None, .. },
-                )) if self.leaves_unanswered > 0 => {}
+                    ServerMsg::Joined { id: answered, .. } | ServerMsg::Error { id: answered, .. },
+                )) if self.gave_up(id, answered) => {}
                 Ok(Event::Control(ServerMsg::Joined {
                     room,
                     name,
@@ -508,8 +519,8 @@ impl Client {
                     seed,
                     next_spawn_tag,
                     cached,
-                    ..
-                })) => {
+                    id: answered,
+                })) if answered == id => {
                     let joined = Joined {
                         room,
                         name,
@@ -528,7 +539,11 @@ impl Client {
                     };
                     break Ok((joined, cached));
                 }
-                Ok(Event::Control(ServerMsg::Error { code, message, .. })) => {
+                Ok(Event::Control(ServerMsg::Error {
+                    code,
+                    message,
+                    id: answered,
+                })) if id.is_none() || answered.is_none() || answered == id => {
                     break Err(ClientError::Server { code, message })
                 }
                 Ok(Event::Data { .. } | Event::DataReady) => {}
@@ -869,6 +884,23 @@ impl Client {
         None
     }
 
+    /// The id of the next join or leave, for a node that repeats it in its answer.
+    fn own_id(&mut self) -> Option<u32> {
+        self.join_ids.then(|| {
+            self.asked = (self.asked + 1) % OWN_IDS;
+            OWN_IDS | self.asked
+        })
+    }
+
+    /// Whether `answered` is on the answer to a join the client gave up, and not to the one it
+    /// asked with `asked`.
+    fn gave_up(&self, asked: Option<u32>, answered: Option<u32>) -> bool {
+        match asked {
+            Some(asked) => answered.is_some_and(|id| id >= OWN_IDS && id != asked),
+            None => answered.is_none() && self.leaves_unanswered > 0,
+        }
+    }
+
     /// Closes a data path the game did not close; the reliable events the node had not
     /// acknowledged on it are for the game.
     fn lose_data(&mut self) -> Option<Event> {
@@ -887,7 +919,7 @@ impl Client {
     /// game is told before the event.
     fn note(&mut self, event: &Event) -> Option<Event> {
         match event {
-            Event::Control(ServerMsg::Left { reason, room }) => {
+            Event::Control(ServerMsg::Left { reason, room, .. }) => {
                 if reason == "left" {
                     self.leaves_unanswered = self.leaves_unanswered.saturating_sub(1);
                 }
@@ -932,14 +964,18 @@ impl Client {
         self.end_data().await;
         self.joined = None;
         self.avatar = None;
-        self.send(ClientMsg::Leave).await?;
-        self.leaves_unanswered += 1;
+        let id = self.own_id();
+        self.send(ClientMsg::Leave { id }).await?;
+        if id.is_none() {
+            self.leaves_unanswered += 1;
+        }
         Ok(())
     }
 
     /// Ask for project-wide room/player counts per lobby; the answer arrives as
     /// `Event::Control(ServerMsg::Stats { id, .. })`, a refusal as `ServerMsg::Error { id, .. }`,
-    /// both with the `id` given here. At most one `stats`/`find_friends` per second.
+    /// both with the `id` given here, which stays below [`OWN_IDS`]. At most one
+    /// `stats`/`find_friends` per second.
     pub async fn stats(&self, id: u32) -> Result<()> {
         self.send(ClientMsg::Stats { id: Some(id) }).await
     }
@@ -1010,7 +1046,20 @@ fn way_back(asked: &ClientMsg, name: &str) -> ClientMsg {
         rejoin_actor: None,
         schema_hash,
         spectator,
+        id: None,
     }
+}
+
+/// `msg` with `id` if it is a join: the client numbers its joins itself.
+fn with_id(mut msg: ClientMsg, asked: Option<u32>) -> ClientMsg {
+    if let ClientMsg::Create { id, .. }
+    | ClientMsg::Join { id, .. }
+    | ClientMsg::JoinOrCreate { id, .. }
+    | ClientMsg::JoinRandom { id, .. } = &mut msg
+    {
+        *id = asked;
+    }
+    msg
 }
 
 async fn deliver(dp: &Arc<DataPath>, datagram: Bytes, ev: &mpsc::Sender<Event>) {
@@ -1139,6 +1188,7 @@ mod tests {
             player_props: props.clone(),
             expr: Some("rank > 3".into()),
             match_type: Some("fill".into()),
+            id: None,
         };
         let watched = ClientMsg::Join {
             name: "asked".into(),
@@ -1146,6 +1196,7 @@ mod tests {
             rejoin_actor: None,
             schema_hash: Some("abc".into()),
             spectator: true,
+            id: None,
         };
         assert_eq!(
             serde_json::to_value(way_back(&random, "found")).unwrap(),

@@ -23,6 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         region: None,
         player_props: Default::default(),
         reserved: Vec::new(),
+        id: None,
     };
 
     let alice_grant = issue_grant(&http, &key, "alice", "Alice").await?;

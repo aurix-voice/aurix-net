@@ -102,10 +102,10 @@ with the route or the message type and the project.
 ## WebSocket control channel `/ws`
 
 JSON messages, `"t"` is the type (snake_case). Client → server: `auth{grant, supports?}`,
-`create{name?, mode, max_players, visible, open, props, lobby_props, region, player_props, reserved}`,
-`join{name, player_props, rejoin_actor?, schema_hash?, spectator?}`,
-`join_or_create{name, mode, max_players, visible, open, props, lobby_props, region, player_props, reserved}`,
-`join_random{filter, player_props, expr?, match_type?}`, `leave`, `set_room_props{props, expected?, visible?, open?}`,
+`create{name?, mode, max_players, visible, open, props, lobby_props, region, player_props, reserved, id?}`,
+`join{name, player_props, rejoin_actor?, schema_hash?, spectator?, id?}`,
+`join_or_create{name, mode, max_players, visible, open, props, lobby_props, region, player_props, reserved, id?}`,
+`join_random{filter, player_props, expr?, match_type?, id?}`, `leave{id?}`, `set_room_props{props, expected?, visible?, open?}`,
 `set_player_props{props, expected?}`, `event{code, data(base64), target, channel, cache, group}` (`target` is `{"kind": "all" | "others" | "master"}` or `{"kind": "actors", "actors": [..]}`, default others; `channel` is `unreliable_sequenced`, `reliable_ordered` (default), `reliable_unordered` or `unreliable_unsequenced`),
 `set_groups{join, leave}`, `cache_slice{op, index?}` (relay event-cache slices), `set_view{viewpoints, interest}` (sync AOI: extra viewpoints, forced entities),
 `set_master{actor}`, `kick{actor, reason}`, `lobby{subscribe}`,
@@ -116,8 +116,8 @@ The node closes a control connection it has heard nothing from for 90 s (10 s be
 any message counts, so a client that sends `ping` stays connected.
 
 Server → client: `hello{session, version, region, supports?}`, `authed{player_id, name}`,
-`joined{room, name, mode, actor, master, max_players, props, players, data, cached, schema_hash?, tick_hz?, next_spawn_tag?}`,
-`left{reason, room?}`, `player_joined{player}`, `player_left{actor, reason}`, `room_props`,
+`joined{room, name, mode, actor, master, max_players, props, players, data, cached, schema_hash?, tick_hz?, next_spawn_tag?, id?}`,
+`left{reason, room?, id?}`, `player_joined{player}`, `player_left{actor, reason}`, `room_props`,
 `player_props`, `event{code, from, data}` (control fallback), `master_changed{actor}`,
 `lobby_rooms{rooms}` (the whole list, in place of the one the client holds: sent on `lobby{subscribe: true}` and again after the node lost its Redis connection and may have missed changes), `lobby_update{room, removed}` (with `removed: true` the room is out of the list this client holds, closed or no longer offered to him, and `room` carries its `id` alone; it comes once, and not for a room the list never offered him), `stats{rooms, players, lobbies[{lobby, rooms, players}], id?}`,
 `friends{friends[{player, online, room?{id, name, mode, node}}], id?}`, `rooms{rooms[{id, name, mode, players, max_players, open, props}], id?}`, `rpc_result{id, ok, status?, body, error?}`, `pong{ts, server_ms}`,
@@ -127,6 +127,13 @@ Server → client: `hello{session, version, region, supports?}`, `authed{player_
 repeats the `id` of a `stats`, `find_friends` or `get_rooms` in its answer, and the `id` of any
 of these or of an `rpc` in the `error` that refuses that request (`lookup_rate`, `rpc_rate`, a
 bad `expr`, name or body). A request sent without an `id` is answered without one.
+
+A node that lists `join_id` in `supports` takes an `id` in `create`, `join`, `join_or_create`,
+`join_random` and `leave` too and repeats it in the `joined`, the `left` (reason `left`) or the
+`error` that answers the request. The node answers these in the order it was asked; with the
+`id` a client that gave a join up does not take the answer to it for the answer to its next
+join. A node that does not list `join_id` refuses the `id` in these five as a field it does
+not know.
 
 `left.room` is the id from `joined.room` of the room the session is out of, whatever the reason
 (`left`, `kicked` or the reason a kick gave, `room closed`, `session_replaced`, `rehost`). A
@@ -182,6 +189,7 @@ message of the node.
 | Name | The side |
 |---|---|
 | `unsequenced` | takes channel 4 (`unreliable_unsequenced`), see Data path |
+| `join_id` | repeats the `id` of a `create`, `join`, `join_or_create`, `join_random` and `leave` in its answer (the node) |
 
 ## Data path
 

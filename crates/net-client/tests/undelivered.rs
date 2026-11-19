@@ -19,6 +19,7 @@ fn left(reason: &str) -> ServerMsg {
     ServerMsg::Left {
         reason: reason.into(),
         room: Some("id".into()),
+        id: None,
     }
 }
 
@@ -67,6 +68,7 @@ async fn node(end: Option<ServerMsg>) -> String {
                         tick: None,
                         seed: None,
                         next_spawn_tag: None,
+                        id: None,
                     };
                     ws.send(text(&joined)).await.unwrap();
                 }
@@ -156,6 +158,7 @@ async fn told_after(end: Option<ServerMsg>, leaves: bool) -> Vec<String> {
         rejoin_actor: None,
         schema_hash: None,
         spectator: false,
+        id: None,
     };
     client.join(join).await.unwrap();
     let send = |client: &Client, channel, frame: EventFrame| {

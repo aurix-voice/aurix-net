@@ -21,6 +21,7 @@ async fn main() -> anyhow::Result<()> {
         region: None,
         player_props: Default::default(),
         reserved: Vec::new(),
+        id: None,
     };
     let (mut client, joined) =
         Client::connect_and_join(url, grant, Options::default(), join).await?;
@@ -96,6 +97,7 @@ fn relay_room(name: String, max_players: u16, tag: &str) -> ClientMsg {
         region: None,
         player_props: Default::default(),
         reserved: Vec::new(),
+        id: None,
     }
 }
 
@@ -119,6 +121,7 @@ async fn random_join(
         player_props: Default::default(),
         expr: None,
         match_type: None,
+        id: None,
     };
     let (client, joined) = enter("rust-rehost-r", random).await?;
     let (beside, _) = enter("rust-rehost-o", relay_room(format!("{room}-open"), 8, &tag)).await?;

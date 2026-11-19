@@ -56,6 +56,7 @@ async fn join_gives_up_when_it_is_not_answered() {
         rejoin_actor: None,
         schema_hash: None,
         spectator: false,
+        id: None,
     };
     assert!(matches!(client.join(join).await, Err(ClientError::Timeout)));
 }

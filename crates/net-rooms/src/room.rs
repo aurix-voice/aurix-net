@@ -816,6 +816,7 @@ impl Room {
                     reason.into()
                 },
                 room: Some(self.id().to_string()),
+                id: None,
             },
         )];
         out.extend(self.leave(target, false, now));
