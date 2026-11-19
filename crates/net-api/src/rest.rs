@@ -1965,7 +1965,7 @@ fn local_replay(st: &Shared, id: Uuid, query: &ReplayQuery) -> Option<Result<Val
                 .map_err(|e| NetError::Internal(e.to_string()))
         }
         None => Err(NetError::Invalid(
-            "replays exist for lockstep rooms only".into(),
+            "replays exist for lockstep and sync rooms only".into(),
         )),
     })
 }

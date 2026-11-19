@@ -940,15 +940,18 @@ impl SyncRoom {
 
     /// Instant replay of a live sync room: full-world `0x11` frames for ticks `from..to`, each
     /// decodable by any SDK's sync client as if it were the first delta after joining
-    /// (feed them in order to a fresh `SyncWorld`/`SyncSession`). `from_tick` is the first tick
-    /// actually held.
+    /// (feed them in order to a fresh `SyncWorld`/`SyncSession`). `from_tick` is the tick of the
+    /// first frame given, or `from` when there is none.
     pub fn replay_window(&self, from: u32, to: Option<u32>) -> serde_json::Value {
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD;
-        let frames: Vec<serde_json::Value> = self
+        let mut window = self
             .replay
             .iter()
-            .filter(|(t, _)| *t >= from && to.is_none_or(|hi| *t <= hi))
+            .filter(|(t, _)| *t >= from && to.is_none_or(|to| *t < to))
+            .peekable();
+        let from_tick = window.peek().map_or(from, |(t, _)| *t);
+        let frames: Vec<serde_json::Value> = window
             .map(|(t, d)| serde_json::json!({ "tick": t, "delta": b64.encode(d) }))
             .collect();
         serde_json::json!({
@@ -956,7 +959,7 @@ impl SyncRoom {
             "tick_hz": self.hz,
             "schema_hash": self.schema_hash,
             "every": self.replay_every,
-            "from_tick": self.replay.front().map(|(t, _)| *t).unwrap_or(from).max(from),
+            "from_tick": from_tick,
             "frames": frames,
         })
     }

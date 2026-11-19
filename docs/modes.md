@@ -259,7 +259,7 @@ way up to their delayed tick.
 
 **Commands**: a reliable message outside the per-tick input stream — buy, surrender, pause. The server stamps it onto the next tick and ships it inside that tick's bundle as the input of pseudo-actor 65535, so it is in the journal, in catch-ups, in replays and in the referee's input stream; every client sees it at the same tick (`SendCommand` / `OnCommand` in the SDKs). A command takes 1 to 251 bytes; the node answers a longer one with `error` `invalid_request` on the control channel. A tick carries 255 bytes of commands, 4 of them for the header of each: commands that do not fit ride the next ticks in the order they arrived, the same for clients, the journal, the replay and the referee. Up to 4096 bytes wait this way; a command past that is refused with `rate_limited`.
 
-**Instant replay for sync rooms**: room props `replay_every` (ticks between snapshots, default hz/2) and `replay_secs` (window, default 30; 0 off) keep full-world delta frames on the node; `GET /v1/rooms/{id}/replay?from=&to=` returns them (`mode: "sync"`) and any SDK sync client replays them by feeding the frames, in order, to a fresh world.
+**Instant replay for sync rooms**: room props `replay_every` (ticks between snapshots, default hz/2) and `replay_secs` (window, default 30; 0 off) keep full-world delta frames on the node; `GET /v1/rooms/{id}/replay?from=&to=` returns them (`mode: "sync"`) and any SDK sync client replays them by feeding the frames, in order, to a fresh world. `from_tick` in the answer is the tick of the first frame returned, or `from` when there is none.
 
 Use `net-fpmath` (Q32.32 fixed point, table trig, deterministic RNG) for anything that
 touches game state; never floats.

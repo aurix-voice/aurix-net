@@ -660,3 +660,76 @@ async fn client_whose_data_path_opens_late_gets_the_whole_world() {
         }
     }
 }
+
+/// What the replay of `room` holds for `query`: its `from_tick` and the ticks of its frames.
+async fn replay_ticks(project: &Project, room: &str, query: &str) -> (u64, Vec<u64>) {
+    let path = format!("/v1/rooms/{room}/replay{query}");
+    let (status, replay) = project.api.get(&path).await;
+    assert_eq!(status, 200, "{path}: {replay}");
+    let ticks = replay["frames"].as_array().expect("frames").iter();
+    let ticks = ticks.map(|frame| frame["tick"].as_u64().expect("tick"));
+    (
+        replay["from_tick"].as_u64().expect("from_tick"),
+        ticks.collect(),
+    )
+}
+
+/// A sync room that has run long enough to hold a few replay frames, and their ticks.
+async fn room_with_replay_frames(project: &Project) -> (common::Ws, String, Vec<u64>) {
+    let mut ann = project.player("ann").await;
+    let create = json!({"t": "create", "name": "arena", "mode": "sync", "props": {"tick_hz": 30}});
+    let room = ann.call(create).await["room"]
+        .as_str()
+        .expect("room")
+        .to_string();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let (_, held) = replay_ticks(project, &room, "").await;
+    assert!(held.len() >= 4, "{held:?}");
+    (ann, room, held)
+}
+
+#[tokio::test]
+async fn replay_window_of_a_sync_room_ends_before_its_last_tick() {
+    let node = Node::start().await;
+    let project = node.project("replay-window").await;
+    let (_ann, room, held) = room_with_replay_frames(&project).await;
+    let (first, second) = (held[1], held[2]);
+    let (_, ticks) = replay_ticks(&project, &room, &format!("?from={first}&to={second}")).await;
+    assert_eq!(ticks, [first]);
+    let after = second + 1;
+    let (_, ticks) = replay_ticks(&project, &room, &format!("?from={first}&to={after}")).await;
+    assert_eq!(ticks, [first, second]);
+}
+
+#[tokio::test]
+async fn replay_of_a_sync_room_says_the_tick_of_its_first_frame() {
+    let node = Node::start().await;
+    let project = node.project("replay-from").await;
+    let (_ann, room, held) = room_with_replay_frames(&project).await;
+    let between = held[1] + 1;
+    let (from_tick, ticks) = replay_ticks(&project, &room, &format!("?from={between}")).await;
+    assert_eq!(ticks[0], held[2]);
+    assert_eq!(from_tick, held[2]);
+    let (from_tick, ticks) = replay_ticks(&project, &room, "?from=1000000").await;
+    assert_eq!((from_tick, ticks), (1_000_000, vec![]));
+}
+
+#[tokio::test]
+async fn replay_of_a_relay_room_is_refused_naming_the_modes_that_keep_one() {
+    let node = Node::start().await;
+    let project = node.project("replay-relay").await;
+    let mut ann = project.player("ann").await;
+    let room = ann.call(json!({"t": "create", "name": "arena"})).await["room"]
+        .as_str()
+        .expect("room")
+        .to_string();
+    let (status, refusal) = project.api.get(&format!("/v1/rooms/{room}/replay")).await;
+    assert_eq!(
+        (status, &refusal["error"]),
+        (400, &json!("invalid_request"))
+    );
+    assert_eq!(
+        refusal["message"],
+        "invalid request: replays exist for lockstep and sync rooms only"
+    );
+}

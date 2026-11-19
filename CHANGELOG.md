@@ -102,6 +102,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   and no threads in a browser.
 
 ### Changed
+- Replay of a sync room: `to` is no longer in the window. `?from=30&to=45` returned the frame
+  of tick 45, where the same window of a lockstep room ends at tick 44. Both end before `to`
+  now; ask for `to` one higher to get the frame you got before.
 - Rooms: `join_random` with a `match_type` other than `fill`, `serial` or `random` is
   refused with `invalid_request`. It was read as `fill`.
 - Rooms: `reserved` with more than 32 names is refused with `invalid_request`. The node
@@ -203,6 +206,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   `Content-Type: application/json`, an unknown path, a method the path does not take and the
   per-address request limit. Each is now refused with `{"error", "message"}` like every other
   refusal; the status codes are the same.
+- Replay of a sync room: `from_tick` repeated the `from` of the request when the first frame
+  returned was a later one. It is the tick of the first frame returned.
+- Replay of a relay room: the refusal said replays exist for lockstep rooms only. It names
+  sync rooms too.
 - Every client: a reliable message sent just before a leave could be lost without a word. The
   leave closed the data path at once, with what the node had not yet acknowledged. Of 40
   events each followed at once by a leave, over a link that loses data frames, the room got 36
