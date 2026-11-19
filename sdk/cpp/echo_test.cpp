@@ -93,7 +93,8 @@ int main() {
         rejoined = !std::getenv("NET_LIVE_REQUIRED");
     }
     // over a link that takes 100 ms each way and closes on `stats` (NET_BREAK_HTTP, see README): the
-    // reliable events the node did not acknowledge come before the room is lost, and not to a client that leaves
+    // reliable events the node did not acknowledge come before the room is lost; a client that leaves
+    // waits for the node to have them and gets none back
     bool handedBack = true;
     if (const char* broken = std::getenv("NET_BREAK_HTTP")) {
         for (std::string how : {"kick", "cut", "leave"}) {

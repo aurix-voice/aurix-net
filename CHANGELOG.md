@@ -15,6 +15,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   lost, and the game could not tell which. The game gets them once, in the order they were sent,
   before the `closed` or the `left`: `undelivered` in Web and Godot, `OnUndelivered` in C# and
   Unreal, `onUndelivered` in C++, `Event::Undelivered` in Rust, the poll event
+  `AURIX_NET_EVENT_UNDELIVERED` in C. An event that went out in parts is there once, and events
+  still waiting to be sent are there too. The room may have got any of them, when only the
+  acknowledgement was lost; no client sends them again by itself.
 - Data path: channel 4, unreliable and unsequenced. It delivers every datagram that arrives,
   in the order it arrives, where channel 0 drops one that comes after a later one: under a
   delay of 100±30 ms with no loss about half of the unreliable relay events were dropped
@@ -188,6 +191,18 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Every client: a reliable message sent just before a leave could be lost without a word. The
+  leave closed the data path at once, with what the node had not yet acknowledged. Of 40
+  events each followed at once by a leave, over a link that loses data frames, the room got 36
+  from the Web client and 31 through the C library, which lost 2 of 10 on a link that loses
+  nothing; the game was told of none. A leave now waits for the node to acknowledge the
+  reliable messages of the room, the client taking no new sends meanwhile, and no longer than
+  3 s, twice the longest the link waits before it sends a message again. The events still not
+  acknowledged then come back to the game before the `left`, as the events of a lost room do.
+  The same runs give 40 of 40 and 20 of 20. `leave()` in Web returns a promise that resolves
+  when the client is out of the room; `LeaveAsync` in C# and `leave` in Rust end then; the
+  leave call of C, C++, Godot, the native Unity client and Unreal returns then, up to 3 s
+  later on a link that has stopped answering. Closing the client does not wait.
 - SDKs: a game on Linux that loads the C library (C, C++, Godot, Unreal, the native C#
   client) was killed by SIGPIPE, exit code 141, when its connection to an `https://` node was
   reset: a write to the reset connection raises the signal, and a game, unlike a Rust program,

@@ -652,9 +652,11 @@ class P
             quiet.Dispose(); talker.Dispose();
         }
         // the reliable events the node did not acknowledge come back to the game when the room is
-        // lost, before the left or the closed that tells it so; a game that leaves gets none
+        // lost, before the left or the closed that tells it so; a game that leaves waits for the
+        // node to acknowledge them, takes no new sends meanwhile and gets back those the node
+        // has not acknowledged in time
         bool undeliveredOk = true;
-        foreach (string how in new[] { "kick", "socket", "leave" })
+        foreach (string how in new[] { "kick", "socket", "leave", "leave-unheard" })
         {
             using (var gag = new GagRelay())
             {
@@ -665,6 +667,10 @@ class P
                 sender.OnControl += json => { if (ManagedClientTestHooks.Str(json, "t") == "left") told.Add("left " + ManagedClientTestHooks.Str(json, "reason")); };
                 sender.OnClosed += reason => told.Add("closed " + reason);
                 await sender.JoinOrCreateAsync("cs-undelivered-" + how + "-" + Environment.ProcessId, "relay", 4);
+                using var listener = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-undelivered-l-" + how));
+                var heard = new List<byte>();
+                listener.OnEvent += frame => heard.Add(frame.Code);
+                await listener.JoinOrCreateAsync("cs-undelivered-" + how + "-" + Environment.ProcessId, "relay", 4);
                 sender.SendEvent(1, new byte[] { 1 }, Target.Others, reliable: true); sender.Flush();
                 for (int i = 0; i < 40; i++) { sender.Poll(); await Task.Delay(10); }
                 gag.Gagged = true;
@@ -682,15 +688,25 @@ class P
                     if (!(await h.SendAsync(removal)).IsSuccessStatusCode) throw new Exception("kick refused");
                 }
                 if (how == "socket") gag.Dispose();
-                if (how == "leave") await sender.LeaveAsync();
-                for (int i = 0; i < 60; i++) { sender.Poll(); await Task.Delay(10); }
+                bool turnedDown = false;
+                if (how == "leave")
+                {
+                    var leaving = sender.LeaveAsync();
+                    try { sender.SendEvent(7, new byte[] { 7 }, Target.Others, reliable: true); } catch (NetException) { turnedDown = true; }
+                    await Task.Delay(100);
+                    gag.Gagged = false;
+                    await leaving;
+                }
+                if (how == "leave-unheard") await sender.LeaveAsync();
+                for (int i = 0; i < 60; i++) { sender.Poll(); listener.Poll(); await Task.Delay(10); }
                 const string events = "2:1:Actors:7+9::None 5:3000:Master:::Add 6:1:All::9:None";
-                Console.WriteLine($"undelivered events, {how}: [{string.Join(" | ", told)}]");
+                Console.WriteLine($"undelivered events, {how}: [{string.Join(" | ", told)}]" + (how == "leave" ? $", the room got [{string.Join(",", heard)}], a send while leaving refused={turnedDown}" : ""));
                 undeliveredOk &= how switch
                 {
                     "kick" => told.SequenceEqual(new[] { events, "left kicked" }),
                     "socket" => told.Count == 2 && told[0] == events && told[1].StartsWith("closed "),
-                    _ => told.SequenceEqual(new[] { "left left" }),
+                    "leave-unheard" => told.SequenceEqual(new[] { events, "left left" }),
+                    _ => told.SequenceEqual(new[] { "left left" }) && heard.SequenceEqual(new byte[] { 1, 4 }) && turnedDown,
                 };
                 sender.Dispose();
             }
@@ -707,8 +723,8 @@ class P
                 {
                     using var master = Client.Connect("http://127.0.0.1:8090", await Grant(h, key, "cs-native-m-" + how));
                     using var sender = Client.Connect(broken, await Grant(h, key, "cs-native-u-" + how), tunnel: true);
-                    int acknowledged = 0; var told = new List<string>();
-                    master.OnData += (channel, tick, bytes) => { if (Event.TryDecode(bytes, out var frame) && frame.Code == 1) acknowledged++; };
+                    int acknowledged = 0, large = 0; var told = new List<string>();
+                    master.OnData += (channel, tick, bytes) => { if (Event.TryDecode(bytes, out var frame)) { if (frame.Code == 1) acknowledged++; if (frame.Code == 5) large++; } };
                     sender.OnUndelivered += events => told.Add(string.Join(" ", events.Select(sent =>
                         $"{sent.Code}:{sent.Payload.Length}:{sent.Target}:{(sent.Actors == null ? "" : string.Join("+", sent.Actors))}:{sent.Group}:{sent.Cache}")));
                     sender.OnControl += json => { if (ManagedClientTestHooks.Str(json, "t") == "left") told.Add("left " + ManagedClientTestHooks.Str(json, "reason")); };
@@ -728,8 +744,8 @@ class P
                     if (how == "leave") sender.Leave();
                     for (int i = 0; i < 100; i++) { try { sender.Poll(); } catch (NetException) { } master.Poll(); await Task.Delay(10); }
                     const string events = "2:1:Actors:7+9::None 5:3000:Master:::None 6:1:All:::None";
-                    Console.WriteLine($"native undelivered events, {how}: [{string.Join(" | ", told)}]");
-                    undeliveredOk &= told.SequenceEqual(how == "kick" ? new[] { events, "left kicked" } : how == "cut" ? new[] { events, "closed" } : new[] { "left left" });
+                    Console.WriteLine($"native undelivered events, {how}: [{string.Join(" | ", told)}]" + (how == "leave" ? $", the room got {large} of 1" : ""));
+                    undeliveredOk &= told.SequenceEqual(how == "kick" ? new[] { events, "left kicked" } : how == "cut" ? new[] { events, "closed" } : new[] { "left left" }) && (how != "leave" || large == 1);
                 }
             }
             catch (DllNotFoundException) { undeliveredOk &= Skip("native undelivered events: skipped (libaurix_net is not on the library path)"); }

@@ -107,7 +107,8 @@ int main(void) {
     }
     printf("bob got hello=%d ticks=%d/10\n", got_hello, ticks);
     /* over a link that takes 100 ms each way and closes on `stats` (NET_BREAK_HTTP, see sdk/cpp/README.md): the
-     * reliable events the node did not acknowledge come before the room is lost, and not to a client that leaves */
+     * reliable events the node did not acknowledge come before the room is lost; a client that leaves waits for the
+     * node to have them and gets none back */
     int handed_back = 1;
     const char *broken = getenv("NET_BREAK_HTTP");
     const char *hows[] = {"kick", "cut", "leave"};

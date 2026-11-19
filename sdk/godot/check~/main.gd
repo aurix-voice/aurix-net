@@ -263,7 +263,8 @@ func _slow_link() -> bool:
 	return joined and errors[0] == 0 and next[0] == 5
 
 # Over a link that takes 100 ms each way and closes on `stats` (NET_BREAK_HTTP with GRANT_I and GRANT_J, see README):
-# the reliable events the node did not acknowledge come before the room is lost, and not to a client that leaves.
+# the reliable events the node did not acknowledge come before the room is lost; a client that leaves waits for the
+# node to have them and gets none back.
 func _broken_link() -> bool:
 	var broken := OS.get_environment("NET_BREAK_HTTP")
 	if broken == "":

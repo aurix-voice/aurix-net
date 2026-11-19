@@ -1,7 +1,7 @@
 // Two clients over the WS tunnel against a local node: NET_API_KEY=an_... node --test test/
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Channel, Client, Chat, encodeEvent } from "../dist/index.js";
+import { Channel, Client, Chat, LEAVE_WAIT, encodeEvent } from "../dist/index.js";
 import WebSocket, { WebSocketServer } from "ws";
 import { slowLink } from "./slow-link.mjs";
 import { key } from "./live.mjs";
@@ -169,7 +169,8 @@ test("the reliable events the node did not acknowledge are handed back when the 
       for (let i = 0; i < 80 && got.length < 4; i++) await new Promise((resolve) => setTimeout(resolve, 25));
       if (how === "kick") await remove(`${joined.room}/players/${joined.actor}`);
       if (how === "socket") a.ws.close();
-      if (how === "leave") a.leave();
+      if (how === "leave") await a.leave();
+      if (how === "leave, socket") { const left = a.leave(); a.ws.close(); await left; }
       await new Promise((resolve) => setTimeout(resolve, 500));
       return { seen, got };
     } finally {
@@ -185,7 +186,37 @@ test("the reliable events the node did not acknowledge are handed back when the 
   assert.deepEqual(kick.seen, [unacknowledged, "left: kicked"], "kicked: the events come before the left");
   assert.ok(kick.got.includes(2), "the room had got an event it did not acknowledge");
   assert.deepEqual((await run("socket")).seen, [unacknowledged, "control channel closed"], "socket closed: the events come before closed");
-  assert.deepEqual((await run("leave")).seen, ["left: left"], "the game left by itself: nothing is handed back");
+  assert.deepEqual((await run("leave, socket")).seen, [unacknowledged, "control channel closed"], "socket closed under a leave that waits: as any closed socket");
+  const began = performance.now();
+  assert.deepEqual((await run("leave")).seen, [unacknowledged, "left: left"], "a leave the node did not acknowledge in time: the events come before the left");
+  assert.ok(performance.now() - began < LEAVE_WAIT + 2000, "the leave waited no longer than LEAVE_WAIT");
+});
+
+test("a leave waits for the node to acknowledge what the game sent reliably", { skip: !key }, async () => {
+  const link = mutableLink();
+  const a = await Client.connect(link.url, await grant("web-leave-waits"));
+  const b = await Client.connect(http, await grant("web-leave-waits-b"));
+  const seen = [], got = [];
+  a.on("undelivered", (events) => seen.push(events));
+  a.on("control", (message) => { if (message.t === "left") seen.push(`left: ${message.reason}`); });
+  b.on("event", (frame) => got.push(frame.code));
+  try {
+    const joined = await a.joinOrCreate(`web-leave-waits-${process.pid}`, "relay", 4);
+    await b.joinOrCreate(joined.name, "relay", 4);
+    // the event is lost on its way to the node; the one the link sends again arrives
+    link.gag(true);
+    a.sendEvent(7, Uint8Array.of(7), "others", true);
+    const left = a.leave();
+    assert.throws(() => a.sendEvent(8, Uint8Array.of(8), "others", true), /disconnected/, "a client that is leaving takes no new sends");
+    setTimeout(() => link.gag(false), 100);
+    await left;
+    for (let i = 0; i < 40 && !seen.length; i++) await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.deepEqual(got, [7], "the room got the event sent before the leave");
+    assert.deepEqual(seen, ["left: left"], "the node acknowledged all of it: nothing is handed back");
+    assert.equal((await a.joinOrCreate(`${joined.name}-next`, "relay", 4)).name, `${joined.name}-next`, "the client is free to join again");
+  } finally {
+    a.close(); b.close(); link.close();
+  }
 });
 
 test("a data path the node gave up is closed at the client by the node's answer", { skip: !key }, async () => {

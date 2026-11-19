@@ -35,6 +35,11 @@ namespace Aurix.Net.Managed
         const int Window = 32;
         const double MinRto = 60,
             MaxRto = 1500;
+
+        /// <summary>How long a leave waits for the node to acknowledge what the game sent it reliably, in
+        /// milliseconds: by then the link has sent every message again at least once, and the answer has
+        /// had time to come.</summary>
+        public const double LeaveWait = 2 * MaxRto;
         const int FragHdr = 5,
             FragPayload = Packet.MaxUnfragmented - FragHdr,
             MaxMessage = 64 * 1024;

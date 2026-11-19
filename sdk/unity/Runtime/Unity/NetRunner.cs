@@ -41,7 +41,8 @@ namespace Aurix.Net.Unity
         public event Action<string> OnClosed;
 
         /// <summary>The reliable events the node had not acknowledged when the room was lost, in the order they
-        /// were sent; comes before OnClosed and before a rehost. The room may have got any of them.</summary>
+        /// were sent; comes before OnClosed, before a rehost and before the left of a leave the node did not
+        /// acknowledge them in time for. The room may have got any of them.</summary>
         public event Action<IReadOnlyList<UndeliveredEvent>> OnUndelivered;
         public event Action<EventFrame> OnEvent;
         public event Action<string> OnControl;

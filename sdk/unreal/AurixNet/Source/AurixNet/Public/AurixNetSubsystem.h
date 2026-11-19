@@ -76,6 +76,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net")
 	int32 JoinRandom(const FString& FilterJson = TEXT(""), const FString& Expr = TEXT(""));
 
+	/** Leaves the room once the node has acknowledged what was sent to it reliably: the call takes up to 3 s on a link that has stopped answering. */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net")
 	void Leave();
 
@@ -182,7 +183,7 @@ public:
 	/** The cell says we are out of room RoomId: Reason is "left", "kicked" or the reason a kick gave, "room closed", "session_replaced", or "rehost" (the room moved to another node: connect again with the same grant and join it). */
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetLeft OnLeft;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetClosed OnClosed;
-	/** The reliable events the node had not acknowledged when the room was lost, in the order they were sent. Comes before OnClosed and before the OnLeft of a room the node took us out of; LeaveRoom and Disconnect give none. The room may have got any of them. */
+	/** The reliable events the node had not acknowledged when the room was lost, in the order they were sent. Comes before OnClosed and before the OnLeft of a room the node took us out of or Leave left without their acknowledgement; Disconnect gives none. The room may have got any of them. */
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetUndelivered OnUndelivered;
 	UPROPERTY(BlueprintAssignable, Category = "Aurix Net") FAurixNetRoomsListed OnRoomsListed;
 

@@ -116,8 +116,8 @@ namespace Aurix.Net
         public event Action<string> OnClosed;
 
         /// <summary>The reliable events the node had not acknowledged when the room was lost, in the order they
-        /// were sent. Comes before OnClosed and before the left of a room the node took the client out of; a
-        /// client that leaves gets none. The room may have got any of them.</summary>
+        /// were sent. Comes before OnClosed and before the left of a room the node took the client out of or
+        /// Leave left without their acknowledgement. The room may have got any of them.</summary>
         public event Action<IReadOnlyList<Managed.UndeliveredEvent>> OnUndelivered;
 
         public static string Version => Native.Utf8(Native.aurix_net_version());

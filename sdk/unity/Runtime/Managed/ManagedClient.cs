@@ -40,6 +40,9 @@ namespace Aurix.Net.Managed
         // False between rooms: the link of a room the client has left must not go on resending to the node.
         bool _dataOpen;
 
+        // True while LeaveAsync waits for the node's acknowledgements: the client takes no new sends.
+        bool _leaving;
+
         // One lost connection is reported once, whichever of the link and the control channel notices it first.
         bool _lost;
         bool _controlClosed;
@@ -106,7 +109,8 @@ namespace Aurix.Net.Managed
 
         /// <summary>The reliable events the node had not acknowledged when the room was lost, in the
         /// order they were sent. Comes before OnClosed and before the `left` of a room the node took
-        /// the client out of. The room may have got any of them.</summary>
+        /// the client out of or LeaveAsync left without their acknowledgement. The room may have got
+        /// any of them.</summary>
         public event Action<IReadOnlyList<UndeliveredEvent>> OnUndelivered;
 
         sealed class Closed
@@ -404,7 +408,7 @@ namespace Aurix.Net.Managed
 
         void Queue(Channel channel, byte[] payload, int mark)
         {
-            if (!_dataOpen)
+            if (!_dataOpen || _leaving)
             {
                 throw new NetException("disconnected");
             }
@@ -717,12 +721,39 @@ namespace Aurix.Net.Managed
             Avatar = null;
         }
 
-        public Task LeaveAsync()
+        /// <summary>Leaves the room once the node has acknowledged what the game sent it reliably, or after
+        /// Link.LeaveWait: the events it has not acknowledged by then come in OnUndelivered before the `left`.
+        /// Until then the client stays in the room, takes no new sends and dispatches what comes as Poll does.</summary>
+        public async Task LeaveAsync()
         {
+            _leaving = true;
+            try
+            {
+                long end = _clock.ElapsedMilliseconds + (long)Link.LeaveWait;
+                while (AwaitsAcknowledgement() && _clock.ElapsedMilliseconds < end)
+                {
+                    Poll();
+                    await _socket.Delay(2);
+                }
+            }
+            finally
+            {
+                _leaving = false;
+            }
+            var events = UnacknowledgedEvents();
             ForgetRoom();
-            return SendControlAsync(
+            HandBack(events);
+            await SendControlAsync(
                 WithId("{\"t\":\"leave\"}", _nodeRepeatsJoinIds ? NextRequestId() : (uint?)null)
             );
+        }
+
+        bool AwaitsAcknowledgement()
+        {
+            lock (_linkLock)
+            {
+                return _dataOpen && _link.Unacknowledged().Count > 0;
+            }
         }
 
         static string WithId(string json, uint? id) =>

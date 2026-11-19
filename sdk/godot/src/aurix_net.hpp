@@ -110,7 +110,8 @@ public:
     std::function<void(const std::string& reason)> onClosed;
     /// The reliable events the node had not acknowledged when the room was lost, in the order
     /// they were sent. Comes before onClosed and before the `left` of a room the node took the
-    /// client out of. The room may have got any of them.
+    /// client out of or leave() left without their acknowledgement. The room may have got any
+    /// of them.
     std::function<void(const std::vector<UndeliveredEvent>&)> onUndelivered;
 
     Client() = default;

@@ -99,9 +99,9 @@ void aurix_net_flush(AurixNetClient *client);
 int32_t aurix_net_poll(AurixNetClient *client, AurixNetEvent *out);          /* 1 = event filled */
 void aurix_net_event_free(AurixNetEvent *ev);
 /* AURIX_NET_EVENT_UNDELIVERED comes once, before the AURIX_NET_EVENT_CLOSED of a lost connection and before the `left` of
- * a room the node took the client out of; a client that leaves gets none. Its events are in the order they were sent,
- * each as aurix_net_send_event_ex was given it: group is -1 for none, data is valid until aurix_net_event_free. The room
- * may have got any of them. */
+ * a room the node took the client out of or the client left without the node's acknowledgement. Its events are in the
+ * order they were sent, each as aurix_net_send_event_ex was given it: group is -1 for none, data is valid until
+ * aurix_net_event_free. The room may have got any of them. */
 typedef struct AurixNetUndelivered {
     uint8_t code;
     int32_t target;
@@ -114,6 +114,7 @@ typedef struct AurixNetUndelivered {
 size_t aurix_net_undelivered_count(const AurixNetEvent *ev);
 int32_t aurix_net_undelivered_get(const AurixNetEvent *ev, size_t index, AurixNetUndelivered *out); /* 0, or -1 when there is no such event */
 size_t aurix_net_undelivered_actors(const AurixNetEvent *ev, size_t index, uint16_t *out, size_t cap); /* copies at most cap actors; returns how many */
+/* returns once the node has acknowledged the reliable messages of the room, and no later than 3 s after the call */
 int32_t aurix_net_leave(AurixNetClient *client);
 void aurix_net_destroy(AurixNetClient *client);
 

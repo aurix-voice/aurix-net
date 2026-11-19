@@ -32,10 +32,22 @@ reliable events the node had not acknowledged: once, in the order
 they were sent, an event that went out in parts as the one event it was, those still waiting
 to be sent among them. They come before the `closed` of a lost connection (`link dead`, a
 closed socket) and before the `left` of a room the node took the client out of (`kicked` or
-the reason a kick gave, `room closed`, `session_replaced`, `rehost`). A game that leaves or
-closes gets none. Not acknowledged does not mean not delivered: the room may have got an event
-whose acknowledgement was lost, so an event the game sends again must be safe to arrive twice.
-What `sendData` sent and lockstep commands are not among them.
+the reason a kick gave, `room closed`, `session_replaced`, `rehost`). Not acknowledged does
+not mean not delivered: the room may have got an event whose acknowledgement was lost, so an
+event the game sends again must be safe to arrive twice. What `sendData` sent and lockstep
+commands are not among them.
+
+A leave does not cut off what the game sent before it. The client stays in the room, taking no
+new sends, until the node has acknowledged the reliable messages of the room, and no longer
+than 3 s: twice the longest the link waits before it sends a message again, so each has gone
+out a second time and its acknowledgement has had time to come. The events still not
+acknowledged then come back as above, before the `left` that answers the leave; when the node
+has acknowledged them all, which is the case on a link that works, nothing comes back. In Web
+the promise `leave()` returns resolves when the client is out of the room, in C# the task of
+`LeaveAsync`, in Rust the future of `leave`; in C, C++, Godot, the native Unity client and
+Unreal the call returns then, so on a link that has stopped answering it takes up to the 3 s.
+Closing the client does not wait and hands nothing back: a game that wants its last reliable
+messages to arrive leaves first.
 
 | SDK | Events the node did not acknowledge |
 |---|---|

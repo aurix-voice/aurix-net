@@ -11,7 +11,7 @@ use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use net_common::{Channel, RoomMode};
 use net_rooms::protocol::{ClientMsg, DataEndpoint, ServerMsg, JOIN_ID, UNSEQUENCED};
-use net_transport::{quic, Link};
+use net_transport::{link::MAX_RTO, quic, Link};
 use parking_lot::Mutex;
 use rustls::pki_types::CertificateDer;
 use std::collections::VecDeque;
@@ -111,7 +111,8 @@ pub enum Event {
     DataReady,
     /// The reliable events the node had not acknowledged when the room was lost, in the order
     /// they were sent. Comes before `Closed` and before the `Left` of a room the node took the
-    /// client out of. The room may have got any of them.
+    /// client out of or [`Client::leave`] left without their acknowledgement. The room may
+    /// have got any of them.
     Undelivered(Vec<EventFrame>),
     Closed(String),
 }
@@ -150,6 +151,9 @@ impl DataPath {
 
 /// Idle timeout of the data connection, and of the link on it.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a leave waits for the node to acknowledge what the game sent it reliably: by then
+/// the link has sent every message again at least once, and the answer has had time to come.
+pub const LEAVE_WAIT: Duration = MAX_RTO.saturating_mul(2);
 /// The code the node closes a data connection with when it gave the link up.
 const LINK_DEAD_CLOSE: u32 = 4;
 const PING_EVERY: Duration = Duration::from_secs(1);
@@ -904,6 +908,13 @@ impl Client {
     /// Closes a data path the game did not close; the reliable events the node had not
     /// acknowledged on it are for the game.
     fn lose_data(&mut self) -> Option<Event> {
+        let events = self.unacknowledged();
+        self.close_data();
+        events
+    }
+
+    /// The reliable events of the room the node has not acknowledged, as the game is handed them.
+    fn unacknowledged(&self) -> Option<Event> {
         let events: Vec<_> = self
             .data
             .iter()
@@ -911,7 +922,6 @@ impl Client {
             .filter(|message| message.mark == EVENT)
             .filter_map(|message| EventFrame::decode(message.msg).ok())
             .collect();
-        self.close_data();
         (!events.is_empty()).then_some(Event::Undelivered(events))
     }
 
@@ -960,7 +970,38 @@ impl Client {
         self.data.as_ref().map(|path| path.link.lock().stats())
     }
 
+    /// Waits until the node has acknowledged the reliable messages of the room, so that a
+    /// leave does not cut off what the game sent before it, and no longer than [`LEAVE_WAIT`].
+    /// What the room sends meanwhile is kept for the game; a path that is lost ends the wait.
+    async fn acknowledged(&mut self) {
+        let end = tokio::time::sleep(LEAVE_WAIT);
+        tokio::pin!(end);
+        let mut again = tokio::time::interval(self.opts.tick);
+        while self
+            .data
+            .as_ref()
+            .is_some_and(|path| !path.link.lock().unacknowledged_messages().is_empty())
+        {
+            tokio::select! {
+                _ = &mut end => break,
+                _ = again.tick() => {}
+                event = self.events.recv() => {
+                    let Some(event) = event else { break };
+                    let first = self.note(&event);
+                    self.replay.extend(first);
+                    self.replay.push_back(event);
+                }
+            }
+        }
+    }
+
+    /// Leaves the room once the node has acknowledged what the game sent it reliably, or after
+    /// [`LEAVE_WAIT`]: the events it has not acknowledged by then come as [`Event::Undelivered`]
+    /// before the `left`.
     pub async fn leave(&mut self) -> Result<()> {
+        self.acknowledged().await;
+        let unacknowledged = self.unacknowledged();
+        self.replay.extend(unacknowledged);
         self.end_data().await;
         self.joined = None;
         self.avatar = None;

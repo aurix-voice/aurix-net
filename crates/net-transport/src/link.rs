@@ -42,7 +42,8 @@ pub enum LinkError {
 }
 
 const MIN_RTO: Duration = Duration::from_millis(60);
-const MAX_RTO: Duration = Duration::from_millis(1500);
+/// The longest a link waits for an acknowledgement before it sends a packet again.
+pub const MAX_RTO: Duration = Duration::from_millis(1500);
 const ACK_DELAY: Duration = Duration::from_millis(20);
 
 /// A reliable message the peer has not acknowledged, with the mark its sender gave it.

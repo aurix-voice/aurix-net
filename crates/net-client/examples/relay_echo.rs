@@ -108,7 +108,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(bob.joined.is_none(), "bob still describes the room");
 
     // over a link that takes 100 ms each way and closes on `stats`: the reliable events the node
-    // did not acknowledge come before the room is lost, and not to a client that leaves
+    // did not acknowledge come before the room is lost; a client that leaves waits for the node
+    // to have them and gets none back
     let Ok(broken) = std::env::var("NET_BREAK_HTTP") else {
         println!("broken link: skipped (NET_BREAK_HTTP not set)");
         return Ok(());
@@ -197,6 +198,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => &["left left"],
         };
         assert_eq!(told, want, "undelivered events, {how}");
+        if how == "leave" {
+            let mut large = 0;
+            while let Some(ev) = master.try_next_event() {
+                if let Event::Data { payload, .. } = ev {
+                    large += EventFrame::decode(payload).is_ok_and(|event| event.code == 5) as u32;
+                }
+            }
+            println!("the room got {large} of the 1 event sent to it before the leave");
+            assert_eq!(large, 1, "an event sent before a leave");
+        }
     }
     Ok(())
 }

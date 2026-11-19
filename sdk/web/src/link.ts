@@ -20,6 +20,10 @@ export const IDLE_TIMEOUT = 15000;
 export const RELIABLE_BACKLOG_BYTES = 1024 * 1024;
 const MIN_RTO = 60;
 const MAX_RTO = 1500;
+/** How long a leave waits for the node to acknowledge what the game sent it reliably, in
+ *  milliseconds: by then the link has sent every message again at least once, and the answer
+ *  has had time to come. */
+export const LEAVE_WAIT = 2 * MAX_RTO;
 /** Packet kind of fragment packets (their own reliable stream); channels use their own value. */
 export const KIND_FRAGMENT = 3;
 const FRAG_HDR = 5;

@@ -1,5 +1,5 @@
 import { Channel } from "./packet.js";
-import { Link, type Received } from "./link.js";
+import { Link, LEAVE_WAIT, type Received } from "./link.js";
 import {
   encodeEvent,
   decodeEvent,
@@ -10,7 +10,12 @@ import {
   type UndeliveredEvent,
 } from "./event.js";
 export { Channel } from "./packet.js";
-export { Link, IDLE_TIMEOUT, RELIABLE_BACKLOG_BYTES } from "./link.js";
+export {
+  Link,
+  IDLE_TIMEOUT,
+  LEAVE_WAIT,
+  RELIABLE_BACKLOG_BYTES,
+} from "./link.js";
 export { encodeEvent, decodeEvent } from "./event.js";
 export type { Target, EventFrame, UndeliveredEvent } from "./event.js";
 export * from "./sync.js";
@@ -127,7 +132,8 @@ export interface ClientEvents {
   closed: (reason: string) => void;
   /** The reliable events the node had not acknowledged when the room was lost, in the order
    *  they were sent. Comes before `closed` and before the `left` of a room the node took the
-   *  client out of. The room may have got any of them. */
+   *  client out of or `leave` left without their acknowledgement. The room may have got any
+   *  of them. */
   undelivered: (events: UndeliveredEvent[]) => void;
   rehost: () => void;
   notice: (text: string, level: string) => void;
@@ -157,6 +163,9 @@ export class Client {
   private onReady?: () => void;
   private failReady?: (error: Error) => void;
   private isLost = false;
+  /** The leave that waits for the node's acknowledgements, and what tells it of a change. */
+  private leaving?: Promise<void>;
+  private acknowledged?: (late?: boolean) => void;
   forceTunnel = false;
   /** Which data path is in use after join(). */
   get dataPath() {
@@ -510,6 +519,9 @@ export class Client {
     throw err;
   }
   async join(msg: object): Promise<Joined> {
+    if (this.leaving) {
+      await this.leaving;
+    }
     // a node that repeats the id of a join answers this one and no other with it
     const id = this.joinId();
     this.send(id === undefined ? msg : { ...msg, id });
@@ -525,7 +537,7 @@ export class Client {
         this.ws.readyState === this.ws.OPEN
       ) {
         // the node may have let the client in, or may yet: the client is in no room after this
-        this.leave();
+        this.leaveNow();
       }
       throw error;
     }
@@ -588,6 +600,7 @@ export class Client {
     }
     const recv: Received[] = this.link.receive(bytes);
     this.flushLink();
+    this.acknowledged?.();
     for (const received of recv) {
       if (received.payload.length === 0) {
         const ready = this.onReady;
@@ -701,7 +714,7 @@ export class Client {
     this.queue(channel, payload, 0);
   }
   private queue(channel: Channel, payload: Uint8Array, mark: number) {
-    if (!this.path || this.isLost) {
+    if (!this.path || this.isLost || this.leaving) {
       throw new Error("disconnected");
     }
     if (
@@ -766,7 +779,41 @@ export class Client {
     return this.link.stats;
   }
 
-  leave() {
+  /** Leaves the room once the node has acknowledged what the game sent it reliably, or after
+   *  `LEAVE_WAIT`: the events it has not acknowledged by then come as `undelivered` before the
+   *  `left`. Until then the client stays in the room and takes no new sends. Resolves when the
+   *  client is out of the room. */
+  leave(): Promise<void> {
+    if (this.leaving) {
+      return this.leaving;
+    }
+    const path = this.path;
+    if (!path || !this.link.unacknowledged().length) {
+      this.leaveNow();
+      return Promise.resolve();
+    }
+    this.leaving = new Promise<void>((resolve) => {
+      const end = setTimeout(() => this.acknowledged?.(true), LEAVE_WAIT);
+      this.acknowledged = (late = false) => {
+        if (!late && this.path === path && this.link.unacknowledged().length) {
+          return;
+        }
+        clearTimeout(end);
+        this.acknowledged = undefined;
+        this.leaving = undefined;
+        // a path that is gone took the room with it: the node took the client out, or the
+        // connection is lost
+        if (this.path === path) {
+          const events = this.unacknowledgedEvents();
+          this.leaveNow();
+          this.handBack(events);
+        }
+        resolve();
+      };
+    });
+    return this.leaving;
+  }
+  private leaveNow() {
     this.closePath();
     this.forgetRoom();
     this.send({ t: "leave", id: this.joinId() });
@@ -894,6 +941,7 @@ export class Client {
     this.path = undefined;
     old?.close();
     this.link = new Link();
+    this.acknowledged?.();
   }
 }
 
