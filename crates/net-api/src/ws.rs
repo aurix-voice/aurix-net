@@ -789,7 +789,11 @@ impl Session {
                         .subscribe_lobby(grant.project, &grant.player_id, self.ctl.clone());
                     self.lobby = Some(grant.project);
                     let rooms = self.lobby_rooms(grant.project, &grant.player_id).await;
-                    let _ = self.ctl.try_send(ServerMsg::LobbyRooms { rooms });
+                    self.st.host.tell_lobby_watcher(
+                        grant.project,
+                        &self.ctl,
+                        ServerMsg::LobbyRooms { rooms },
+                    );
                 } else if let Some(lobby) = self.lobby.take() {
                     self.st.host.unsubscribe_lobby(lobby, &self.ctl);
                 }
@@ -2263,10 +2267,7 @@ pub async fn publish_room(st: &Shared, handle: &Arc<Mutex<HostedRoom>>) {
     if let Err(e) = st.redis.put_room(project, &live).await {
         tracing::warn!(error = %e, "redis put_room failed");
         st.host
-            .notify_lobby(project, |player| ServerMsg::LobbyUpdate {
-                removed: !live.is_listed_for(player),
-                room: live_to_summary(live.clone()),
-            });
+            .notify_lobby(project, |player| lobby_change(&live, player));
     }
 }
 
@@ -2568,19 +2569,37 @@ pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {
     if let Err(e) = st.redis.remove_room(project, id).await {
         tracing::warn!(error = %e, room = %id, "close_room redis");
         st.host.unlisted(project, id);
-        let gone = ServerMsg::LobbyUpdate {
-            room: RoomSummary {
-                id: id.to_string(),
-                name: String::new(),
-                mode: RoomMode::Relay,
-                players: 0,
-                max_players: 0,
-                open: false,
-                props: Map::new(),
-            },
-            removed: true,
-        };
+        let gone = lobby_removal(id.to_string());
         st.host.notify_lobby(project, |_| gone.clone());
+    }
+}
+
+/// Tells a lobby watcher that a room left his list; of the room it carries the id alone.
+pub fn lobby_removal(id: String) -> ServerMsg {
+    ServerMsg::LobbyUpdate {
+        room: RoomSummary {
+            id,
+            name: String::new(),
+            mode: RoomMode::Relay,
+            players: 0,
+            max_players: 0,
+            open: false,
+            props: Map::new(),
+        },
+        removed: true,
+    }
+}
+
+/// What a lobby watcher hears of a room that changed: the room while the list offers it to
+/// him, its removal otherwise.
+pub fn lobby_change(live: &LiveRoom, player: &str) -> ServerMsg {
+    if live.is_listed_for(player) {
+        ServerMsg::LobbyUpdate {
+            room: live_to_summary(live.clone()),
+            removed: false,
+        }
+    } else {
+        lobby_removal(live.room.to_string())
     }
 }
 

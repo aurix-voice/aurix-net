@@ -168,6 +168,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - Data path: over WebTransport the node acknowledged a packet of a player it had taken out
   of the room and dropped it, so his client took a reliable message sent after a kick for
   delivered. Such a packet is not acknowledged, over QUIC either.
+- Lobby: `lobby_update` told every watcher the name, the player count and the lobby props
+  of a room the list does not offer him: a hidden one, a closed one, one whose last seat is
+  held for somebody else. A watcher is told once, by the id alone and with `removed: true`,
+  that a room left his list, and nothing of a room the list never offered him.
 - Lobby: while Redis was unreachable, the node announced every changed room to the lobby
   watchers, a hidden or a closed one too. They are told of a room the list offers them.
 - Rooms: a room whose creator was refused on the way in (player properties over the limit,

@@ -273,6 +273,97 @@ async fn lobby_watcher_hears_of_a_room_whose_last_seat_is_held_for_him_alone() {
 }
 
 #[tokio::test]
+async fn lobby_watcher_is_told_once_and_by_id_alone_that_a_room_left_his_list() {
+    let node = Node::start().await;
+    let project = node.project("lobby-unlisted").await;
+    let mut ann = project.player("ann").await;
+    ann.send(json!({"t": "lobby", "subscribe": true})).await;
+    ann.until("lobby_rooms").await;
+    let updates = |heard: Vec<Value>| -> Vec<Value> {
+        heard
+            .into_iter()
+            .filter(|msg| msg["t"] == "lobby_update")
+            .collect()
+    };
+
+    // Rooms the list never offered her.
+    let mut hosts = Vec::new();
+    for create in [
+        json!({"t": "create", "name": "hidden", "visible": false}),
+        json!({"t": "create", "name": "closed", "open": false}),
+        json!({"t": "create", "name": "held", "max_players": 2, "reserved": ["friend"]}),
+    ] {
+        let name = create["name"].clone();
+        let mut host = project.player(name.as_str().expect("name")).await;
+        joined(&host.call(create).await);
+        assert_eq!(
+            updates(ann.drain(Duration::from_secs(1)).await),
+            [] as [Value; 0]
+        );
+        hosts.push(host);
+    }
+
+    let mut bob = project.player("bob").await;
+    let create = json!({"t": "create", "name": "shown", "props": {"map": "dust"},
+        "lobby_props": ["map"]});
+    let id = bob.call(create).await["room"].clone();
+    let shown = updates(ann.drain(Duration::from_secs(1)).await);
+    assert!(!shown.is_empty());
+    assert!(shown
+        .iter()
+        .all(|msg| msg["room"]["name"] == "shown" && msg["removed"] == false));
+
+    bob.send(json!({"t": "set_room_props", "props": {}, "visible": false}))
+        .await;
+    let gone = json!({"t": "lobby_update", "removed": true, "room": {"id": id, "name": "",
+        "mode": "relay", "players": 0, "max_players": 0, "open": false, "props": {}}});
+    assert_eq!(updates(ann.drain(Duration::from_secs(1)).await), [gone]);
+
+    bob.send(json!({"t": "leave"})).await;
+    bob.until("left").await;
+    assert_eq!(
+        updates(ann.drain(Duration::from_secs(1)).await),
+        [] as [Value; 0]
+    );
+}
+
+#[tokio::test]
+async fn lobby_watcher_who_subscribes_again_is_still_told_once_that_a_room_left() {
+    let node = Node::start().await;
+    let project = node.project("lobby-again").await;
+    let mut ann = project.player("ann").await;
+    ann.send(json!({"t": "lobby", "subscribe": true})).await;
+    ann.until("lobby_rooms").await;
+    let mut bob = project.player("bob").await;
+    let id = bob.call(json!({"t": "create", "name": "shown"})).await["room"].clone();
+    ann.until("lobby_update").await;
+    ann.drain(Duration::from_secs(1)).await;
+
+    ann.send(json!({"t": "lobby", "subscribe": true})).await;
+    assert_eq!(ann.until("lobby_rooms").await["rooms"][0]["id"], id);
+    let updates = |heard: Vec<Value>| -> Vec<Value> {
+        heard
+            .into_iter()
+            .filter(|msg| msg["t"] == "lobby_update")
+            .collect()
+    };
+
+    bob.send(json!({"t": "set_room_props", "props": {}, "visible": false}))
+        .await;
+    let left = updates(ann.drain(Duration::from_secs(1)).await);
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert_eq!(left[0]["removed"], true);
+    assert_eq!(left[0]["room"]["id"], id);
+
+    bob.send(json!({"t": "leave"})).await;
+    bob.until("left").await;
+    assert_eq!(
+        updates(ann.drain(Duration::from_secs(1)).await),
+        [] as [Value; 0]
+    );
+}
+
+#[tokio::test]
 async fn room_is_offered_again_once_the_hold_on_its_seat_lapses() {
     let node = Node::start().await;
     let project = node.project("lobby-lapse").await;

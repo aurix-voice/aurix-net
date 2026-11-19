@@ -6,7 +6,6 @@ use net_common::config::RedisConfig;
 use net_common::{NetConfig, NodeId, RegionId};
 use net_control::{NodeRegistry, RedisStore};
 use net_db::queries::{self, NodeHeartbeat};
-use net_rooms::protocol::ServerMsg;
 use net_transport::quic;
 use net_transport::TicketSigner;
 use std::sync::Arc;
@@ -449,26 +448,13 @@ async fn fleet_listen_once(st: &Arc<AppState>, redis: &RedisConfig) -> anyhow::R
                 .and_then(|r| r.as_str())
                 .unwrap_or("")
                 .to_string();
-            let gone = ServerMsg::LobbyUpdate {
-                room: net_rooms::protocol::RoomSummary {
-                    id,
-                    name: String::new(),
-                    mode: net_common::RoomMode::Relay,
-                    players: 0,
-                    max_players: 0,
-                    open: false,
-                    props: Default::default(),
-                },
-                removed: true,
-            };
+            let gone = net_api::ws::lobby_removal(id);
             st.host.notify_lobby(pid, |_| gone.clone());
         } else if let Ok(live) =
             serde_json::from_value::<net_control::redis_store::LiveRoom>(change)
         {
-            st.host.notify_lobby(pid, |player| ServerMsg::LobbyUpdate {
-                removed: !live.is_listed_for(player),
-                room: net_api::ws::live_to_summary(live.clone()),
-            });
+            st.host
+                .notify_lobby(pid, |player| net_api::ws::lobby_change(&live, player));
         }
     }
     anyhow::bail!("the connection closed")

@@ -116,7 +116,7 @@ Server → client: `hello{session, version, region, supports?}`, `authed{player_
 `joined{room, name, mode, actor, master, max_players, props, players, data, cached, schema_hash?, tick_hz?, next_spawn_tag?}`,
 `left{reason, room?}`, `player_joined{player}`, `player_left{actor, reason}`, `room_props`,
 `player_props`, `event{code, from, data}` (control fallback), `master_changed{actor}`,
-`lobby_rooms{rooms}` (the whole list, in place of the one the client holds: sent on `lobby{subscribe: true}` and again after the node lost its Redis connection and may have missed changes), `lobby_update{room, removed}`, `stats{rooms, players, lobbies[{lobby, rooms, players}], id?}`,
+`lobby_rooms{rooms}` (the whole list, in place of the one the client holds: sent on `lobby{subscribe: true}` and again after the node lost its Redis connection and may have missed changes), `lobby_update{room, removed}` (with `removed: true` the room is out of the list this client holds, closed or no longer offered to him, and `room` carries its `id` alone; it comes once, and not for a room the list never offered him), `stats{rooms, players, lobbies[{lobby, rooms, players}], id?}`,
 `friends{friends[{player, online, room?{id, name, mode, node}}], id?}`, `rooms{rooms[{id, name, mode, players, max_players, open, props}], id?}`, `rpc_result{id, ok, status?, body, error?}`, `pong{ts, server_ms}`,
 `notice{text, level}`, `error{code, message, id?}`, `desync{tick, actor, strikes, untrusted}`.
 

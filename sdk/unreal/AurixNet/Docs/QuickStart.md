@@ -72,10 +72,12 @@ Latent nodes (Success / Failure pins, nothing blocks the game thread): **Connect
 **Connect and Join Room**, **Join or Create Room**, **Join Room**, **Join Random Room**.
 
 Realtime-style room features on the subsystem: `SetRoomProps` / `SetPlayerProps` (with CAS
-`Expected`), `SetRoomVisibility`, `SubscribeLobby` (+ `OnLobbyUpdate`), `SendEventEx` (interest
-group, cached events for late joiners), `SetGroups`, `Rpc` to a room module, `Kick`, `SetMaster`,
-`RequestStats`, `OnDesync`. `AurixInterestComponent` joins grid interest groups around its owner —
-send state events with `Group = CurrentGroup()` and only nearby players receive them.
+`Expected`), `SetRoomVisibility`, `SubscribeLobby` (+ `OnLobbyUpdate`; a room that left the list
+comes with its `RoomId` alone, the name and the rest empty, so take it out by `RoomId`),
+`SendEventEx` (interest group, cached events for late joiners), `SetGroups`, `Rpc` to a room module,
+`Kick`, `SetMaster`, `RequestStats`, `OnDesync`. `AurixInterestComponent` joins grid interest groups
+around its owner — send state events with `Group = CurrentGroup()` and only nearby players receive
+them.
 
 ## 3c. Host migration
 

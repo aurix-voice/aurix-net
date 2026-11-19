@@ -109,7 +109,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Room") bool SendEventEx(uint8 Code, const TArray<uint8>& Payload, EAurixNetTarget Target, const TArray<int32>& Actors, EAurixNetChannel Channel, int32 Group, EAurixNetCache Cache);
 	/** Sync rooms: steer area-of-interest — extra viewpoints (entity ids) and entities always in view. */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Sync") bool SetView(const TArray<int64>& Viewpoints, const TArray<int64>& Interest);
-	/** Subscribe to the lobby: OnRoomsListed with the current list, then OnLobbyUpdate per change. */
+	/** Subscribe to the lobby: OnRoomsListed with the current list, then OnLobbyUpdate per change.
+	 *  A room that left the list comes with bRemoved and, of the room, its RoomId alone, the name
+	 *  and the rest empty: take it out by RoomId. */
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Lobby") bool SubscribeLobby(bool bSubscribe);
 	UFUNCTION(BlueprintCallable, Category = "Aurix Net|Lobby") bool RequestStats();
 	/** Call a room module RPC (rooms with a WASM module); answered by OnRpcResult with this id. */

@@ -8,7 +8,7 @@ use net_rooms::protocol::ServerMsg;
 use net_rooms::{EventFrame, Outgoing, Room};
 use net_transport::Link;
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -201,12 +201,47 @@ pub struct RoomHost {
     rooms: DashMap<RoomId, Arc<Mutex<HostedRoom>>>,
     by_name: DashMap<(ProjectId, String), RoomId>,
     /// Lobby subscribers per project on this node.
-    lobby: DashMap<ProjectId, Vec<(String, mpsc::Sender<ServerMsg>)>>,
+    lobby: DashMap<ProjectId, Vec<LobbyWatcher>>,
     /// Authenticated control sessions per (project, player): presence for `find_friends`.
     presence: DashMap<(ProjectId, String), u32>,
     /// Rooms closed here that Redis still lists: it could not be reached to take them out.
     unlisted: Mutex<Vec<(ProjectId, RoomId)>>,
     unmetered: Unmetered,
+}
+
+struct LobbyWatcher {
+    player: String,
+    control: mpsc::Sender<ServerMsg>,
+    /// The rooms in the list the watcher holds.
+    shown: HashSet<String>,
+}
+
+impl LobbyWatcher {
+    /// A room goes out of the watcher's list once: he is not told of the removal of a room
+    /// he does not hold.
+    fn tell(&mut self, msg: ServerMsg) {
+        let news = match &msg {
+            ServerMsg::LobbyRooms { rooms } => {
+                self.shown = rooms.iter().map(|room| room.id.clone()).collect();
+                true
+            }
+            ServerMsg::LobbyUpdate {
+                room,
+                removed: false,
+            } => {
+                self.shown.insert(room.id.clone());
+                true
+            }
+            ServerMsg::LobbyUpdate {
+                room,
+                removed: true,
+            } => self.shown.remove(&room.id),
+            _ => true,
+        };
+        if news {
+            let _ = self.control.try_send(msg);
+        }
+    }
 }
 
 impl RoomHost {
@@ -408,17 +443,32 @@ impl RoomHost {
 
     pub fn subscribe_lobby(&self, project: ProjectId, player: &str, tx: mpsc::Sender<ServerMsg>) {
         let mut watchers = self.lobby.entry(project).or_default();
-        if !watchers
-            .iter()
-            .any(|(_, watcher)| watcher.same_channel(&tx))
-        {
-            watchers.push((player.to_string(), tx));
+        if !watchers.iter().any(|w| w.control.same_channel(&tx)) {
+            watchers.push(LobbyWatcher {
+                player: player.to_string(),
+                control: tx,
+                shown: HashSet::new(),
+            });
         }
     }
 
     pub fn unsubscribe_lobby(&self, project: ProjectId, tx: &mpsc::Sender<ServerMsg>) {
         if let Some(mut watchers) = self.lobby.get_mut(&project) {
-            watchers.retain(|(_, t)| !t.same_channel(tx));
+            watchers.retain(|w| !w.control.same_channel(tx));
+        }
+    }
+
+    /// Sends one watcher of the project's lobby its list.
+    pub fn tell_lobby_watcher(
+        &self,
+        project: ProjectId,
+        tx: &mpsc::Sender<ServerMsg>,
+        msg: ServerMsg,
+    ) {
+        if let Some(mut watchers) = self.lobby.get_mut(&project) {
+            if let Some(watcher) = watchers.iter_mut().find(|w| w.control.same_channel(tx)) {
+                watcher.tell(msg);
+            }
         }
     }
 
@@ -443,9 +493,10 @@ impl RoomHost {
     /// Sends every watcher of the project's lobby the message `for_player` makes for him.
     pub fn notify_lobby(&self, project: ProjectId, for_player: impl Fn(&str) -> ServerMsg) {
         if let Some(mut watchers) = self.lobby.get_mut(&project) {
-            watchers.retain(|(_, t)| !t.is_closed());
-            for (player, watcher) in watchers.iter() {
-                let _ = watcher.try_send(for_player(player));
+            watchers.retain(|w| !w.control.is_closed());
+            for watcher in watchers.iter_mut() {
+                let msg = for_player(&watcher.player);
+                watcher.tell(msg);
             }
         }
     }

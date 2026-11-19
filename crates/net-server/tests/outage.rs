@@ -3,7 +3,7 @@
 mod common;
 
 use common::{joined, refused, Node, Sink};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::time::Duration;
 use tokio::io::copy_bidirectional;
 use tokio::net::{TcpListener, TcpStream};
@@ -547,4 +547,62 @@ async fn hidden_and_closed_rooms_stay_out_of_the_lobby_during_a_redis_outage() {
         .map(|msg| msg["room"]["name"].clone())
         .collect();
     assert_eq!(offered, ["plain"]);
+}
+
+// The relay has to keep running while the node deletes its project on drop.
+#[tokio::test(flavor = "multi_thread")]
+async fn list_sent_again_after_a_redis_outage_keeps_what_the_watcher_was_told() {
+    let relay = Relay::redis().await;
+    let node = Node::start_with(&[("NET__REDIS__URL", &relay.url)]).await;
+    let project = node.project("outage-list").await;
+    let mut ann = project.player("ann").await;
+    ann.send(json!({"t": "lobby", "subscribe": true})).await;
+    ann.until("lobby_rooms").await;
+    let mut kept = project.player("kept").await;
+    let kept_id = kept.call(json!({"t": "create", "name": "kept"})).await["room"].clone();
+    let mut gone = project.player("gone").await;
+    let gone_id = gone.call(json!({"t": "create", "name": "gone"})).await["room"].clone();
+    ann.drain(Duration::from_secs(1)).await;
+    let hide = json!({"t": "set_room_props", "props": {}, "visible": false});
+
+    relay.set(false);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    gone.send(hide.clone()).await;
+    // The node gives up on Redis after a few seconds and tells the watchers itself.
+    let left = ann.until("lobby_update").await;
+    assert_eq!(
+        (&left["removed"], &left["room"]["id"]),
+        (&json!(true), &gone_id)
+    );
+    relay.set(true);
+
+    let mut list = None;
+    while list.is_none() {
+        let msg = ann.poll(Duration::from_secs(15)).await.expect("the list");
+        list = (msg["t"] == "lobby_rooms").then_some(msg);
+    }
+    let listed: Vec<&Value> = list.as_ref().expect("list")["rooms"]
+        .as_array()
+        .expect("rooms")
+        .iter()
+        .map(|room| &room["id"])
+        .collect();
+    assert_eq!(listed, [&kept_id]);
+    ann.drain(Duration::from_secs(1)).await;
+
+    let removals = |heard: Vec<Value>| -> Vec<Value> {
+        heard
+            .into_iter()
+            .filter(|msg| msg["t"] == "lobby_update" && msg["removed"] == true)
+            .map(|msg| msg["room"]["id"].clone())
+            .collect()
+    };
+    gone.send(json!({"t": "leave"})).await;
+    gone.until("left").await;
+    assert_eq!(
+        removals(ann.drain(Duration::from_secs(1)).await),
+        [] as [Value; 0]
+    );
+    kept.send(hide).await;
+    assert_eq!(removals(ann.drain(Duration::from_secs(1)).await), [kept_id]);
 }
