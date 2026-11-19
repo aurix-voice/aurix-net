@@ -56,6 +56,15 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   hash. A restore with an empty state (no checkpoint yet) was handed to the game as bytes to
   load; the runner now goes back to the state it started with. Checked in UE 5.8.2 against a
   Web SDK player, joining either way: 0 of 29 state comparisons matched before, 26 of 26 after.
+- Billing: `rooms_created` in `GET /v1/operator/billing` was counted from the rooms table,
+  where a closed room's row is deleted after `closed_rooms_days` (7 by default), so the report
+  for a finished month showed only the rooms closed in the last week. A created room is now
+  counted in the usage table, which is kept for `usage_days`, and shows as the `rooms_created`
+  metric in `GET /v1/usage`. Rooms created before this version are not in the count.
+- Usage: traffic a player moved after the node's last metering pass was never billed once he
+  left, so a session shorter than a minute counted no `bytes_in` or `bytes_out` at all and every
+  longer one lost its tail, in `/v1/usage`, the billing report and the monthly byte cap alike.
+  The node now adds it when the data session closes.
 - Web SDK: a late joiner got neither the cached relay events nor the chat history. The node sends
   them in `joined.cached`, and the client dropped that field. They are now emitted as `event` after
   the join (`cached: true`, also kept in `Client.cached`), and `Chat.join` delivers the history of

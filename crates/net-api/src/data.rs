@@ -1,7 +1,7 @@
 //! QUIC data plane: the first datagram of a connection is the data ticket; everything after
 //! runs through the session's [`net_transport::Link`].
 
-use crate::host::{handle_data_frame, DataSession, DataSink};
+use crate::host::{handle_data_frame, DataSink};
 use crate::state::Shared;
 use crate::ws::{attach_data, spawn_ticker};
 use std::sync::Arc;
@@ -41,15 +41,18 @@ async fn handle(st: Shared, incoming: quinn::Incoming) -> anyhow::Result<()> {
         conn.close(2u32.into(), b"no room");
         anyhow::bail!("no such room");
     };
-    {
+    let project = {
         let room = hosted.lock();
         if !room.sessions.contains_key(&ticket.actor) {
             drop(room);
             conn.close(3u32.into(), b"not joined");
             anyhow::bail!("actor not joined");
         }
-    }
-    let ds = DataSession::new(DataSink::Quic(conn.clone()), st.metrics.clone());
+        room.project
+    };
+    let ds = st
+        .host
+        .data_session(project, DataSink::Quic(conn.clone()), st.metrics.clone());
     let ds = attach_data(&hosted, ticket.actor, ds);
     spawn_ticker(&st, ds.clone());
     loop {
@@ -130,11 +133,20 @@ async fn handle_wt(
         conn.close(2u32.into(), b"no room");
         anyhow::bail!("no such room");
     };
-    if !hosted.lock().sessions.contains_key(&ticket.actor) {
-        conn.close(3u32.into(), b"not joined");
-        anyhow::bail!("actor not joined");
-    }
-    let ds = DataSession::new(DataSink::WebTransport(conn.clone()), st.metrics.clone());
+    let project = {
+        let room = hosted.lock();
+        if !room.sessions.contains_key(&ticket.actor) {
+            drop(room);
+            conn.close(3u32.into(), b"not joined");
+            anyhow::bail!("actor not joined");
+        }
+        room.project
+    };
+    let ds = st.host.data_session(
+        project,
+        DataSink::WebTransport(conn.clone()),
+        st.metrics.clone(),
+    );
     let ds = attach_data(&hosted, ticket.actor, ds);
     spawn_ticker(&st, ds.clone());
     loop {

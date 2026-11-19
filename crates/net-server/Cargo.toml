@@ -40,3 +40,4 @@ net-client = { path = "../net-client" }
 tokio-tungstenite = { workspace = true }
 reqwest = { workspace = true }
 bytes = { workspace = true }
+sqlx = { workspace = true }

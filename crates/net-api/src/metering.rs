@@ -1,7 +1,7 @@
 //! Usage metering, the basis of node-hour billing (never CCU): every minute each node adds,
 //! per project, `room_minutes`, `player_minutes`, `bytes_in` and `bytes_out` to `usage_hours`
-//! (`GET /v1/usage`). Bytes are deltas of the per-session link counters, so a session that
-//! leaves between two passes loses at most one minute of traffic accounting.
+//! (`GET /v1/usage`). Bytes are deltas of the per-session link counters; what a session moved
+//! after its last pass is added when it closes and billed on the next one.
 
 use crate::state::Shared;
 use net_db::queries;

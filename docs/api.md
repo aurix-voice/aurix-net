@@ -158,8 +158,9 @@ regenerated on every start. The WebSocket tunnel remains the fallback. Manual br
 ## Usage metering
 
 Every node adds per project and hour: `room_minutes`, `player_minutes`, `bytes_in`,
-`bytes_out` (`GET /v1/usage?from&to`). Billing is node-hours plus included traffic, never
-peak CCU. `GET /v1/regions` lists live regions with `endpoints` (node HTTP URLs) so clients
+`bytes_out`, and `rooms_created` when a room is created (`GET /v1/usage?from&to`). Billing is
+node-hours plus included traffic, never peak CCU. `GET /v1/regions` lists live regions with
+`endpoints` (node HTTP URLs) so clients
 pick the closest node; a room lookup on another node answers `conflict room_elsewhere:<url>`.
 `Client::connect_and_join` (Rust) and `Client.connectAndJoin` (Web) follow that redirect
 automatically; the C ABI returns the error and the caller reconnects to the URL.

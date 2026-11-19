@@ -499,11 +499,6 @@ async fn op_billing(
     let (from, to) = month_bounds(q.month.as_deref())?;
     let projects = queries::list_projects_all(&st.pool).await?;
     let usage = queries::usage_by_project_between(&st.pool, from, to).await?;
-    let created: std::collections::HashMap<Uuid, i64> =
-        queries::rooms_created_between(&st.pool, from, to)
-            .await?
-            .into_iter()
-            .collect();
     let mut by: std::collections::HashMap<Uuid, std::collections::BTreeMap<String, f64>> =
         Default::default();
     for row in usage {
@@ -518,8 +513,8 @@ async fn op_billing(
     let mut total = std::collections::BTreeMap::<&str, f64>::new();
     for project in &projects {
         let used = by.remove(&project.id).unwrap_or_default();
-        let rooms = created.get(&project.id).copied().unwrap_or(0);
-        if used.is_empty() && rooms == 0 && project.deleted_at.is_some() {
+        let rooms = get(&used, "rooms_created") as i64;
+        if used.is_empty() && project.deleted_at.is_some() {
             continue;
         }
         let limits = net_control::ProjectLimits::from_json(&project.limits);
@@ -679,23 +674,18 @@ pub(crate) fn month_start() -> Timestamp {
 /// Month-to-date (player_minutes, bytes) of a project, cached 30 s per node so the join path
 /// does not add a SUM to every room creation.
 pub(crate) async fn usage_month(st: &Shared, project: Uuid) -> Result<(f64, f64)> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    use std::time::Instant;
-    type UsageCache = Mutex<HashMap<Uuid, (Instant, (f64, f64))>>;
-    static CACHE: OnceLock<UsageCache> = OnceLock::new();
-    let cache = CACHE.get_or_init(Default::default);
-    if let Some((at, v)) = cache.lock().unwrap().get(&project) {
-        if at.elapsed() < std::time::Duration::from_secs(30) {
-            return Ok(*v);
-        }
+    use std::sync::LazyLock;
+    static CACHE: LazyLock<moka::future::Cache<Uuid, (f64, f64)>> = LazyLock::new(|| {
+        moka::future::Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(30))
+            .max_capacity(10_000)
+            .build()
+    });
+    if let Some(totals) = CACHE.get(&project).await {
+        return Ok(totals);
     }
     let totals = queries::usage_totals_since(&st.pool, project, month_start()).await?;
-    let mut cached = cache.lock().unwrap();
-    if cached.len() > 10_000 {
-        cached.clear();
-    }
-    cached.insert(project, (Instant::now(), totals));
+    CACHE.insert(project, totals).await;
     Ok(totals)
 }
 

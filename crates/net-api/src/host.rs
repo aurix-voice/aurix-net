@@ -23,6 +23,9 @@ pub enum DataSink {
     Ws(mpsc::Sender<Bytes>),
 }
 
+/// Per project: bytes (in, out) of closed data sessions the metering task has not billed yet.
+pub type Unmetered = Arc<DashMap<ProjectId, (u64, u64)>>;
+
 pub struct DataSession {
     pub link: Mutex<Link>,
     pub sink: DataSink,
@@ -30,16 +33,38 @@ pub struct DataSession {
     /// Byte counters already billed by the metering task (see `metering.rs`).
     pub metered_in: std::sync::atomic::AtomicU64,
     pub metered_out: std::sync::atomic::AtomicU64,
+    project: ProjectId,
+    unmetered: Unmetered,
+}
+
+impl Drop for DataSession {
+    fn drop(&mut self) {
+        let stats = self.link.get_mut().stats();
+        let bytes_in = stats.recv_bytes.saturating_sub(*self.metered_in.get_mut());
+        let bytes_out = stats.sent_bytes.saturating_sub(*self.metered_out.get_mut());
+        if bytes_in > 0 || bytes_out > 0 {
+            let mut left = self.unmetered.entry(self.project).or_default();
+            left.0 += bytes_in;
+            left.1 += bytes_out;
+        }
+    }
 }
 
 impl DataSession {
-    pub fn new(sink: DataSink, metrics: Arc<Metrics>) -> Arc<Self> {
+    fn new(
+        project: ProjectId,
+        sink: DataSink,
+        metrics: Arc<Metrics>,
+        unmetered: Unmetered,
+    ) -> Arc<Self> {
         Arc::new(Self {
             link: Mutex::new(Link::new(Instant::now())),
             sink,
             metrics,
             metered_in: Default::default(),
             metered_out: Default::default(),
+            project,
+            unmetered,
         })
     }
 
@@ -145,9 +170,20 @@ pub struct RoomHost {
     lobby: DashMap<ProjectId, Vec<mpsc::Sender<ServerMsg>>>,
     /// Authenticated control sessions per (project, player): presence for `find_friends`.
     presence: DashMap<(ProjectId, String), u32>,
+    unmetered: Unmetered,
 }
 
 impl RoomHost {
+    /// A data session whose traffic is billed to `project`.
+    pub fn data_session(
+        &self,
+        project: ProjectId,
+        sink: DataSink,
+        metrics: Arc<Metrics>,
+    ) -> Arc<DataSession> {
+        DataSession::new(project, sink, metrics, self.unmetered.clone())
+    }
+
     pub fn register_data(&self, ds: &Arc<DataSession>) {
         self.data_sessions.lock().push(Arc::downgrade(ds));
     }
@@ -228,6 +264,14 @@ impl RoomHost {
                     totals.2 += din;
                     totals.3 += dout;
                 }
+            }
+        }
+        let closed: Vec<ProjectId> = self.unmetered.iter().map(|left| *left.key()).collect();
+        for project in closed {
+            if let Some((_, (bytes_in, bytes_out))) = self.unmetered.remove(&project) {
+                let totals = out.entry(project).or_default();
+                totals.2 += bytes_in;
+                totals.3 += bytes_out;
             }
         }
         out

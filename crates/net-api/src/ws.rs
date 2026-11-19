@@ -1244,7 +1244,12 @@ impl Session {
                         "ticket does not match session".into(),
                     ));
                 }
-                let ds = DataSession::new(DataSink::Ws(self.bin.clone()), self.st.metrics.clone());
+                let project = joined.hosted.lock().project;
+                let ds = self.st.host.data_session(
+                    project,
+                    DataSink::Ws(self.bin.clone()),
+                    self.st.metrics.clone(),
+                );
                 let ds = attach_data(&joined.hosted, joined.actor, ds);
                 spawn_ticker(&self.st, ds.clone());
                 self.data = Some(ds);

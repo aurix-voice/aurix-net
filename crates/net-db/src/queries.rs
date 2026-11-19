@@ -323,8 +323,10 @@ pub struct NewRoom {
     pub lobby_props: Vec<String>,
 }
 
+/// Inserts the room and counts it in the project's usage, which outlives the room's row.
 pub async fn insert_room(pool: &DbPool, room: &NewRoom) -> Result<RoomRow> {
-    sqlx::query_as::<_, RoomRow>(
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    let row = sqlx::query_as::<_, RoomRow>(
         "INSERT INTO rooms (id, project_id, node_id, region, name, mode, max_players, visible, open, schema_hash, props, lobby_props)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *",
     )
@@ -340,9 +342,19 @@ pub async fn insert_room(pool: &DbPool, room: &NewRoom) -> Result<RoomRow> {
     .bind(&room.schema_hash)
     .bind(&room.props)
     .bind(&room.lobby_props)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await
-    .map_err(db_err)
+    .map_err(db_err)?;
+    add_usage(
+        &mut *tx,
+        row.project_id,
+        row.created_at.hour_start(),
+        "rooms_created",
+        1.0,
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)?;
+    Ok(row)
 }
 
 pub async fn get_room(pool: &DbPool, id: Uuid) -> Result<RoomRow> {
@@ -659,7 +671,7 @@ pub async fn delete_game_module(pool: &DbPool, project_id: Uuid, name: &str) -> 
 // ---------- usage / audit ----------
 
 pub async fn add_usage(
-    pool: &DbPool,
+    db: impl sqlx::PgExecutor<'_>,
     project_id: Uuid,
     hour: Timestamp,
     metric: &str,
@@ -673,7 +685,7 @@ pub async fn add_usage(
     .bind(hour)
     .bind(metric)
     .bind(qty)
-    .execute(pool)
+    .execute(db)
     .await
     .map_err(db_err)?;
     Ok(())
@@ -738,22 +750,6 @@ pub async fn usage_by_project_between(
     sqlx::query_as::<_, ProjectMetricRow>(
         "SELECT project_id, metric, SUM(quantity)::float8 AS quantity FROM usage_hours \
          WHERE hour >= $1 AND hour < $2 GROUP BY project_id, metric",
-    )
-    .bind(from)
-    .bind(to)
-    .fetch_all(pool)
-    .await
-    .map_err(db_err)
-}
-
-/// Rooms created per project in [from, to).
-pub async fn rooms_created_between(
-    pool: &DbPool,
-    from: Timestamp,
-    to: Timestamp,
-) -> Result<Vec<(Uuid, i64)>> {
-    sqlx::query_as::<_, (Uuid, i64)>(
-        "SELECT project_id, COUNT(*) FROM rooms WHERE created_at >= $1 AND created_at < $2 GROUP BY project_id",
     )
     .bind(from)
     .bind(to)

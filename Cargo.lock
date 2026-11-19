@@ -2274,6 +2274,7 @@ dependencies = [
  "reqwest",
  "rustls",
  "serde_json",
+ "sqlx",
  "tokio",
  "tokio-tungstenite",
  "tower-http",
