@@ -62,7 +62,8 @@ impl Relay {
     }
 }
 
-#[tokio::test]
+// The relay has to keep running while the node deletes its project on drop.
+#[tokio::test(flavor = "multi_thread")]
 async fn webhooks_resume_as_soon_as_the_database_is_back() {
     let relay = Relay::start().await;
     let node = Node::start_with(&[("NET__DATABASE__URL", &relay.url)]).await;
@@ -88,7 +89,8 @@ async fn webhooks_resume_as_soon_as_the_database_is_back() {
     assert_eq!(sink.next("player.joined").await["data"]["actor"], actor);
 }
 
-#[tokio::test]
+// The relay has to keep running while the node deletes its project on drop.
+#[tokio::test(flavor = "multi_thread")]
 async fn webhooks_go_out_through_an_outage_longer_than_the_cache() {
     let relay = Relay::start().await;
     let node = Node::start_with(&[("NET__DATABASE__URL", &relay.url)]).await;
@@ -108,4 +110,5 @@ async fn webhooks_go_out_through_an_outage_longer_than_the_cache() {
     tokio::time::sleep(Duration::from_secs(32)).await;
     bob.send(json!({"t": "leave"})).await;
     assert_eq!(sink.next("player.left").await["data"]["actor"], actor);
+    relay.set(true);
 }

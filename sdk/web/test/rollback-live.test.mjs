@@ -23,11 +23,12 @@ class Toy {
   snapshot() { return this.state; } restore(s) { this.state = s; }
 }
 
-test("rollback: two predicting clients stay in sync on confirmed hashes while rolling back", { skip: !key }, async () => {
+test("rollback: two predicting clients stay in sync on confirmed hashes while rolling back", { skip: !key }, async (t) => {
   const room = `web-rb-${process.pid}`;
   const peers = [];
   for (const name of ["rb-a", "rb-b"]) {
     const c = await Client.connect(http, await grant(name));
+    t.after(() => c.close());
     const joined = await c.joinOrCreate(room, "lockstep", 2, { tick_hz: 30 });
     const ls = new LockstepClient((ch, p) => c.sendData(ch, p));
     const sim = new Toy(); const rb = new LockstepRollback(sim, joined.actor, 0, 8);
@@ -59,5 +60,4 @@ test("rollback: two predicting clients stay in sync on confirmed hashes while ro
   for (const [t, h] of a.hashes) { const hb = b.hashes.get(t); if (hb === undefined) continue; compared++; assert.equal(h, hb, `confirmed state differs at tick ${t}`); }
   assert.ok(compared > 60, `compared ${compared} confirmed ticks`);
   console.log(`rollback live: a ${a.rb.rollbacks} rollbacks/${a.rb.resimulatedTicks} resim, b ${b.rb.rollbacks}/${b.rb.resimulatedTicks}, ${compared} ticks equal, delay a=${a.ls.inputDelay} b=${b.ls.inputDelay}`);
-  for (const p of peers) p.c.close();
 });

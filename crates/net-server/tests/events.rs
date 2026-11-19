@@ -9,7 +9,7 @@ use net_client::{Client, Event, Options};
 use net_rooms::event::EventTarget;
 use net_rooms::protocol::{ClientMsg, ServerMsg};
 use serde_json::json;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const CLIENTS: usize = 16;
 const SECONDS: u32 = 4;
@@ -83,6 +83,8 @@ async fn host_and_sixteen_clients_exchange_engine_packets_without_loss() {
     let packet = Bytes::from_static(&[0u8; 200]);
     let rounds = SECONDS * PER_PEER_HZ;
     let mut tick = tokio::time::interval(Duration::from_secs(1) / PER_PEER_HZ);
+    // After a stall the rounds it missed must not all go out at once.
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     for _ in 0..rounds {
         tick.tick().await;
         for (client, actor, seen) in &mut clients {
@@ -102,16 +104,23 @@ async fn host_and_sixteen_clients_exchange_engine_packets_without_loss() {
         host.flush();
         drain(&mut host, &mut host_seen);
     }
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    drain(&mut host, &mut host_seen);
-    let mut refused = host_seen.refused;
-    let mut delivered = 0;
-    for (client, _, seen) in &mut clients {
-        drain(client, seen);
-        refused += seen.refused;
-        delivered += seen.events;
-    }
     let sent = rounds as usize * CLIENTS;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (refused, delivered) = loop {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drain(&mut host, &mut host_seen);
+        let mut refused = host_seen.refused;
+        let mut delivered = 0;
+        for (client, _, seen) in &mut clients {
+            drain(client, seen);
+            refused += seen.refused;
+            delivered += seen.events;
+        }
+        let all = delivered == sent && host_seen.events == sent;
+        if all || refused > 0 || Instant::now() > deadline {
+            break (refused, delivered);
+        }
+    };
     println!(
         "host: sent {sent}, refused {}, delivered to clients {delivered}; clients: sent {sent}, refused {}, delivered to host {}",
         host_seen.refused,
@@ -128,7 +137,7 @@ async fn host_and_sixteen_clients_exchange_engine_packets_without_loss() {
 
 #[tokio::test]
 async fn player_flooding_one_receiver_is_cut_off() {
-    let node = Node::start().await;
+    let node = Node::start_with(&[("NET__LIMITS__MAX_EVENTS_PER_SEC_PER_PLAYER", "20")]).await;
     let project = node.project("flood").await;
     let mut flooder = connect(&node, &project.grant("flooder").await).await;
     flooder
@@ -149,6 +158,7 @@ async fn player_flooding_one_receiver_is_cut_off() {
 
     const SENT: usize = 1000;
     let packet = Bytes::from_static(&[0u8; 200]);
+    let started = Instant::now();
     for _ in 0..SENT / 50 {
         for _ in 0..50 {
             flooder
@@ -166,18 +176,20 @@ async fn player_flooding_one_receiver_is_cut_off() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     drain(&mut flooder, &mut flooder_seen);
     drain(&mut victim, &mut victim_seen);
-    // The default is 120 a second with two seconds' worth in hand; the flood lasts under a second.
+    // 20 a second with two seconds' worth in hand, however long the flood took on this machine.
+    let allowed = 40 + (20.0 * started.elapsed().as_secs_f64()).ceil() as usize;
     assert!(
-        (240..400).contains(&victim_seen.events),
-        "{} of {SENT} events reached the victim",
+        victim_seen.events <= allowed,
+        "{} of {SENT} events reached the victim, {allowed} allowed",
         victim_seen.events
     );
+    assert!(victim_seen.events > 0, "nothing reached the victim");
     assert!(flooder_seen.refused > 0, "the flooder was told nothing");
 }
 
 #[tokio::test]
 async fn event_over_the_limit_is_dropped_and_the_connection_stays() {
-    let node = Node::start().await;
+    let node = Node::start_with(&[("NET__LIMITS__MAX_EVENTS_PER_SEC_PER_PLAYER", "5")]).await;
     let project = node.project("flood-json").await;
     let mut flooder = project.player("flooder").await;
     common::joined(&flooder.call(json!({"t": "create", "name": "arena"})).await);

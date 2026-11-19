@@ -17,12 +17,15 @@ async function grant(http, player) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-test("presence: find_friends across nodes and lobby stats", { skip: !key }, async () => {
+test("presence: find_friends across nodes and lobby stats", { skip: !key }, async (t) => {
   const tag = process.pid;
   const inRoom = await Client.connect(httpB, await grant(httpB, `pf-room-${tag}`));
+  t.after(() => inRoom.close());
   const joined = await inRoom.joinOrCreate(`presence-${tag}`, "relay", 4, { lobby: "ranked" }, []);
   const idle = await Client.connect(httpB, await grant(httpB, `pf-idle-${tag}`));
+  t.after(() => idle.close());
   const asker = await Client.connect(httpA, await grant(httpA, `pf-ask-${tag}`));
+  t.after(() => asker.close());
   await sleep(300);
 
   const friends = await asker.findFriends([`pf-room-${tag}`, `pf-idle-${tag}`, `pf-ghost-${tag}`, `pf-room-${tag}`]);
@@ -48,5 +51,4 @@ test("presence: find_friends across nodes and lobby stats", { skip: !key }, asyn
   await sleep(800);
   const again = await asker.findFriends([`pf-idle-${tag}`]);
   assert.ok(!again[0].online, JSON.stringify(again));
-  inRoom.close(); asker.close();
 });

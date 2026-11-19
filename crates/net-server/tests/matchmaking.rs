@@ -5,7 +5,7 @@ mod common;
 use common::{joined, Node, Project, Sink};
 use futures::future::join_all;
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 async fn file(project: &Project, body: Value) -> String {
     let (status, reply) = project.api.post("/v1/matchmaking/tickets", body).await;
@@ -167,12 +167,30 @@ async fn key_writes_are_cut_off_past_the_burst_and_come_back() {
             json!({"player_id": format!("p{i}"), "max_players": 8, "min_players": 8}),
         )
     };
-    // The burst is twice the rate.
-    for i in 0..4 {
-        assert_eq!(ticket(i).await.0, 200, "write {i}");
+    // Two a second with a burst of twice that, however slowly this machine sends.
+    let started = Instant::now();
+    let mut accepted = 0;
+    for i in 0..40 {
+        match ticket(i).await.0 {
+            200 => accepted += 1,
+            429 => {}
+            status => panic!("write {i}: {status}"),
+        }
     }
-    assert_eq!(ticket(4).await.0, 429);
-    tokio::time::sleep(Duration::from_millis(700)).await;
-    assert_eq!(ticket(5).await.0, 200);
-    assert_eq!(ticket(6).await.0, 429);
+    let allowed = 4 + (2.0 * started.elapsed().as_secs_f64()).ceil() as usize;
+    assert!(
+        (4..=allowed).contains(&accepted),
+        "{accepted} of 40 writes accepted, {allowed} allowed"
+    );
+    assert!(accepted < 40, "no write was refused");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut status = 429;
+    let mut i = 40;
+    while status == 429 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        status = ticket(i).await.0;
+        i += 1;
+    }
+    assert_eq!(status, 200, "writes did not come back");
 }

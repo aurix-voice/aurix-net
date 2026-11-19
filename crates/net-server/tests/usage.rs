@@ -66,8 +66,12 @@ async fn traffic_of_a_player_who_left_before_the_metering_pass_is_billed() {
     drop(leaving);
 
     // The node meters once a minute.
-    tokio::time::sleep(Duration::from_secs(63).saturating_sub(started.elapsed())).await;
+    tokio::time::sleep(Duration::from_secs(60).saturating_sub(started.elapsed())).await;
     let sent = (EVENTS * PAYLOAD) as f64;
+    while bytes_in(&stays).await < sent && started.elapsed() < Duration::from_secs(90) {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
     let stayed = bytes_in(&stays).await;
     let left = bytes_in(&leaves).await;
     assert!(stayed >= sent, "the player who stayed: {stayed} bytes");

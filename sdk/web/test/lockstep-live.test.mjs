@@ -17,11 +17,12 @@ async function grant(player) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const tickBytes = (t) => Uint8Array.of(t >>> 24, (t >>> 16) & 255, (t >>> 8) & 255, t & 255);
 
-test("lockstep: confirmed ticks flow, margin reports arrive, a liar's desync yields stored dumps", { skip: !key }, async () => {
+test("lockstep: confirmed ticks flow, margin reports arrive, a liar's desync yields stored dumps", { skip: !key }, async (t) => {
   const room = `web-ls-${process.pid}`;
   const peers = [];
   for (const name of ["ls-a", "ls-b", "ls-c"]) {
     const c = await Client.connect(http, await grant(name));
+    t.after(() => c.close());
     const joined = await c.joinOrCreate(room, "lockstep", 4, { tick_hz: 30 });
     const ls = new LockstepClient((ch, p) => c.sendData(ch, p));
     const p = { name, c, joined, ls, ticks: 0, stats: 0, dumpsAsked: [], liar: name === "ls-c" };
@@ -48,5 +49,4 @@ test("lockstep: confirmed ticks flow, margin reports arrive, a liar's desync yie
   const blob = await fetch(`${http}/v1/rooms/${roomId}/desyncs/${d.tick}/${d.actor}`, { headers: hdr });
   assert.equal(blob.headers.get("content-type"), "application/octet-stream");
   assert.equal(await blob.text(), `ls-c@${d.tick}`);
-  for (const p of peers) p.c.close();
 });

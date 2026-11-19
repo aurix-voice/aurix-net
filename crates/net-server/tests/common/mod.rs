@@ -1,11 +1,13 @@
 //! A real node per test: the built `aurix-net-server` on free ports against the development
 //! Postgres and Redis (`deploy/docker-compose.dev.yml`, the services of the CI job), with a
-//! project of its own so tests do not see each other's rooms.
+//! project of its own so tests do not see each other's rooms. The node deletes the projects
+//! it created when the test ends.
 #![allow(dead_code)]
 
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -16,6 +18,7 @@ pub struct Node {
     child: Child,
     pub http: String,
     log: std::path::PathBuf,
+    projects: Mutex<Vec<String>>,
 }
 
 fn free_port() -> u16 {
@@ -51,6 +54,7 @@ impl Node {
             child,
             http: format!("http://127.0.0.1:{port}"),
             log,
+            projects: Mutex::default(),
         };
         let client = reqwest::Client::new();
         for _ in 0..300 {
@@ -111,8 +115,10 @@ impl Node {
             )
             .await;
         assert_eq!(status, 200, "create project: {body}");
+        let id: String = body["project"]["id"].as_str().expect("project id").into();
+        self.projects.lock().expect("projects").push(id.clone());
         Project {
-            id: body["project"]["id"].as_str().expect("project id").into(),
+            id,
             api: Api {
                 http: self.http.clone(),
                 token: body["key"]["key"].as_str().expect("api key").into(),
@@ -122,8 +128,37 @@ impl Node {
     }
 }
 
+impl Node {
+    /// Drop cannot await, so the calls run on a thread with a runtime of its own.
+    fn delete_projects(&self) {
+        let projects = std::mem::take(&mut *self.projects.lock().expect("projects"));
+        let http = self.http.clone();
+        let cleanup = std::thread::spawn(move || {
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            runtime.block_on(async {
+                let client = reqwest::Client::new();
+                for id in projects {
+                    let _ = client
+                        .delete(format!("{http}/v1/operator/projects/{id}"))
+                        .bearer_auth(ADMIN)
+                        .timeout(WAIT)
+                        .send()
+                        .await;
+                }
+            });
+        });
+        let _ = cleanup.join();
+    }
+}
+
 impl Drop for Node {
     fn drop(&mut self) {
+        self.delete_projects();
         // SIGTERM lets the node remove its row from the fleet; kill it if that takes too long.
         let _ = Command::new("kill")
             .args(["-TERM", &self.child.id().to_string()])

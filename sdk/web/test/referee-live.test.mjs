@@ -23,11 +23,12 @@ const hasModule = key
   ? await fetch(`${http}/v1/modules`, { headers: hdr }).then((r) => (r.ok ? r.json() : { modules: [] })).then((j) => (j.modules ?? []).some((m) => m.name === logic))
   : false;
 
-test("lockstep referee: the node's own state is the reference dump (actor 0)", { skip: !key ? true : !hasModule ? `game module '${logic}' not uploaded to this project` : false }, async () => {
+test("lockstep referee: the node's own state is the reference dump (actor 0)", { skip: !key ? true : !hasModule ? `game module '${logic}' not uploaded to this project` : false }, async (t) => {
   const room = `web-ref-${process.pid}`;
   const peers = [];
   for (const name of ["rf-a", "rf-b"]) {
     const c = await Client.connect(http, await grant(name));
+    t.after(() => c.close());
     const joined = await c.joinOrCreate(room, "lockstep", 4, { tick_hz: 30, logic, ...JSON.parse(process.env.NET_LOGIC_PROPS ?? "{}") });
     const ls = new LockstepClient((ch, p) => c.sendData(ch, p));
     const p = { name, c, joined, ls, ticks: 0, dumpsAsked: [], liar: name === "rf-b" };
@@ -58,5 +59,4 @@ test("lockstep referee: the node's own state is the reference dump (actor 0)", {
   assert.equal(blob.headers.get("content-type"), "application/octet-stream");
   const bytes = new Uint8Array(await blob.arrayBuffer());
   assert.ok(bytes.length > 0 && ref.bytes === bytes.length, `referee state ${bytes.length} bytes`);
-  for (const p of peers) p.c.close();
 });

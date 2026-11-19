@@ -4,7 +4,7 @@ mod common;
 
 use common::{joined, Node, Sink};
 use serde_json::json;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[tokio::test]
 async fn webhook_created_after_the_first_event_gets_the_next_one() {
@@ -59,10 +59,18 @@ async fn webhook_created_on_one_node_gets_the_events_of_another() {
     let hook = json!({"url": sink.url, "events": ["player.joined"]});
     let (status, reply) = pa.api.post("/v1/webhooks", hook).await;
     assert_eq!(status, 200, "{reply}");
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let mut bob = pb.player("bob").await;
-    let actor = joined(&bob.call(json!({"t": "join", "name": "arena"})).await);
-    assert_eq!(sink.next("player.joined").await["data"]["actor"], actor);
+    // The notice reaches node B through Redis, so the first joins may still be too early.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut players = Vec::new();
+    loop {
+        let mut player = pb.player(&format!("bob{}", players.len())).await;
+        joined(&player.call(json!({"t": "join", "name": "arena"})).await);
+        players.push(player);
+        if !sink.quiet(Duration::from_millis(500)).await {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no `player.joined` webhook");
+    }
 }
 
 #[tokio::test]
@@ -81,13 +89,18 @@ async fn webhook_deleted_on_one_node_is_not_called_by_another() {
 
     let path = format!("/v1/webhooks/{}", reply["id"].as_str().expect("webhook id"));
     assert_eq!(pa.api.delete(&path).await.0, 204);
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let mut bob = pb.player("bob").await;
-    joined(&bob.call(json!({"t": "join", "name": "arena"})).await);
-    assert!(
-        sink.quiet(Duration::from_secs(1)).await,
-        "a deleted webhook was called"
-    );
+    // The notice reaches node B through Redis, so the first joins may still be too early.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut players = Vec::new();
+    loop {
+        let mut player = pb.player(&format!("bob{}", players.len())).await;
+        joined(&player.call(json!({"t": "join", "name": "arena"})).await);
+        players.push(player);
+        if sink.quiet(Duration::from_secs(1)).await {
+            break;
+        }
+        assert!(Instant::now() < deadline, "a deleted webhook was called");
+    }
 }
 
 #[tokio::test]

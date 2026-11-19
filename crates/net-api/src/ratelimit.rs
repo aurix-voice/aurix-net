@@ -142,12 +142,14 @@ mod tests {
     use super::*;
     #[test]
     fn burst_is_twice_the_rate_per_second() {
-        let limiter: Limiter<u8> = RateLimiter::keyed(per_second(500));
-        assert!((0..1000).all(|_| limiter.check_key(&1).is_ok()));
+        let clock = governor::clock::FakeRelativeClock::default();
+        let limiter = RateLimiter::dashmap_with_clock(per_second(500), clock.clone());
+        assert!((0..1000).all(|_| limiter.check_key(&1u8).is_ok()));
         assert!(limiter.check_key(&1).is_err());
         assert!(limiter.check_key(&2).is_ok());
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        clock.advance(std::time::Duration::from_millis(2));
         assert!(limiter.check_key(&1).is_ok());
+        assert!(limiter.check_key(&1).is_err());
     }
     #[test]
     fn xff_only_from_trusted_proxy() {

@@ -9,7 +9,7 @@ use net_client::{Client, Event, Options};
 use net_common::Channel;
 use net_rooms::protocol::ClientMsg;
 use serde_json::json;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// One input frame (`0x10`) holding a single input for `tick`.
 fn input_frame(tick: u32) -> Bytes {
@@ -60,7 +60,10 @@ async fn inputs_behind_the_room_tick_are_counted() {
         client.flush();
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while late_inputs(&node).await < 5 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     assert_eq!(late_inputs(&node).await, 5);
 }
 
