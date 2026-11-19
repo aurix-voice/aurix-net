@@ -152,6 +152,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - Unity SDK (native client): `Client.Actor` and `Client.JoinedJson` went on describing a room
   after `Leave` and after the node took the client out of it. They are `-1` and `null` outside
   a room.
+- Instant replay (`ReplayRing` in Rust, Web and C#): `window` returned a snapshot together
+  with inputs that began several ticks after it whenever the oldest tick kept was not one with
+  a snapshot, so a kill cam stepped the wrong inputs from the first tick on: with the documented
+  `ReplayRing(300, 10)` that was every window asked for within the oldest ticks kept. The ring
+  now keeps the inputs back to its oldest snapshot.
 - Native core (C, C++, Godot, Unity, Unreal): `aurix_net_joined_json` named the room, the mode,
   the actor and the master, and left out the rest of what the node says at a join. A game had no
   list of the players already in the room and no room size or props: in Unreal `GetRoom().Players`

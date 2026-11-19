@@ -263,6 +263,14 @@ public class ManagedCoreTests
         Assert.That(w.Start == 50 && w.Inputs.Count == 50 && ring.Oldest == 50, "replay ring: clamps to the oldest kept snapshot");
         ring.Record(200, Inputs(), () => 1);
         Assert.That(ring.Oldest == 200 && ring.Window(0).Value.Inputs.Count == 1, "replay ring: gap resets");
+        ring = new ReplayRing<uint>(50, 10);
+        for (uint t = 0; t < 105; t++) ring.Record(t, Inputs((1, (byte)t)), () => t * 100);
+        foreach (uint from in new uint[] { 0, 52, 55, 60, 104 })
+        {
+            w = ring.Window(from).Value;
+            Assert.That(w.Snapshot == w.Start * 100 && w.Inputs.Count == 105 - w.Start && w.Inputs[0][1][0] == w.Start, "replay ring: a window is stepped with the inputs of its own ticks");
+        }
+        Assert.That(ring.Oldest <= 55 && ring.Window(ring.Oldest.Value).Value.Start == ring.Oldest, "replay ring: the oldest tick can be replayed");
 
     }
 

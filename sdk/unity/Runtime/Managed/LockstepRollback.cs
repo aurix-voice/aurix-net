@@ -176,7 +176,7 @@ namespace Aurix.Net.Managed
         public List<Dictionary<ushort, byte[]>> Inputs;
     }
 
-    /// <summary>Instant replay (kill cam) buffer: the last <c>keep</c> confirmed ticks' inputs plus a snapshot of the confirmed state every <c>every</c> ticks. Feed it from the confirmed path (after Confirm, with ConfirmedSnapshot).</summary>
+    /// <summary>Instant replay (kill cam) buffer: the inputs of at least the last <c>keep</c> confirmed ticks, back to a snapshot of the confirmed state taken every <c>every</c> ticks. Feed it from the confirmed path (after Confirm, with ConfirmedSnapshot).</summary>
     public sealed class ReplayRing<TSnapshot>
     {
         readonly int _keep;
@@ -210,32 +210,20 @@ namespace Aurix.Net.Managed
             }
 
             _inputs.Add(inputs);
-            if (_inputs.Count > _keep)
+            // the oldest tick kept is one with a snapshot, so every tick kept can be stepped from one
+            long wanted = (long)tick + 1 - _keep;
+            var older = _snaps.Keys.Where(key => key <= wanted).ToList();
+            if (older.Count > 0)
             {
-                int drop = _inputs.Count - _keep;
-                _inputs.RemoveRange(0, drop);
-                _first += (uint)drop;
-            }
-            uint anchor = 0;
-            bool found = false;
-            foreach (var key in _snaps.Keys)
-            {
-                if (key <= _first)
-                {
-                    anchor = key;
-                    found = true;
-                }
-                else
-                {
-                    break;
-                }
-            }
-            if (found)
-            {
-                foreach (var key in _snaps.Keys.Where(key => key < anchor).ToList())
+                uint anchor = older[older.Count - 1];
+                older.RemoveAt(older.Count - 1);
+                foreach (var key in older)
                 {
                     _snaps.Remove(key);
                 }
+
+                _inputs.RemoveRange(0, (int)(anchor - _first));
+                _first = anchor;
             }
         }
 

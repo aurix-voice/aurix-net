@@ -496,9 +496,9 @@ export interface ReplayWindow<S> {
 }
 
 /**
- * Instant replay (kill cam) buffer: the last `keep` confirmed ticks' inputs plus a snapshot of the
- * confirmed state every `every` ticks, so any recent moment can be re-simulated locally. Feed it from
- * the confirmed path (after LockstepRollback.confirm, with confirmedSnapshot()).
+ * Instant replay (kill cam) buffer: the inputs of at least the last `keep` confirmed ticks, back to a
+ * snapshot of the confirmed state taken every `every` ticks, so any recent moment can be re-simulated
+ * locally. Feed it from the confirmed path (after LockstepRollback.confirm, with confirmedSnapshot()).
  */
 export class ReplayRing<S = unknown> {
   private first = 0;
@@ -523,13 +523,11 @@ export class ReplayRing<S = unknown> {
       this.snaps.set(tick, stateBefore());
     }
     this.inputs.push(inputs);
-    while (this.inputs.length > this.keep) {
-      this.inputs.shift();
-      this.first++;
-    }
+    // the oldest tick kept is one with a snapshot, so every tick kept can be stepped from one
+    const wanted = tick + 1 - this.keep;
     let anchor = -1;
     for (const key of this.snaps.keys()) {
-      if (key <= this.first && key > anchor) {
+      if (key <= wanted && key > anchor) {
         anchor = key;
       }
     }
@@ -539,6 +537,8 @@ export class ReplayRing<S = unknown> {
           this.snaps.delete(key);
         }
       }
+      this.inputs.splice(0, anchor - this.first);
+      this.first = anchor;
     }
   }
   /** Oldest tick that can still be replayed. */

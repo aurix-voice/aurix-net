@@ -155,9 +155,9 @@ impl<S: Simulation> Rollback<S> {
     }
 }
 
-/// Instant replay (kill cam) buffer: the last `keep` confirmed ticks' inputs plus a snapshot of the
-/// confirmed state every `every` ticks, so any recent moment can be re-simulated locally without
-/// asking the node. Feed it from the confirmed path (`confirm` + `confirmed_snapshot`).
+/// Instant replay (kill cam) buffer: the inputs of at least the last `keep` confirmed ticks, back to
+/// a snapshot of the confirmed state taken every `every` ticks, so any recent moment can be
+/// re-simulated locally without asking the node. Feed it from the confirmed path (`confirm` + `confirmed_snapshot`).
 pub struct ReplayRing<S> {
     keep: u32,
     every: u32,
@@ -198,13 +198,12 @@ impl<S> ReplayRing<S> {
             self.snaps.insert(tick, state_before());
         }
         self.inputs.push_back(inputs);
-        while self.inputs.len() as u32 > self.keep {
-            self.inputs.pop_front();
-            self.first += 1;
-        }
-        // keep the newest snapshot at or before `first`, drop older ones
-        if let Some((&anchor, _)) = self.snaps.range(..=self.first).next_back() {
+        // the oldest tick kept is one with a snapshot, so every tick kept can be stepped from one
+        let wanted = (tick + 1).saturating_sub(self.keep);
+        if let Some((&anchor, _)) = self.snaps.range(..=wanted).next_back() {
             self.snaps.retain(|tick, _| *tick >= anchor);
+            self.inputs.drain(..(anchor - self.first) as usize);
+            self.first = anchor;
         }
     }
 
@@ -259,6 +258,23 @@ mod tests {
             (ring.oldest(), ring.window(0).unwrap().inputs.len()),
             (Some(200), 1)
         );
+    }
+
+    #[test]
+    fn replay_ring_steps_a_window_with_the_inputs_of_its_own_ticks() {
+        let mut ring: ReplayRing<u32> = ReplayRing::new(50, 10);
+        for tick in 0..105u32 {
+            ring.record(tick, inputs(&[(1, tick as u8)]), || tick * 100);
+        }
+        for from in [0, 52, 55, 60, 104] {
+            let window = ring.window(from).unwrap();
+            assert_eq!(*window.snapshot, window.start * 100);
+            assert_eq!(window.inputs.len() as u32, 105 - window.start);
+            assert_eq!(window.inputs[0][&1].as_ref(), &[window.start as u8]);
+        }
+        let oldest = ring.oldest().unwrap();
+        assert_eq!(ring.window(oldest).unwrap().start, oldest);
+        assert!(oldest <= 55);
     }
 
     use super::*;

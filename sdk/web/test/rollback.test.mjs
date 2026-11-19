@@ -61,3 +61,15 @@ test("replay ring rewinds from the nearest snapshot", async () => {
   w = ring.window(5); assert.deepEqual([w.start, w.inputs.length, ring.oldest], [50, 50, 50]);
   ring.record(200, inputs([]), () => 1); assert.deepEqual([ring.oldest, ring.window(0).inputs.length], [200, 1]);
 });
+
+test("replay ring steps a window with the inputs of its own ticks", async () => {
+  const { ReplayRing } = await import("../dist/index.js");
+  const ring = new ReplayRing(50, 10);
+  for (let t = 0; t < 105; t++) ring.record(t, inputs([[1, t]]), () => t * 100);
+  for (const from of [0, 52, 55, 60, 104]) {
+    const w = ring.window(from);
+    assert.deepEqual([w.snapshot, w.inputs.length, w.inputs[0].get(1)[0]], [w.start * 100, 105 - w.start, w.start]);
+  }
+  assert.equal(ring.window(ring.oldest).start, ring.oldest);
+  assert.ok(ring.oldest <= 55);
+});
