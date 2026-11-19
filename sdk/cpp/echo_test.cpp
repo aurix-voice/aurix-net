@@ -56,6 +56,14 @@ int main() {
     c.join(room);
     for (int s = 0; s < 30; s++) { c.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
     int early = history; chatC.join(1);
+    // the longest chat text reaches the room whole, a longer one is refused, not cut
+    std::string longest, read; for (size_t i = 0; i < Chat::maxText; i++) longest += "\xF0\x9F\x98\x80";
+    int over = 0; try { chatA.send(1, longest + "a"); } catch (const Error& error) { over = error.code; }
+    chatC.onMessage = [&](const Chat::Message& m) { if (m.text != "hello") read = m.text; };
+    chatA.send(1, longest);
+    for (int s = 0; s < 300 && read.empty(); s++) { a.poll(); c.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+    bool whole = over == AURIX_NET_ERR_INVALID_ARGUMENT && read == longest;
+    std::printf("cpp chat text: over the limit code=%d, the longest read whole=%d\n", over, int(read == longest));
     std::printf("cpp late joiner: cached=%d/1 chat history=%d/1 (%d before the channel join)\n", cached, history, early);
     // a refused join says why in Error::code
     Client d, e; d.connect(http, Client::issueGrant(http, key, "cpp-d", "D")); e.connect(http, Client::issueGrant(http, key, "cpp-e", "E"));
@@ -167,5 +175,5 @@ int main() {
         std::printf("cpp join ended by a kick%s: code=%d (%s) after %ld ms, told of [%s] -> %s\n", tunnel ? ", tunnel" : "", code, why.c_str(), ms, lefts.c_str(), ok ? "ok" : "FAIL");
         turnedOut = turnedOut && ok;
     }
-    a.leave(); return (hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && threw && inRange && refused && matched && shaped && rejoined && turnedOut && handedBack) ? 0 : 1;
+    a.leave(); return (hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && threw && inRange && whole && refused && matched && shaped && rejoined && turnedOut && handedBack) ? 0 : 1;
 }

@@ -805,6 +805,8 @@ public:
         std::string text;
     };
     std::function<void(const Message&)> onMessage;
+    /// The longest chat text, in Unicode characters (code points); a longer one is refused.
+    static constexpr size_t maxText = 2000;
     explicit Chat(Client& client, uint8_t code = 240, uint16_t groupBase = 60000,
                   bool history = true)
         : client_(client), code_(code), base_(groupBase), history_(history) {}
@@ -870,13 +872,21 @@ private:
         return (uint16_t)group;
     }
     static std::vector<uint8_t> encode(uint8_t kind, uint16_t channel, const std::string& text) {
+        size_t characters = 0;
+        for (unsigned char byte : text) {
+            characters += (byte & 0xC0) != 0x80;
+        }
+        if (characters > maxText) {
+            throw Error("chat text of " + std::to_string(characters) + " characters: at most " +
+                            std::to_string(maxText),
+                        AURIX_NET_ERR_INVALID_ARGUMENT);
+        }
         std::vector<uint8_t> bytes;
         bytes.reserve(3 + text.size());
         bytes.push_back(kind);
         bytes.push_back((uint8_t)(channel >> 8));
         bytes.push_back((uint8_t)channel);
-        size_t len = text.size() > 2000 ? 2000 : text.size();
-        bytes.insert(bytes.end(), text.begin(), text.begin() + len);
+        bytes.insert(bytes.end(), text.begin(), text.end());
         return bytes;
     }
     Client& client_;

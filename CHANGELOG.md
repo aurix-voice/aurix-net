@@ -194,6 +194,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Chat: a text over the limit was cut without a word, and not the same way: Web and C# kept
+  2000 UTF-16 units and could leave half an emoji at the end, C++ kept 2000 bytes, 1000
+  Cyrillic letters, and could leave half a letter. The limit is now 2000 Unicode characters in
+  every client, named `MAX_CHAT_TEXT`, `ChatClient.MaxText` and `Chat::maxText`, and a longer
+  text is refused: `RangeError` in Web, `ArgumentOutOfRangeException` in C#, `Error` with
+  `AURIX_NET_ERR_INVALID_ARGUMENT` in C++.
 - C++: a callback that threw out of `Client::poll` left the event it was handed unfreed, a
   leak for every such event. The event is now freed on any way out of the callback.
 - Sync and lockstep rooms, every client: an input longer than 255 bytes was cut to 255 without

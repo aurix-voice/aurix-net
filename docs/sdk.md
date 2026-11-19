@@ -515,7 +515,9 @@ Channels are interest groups (`join` = subscribe, chat groups live at `groupBase
 channel whose group would be past 65535 is refused), messages
 are reliable events to the group with `cache: add` so late joiners receive the history the room still holds when
 they join the channel (the room's cache limits and `cleanup_cache_on_leave` apply), whispers are events to one actor and are never cached.
-Payload: `u8 kind (0 channel, 1 whisper), u16 channel, UTF-8 text` on a reserved event code (default 240). Chat
+Payload: `u8 kind (0 channel, 1 whisper), u16 channel, UTF-8 text` on a reserved event code (default 240). A text
+is at most 2000 Unicode characters (code points): `MAX_CHAT_TEXT` in Web, `ChatClient.MaxText` in Unity,
+`Chat::maxText` in C++. A longer one is refused, so the input field of the game is the place to cut it. Chat
 stays inside the room, so moderation (kick, bans), rate limits and GDPR export/erase cover it for free.
 
 ## Lockstep commands

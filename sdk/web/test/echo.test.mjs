@@ -1,7 +1,7 @@
 // Two clients over the WS tunnel against a local node: NET_API_KEY=an_... node --test test/
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Channel, Client, Chat, LEAVE_WAIT, encodeEvent } from "../dist/index.js";
+import { Channel, Client, Chat, LEAVE_WAIT, MAX_CHAT_TEXT, encodeEvent } from "../dist/index.js";
 import WebSocket, { WebSocketServer } from "ws";
 import { Link } from "../dist/link.js";
 import { slowLink } from "./slow-link.mjs";
@@ -361,6 +361,25 @@ test("a late joiner gets the cached events and the chat history", { skip: !key }
   } finally {
     a.close(); b.close();
   }
+});
+
+test("the longest chat text reaches the room whole, a longer one is refused", { skip: !key }, async (t) => {
+  const a = await Client.connect(http, await grant("web-text-a"));
+  const b = await Client.connect(http, await grant("web-text-b"));
+  t.after(() => { a.close(); b.close(); });
+  const room = `web-text-${process.pid}`;
+  await a.joinOrCreate(room, "relay", 4);
+  await b.joinOrCreate(room, "relay", 4);
+  const chatA = new Chat(a), chatB = new Chat(b), texts = [];
+  chatA.join(1); chatB.join(1);
+  chatB.onMessage((message) => texts.push(message.text));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const longest = "😀".repeat(MAX_CHAT_TEXT);
+  assert.throws(() => chatA.send(1, longest + "a"), RangeError);
+  assert.throws(() => chatA.whisper(2, "a".repeat(MAX_CHAT_TEXT + 1)), RangeError);
+  chatA.send(1, longest, false);
+  for (let i = 0; i < 100 && texts.length < 1; i++) await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(texts, [longest]);
 });
 
 test("rooms(expr) finds a room by the lobby props joinOrCreate published", { skip: !key }, async () => {

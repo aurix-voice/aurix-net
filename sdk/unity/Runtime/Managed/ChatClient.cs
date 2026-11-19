@@ -28,6 +28,9 @@ namespace Aurix.Net
         readonly HashSet<ushort> _joined = new HashSet<ushort>();
         public event Action<ChatMessage> OnMessage;
 
+        /// <summary>The longest chat text, in Unicode characters (code points); a longer one is refused.</summary>
+        public const int MaxText = 2000;
+
         /// <param name="code">Relay event code reserved for chat (default 240).</param>
         /// <param name="groupBase">Keeps chat groups away from gameplay interest groups.</param>
         public ChatClient(
@@ -107,9 +110,28 @@ namespace Aurix.Net
 
         static byte[] Encode(byte kind, ushort channel, string text)
         {
-            var encoded = Encoding.UTF8.GetBytes(
-                text.Length > 2000 ? text.Substring(0, 2000) : text
-            );
+            int characters = 0;
+            for (int i = 0; i < text.Length; i++, characters++)
+            {
+                if (
+                    char.IsHighSurrogate(text[i])
+                    && i + 1 < text.Length
+                    && char.IsLowSurrogate(text[i + 1])
+                )
+                {
+                    i++;
+                }
+            }
+
+            if (characters > MaxText)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(text),
+                    "chat text of " + characters + " characters: at most " + MaxText
+                );
+            }
+
+            var encoded = Encoding.UTF8.GetBytes(text);
             var bytes = new byte[3 + encoded.Length];
             bytes[0] = kind;
             bytes[1] = (byte)(channel >> 8);

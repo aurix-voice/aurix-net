@@ -10,6 +10,9 @@ export interface ChatMessage {
   cached: boolean;
 }
 
+/** The longest chat text, in Unicode characters (code points); a longer one is refused. */
+export const MAX_CHAT_TEXT = 2000;
+
 /** Chat on top of a relay room, no extra service: channels are interest groups (join = subscribe),
  *  messages are reliable events to the group with `cache: "add"` so late joiners get the history the room
  *  still holds, whispers are events to one actor. Everything stays inside the room (and its moderation,
@@ -91,7 +94,16 @@ export class Chat {
   }
 
   private encode(kind: number, channel: number, text: string): Uint8Array {
-    const encoded = this.textEncoder.encode(text.slice(0, 2000));
+    let characters = 0;
+    for (const _ of text) {
+      characters++;
+    }
+    if (characters > MAX_CHAT_TEXT) {
+      throw new RangeError(
+        `chat text of ${characters} characters: at most ${MAX_CHAT_TEXT}`,
+      );
+    }
+    const encoded = this.textEncoder.encode(text);
     const payload = new Uint8Array(3 + encoded.length);
     payload[0] = kind;
     payload[1] = channel >> 8;

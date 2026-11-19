@@ -416,6 +416,14 @@ class P
         // a chat channel whose group is past the last group is refused, not moved onto a group of the game
         try { chatC.Send(6000, "hello"); throw new Exception("chat: channel 6000 was taken"); }
         catch (ArgumentOutOfRangeException) { }
+        // the longest chat text reaches the room whole, a longer one is refused, not cut
+        string longest = string.Concat(Enumerable.Repeat("\U0001F600", ChatClient.MaxText)), read = null;
+        chatA.OnMessage += m => read = m.Text;
+        try { chatC.Send(1, longest + "a"); throw new Exception("chat: a text over the limit was taken"); }
+        catch (ArgumentOutOfRangeException) { }
+        chatC.Send(1, longest, history: false);
+        until = DateTime.UtcNow.AddMilliseconds(2000); while (read == null && DateTime.UtcNow < until) { ra.Poll(); rc.Poll(); await Task.Delay(5); }
+        if (read != longest) throw new Exception("chat: the longest text came as " + (read?.Length.ToString() ?? "nothing"));
         ra.Dispose(); rb.Dispose(); rc.Dispose();
         // a handler that throws loses neither the rest of the history nor the events that came in the same datagram
         var ta = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-ta"));
