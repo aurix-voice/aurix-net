@@ -26,6 +26,7 @@ namespace Aurix.Net
         readonly ushort _groupBase;
         readonly bool _history;
         readonly HashSet<ushort> _joined = new HashSet<ushort>();
+        int _stay;
         public event Action<ChatMessage> OnMessage;
 
         /// <summary>The longest chat text, in Unicode characters (code points); a longer one is refused.</summary>
@@ -61,10 +62,22 @@ namespace Aurix.Net
             return (ushort)group;
         }
 
+        // channels are groups of a room: out of it the chat is in none
+        HashSet<ushort> Channels()
+        {
+            if (_stay != _client.Stay)
+            {
+                _stay = _client.Stay;
+                _joined.Clear();
+            }
+
+            return _joined;
+        }
+
         public Task JoinAsync(ushort channel)
         {
             ushort group = Group(channel);
-            if (!_joined.Add(channel))
+            if (!Channels().Add(channel))
             {
                 return Task.CompletedTask;
             }
@@ -88,7 +101,7 @@ namespace Aurix.Net
         }
 
         public Task LeaveAsync(ushort channel) =>
-            _joined.Remove(channel)
+            Channels().Remove(channel)
                 ? _client.SetGroupsAsync(null, new[] { Group(channel) })
                 : Task.CompletedTask;
 
@@ -157,7 +170,7 @@ namespace Aurix.Net
                 payload.Offset + 3,
                 payload.Count - 3
             );
-            if (kind == 0 && !_joined.Contains(channel))
+            if (kind == 0 && !Channels().Contains(channel))
             {
                 return;
             }

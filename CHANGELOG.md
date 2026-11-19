@@ -194,6 +194,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Chat kept over two rooms was silent in the second, in Web, C# and C++: it still counted the
+  channels of the room the client had left as joined, so `join` in the next room did nothing.
+  The chat now forgets its channels once the client is out of the room. In Web a second
+  `Chat` made for the next room no longer has the first one hand out the same message again.
 - Web: a `SyncSession` went on listening after the client had left its room, so in the next
   sync room it answered every delta a second time and, when the schema was another, threw on
   each one; under Node that ended the process. A session is now of one stay in a room: out of

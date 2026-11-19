@@ -175,6 +175,26 @@ int main() {
         std::printf("cpp join ended by a kick%s: code=%d (%s) after %ld ms, told of [%s] -> %s\n", tunnel ? ", tunnel" : "", code, why.c_str(), ms, lefts.c_str(), ok ? "ok" : "FAIL");
         turnedOut = turnedOut && ok;
     }
+    // a chat channel is of the room: the same chat joins it again in the next one
+    std::string matches;
+    {
+        Client says, hears;
+        says.connect(http, Client::issueGrant(http, key, "cpp-says", "Says"));
+        hears.connect(http, Client::issueGrant(http, key, "cpp-hears", "Hears"));
+        Chat chatSays(says), chatHears(hears);
+        chatHears.onMessage = [&](const Chat::Message& m) { matches += "[" + m.text + "]"; };
+        hears.onData = [&](Channel, uint16_t, const uint8_t* d, size_t n) { EventFrame f; if (EventFrame::decode(d, n, f)) chatHears.onEventFrame(f); };
+        for (std::string match : {"one", "two"}) {
+            says.joinOrCreate(room + "-match-" + match, Mode::Relay, 4); hears.joinOrCreate(room + "-match-" + match, Mode::Relay, 4);
+            chatSays.join(1); chatHears.join(1);
+            for (int s = 0; s < 20; s++) { says.poll(); hears.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+            chatSays.send(1, "match " + match); says.flush();
+            for (int s = 0; s < 40; s++) { says.poll(); hears.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+            says.leave(); hears.leave();
+        }
+    }
+    bool rooms = matches == "[match one][match two]";
+    std::printf("cpp chat kept over two rooms: heard %s\n", matches.c_str());
     // a callback that leaves the room is handed nothing more of it, however much had come
     bool gone = true;
     for (bool tunnel : {false, true}) {
@@ -193,5 +213,5 @@ int main() {
         std::printf("cpp callback that leaves the room%s: events before the leave=%d/1, after it=%d/0\n", tunnel ? ", tunnel" : "", last, more);
         gone = gone && last == 1 && more == 0;
     }
-    a.leave(); return (gone && hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && threw && inRange && whole && refused && matched && shaped && rejoined && turnedOut && handedBack) ? 0 : 1;
+    a.leave(); return (rooms && gone && hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && threw && inRange && whole && refused && matched && shaped && rejoined && turnedOut && handedBack) ? 0 : 1;
 }

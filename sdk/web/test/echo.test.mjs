@@ -604,3 +604,25 @@ test("a listener that throws does not stop the data path over WebTransport", { s
   for (let i = 0; i < 100 && got.length < 2; i++) await new Promise((r) => setTimeout(r, 20));
   assert.deepEqual([got, errors], [[1, 2], ["a bug in the game"]]);
 });
+
+test("chat: a channel is of the room, and is joined again in the next one", { skip: !key }, async (t) => {
+  const a = await Client.connect(http, await grant("web-rooms-a"));
+  const b = await Client.connect(http, await grant("web-rooms-b"));
+  t.after(() => { a.close(); b.close(); });
+  const chatA = new Chat(a), chatB = new Chat(b), texts = [];
+  chatB.onMessage((message) => texts.push(message.text));
+  for (const match of ["one", "two"]) {
+    const room = `web-rooms-${match}-${process.pid}`;
+    await a.joinOrCreate(room, "relay", 4);
+    await b.joinOrCreate(room, "relay", 4);
+    chatA.join(1);
+    chatB.join(1);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    chatA.send(1, `match ${match}`, false);
+    a.flush();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await a.leave();
+    await b.leave();
+  }
+  assert.deepEqual(texts, ["match one", "match two"]);
+});

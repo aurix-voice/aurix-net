@@ -1,4 +1,4 @@
-import type { Client } from "./index.js";
+import type { Client, Joined } from "./index.js";
 import type { EventFrame } from "./event.js";
 import { report } from "./report.js";
 
@@ -19,6 +19,8 @@ export const MAX_CHAT_TEXT = 2000;
  *  rate limits and GDPR tooling). */
 export class Chat {
   private readonly joined = new Set<number>();
+  /** The stay in a room the channels in `joined` are of. */
+  private room?: Joined;
   private handlers: Array<(message: ChatMessage) => void> = [];
   private readonly textDecoder = new TextDecoder();
   private readonly textEncoder = new TextEncoder();
@@ -47,10 +49,19 @@ export class Chat {
     return group;
   }
 
+  // channels are groups of a room: out of it the chat is in none
+  private channels(): Set<number> {
+    if (this.room !== this.client.joined) {
+      this.room = this.client.joined;
+      this.joined.clear();
+    }
+    return this.joined;
+  }
+
   join(channel: number): void {
     const group = this.group(channel);
-    if (!this.joined.has(channel)) {
-      this.joined.add(channel);
+    if (!this.channels().has(channel)) {
+      this.channels().add(channel);
       this.client.setGroups([group], []);
       for (const frame of this.client.cached) {
         if (
@@ -64,7 +75,7 @@ export class Chat {
     }
   }
   leave(channel: number): void {
-    if (this.joined.delete(channel)) {
+    if (this.channels().delete(channel)) {
       this.client.setGroups([], [this.group(channel)]);
     }
   }
@@ -123,7 +134,7 @@ export class Chat {
       kind === 1
         ? { from: frame.from, text, cached }
         : { from: frame.from, channel, text, cached };
-    if (kind === 0 && !this.joined.has(channel)) {
+    if (kind === 0 && !this.channels().has(channel)) {
       return;
     }
     for (const handler of this.handlers) {

@@ -35,6 +35,9 @@ namespace Aurix.Net.Managed
 
         // Counts the data paths of this client: what an earlier one delivered is not the game's any more.
         int _epoch;
+
+        /// <summary>Another value in every room the client enters and once it is out of it.</summary>
+        internal int Stay => Volatile.Read(ref _epoch);
         bool _deadTold;
 
         // False between rooms: the link of a room the client has left must not go on resending to the node.

@@ -126,7 +126,8 @@ public:
           onClosed(std::move(other.onClosed)),
           onUndelivered(std::move(other.onUndelivered)),
           handle_(other.handle_),
-          actor_(other.actor_) {
+          actor_(other.actor_),
+          stay_(other.stay_) {
         other.handle_ = nullptr;
         other.actor_ = -1;
     }
@@ -165,6 +166,7 @@ public:
             throw Error::last();
         }
         actor_ = actor;
+        ++stay_;
         return actor;
     }
     bool connected() const { return handle_ != nullptr; }
@@ -292,6 +294,7 @@ public:
             throw Error::last();
         }
         actor_ = actor;
+        ++stay_;
         return actor;
     }
     std::string joinedJson() const { return taken(aurix_net_joined_json(handle_)); }
@@ -462,6 +465,9 @@ public:
 private:
     AurixNetClient* handle_ = nullptr;
     int actor_ = -1;
+    /// Counts the rooms this client has entered.
+    unsigned stay_ = 0;
+    friend class Chat;
 };
 
 /// Lockstep room helper: feed every Data payload to receive(), step your deterministic simulation
@@ -812,7 +818,7 @@ public:
         : client_(client), code_(code), base_(groupBase), history_(history) {}
     void join(uint16_t channel) {
         uint16_t to = group(channel);
-        if (joined_.insert(channel).second) {
+        if (channels().insert(channel).second) {
             client_.setGroups({to});
             std::vector<Message> held;
             held.swap(held_);
@@ -826,7 +832,7 @@ public:
         }
     }
     void leave(uint16_t channel) {
-        if (joined_.erase(channel)) {
+        if (channels().erase(channel)) {
             client_.setGroups({}, {group(channel)});
         }
     }
@@ -850,7 +856,7 @@ public:
         message.whisper = frame.payload[0] == 1;
         message.channel = (uint16_t)((frame.payload[1] << 8) | frame.payload[2]);
         message.text.assign((const char*)frame.payload + 3, frame.len - 3);
-        if (!message.whisper && !joined_.count(message.channel)) {
+        if (!message.whisper && !channels().count(message.channel)) {
             // Only the history replayed at the room join arrives for a channel not joined yet.
             held_.push_back(std::move(message));
             return true;
@@ -893,6 +899,16 @@ private:
     uint8_t code_;
     uint16_t base_;
     bool history_;
+    // channels are groups of a room: in the next one the chat is in none
+    std::set<uint16_t>& channels() {
+        if (stay_ != client_.stay_) {
+            stay_ = client_.stay_;
+            joined_.clear();
+            held_.clear();
+        }
+        return joined_;
+    }
+    unsigned stay_ = 0;
     std::set<uint16_t> joined_;
     std::vector<Message> held_;
 };

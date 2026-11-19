@@ -425,6 +425,24 @@ class P
         until = DateTime.UtcNow.AddMilliseconds(2000); while (read == null && DateTime.UtcNow < until) { ra.Poll(); rc.Poll(); await Task.Delay(5); }
         if (read != longest) throw new Exception("chat: the longest text came as " + (read?.Length.ToString() ?? "nothing"));
         ra.Dispose(); rb.Dispose(); rc.Dispose();
+        // a chat channel is of the room: the same chat joins it again in the next one
+        var ma = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-ma"));
+        var mb = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-mb"));
+        var chatMa = new ChatClient(ma); var chatMb = new ChatClient(mb); string matches = "";
+        chatMb.OnMessage += m => matches += "[" + m.Text + "]";
+        foreach (var match in new[] { "one", "two" })
+        {
+            await ma.JoinOrCreateAsync(room + "-match-" + match, "relay", 4); await mb.JoinOrCreateAsync(room + "-match-" + match, "relay", 4);
+            await chatMa.JoinAsync(1); await chatMb.JoinAsync(1);
+            for (int turn = 0; turn < 20; turn++) { ma.Poll(); mb.Poll(); await Task.Delay(10); }
+            chatMa.Send(1, "match " + match, false); ma.Flush();
+            for (int turn = 0; turn < 40; turn++) { ma.Poll(); mb.Poll(); await Task.Delay(10); }
+            await ma.LeaveAsync(); await mb.LeaveAsync();
+        }
+        if (matches != "[match one][match two]")
+            throw new Exception("a chat kept over two rooms heard " + matches);
+        ma.Dispose(); mb.Dispose();
+
         // a handler that leaves the room gets nothing more of it: not the rest of the datagram either
         var ga = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-ga"));
         var gb = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-gb"));

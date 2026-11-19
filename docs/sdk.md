@@ -524,6 +524,10 @@ is at most 2000 Unicode characters (code points): `MAX_CHAT_TEXT` in Web, `ChatC
 `Chat::maxText` in C++. A longer one is refused, so the input field of the game is the place to cut it. Chat
 stays inside the room, so moderation (kick, bans), rate limits and GDPR export/erase cover it for free.
 
+The chat object belongs to the client and lives as long as it, over any number of rooms. Its
+channels belong to the room: once the client is out of a room the chat is in none of them, and
+`join` in the next room subscribes again.
+
 ## Lockstep commands
 
 `SendCommand(bytes)` (Unity `LockstepClient`, Web `LockstepClient`, C `aurix_net_lockstep_send_command`, C++
