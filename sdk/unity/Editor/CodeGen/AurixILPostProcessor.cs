@@ -1,8 +1,8 @@
 // Unity ILPostProcessor glue: runs RpcWeaver on every player/editor assembly that references
 // Aurix.Net, right after the C# compiler, so [ServerRpc]/[ObserversRpc]/[TargetRpc] methods become
 // direct call sites. The codegen assembly is editor-only, with no engine references and Mono.Cecil
-// from Unity's own precompiled copy. Not yet run in a Unity editor;
-// the weaver core is verified on plain .NET builds.
+// from the com.unity.nuget.mono-cecil package. The editor runs a post-processor only from
+// an assembly named Unity.*.CodeGen.
 using System.IO;
 using System.Linq;
 using Mono.Cecil;

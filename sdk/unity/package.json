@@ -2,11 +2,17 @@
   "name": "com.aurix.net",
   "displayName": "Aurix Net",
   "version": "0.1.0",
-  "unity": "2021.3",
+  "unity": "2022.3",
   "description": "Aurix Net client: rooms, relay events, server-authoritative sync and deterministic lockstep over QUIC/WebSocket.",
   "license": "Apache-2.0",
   "author": { "name": "Aurix" },
   "dependencies": {
-    "com.unity.nuget.newtonsoft-json": "3.2.1"
+    "com.unity.nuget.mono-cecil": "1.11.6",
+    "com.unity.nuget.newtonsoft-json": "3.2.1",
+    "com.unity.modules.animation": "1.0.0",
+    "com.unity.modules.audio": "1.0.0",
+    "com.unity.modules.imageconversion": "1.0.0",
+    "com.unity.modules.imgui": "1.0.0",
+    "com.unity.modules.physics": "1.0.0"
   }
 }

@@ -62,7 +62,11 @@ namespace Aurix.Net.Unity.Framework
             base.OnTick(tick);
             if (isController && _rb != null)
             {
+#if UNITY_6000_0_OR_NEWER
+                velocity.value = _rb.linearVelocity;
+#else
                 velocity.value = _rb.velocity;
+#endif
                 angularVelocity.value = _rb.angularVelocity;
             }
         }

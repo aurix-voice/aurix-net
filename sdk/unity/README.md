@@ -1,7 +1,9 @@
 # Aurix Net for Unity
 
-Pure C#, no native library, every Unity platform including WebGL. Install as a UPM package
-(`Packages/manifest.json` → `"com.aurix.net": "file:../../sdk/unity"` or a git URL).
+Unity 2022.3 or newer. Pure C#, no native library, every Unity platform except Web. A Web build
+cannot run the client yet: it talks through `System.Net.WebSockets` and `System.Net.Http` and
+runs its reader and timer on threads, and Unity has none of the three in a browser. Install as a
+UPM package (`Packages/manifest.json` → `"com.aurix.net": "file:../../sdk/unity"` or a git URL).
 JSON is read with Newtonsoft.Json; the package pulls in Unity's `com.unity.nuget.newtonsoft-json`.
 
 ## Quick start (sync mode, ~10 minutes)
@@ -225,3 +227,28 @@ GetComponent<NetworkManager>().StartDedicated("http://127.0.0.1:8090");
 ```
 
 The room lives on that node; clients keep the project URL and are redirected to your machine (`room_elsewhere`, followed automatically). See `docs/modes.md` → Topologies.
+
+## Checking the package in an editor
+
+`BuildCheck~/unity-project` is a Unity project that takes this package from its folder. Its
+checks run with no manual steps:
+
+```sh
+BuildCheck~/unity-project/check.sh /path/to/Unity          # Linux, macOS
+BuildCheck~/unity-project/check.ps1 C:\path\to\Unity.exe    # Windows
+```
+
+`Compile` passes when the package compiled and its post-processor rewrote the RPCs of a probe
+behaviour; `BuildPlayer` builds a player of the editor's platform with the probe in its scene. A
+second argument `web` adds a Web build. Each check prints one `AURIX <check> PASS|FAIL` line
+and a `WARN` line for every warning of a build; the editor logs are in `Logs/`.
+
+Unity 2022.3 gives every such build one warning, `GfxDevice renderer is null. Unity cannot
+update the Ambient Probe and Reflection Probes that the SkyManager generates.` It comes from the
+run without graphics (`-nographics`) and not from the package; Unity 6000.3 gives none.
+
+The project holds only the packages its manifest names, so a module the package uses and does
+not name fails the build. `Manifest` fails, and the check that ran is not judged, when the editor
+has added anything to `Packages/manifest.json`. Every run resolves the packages
+anew, without the lock file of the run before. Before a run with another version of the editor
+delete the project's `Library`.

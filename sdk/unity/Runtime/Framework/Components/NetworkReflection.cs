@@ -142,8 +142,6 @@ namespace Aurix.Net.Unity.Framework
             }
         }
 
-        PlayerID? localPlayer => networkManager?.localPlayer;
-
         (ReflectedMethod, MethodInfo) Find(string name)
         {
             if (trackedBehaviour == null)

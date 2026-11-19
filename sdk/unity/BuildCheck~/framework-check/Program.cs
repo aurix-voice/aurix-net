@@ -168,6 +168,10 @@ static class Program
         host.StartHost(); await Until(() => host.isServer, 8000, host);
         Check(host.isServer && host.isHost && host.localPlayer.HasValue, $"host started as {host.localPlayer}");
         Check(Player.Woven, "test assembly was woven (CmdHit__Impl present)");
+        Check(
+            !typeof(Player).Assembly.GetReferencedAssemblies().Any(reference => reference.Name == "System.Private.CoreLib"),
+            "the woven assembly names no library of the runtime that wove it (System.Private.CoreLib)"
+        );
 
         // a server object exists before anyone joins (late-join path for c1)
         var srvObj = (TestIdentity)host.Spawn(0);

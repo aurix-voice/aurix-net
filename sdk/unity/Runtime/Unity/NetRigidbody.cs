@@ -40,6 +40,13 @@ namespace Aurix.Net.Unity
         readonly List<Sample> _buf = new List<Sample>(8);
         Rigidbody _rb;
 
+        Vector3 BodyVelocity =>
+#if UNITY_6000_0_OR_NEWER
+            _rb.linearVelocity;
+#else
+            _rb.velocity;
+#endif
+
         protected override void OnBound()
         {
             _rb = GetComponent<Rigidbody>();
@@ -47,7 +54,7 @@ namespace Aurix.Net.Unity
             {
                 Position = _rb.position;
                 Rotation = _rb.rotation;
-                Velocity = _rb.velocity;
+                Velocity = BodyVelocity;
                 AngularVelocity = _rb.angularVelocity;
             }
             else
@@ -77,7 +84,7 @@ namespace Aurix.Net.Unity
 
             Position = _rb.position;
             Rotation = _rb.rotation;
-            Velocity = _rb.velocity;
+            Velocity = BodyVelocity;
             AngularVelocity = _rb.angularVelocity;
         }
 

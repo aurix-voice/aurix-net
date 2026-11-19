@@ -120,7 +120,15 @@ jobs:
         with: { dotnet-version: 8.0.x }
       - name: Unity SDK formatting
         working-directory: sdk/unity
-        run: dotnet tool restore && dotnet csharpier --check Runtime Editor Weaver Samples~
+        run: dotnet tool restore && dotnet csharpier --check Runtime Editor Weaver~ Samples~
+      - name: Unity SDK .meta files
+        working-directory: sdk/unity
+        # Unity leaves out an asset of an installed package that has no .meta. It does not look
+        # into folders and files whose names begin with a dot or end with a tilde.
+        run: |
+          assets=$(git ls-files | grep -v '\.meta$' | grep -vE '(^|/)(\.[^/]*|[^/]*~)(/|$)' | awk -F/ '{ p = ""; for (i = 1; i <= NF; i++) { p = p (i > 1 ? "/" : "") $i; print p } }' | sort -u)
+          metas=$(git ls-files '*.meta' | sed 's/\.meta$//' | sort)
+          diff <(echo "$assets") <(echo "$metas")
       - run: dotnet build -c Release "sdk/unity/BuildCheck~/managed-live/managed-live.csproj"
       - run: dotnet build -c Release "sdk/unity/BuildCheck~/managed-rehost/managed-rehost.csproj"
       - run: dotnet test -c Release "sdk/unity/BuildCheck~/managed-tests/managed-tests.csproj"

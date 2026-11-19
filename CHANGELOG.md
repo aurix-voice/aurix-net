@@ -81,6 +81,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   random join.
 
 ### Changed
+- Unity SDK: the package names Unity 2022.3 as the oldest editor it works in; it named 2021.3,
+  in which it was never built. It builds, weaves and makes a player in 2022.3.62f3.
 - Lockstep: the journal keeps the inputs of a tick packed in one buffer: 72 bytes a tick
   instead of 408 for two players with 8-byte inputs, 216 instead of 600 for eight with 16-byte
   ones.
@@ -303,6 +305,26 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   `transport` to a frame of a tunnel it gave up, and its close of a QUIC or WebTransport
   connection with code 4, now end the data path with `closed` (`link dead`), and sends fail
   from there.
+- Unity SDK: the package comes with the `.meta` files of its assets, written by Unity
+  2022.3.62f3. Without them every project that took the package made identifiers of its own,
+  and a package installed from a git URL or a registry, which the editor may not write into,
+  had its scripts left out.
+- Unity SDK: a player did not build in a project that holds only the packages this one names:
+  `SyncTexture` uses `Texture2D.LoadImage` and `EncodeToPNG` of the image conversion module,
+  which the package did not name among its dependencies.
+- Unity SDK: the editor refused to load an assembly after its RPCs were woven (`Unable to
+  resolve reference 'System.Private.CoreLib'`): the weaver took `object` and `Type` from the
+  runtime it runs in. It takes them from the core library the woven assembly references.
+- Unity SDK: the package did not compile in an editor: its weaving assembly uses Mono.Cecil
+  and the package did not depend on `com.unity.nuget.mono-cecil`, which brings it.
+- Unity SDK: `NetRigidbody` and `NetworkRigidbody` read a body's velocity by the name the
+  editor has (`linearVelocity` since Unity 6), and the scene's objects are found with
+  `FindObjectsByType`: the editor has no deprecated call to warn about or rewrite.
+- Unity SDK: the assembly that weaves `[ServerRpc]`, `[ObserversRpc]` and `[TargetRpc]` was
+  named `Aurix.Net.CodeGen`, and the editor runs a post-processor only from an assembly named
+  `Unity.*.CodeGen`. It is `Unity.Aurix.Net.CodeGen`. The package names the engine modules it
+  uses (animation, audio, IMGUI, physics), and `BuildCheck~/unity-project` builds the package
+  in an editor from the command line and checks that the RPCs of a probe were woven.
 - Web SDK: a client that sent nothing for 90 s was disconnected (`closed` with `control channel
   closed`), in a quiet room as in a menu: the node closes a control channel it hears nothing
   from, and the Web client probed it only when the game called `ping()`. It probes once a second
@@ -777,6 +799,8 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   Wasm guest abort the host process (RUSTSEC-2026-0568).
 
 ### CI
+- `ci.yml`: the Unity job fails when an asset of the package has no `.meta` or a `.meta` has
+  no asset.
 - `ci.yml`: a new job, `sdk-live`, runs the live checks of the Web, C#, C++ and C SDKs against the
   node the `rust` job built and through the four proxies of `sdk/cpp/README.md`. Until now CI
   built these checks and skipped their live part. With `NET_LIVE_REQUIRED` set, as in this job, a check

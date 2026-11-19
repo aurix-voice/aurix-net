@@ -1,5 +1,5 @@
 {
-  "name": "Aurix.Net.CodeGen",
+  "name": "Unity.Aurix.Net.CodeGen",
   "rootNamespace": "Aurix.Net.CodeGen",
   "references": [],
   "includePlatforms": ["Editor"],

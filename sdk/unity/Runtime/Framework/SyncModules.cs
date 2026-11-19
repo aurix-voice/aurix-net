@@ -485,7 +485,6 @@ namespace Aurix.Net.Unity.Framework
     {
         uint _endTick;
         bool _running;
-        bool _changed;
         public event Action onFinished,
             onStarted,
             onStopped;
@@ -525,7 +524,6 @@ namespace Aurix.Net.Unity.Framework
                     );
             _running = true;
             _finishedFired = false;
-            _changed = true;
             isDirty = true;
             onStarted?.Invoke();
         }
@@ -538,7 +536,6 @@ namespace Aurix.Net.Unity.Framework
             }
 
             _running = false;
-            _changed = true;
             isDirty = true;
             onStopped?.Invoke();
         }
@@ -579,7 +576,6 @@ namespace Aurix.Net.Unity.Framework
         public override void WriteDelta(BitWriter writer)
         {
             WriteFull(writer);
-            _changed = false;
         }
 
         public override void ReadDelta(BitReader reader) => ReadFull(reader);

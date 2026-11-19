@@ -21,7 +21,7 @@
   </ItemGroup>
   <!-- weave RPC methods in the built test assembly exactly like Unity's ILPostProcessor would -->
   <Target Name="AurixWeave" AfterTargets="Build" Condition="'$(AurixNoWeave)' != 'true'">
-    <Exec Command="dotnet run --project &quot;$(MSBuildProjectDirectory)/../../Weaver/Aurix.Net.Weaver.Cli/Aurix.Net.Weaver.Cli.csproj&quot; -c $(Configuration) -- &quot;$(TargetPath)&quot;" />
+    <Exec Command="dotnet run --project &quot;$(MSBuildProjectDirectory)/../../Weaver~/Aurix.Net.Weaver.Cli/Aurix.Net.Weaver.Cli.csproj&quot; -c $(Configuration) -- &quot;$(TargetPath)&quot;" />
   </Target>
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.2" />

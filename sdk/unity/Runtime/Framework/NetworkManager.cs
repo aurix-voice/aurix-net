@@ -436,7 +436,12 @@ namespace Aurix.Net.Unity.Framework
                 main = this;
             }
 #if UNITY_5_3_OR_NEWER
-            foreach (var id in UnityEngine.Object.FindObjectsOfType<NetworkIdentity>(true))
+            foreach (
+                var id in UnityEngine.Object.FindObjectsByType<NetworkIdentity>(
+                    FindObjectsInactive.Include,
+                    FindObjectsSortMode.None
+                )
+            )
             {
                 RegisterSceneObject(id);
             }

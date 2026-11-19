@@ -153,7 +153,7 @@ namespace Aurix.Net.Weaver
                         | TypeAttributes.Sealed
                         | TypeAttributes.Abstract
                         | TypeAttributes.Class,
-                    module.ImportReference(typeof(object))
+                    module.TypeSystem.Object
                 );
                 module.Types.Add(marker);
             }
@@ -237,9 +237,12 @@ namespace Aurix.Net.Weaver
             var first = body.Instructions[0];
             var send = module.ImportReference(FindMethod(type, "__RpcSendGeneric"));
             var localInfo = module.ImportReference(FindMethod(type, "__LocalInfoOr"));
-            var getType = module.ImportReference(typeof(Type).GetMethod("GetTypeFromHandle"));
             var objType = module.TypeSystem.Object;
-            var typeType = module.ImportReference(typeof(Type));
+            var typeType = CoreType(module, "Type");
+            var getType = new MethodReference("GetTypeFromHandle", typeType, typeType);
+            getType.Parameters.Add(
+                new ParameterDefinition(CoreType(module, "RuntimeTypeHandle", valueType: true))
+            );
             int count = wantsInfo ? method.Parameters.Count - 1 : method.Parameters.Count;
             var ins = new List<Instruction>();
             ins.Add(il.Create(OpCodes.Ldarg_0));
@@ -539,6 +542,14 @@ namespace Aurix.Net.Weaver
             }
             return null;
         }
+
+        // A type of the core library the woven assembly itself references. A type taken by
+        // reflection would name the library of the runtime the weaver runs in.
+        static TypeReference CoreType(
+            ModuleDefinition module,
+            string name,
+            bool valueType = false
+        ) => new TypeReference("System", name, module, module.TypeSystem.CoreLibrary, valueType);
 
         static MethodReference FindMethod(TypeDefinition type, string name)
         {

@@ -90,7 +90,7 @@ datagrams from then on. Where UDP is blocked the same datagrams ride as binary W
 | SDK | Path | What |
 |---|---|---|
 | Web (TypeScript) | [`sdk/web`](sdk/web) | `@aurix/net`: relay / sync / lockstep clients, rollback runner, matchmaking, presence, instant replay, aurix-sim (wasm) |
-| Unity (UPM, pure C#) | [`sdk/unity`](sdk/unity) | every platform incl. WebGL: `NetRunner` / `NetView` / `SyncBehaviour`, `NetTransform`, `NetRigidbody`, `NetAnimator`, lockstep + rollback, a host-authoritative gameplay framework (`NetworkManager`, `NetworkBehaviour`, RPCs, SyncVars, LOD, spawning) and transports for PurrNet, Mirror and FishNet over relay rooms |
+| Unity (UPM, pure C#) | [`sdk/unity`](sdk/unity) | every platform except Web builds: `NetRunner` / `NetView` / `SyncBehaviour`, `NetTransform`, `NetRigidbody`, `NetAnimator`, lockstep + rollback, a host-authoritative gameplay framework (`NetworkManager`, `NetworkBehaviour`, RPCs, SyncVars, LOD, spawning) and transports for PurrNet, Mirror and FishNet over relay rooms |
 | Rust | [`crates/net-client`](crates/net-client) | control + data path, rollback, replays; the reference client |
 | C / C++ | [`crates/net-ffi`](crates/net-ffi), [`sdk/cpp`](sdk/cpp) | `libaurix_net` C ABI (`aurix_net.h`, `aurix_sim.h`) and a header-only C++ wrapper |
 | Unreal Engine (beta) | [`sdk/unreal`](sdk/unreal) | `AurixNetDriver` runs the engine's own replication and RPCs over a relay room (host = room master, no public IP), `UAurixNetSubsystem` for Blueprint: connect with a grant, join / create / random, relay events, players; written for UE 5.3-5.8, not yet built with an engine |
