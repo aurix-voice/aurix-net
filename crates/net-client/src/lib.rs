@@ -134,6 +134,7 @@ impl DataPath {
 }
 
 const PING_EVERY: Duration = Duration::from_secs(1);
+const TICKET_RESEND: Duration = Duration::from_millis(100);
 
 pub struct Client {
     ctl: mpsc::Sender<Message>,
@@ -498,7 +499,8 @@ impl Client {
             })
             .await
             .map_err(|_| ClientError::Timeout)??;
-            conn.send_datagram(Bytes::from(ticket))
+            let ticket = Bytes::from(ticket);
+            conn.send_datagram(ticket.clone())
                 .map_err(|e| ClientError::Data(e.to_string()))?;
             let dp = Arc::new(DataPath {
                 link,
@@ -506,8 +508,21 @@ impl Client {
             });
             let (dp2, ev) = (dp.clone(), self.events_tx.clone());
             self.data_tasks.push(tokio::spawn(async move {
-                while let Ok(d) = conn.read_datagram().await {
-                    deliver(&dp2, d, &ev).await;
+                // the ticket is a datagram: it is repeated until the node's first one arrives
+                let start = tokio::time::Instant::now() + TICKET_RESEND;
+                let mut again = tokio::time::interval_at(start, TICKET_RESEND);
+                let mut answered = false;
+                loop {
+                    tokio::select! {
+                        datagram = conn.read_datagram() => {
+                            let Ok(datagram) = datagram else { break };
+                            answered = true;
+                            deliver(&dp2, datagram, &ev).await;
+                        }
+                        _ = again.tick(), if !answered => {
+                            let _ = conn.send_datagram(ticket.clone());
+                        }
+                    }
                 }
                 let _ = ev.send(Event::Closed("data path closed".into())).await;
             }));

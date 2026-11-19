@@ -116,9 +116,12 @@ Server → client: `hello{session, version, region}`, `authed{player_id, name}`,
 `notice{text, level}`, `error{code, message}`, `desync{tick, actor, strikes, untrusted}`.
 
 `joined.data` = `{host, port, cert_sha256, ticket(base64), ws_tunnel, webtransport_url?}`: connect QUIC
-(ALPN `aurix-net/1`, pin `cert_sha256`), send the ticket as the first datagram, wait for the
-empty reliable frame. Where UDP is blocked send the ticket as the first binary WebSocket
-frame and use binary frames as datagrams.
+(ALPN `aurix-net/1`, pin `cert_sha256`), send the ticket as a datagram, wait for the
+empty reliable frame. Datagrams can be lost, so repeat the ticket until the node's first
+datagram arrives: the node ignores repeats, and drops every datagram that reaches it before
+the ticket. A connection that shows no valid ticket within 5 s is closed with code 1. Where
+UDP is blocked send the ticket as the first binary WebSocket frame and use binary frames as
+datagrams.
 
 ## Data path
 
@@ -132,7 +135,7 @@ event frame or a mode frame (`docs/modes.md`).
 
 Nodes also listen for WebTransport sessions (`transport.webtransport_addr`, default
 `0.0.0.0:7443`; `joined.data.webtransport_url` = `https://host:7443/`). The protocol is the
-same as raw QUIC: the first datagram is the ticket, then packets flow as HTTP/3 datagrams
+same as raw QUIC: the ticket datagram comes first, then packets flow as HTTP/3 datagrams
 through the same link/channels. Browsers pin the certificate via `serverCertificateHashes`
 (= `cert_sha256`), so the self-signed dev certificate works; it is valid 13 days and
 regenerated on every start. The WebSocket tunnel remains the fallback. Manual browser check:

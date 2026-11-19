@@ -15,6 +15,8 @@ export * from "./sync.js";
 export * from "./lockstep.js";
 export * from "./chat.js";
 
+const TICKET_RESEND_MS = 100;
+
 export type RoomMode = "relay" | "sync" | "lockstep";
 /** `stats` answer: live rooms/players of the project, grouped by the room prop `lobby` ("" = default lobby). */
 export interface Stats {
@@ -415,8 +417,7 @@ export class Client {
         res();
       };
     });
-    this.path = await this.openPath(joined.data);
-    this.path.send(ticket);
+    this.path = await this.openPath(joined.data, ticket);
     this.timer = setInterval(() => {
       if (!this.link.poll()) {
         this.lost("link dead");
@@ -465,7 +466,10 @@ export class Client {
     }
   }
 
-  private async openPath(data: Joined["data"]): Promise<DataPath> {
+  private async openPath(
+    data: Joined["data"],
+    ticket: Uint8Array,
+  ): Promise<DataPath> {
     const WT = (globalThis as { WebTransport?: typeof WebTransport })
       .WebTransport;
     if (WT && data.webtransport_url && !this.forceTunnel) {
@@ -481,6 +485,12 @@ export class Client {
         const reader = (
           wt.datagrams.readable as ReadableStream<Uint8Array>
         ).getReader();
+        const send = (bytes: Uint8Array) => {
+          writer.write(bytes).catch(() => {});
+        };
+        send(ticket);
+        // the ticket is a datagram: it is repeated until the node's first one arrives
+        const again = setInterval(() => send(ticket), TICKET_RESEND_MS);
         void (async () => {
           try {
             for (;;) {
@@ -488,6 +498,7 @@ export class Client {
               if (done) {
                 break;
               }
+              clearInterval(again);
               this.onDatagram(value);
             }
           } catch {
@@ -496,12 +507,14 @@ export class Client {
         })();
         const path: DataPath = {
           kind: "webtransport",
-          send: (bytes) => {
-            writer.write(bytes).catch(() => {});
+          send,
+          close: () => {
+            clearInterval(again);
+            wt.close();
           },
-          close: () => wt.close(),
         };
         const gone = (why: string) => {
+          clearInterval(again);
           if (this.path === path) {
             this.lost(why);
           }
@@ -520,6 +533,7 @@ export class Client {
         "no usable data path (webtransport failed, tunnel disabled)",
       );
     }
+    this.ws.send(ticket);
     return {
       kind: "ws-tunnel",
       send: (bytes) => this.ws.send(bytes),

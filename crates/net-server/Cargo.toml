@@ -37,7 +37,9 @@ mimalloc = "0.1"
 
 [dev-dependencies]
 net-client = { path = "../net-client" }
+base64 = { workspace = true }
 tokio-tungstenite = { workspace = true }
 reqwest = { workspace = true }
 bytes = { workspace = true }
+quinn = { workspace = true }
 sqlx = { workspace = true }

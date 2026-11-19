@@ -70,10 +70,25 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   where the object stopped and stayed there (0.6 units ahead at 3 units/s with the default
   level). The stop was sent as one sample, and the receiver kept extrapolating from the last
   two. The controller now sends a second sample at rest.
+- SDKs, data path: the Rust client and the Web SDK sent the ticket of a QUIC or WebTransport
+  path as a single datagram, so a lost one ended the join after the timeout. They now repeat
+  it every 100 ms until the node's first datagram arrives. With 10 % of UDP packets lost 6 of
+  40 joins failed in the Rust client and 7 of 40 in Chrome; now 0 of 40 in each.
+- Data path: when a WebTransport session ended while the player stayed in the room, the node
+  kept the dead path on the player's slot, and room events went nowhere instead of falling back
+  to the control channel as they do after a QUIC connection ends.
+- Data path: when a player joined again from a second connection, the data ticket of the
+  replaced session still opened a QUIC or WebTransport path, took the data of the new session
+  and cut its link. The node now refuses it with `not joined`, as the WebSocket tunnel did.
 - Lockstep: the state a desynced client reloads from went out as `Catchup` (`0x24`), the frame
   of a late join, and a client that drops a `Catchup` behind its own ticks never recovered. It
   is now a frame of its own, `Restore` (`0x2A`), with the same layout. Clients have to handle
   `0x2A`; one that does not skips it and stays desynced.
+- Data path: the node closed a QUIC or WebTransport connection with `bad ticket` when any
+  datagram reached it before the ticket, which happens whenever the ticket datagram is lost.
+  It now drops such datagrams and waits 5 s for a valid ticket. A ticket repeated after the
+  path is open used to be parsed as a packet; it is now ignored, so a client can repeat the
+  ticket until the node answers.
 - Limits: a project whose stored limits did not parse ran with no limits at all. The node now
   refuses its new rooms and joins with `quota_exceeded` until an operator sets the limits
   again, lists the project under `invalid_limits` in `GET /v1/operator/attention`, and returns
