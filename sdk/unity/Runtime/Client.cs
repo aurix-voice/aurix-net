@@ -151,7 +151,8 @@ namespace Aurix.Net
             RoomMode mode = RoomMode.Relay,
             int maxPlayers = 8,
             string propsJson = null,
-            string[] reserved = null
+            string[] reserved = null,
+            string[] lobbyProps = null
         )
         {
             var sb = new StringBuilder("{\"t\":\"join_or_create\",\"name\":")
@@ -176,6 +177,21 @@ namespace Aurix.Net
                     }
 
                     sb.Append(Json(reserved[i]));
+                }
+                sb.Append(']');
+            }
+
+            if (lobbyProps != null && lobbyProps.Length > 0)
+            {
+                sb.Append(",\"lobby_props\":[");
+                for (int i = 0; i < lobbyProps.Length; i++)
+                {
+                    if (i > 0)
+                    {
+                        sb.Append(',');
+                    }
+
+                    sb.Append(Json(lobbyProps[i]));
                 }
                 sb.Append(']');
             }

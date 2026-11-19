@@ -63,6 +63,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   dropped it, so a game on the Rust client could not start from the state the node starts from.
 - C ABI, C++, Godot, C#: the lockstep room's `seed` is there too: `aurix_net_joined_seed()`,
   `aurix::net::Client::seed()`, `AurixNetClient.get_seed()` and `ManagedClient.Seed`.
+- C++ and Godot SDKs: `joinOrCreate` / `join_or_create` take `reserved`, the player ids whose
+  seats the new room holds (the `players` of a matchmaking ticket), and `joinRandom` /
+  `join_random` joins a random open room, as the Web and Unity SDKs do. Without `reserved` a
+  matched player could not keep the seat of the other one, and a connected Godot client had no
+  random join.
 
 ### Changed
 - Dates: the node reads and writes dates as strict RFC 3339 through the `time` crate; its own
@@ -147,6 +152,14 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - Unity SDK (native client): `Client.Actor` and `Client.JoinedJson` went on describing a room
   after `Leave` and after the node took the client out of it. They are `-1` and `null` outside
   a room.
+- Native core (C, C++, Godot, Unity, Unreal): `aurix_net_joined_json` named the room, the mode,
+  the actor and the master, and left out the rest of what the node says at a join. A game had no
+  list of the players already in the room and no room size or props: in Unreal `GetRoom().Players`
+  was empty for the one who joined second and `MaxPlayers` was 0. It now carries `max_players`,
+  `props`, `players`, `tick`, `seed` and `next_spawn_tag` as well.
+- Unity SDK (native client): `Client.JoinOrCreate` had no `lobbyProps`, so a room it created
+  published no props, and neither a room list nor a random join with an `expr` found it. It
+  takes them as the managed client does.
 - Unreal SDK: `SendEventEx` sent an event for `EAurixNetChannel::ReliableUnordered` on the
   reliable ordered channel. It goes on the channel it is given.
 - Lobby: a node that lost its Redis connection heard no room changes for about 2 s, and a room

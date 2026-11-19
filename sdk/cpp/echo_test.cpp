@@ -18,6 +18,10 @@ int main() {
     for (uint8_t i = 0; i < 10; i++) { a.sendEvent(2, &i, 1); a.flush(); std::this_thread::sleep_for(std::chrono::milliseconds(16)); }
     for (int s = 0; s < 300 && !(hello && ticks == 10); s++) { b.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
     std::printf("cpp: hello=%d ticks=%d/10 joined=%s\n", hello, ticks, b.joinedJson().substr(0, 60).c_str());
+    // the room as the node described it at the join: its size and who was in it, the joiner too
+    std::string facts = b.joinedJson();
+    bool described = facts.find("\"max_players\":4") != std::string::npos && facts.find("\"player_id\":\"cpp-a\"") != std::string::npos && facts.find("\"player_id\":\"cpp-b\"") != std::string::npos;
+    std::printf("cpp joined: the room's size and both players=%d\n", described);
     // events on the unsequenced channel arrive on it
     for (uint8_t i = 0; i < 10; i++) { a.sendEventOn(Channel::UnreliableUnsequenced, 6, &i, 1); a.flush(); std::this_thread::sleep_for(std::chrono::milliseconds(16)); }
     for (int s = 0; s < 300 && unsequenced < 10; s++) { b.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
@@ -40,6 +44,16 @@ int main() {
     try { e.join(room + "-one"); } catch (const Error& error) { full = error.code; }
     std::printf("cpp refused joins: missing room code=%d, full room code=%d\n", missing, full);
     bool refused = missing == AURIX_NET_ERR_NOT_FOUND && full == AURIX_NET_ERR_ROOM_FULL;
+    // a random join finds a room by the props it publishes, and a seat held for a player is kept for it
+    Client h; h.connect(http, Client::issueGrant(http, key, "cpp-h", "H"));
+    h.joinOrCreate(room + "-open", Mode::Relay, 4, "{\"map\":" + Client::quote(room) + "}", {"map"});
+    int random = e.joinRandom("", "map = '" + room + "'"), taken = 0;
+    e.leave(); h.leave(); d.leave();
+    d.joinOrCreate(room + "-party", Mode::Relay, 2, "", {}, {"cpp-e"});
+    try { h.join(room + "-party"); } catch (const Error& error) { taken = error.code; }
+    int awaited = e.join(room + "-party");
+    std::printf("cpp random join: actor=%d; held seat: another player code=%d, the awaited one actor=%d\n", random, taken, awaited);
+    bool matched = random == 2 && taken == AURIX_NET_ERR_ROOM_FULL && awaited == 2;
     // over a slow link (NET_SLOW_HTTP, see README): a client that left a room joins another one
     bool rejoined = true;
     if (const char* slow = std::getenv("NET_SLOW_HTTP")) {
@@ -61,5 +75,5 @@ int main() {
         std::printf("cpp slow link: skipped (NET_SLOW_HTTP not set)\n");
         rejoined = !std::getenv("NET_LIVE_REQUIRED");
     }
-    a.leave(); return (hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && refused && rejoined) ? 0 : 1;
+    a.leave(); return (hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && refused && matched && rejoined) ? 0 : 1;
 }

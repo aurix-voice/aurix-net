@@ -202,23 +202,49 @@ private:
         }
         return out + "]";
     }
+    static std::string quoted(const std::vector<std::string>& texts) {
+        std::string out = "[";
+        for (size_t i = 0; i < texts.size(); ++i) {
+            out += (i ? "," : "") + quote(texts[i]);
+        }
+        return out + "]";
+    }
 
 public:
     /// `lobbyProps` names the room props that room listings show and `expr` filters match.
+    /// `reserved`: player ids whose seats are held for 60 s when this call creates the room (the
+    /// `players` of a matchmaking ticket).
     int joinOrCreate(const std::string& name, Mode mode = Mode::Relay, int maxPlayers = 8,
                      const std::string& propsJson = "",
-                     const std::vector<std::string>& lobbyProps = {}) {
+                     const std::vector<std::string>& lobbyProps = {},
+                     const std::vector<std::string>& reserved = {}) {
         std::string message = "{\"t\":\"join_or_create\",\"name\":" + quote(name) + ",\"mode\":\"" +
                               modeName(mode) + "\",\"max_players\":" + std::to_string(maxPlayers);
         if (!propsJson.empty()) {
             message += ",\"props\":" + propsJson;
         }
         if (!lobbyProps.empty()) {
-            message += ",\"lobby_props\":[";
-            for (size_t k = 0; k < lobbyProps.size(); ++k) {
-                message += (k ? "," : "") + quote(lobbyProps[k]);
-            }
-            message += "]";
+            message += ",\"lobby_props\":" + quoted(lobbyProps);
+        }
+        if (!reserved.empty()) {
+            message += ",\"reserved\":" + quoted(reserved);
+        }
+        return joinJson(message + "}");
+    }
+    /// Joins a random open room. `filterJson` must equal room props exactly, `expr` is a SQL-like
+    /// condition on lobby props (`map = 'dust' AND skill <= 1500`), `matchType` is `fill`
+    /// (default), `serial` or `random`.
+    int joinRandom(const std::string& filterJson = "", const std::string& expr = "",
+                   const std::string& matchType = "") {
+        std::string message = "{\"t\":\"join_random\"";
+        if (!filterJson.empty()) {
+            message += ",\"filter\":" + filterJson;
+        }
+        if (!expr.empty()) {
+            message += ",\"expr\":" + quote(expr);
+        }
+        if (!matchType.empty()) {
+            message += ",\"match_type\":" + quote(matchType);
         }
         return joinJson(message + "}");
     }

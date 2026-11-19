@@ -52,7 +52,8 @@ public:
 
 	bool connect_to(const String &http_url, const String &grant, bool force_tunnel = false);
 	int connect_and_join(const String &http_url, const String &grant, const String &join_json, bool force_tunnel = false);
-	int join_or_create(const String &room, int mode = MODE_RELAY, int max_players = 8, const String &props_json = "", const PackedStringArray &lobby_props = PackedStringArray());
+	int join_or_create(const String &room, int mode = MODE_RELAY, int max_players = 8, const String &props_json = "", const PackedStringArray &lobby_props = PackedStringArray(), const PackedStringArray &reserved = PackedStringArray());
+	int join_random(const String &filter_json = "", const String &expr = "", const String &match_type = "");
 	int join(const String &room, const String &schema_hash = "");
 	bool send_control(const String &json);
 	/// GetRegions + ping: JSON {region, endpoint, rtt_ms, candidates}; empty on error.

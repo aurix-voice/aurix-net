@@ -338,9 +338,18 @@ class P
                 viaCore = () => core.SendEvent(1, one, Target.Others, reliable: true);
                 coreOutside = Refusal(viaCore);
                 core.Join(room + "-lost");
+                // the native client describes the room as the node did at the join: its size and who was in it, itself too
+                if (ManagedClientTestHooks.Num(core.JoinedJson, "max_players") != 4 || !core.JoinedJson.Contains("\"player_id\":\"cs-lost-m\"") || !core.JoinedJson.Contains("\"player_id\":\"cs-lost-c\"")) throw new Exception("joined: the native client does not describe the room: " + core.JoinedJson);
                 coreInside = Refusal(viaCore);
                 core.Leave();
                 if (core.Actor != -1 || core.JoinedJson != null) throw new Exception("leave: the native client still describes the room");
+                // a room the native client creates is found by the props it publishes
+                core.JoinOrCreate(room + "-map", RoomMode.Relay, 4, "{\"map\":\"" + room + "\"}", null, new[] { "map" });
+                await managed.LeaveAsync();
+                await managed.JoinRandomAsync(null, "map = '" + room + "'");
+                if (ManagedClientTestHooks.Str(managed.JoinedJson, "name") != room + "-map") throw new Exception("random join: not the room the native client published");
+                core.Leave(); await managed.LeaveAsync();
+                await managed.JoinOrCreateAsync(room + "-lost", "relay", 4);
                 core.Join(room + "-lost");
             }
             catch (DllNotFoundException) { core = null; }

@@ -84,6 +84,11 @@ Other room props stay private unless the room publishes them: `joinOrCreate` tak
 `lobbyProps` (Web, C#, C++; `lobby_props` in Godot). Room listings show only those props, and the
 `expr` filters of `rooms` and `joinRandom` match only those.
 
+`joinRandom(filter, expr, matchType)` joins a random open room: Web and C++ `joinRandom`, Unity
+`JoinRandomAsync` / `JoinRandom`, Godot `join_random`. `joinOrCreate` also takes `reserved`, the
+player ids whose seats the new room holds for 60 s: the `players` of a matchmaking ticket
+(docs/api.md → Matchmaking flow).
+
 ## Lockstep rooms from Rust, C++ and Godot
 
 `net_client::lockstep::LockstepClient` is the same core the C# and Web SDKs use, as pure logic: feed

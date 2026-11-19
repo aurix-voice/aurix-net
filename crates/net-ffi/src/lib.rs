@@ -353,8 +353,10 @@ pub unsafe extern "C" fn aurix_net_join(client: *mut AurixNetClient, json: *cons
     }
 }
 
-/// Room facts after a successful join as JSON (`{"room","name","mode","actor","master","tick_hz","schema_hash"}`),
-/// malloc'd; NULL when not in a room.
+/// What the node said of the room at the join, as JSON, malloc'd; NULL when not in a room:
+/// `{"room","name","mode","actor","master","max_players","props","players","tick_hz","schema_hash",
+/// "tick","seed","next_spawn_tag"}`. `players` are those in the room at the join, this client among
+/// them; `player_joined` and `player_left` tell of the later ones.
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_joined_json(client: *mut AurixNetClient) -> *mut c_char {
     let Some(client) = client.as_ref() else {
@@ -366,7 +368,9 @@ pub unsafe extern "C" fn aurix_net_joined_json(client: *mut AurixNetClient) -> *
     };
     let facts = serde_json::json!({
         "room": joined.room, "name": joined.name, "mode": joined.mode, "actor": joined.actor.0,
-        "master": joined.master.0, "tick_hz": joined.tick_hz, "schema_hash": joined.schema_hash,
+        "master": joined.master.0, "max_players": joined.max_players, "props": joined.props,
+        "players": joined.players, "tick_hz": joined.tick_hz, "schema_hash": joined.schema_hash,
+        "tick": joined.tick, "seed": joined.seed, "next_spawn_tag": joined.next_spawn_tag,
     });
     CString::new(facts.to_string())
         .map(CString::into_raw)

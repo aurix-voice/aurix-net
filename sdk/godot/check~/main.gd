@@ -36,8 +36,16 @@ func _ready() -> void:
 	if not a.connect_to(http, ga, true): fail("a connect: " + a.get_last_error()); return
 	if not b.connect_to(http, gb, true): fail("b connect: " + b.get_last_error()); return
 	var room := "godot-%d" % OS.get_process_id()
-	if a.join_or_create(room, AurixNetClient.MODE_RELAY, 8) < 0: fail("a join: " + a.get_last_error()); return
-	if b.join_or_create(room, AurixNetClient.MODE_RELAY, 8) < 0: fail("b join: " + b.get_last_error()); return
+	# a seat held for a player on its way is not given to another
+	if a.join_or_create(room + "-held", AurixNetClient.MODE_RELAY, 2, "", PackedStringArray(), PackedStringArray(["godot-awaited"])) < 0: fail("a join: " + a.get_last_error()); return
+	if b.join(room + "-held") >= 0 or b.get_last_error_code() != AurixNetClient.ERROR_ROOM_FULL: fail("b took a held seat: " + b.get_last_error()); return
+	a.leave()
+	# a random join finds a room by the props it publishes
+	if a.join_or_create(room, AurixNetClient.MODE_RELAY, 8, JSON.stringify({"map": room}), PackedStringArray(["map"])) < 0: fail("a join: " + a.get_last_error()); return
+	if b.join_random("", "map = '%s'" % room) < 0: fail("b random join: " + b.get_last_error()); return
+	# the room as the node described it at the join: its size, props and who was in it, the joiner too
+	var facts: Dictionary = JSON.parse_string(b.get_joined_json())
+	if int(facts.get("max_players", 0)) != 8 or facts.get("props", {}).get("map") != room or facts.get("players", []).size() != 2: fail("joined: " + b.get_joined_json()); return
 	b.event.connect(func(code, from, payload): 
 		print("b got event code=%d from=%d payload=%s" % [code, from, payload.get_string_from_utf8()])
 		got = true)

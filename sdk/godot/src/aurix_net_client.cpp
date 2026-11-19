@@ -18,7 +18,8 @@ static PackedByteArray to_pba(const uint8_t *data, size_t len) {
 void AurixNetClient::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("connect_to", "http_url", "grant", "force_tunnel"), &AurixNetClient::connect_to, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("connect_and_join", "http_url", "grant", "join_json", "force_tunnel"), &AurixNetClient::connect_and_join, DEFVAL(false));
-	ClassDB::bind_method(D_METHOD("join_or_create", "room", "mode", "max_players", "props_json", "lobby_props"), &AurixNetClient::join_or_create, DEFVAL(MODE_RELAY), DEFVAL(8), DEFVAL(""), DEFVAL(PackedStringArray()));
+	ClassDB::bind_method(D_METHOD("join_or_create", "room", "mode", "max_players", "props_json", "lobby_props", "reserved"), &AurixNetClient::join_or_create, DEFVAL(MODE_RELAY), DEFVAL(8), DEFVAL(""), DEFVAL(PackedStringArray()), DEFVAL(PackedStringArray()));
+	ClassDB::bind_method(D_METHOD("join_random", "filter_json", "expr", "match_type"), &AurixNetClient::join_random, DEFVAL(""), DEFVAL(""), DEFVAL(""));
 	ClassDB::bind_method(D_METHOD("join", "room", "schema_hash"), &AurixNetClient::join, DEFVAL(""));
 	ClassDB::bind_method(D_METHOD("send_control", "json"), &AurixNetClient::send_control);
 	ClassDB::bind_static_method("AurixNetClient", D_METHOD("best_region", "catalog_http", "probes"), &AurixNetClient::best_region, DEFVAL(3));
@@ -113,12 +114,18 @@ void AurixNetClient::note_mode() {
 	const std::string mode = aurix::net::Client::jsonStr(client_.joinedJson(), "mode");
 	relay_ = mode != "sync" && mode != "lockstep";
 }
-int AurixNetClient::join_or_create(const String &room, int mode, int max_players, const String &props_json, const PackedStringArray &lobby_props) {
-	std::vector<std::string> lobbyProps;
-	for (int k = 0; k < lobby_props.size(); ++k) {
-		lobbyProps.push_back(to_std(lobby_props[k]));
+static std::vector<std::string> to_std(const PackedStringArray &texts) {
+	std::vector<std::string> out;
+	for (int k = 0; k < texts.size(); ++k) {
+		out.push_back(to_std(texts[k]));
 	}
-	AURIX_TRY(const int actor = client_.joinOrCreate(to_std(room), (aurix::net::Mode)mode, max_players, to_std(props_json), lobbyProps); note_mode(); return actor, -1);
+	return out;
+}
+int AurixNetClient::join_or_create(const String &room, int mode, int max_players, const String &props_json, const PackedStringArray &lobby_props, const PackedStringArray &reserved) {
+	AURIX_TRY(const int actor = client_.joinOrCreate(to_std(room), (aurix::net::Mode)mode, max_players, to_std(props_json), to_std(lobby_props), to_std(reserved)); note_mode(); return actor, -1);
+}
+int AurixNetClient::join_random(const String &filter_json, const String &expr, const String &match_type) {
+	AURIX_TRY(const int actor = client_.joinRandom(to_std(filter_json), to_std(expr), to_std(match_type)); note_mode(); return actor, -1);
 }
 int AurixNetClient::join(const String &room, const String &schema_hash) {
 	AURIX_TRY(const int actor = client_.join(to_std(room), to_std(schema_hash)); note_mode(); return actor, -1);
