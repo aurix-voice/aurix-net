@@ -89,6 +89,8 @@ func _ready() -> void:
 	# each client knows the player its grant names, the one the room lists it as
 	var ids: Array = facts.get("players", []).map(func(player): return player.get("player_id"))
 	if a.get_player_id() == "" or a.get_player_name() == "" or a.get_player_id() == b.get_player_id() or not ids.has(a.get_player_id()) or not ids.has(b.get_player_id()): fail("player: a %s, b %s, room %s" % [a.get_player_id(), b.get_player_id(), ids]); return
+	# a number the wire has no room for is refused, not sent as another one
+	if a.send_event(300, PackedByteArray([1])) or a.get_last_error_code() != AurixNetClient.ERROR_INVALID_ARGUMENT or a.send_event_on(257, 1, PackedByteArray([1])) or a.send_data(257, PackedByteArray([1])) or a.set_groups(PackedInt32Array([65537])): fail("a number out of range was taken: " + a.get_last_error()); return
 	b.event.connect(func(code, from, payload): 
 		print("b got event code=%d from=%d payload=%s" % [code, from, payload.get_string_from_utf8()])
 		got = true)

@@ -431,12 +431,27 @@ namespace Aurix.Net.Managed
             };
 
         /// <summary>Input packet: the last inputs ending at `firstTick + inputs.Count - 1` (send 2-3 for redundancy).</summary>
+        /// <summary>The longest input of one tick, in bytes: its length travels in one byte.</summary>
+        public const int MaxInput = 255;
+
+        /// <summary>Throws for an input longer than <see cref="MaxInput"/>.</summary>
+        public static void CheckInput(byte[] input)
+        {
+            if (input.Length > MaxInput)
+            {
+                throw new ArgumentException(
+                    "input of " + input.Length + " bytes: at most " + MaxInput + " a tick"
+                );
+            }
+        }
+
         public static byte[] EncodeInput(uint firstTick, IList<byte[]> inputs)
         {
             int len = 6;
             foreach (var input in inputs)
             {
-                len += 1 + Math.Min(255, input.Length);
+                CheckInput(input);
+                len += 1 + input.Length;
             }
 
             var bytes = new byte[len];
@@ -449,10 +464,9 @@ namespace Aurix.Net.Managed
             bytes[offset++] = (byte)Math.Min(255, inputs.Count);
             foreach (var input in inputs)
             {
-                int count = Math.Min(255, input.Length);
-                bytes[offset++] = (byte)count;
-                Array.Copy(input, 0, bytes, offset, count);
-                offset += count;
+                bytes[offset++] = (byte)input.Length;
+                Array.Copy(input, 0, bytes, offset, input.Length);
+                offset += input.Length;
             }
             return bytes;
         }

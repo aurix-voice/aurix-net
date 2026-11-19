@@ -13,6 +13,14 @@ export interface EventFrame {
 /** Event cache flag: `add` keeps the event for late joiners (current cache slice), `remove` drops your earlier cached events with the same code. */
 export type CacheOp = "add" | "remove";
 
+/** A number the wire has `bits` for; one that does not fit would reach the room as another. */
+function fits(what: string, value: number, bits: number) {
+  if (!Number.isInteger(value) || value < 0 || value >= 2 ** bits) {
+    throw new RangeError(`${what} ${value} is not in 0..${2 ** bits - 1}`);
+  }
+}
+
+/** Throws `RangeError` for a code outside 0..255 and a group or an actor outside 0..65535. */
 export function encodeEvent(
   code: number,
   payload: Uint8Array,
@@ -20,6 +28,10 @@ export function encodeEvent(
   group?: number,
   cache?: CacheOp,
 ): Uint8Array {
+  fits("event code", code, 8);
+  if (group !== undefined) {
+    fits("group", group, 16);
+  }
   const kind =
     target === "all"
       ? 0
@@ -29,6 +41,9 @@ export function encodeEvent(
           ? 2
           : 3;
   const actors = Array.isArray(target) ? target : [];
+  for (const actor of actors) {
+    fits("actor", actor, 16);
+  }
   const len =
     4 +
     (group !== undefined ? 2 : 0) +

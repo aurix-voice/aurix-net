@@ -805,8 +805,9 @@ public:
                   bool history = true)
         : client_(client), code_(code), base_(groupBase), history_(history) {}
     void join(uint16_t channel) {
+        uint16_t to = group(channel);
         if (joined_.insert(channel).second) {
-            client_.setGroups({(uint16_t)(base_ + channel)});
+            client_.setGroups({to});
             std::vector<Message> held;
             held.swap(held_);
             for (auto& message : held) {
@@ -820,13 +821,13 @@ public:
     }
     void leave(uint16_t channel) {
         if (joined_.erase(channel)) {
-            client_.setGroups({}, {(uint16_t)(base_ + channel)});
+            client_.setGroups({}, {group(channel)});
         }
     }
     void send(uint16_t channel, const std::string& text) {
         auto bytes = encode(0, channel, text);
         client_.sendEventEx(code_, bytes.data(), bytes.size(), Target::All, true, {},
-                            base_ + channel, history_ ? 1 : 0);
+                            group(channel), history_ ? 1 : 0);
     }
     void whisper(uint16_t actor, const std::string& text) {
         auto bytes = encode(1, 0, text);
@@ -855,6 +856,15 @@ public:
     }
 
 private:
+    uint16_t group(uint16_t channel) const {
+        int group = base_ + channel;
+        if (group > 0xFFFF) {
+            throw Error("chat channel " + std::to_string(channel) + " is group " +
+                            std::to_string(group) + ", not in 0..65535",
+                        AURIX_NET_ERR_INVALID_ARGUMENT);
+        }
+        return (uint16_t)group;
+    }
     static std::vector<uint8_t> encode(uint8_t kind, uint16_t channel, const std::string& text) {
         std::vector<uint8_t> bytes;
         bytes.reserve(3 + text.size());

@@ -44,10 +44,23 @@ namespace Aurix.Net
             client.OnEvent += HandleEvent;
         }
 
-        ushort Group(ushort channel) => (ushort)(_groupBase + channel);
+        ushort Group(ushort channel)
+        {
+            int group = _groupBase + channel;
+            if (group > ushort.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(channel),
+                    "chat channel " + channel + " is group " + group + ", not in 0..65535"
+                );
+            }
+
+            return (ushort)group;
+        }
 
         public Task JoinAsync(ushort channel)
         {
+            ushort group = Group(channel);
             if (!_joined.Add(channel))
             {
                 return Task.CompletedTask;
@@ -68,7 +81,7 @@ namespace Aurix.Net
                     HandleEvent(frame);
                 }
             }
-            return _client.SetGroupsAsync(new[] { Group(channel) }, null);
+            return _client.SetGroupsAsync(new[] { group }, null);
         }
 
         public Task LeaveAsync(ushort channel) =>

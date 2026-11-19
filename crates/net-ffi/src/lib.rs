@@ -843,23 +843,33 @@ pub unsafe extern "C" fn aurix_net_send_event_on(
                 return -1;
             }
         };
+        let group = match group {
+            -1 => None,
+            0..=0xFFFF => Some(group as u16),
+            _ => {
+                set_error(ErrorCode::InvalidArgument, "bad group");
+                return -1;
+            }
+        };
+        let cache = match cache {
+            0 => CacheOp::None,
+            1 => CacheOp::Add,
+            2 => CacheOp::Remove,
+            _ => {
+                set_error(ErrorCode::InvalidArgument, "bad cache");
+                return -1;
+            }
+        };
         let payload = if data.is_null() || len == 0 {
             Bytes::new()
         } else {
             Bytes::copy_from_slice(std::slice::from_raw_parts(data, len))
         };
-        match client.inner.lock().send_event_on(
-            channel,
-            code,
-            target,
-            payload,
-            (0..=0xFFFF).contains(&group).then_some(group as u16),
-            match cache {
-                1 => CacheOp::Add,
-                2 => CacheOp::Remove,
-                _ => CacheOp::None,
-            },
-        ) {
+        match client
+            .inner
+            .lock()
+            .send_event_on(channel, code, target, payload, group, cache)
+        {
             Ok(()) => 0,
             Err(error) => {
                 set_client_error(&error);
@@ -987,7 +997,7 @@ pub unsafe extern "C" fn aurix_net_destroy(client: *mut AurixNetClient) {
 
 // ---- lockstep rooms: a pure-logic helper next to the client (see net_client::lockstep) ----
 
-use net_client::lockstep::{LockstepClient, LsEvent, Outgoing, LS_BUNDLE, MAX_COMMAND};
+use net_client::lockstep::{LockstepClient, LsEvent, Outgoing, LS_BUNDLE, MAX_COMMAND, MAX_INPUT};
 use std::collections::VecDeque;
 
 pub struct AurixNetLockstep {
@@ -1189,6 +1199,13 @@ pub unsafe extern "C" fn aurix_net_lockstep_send_input(
 ) -> i64 {
     guard(&[stopped(ls), stopped(client)], -1, || {
         let Some(ls) = ls.as_ref() else { return -1 };
+        if len > MAX_INPUT {
+            set_error(
+                ErrorCode::InvalidArgument,
+                format_args!("input of {len} bytes: at most {MAX_INPUT} a tick"),
+            );
+            return -1;
+        }
         let input = if data.is_null() || len == 0 {
             Bytes::new()
         } else {

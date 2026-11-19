@@ -91,7 +91,7 @@ int32_t aurix_net_avatar(AurixNetClient *client, uint64_t *entity); /* sync room
 int32_t aurix_net_send_data(AurixNetClient *client, uint8_t channel, const uint8_t *data, size_t len);
 int32_t aurix_net_send_event(AurixNetClient *client, uint8_t code, int32_t target, const uint16_t *actors, size_t n_actors,
                              const uint8_t *data, size_t len, int32_t reliable);
-/* send_event + interest group (-1 = none) and cache (0 none, 1 add for late joiners, 2 remove) */
+/* send_event + interest group (-1 = none, else 0..65535) and cache (0 none, 1 add for late joiners, 2 remove) */
 int32_t aurix_net_send_event_ex(AurixNetClient *client, uint8_t code, int32_t target, const uint16_t *actors, size_t n_actors,
                                 const uint8_t *data, size_t len, int32_t reliable, int32_t group, int32_t cache);
 /* send_event_ex on a channel of the caller's choice; a node that does not take AURIX_NET_CH_UNRELIABLE_UNSEQUENCED
@@ -138,7 +138,7 @@ void aurix_net_lockstep_destroy(AurixNetLockstep *ls);
 int32_t aurix_net_lockstep_receive(AurixNetLockstep *ls, AurixNetClient *client, const uint8_t *data, size_t len);
 int32_t aurix_net_lockstep_poll(AurixNetLockstep *ls, AurixNetLsEvent *out);               /* 1 = event filled */
 int32_t aurix_net_lockstep_input(AurixNetLockstep *ls, uint16_t index, uint16_t *actor, const uint8_t **data, size_t *len);
-int64_t aurix_net_lockstep_send_input(AurixNetLockstep *ls, AurixNetClient *client, const uint8_t *data, size_t len); /* stamped tick; -1 on error or when this tick's input is already sent (one per room tick) */
+int64_t aurix_net_lockstep_send_input(AurixNetLockstep *ls, AurixNetClient *client, const uint8_t *data, size_t len); /* stamped tick; -1 on error (an input is at most 255 bytes) or when this tick's input is already sent (one per room tick) */
 int32_t aurix_net_lockstep_report_hash(AurixNetClient *client, uint32_t tick, uint64_t hash);
 /* Reliable command outside the input stream: arrives in the next tick's inputs for every client under
    actor AURIX_NET_COMMAND_ACTOR as [u16 actor, u16 len, bytes]*; journaled, replayed, seen by the referee.
@@ -174,13 +174,13 @@ int32_t aurix_net_sync_has(const AurixNetSync *sync, uint64_t entity, int32_t co
 int32_t aurix_net_sync_get_number(const AurixNetSync *sync, uint64_t entity, int32_t component, int32_t field, double *out); /* bool/int/uint/f32/quantized; 1 = filled */
 int32_t aurix_net_sync_get_vector(const AurixNetSync *sync, uint64_t entity, int32_t component, int32_t field, float *out4); /* 2 vec2, 3 vec3, 4 quat xyzw, 1 scalar, 0 missing */
 int32_t aurix_net_sync_get_bytes(const AurixNetSync *sync, uint64_t entity, int32_t component, int32_t field, uint8_t *buf, size_t cap); /* string/bytes: full length (buf may be NULL), -1 missing */
-int64_t aurix_net_sync_send_input(const AurixNetSync *sync, AurixNetClient *client, const uint8_t *data, size_t len); /* raw input for server logic; stamped tick or -1 */
+int64_t aurix_net_sync_send_input(const AurixNetSync *sync, AurixNetClient *client, const uint8_t *data, size_t len); /* raw input for server logic, at most 255 bytes; stamped tick or -1 */
 int32_t aurix_net_sync_write_begin(const AurixNetSync *sync, int32_t component);           /* full component write, fields start at zero */
 int32_t aurix_net_sync_write_number(const AurixNetSync *sync, int32_t field, double value);
 int32_t aurix_net_sync_write_vector(const AurixNetSync *sync, int32_t field, const float *values, int32_t count); /* count = 2/3/4 */
 int32_t aurix_net_sync_write_bytes(const AurixNetSync *sync, int32_t field, const uint8_t *data, size_t len);
 int32_t aurix_net_sync_write_end(const AurixNetSync *sync);
-int64_t aurix_net_sync_send_writes(const AurixNetSync *sync, AurixNetClient *client);           /* queued writes as this tick's input (owner-authoritative rooms); stamped tick or -1 */
+int64_t aurix_net_sync_send_writes(const AurixNetSync *sync, AurixNetClient *client);           /* queued writes as this tick's input (owner-authoritative rooms), at most 255 bytes of them; stamped tick or -1 */
 int32_t aurix_net_sync_pump(const AurixNetSync *sync, AurixNetClient *client);                  /* sends inputs that were waiting for a tick and repeats the last frame on the next two; call after every applied delta */
 int64_t aurix_net_sync_send_op(const AurixNetSync *sync, AurixNetClient *client, int32_t op, uint64_t entity, int32_t to); /* 0 write entity (queued writes), 1 spawn (queued writes), 2 despawn, 3 transfer to actor `to`, 4 set ownership policy `to` (0 destroy_on_leave, 1 to_master, 2 orphan, 3 dynamic), 5 request ownership, 6 release; stamped tick or -1 */
 int64_t aurix_net_sync_spawn(const AurixNetSync *sync, AurixNetClient *client);                 /* spawn (queued writes) under a tag the room answers with the entity; repeated until answered; the tag or -1 (the room does not answer tagged spawns) */

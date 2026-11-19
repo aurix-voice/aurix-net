@@ -65,6 +65,10 @@ int main() {
     bool ok = sb.serverTick() > 30 && sb.gaps() == 0 && updates >= 20 && std::fabs(last[0] - x) < 3 && std::fabs(last[1] - 1) < 0.02 && std::fabs(last[2] + 2) < 0.02 && own == 2 && told
               && sb.renderTick() > 0 && sb.renderTick() <= sb.serverTick();
     std::printf("cpp sync: serverTick=%u gaps=%llu updates=%d last=(%.2f %.2f %.2f) x=%.1f own=%d told=%d renderTick=%.1f -> %s\n", sb.serverTick(), (unsigned long long)sb.gaps(), updates, last[0], last[1], last[2], x, own, int(told), sb.renderTick(), ok ? "ok" : "FAIL");
+    // an entity is not given to an actor number that does not fit, nor a policy the room has not
+    bool refusedOps = sa.transfer(a, spawned, 70000) == -1 && aurix_net_last_error_code() == AURIX_NET_ERR_INVALID_ARGUMENT && sa.setPolicy(a, spawned, 9) == -1;
+    std::printf("cpp sync ops out of range: refused=%d\n", int(refusedOps));
+    ok = ok && refusedOps;
     // a replay: the room's first delta again, to a world with no client behind it. Its render tick
     // stands still before the frame, is 2 ticks behind the frame's after it, not below 0, and runs
     // with time from there up to the frame's tick

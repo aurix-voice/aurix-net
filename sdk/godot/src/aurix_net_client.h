@@ -11,6 +11,7 @@ class AurixNetClient : public Node {
 	aurix::net::Client client_;
 	bool relay_ = true; // mode of the joined room: sync and lockstep frames are not relay events
 	void note_mode();
+	bool fits(int64_t value, int64_t max, const char *what);
 	String last_error_;
 	int last_error_code_ = AURIX_NET_OK;
 	bool hooked_ = false;

@@ -28,6 +28,14 @@ int main() {
     for (uint8_t i = 0; i < 10; i++) { a.sendEventOn(Channel::UnreliableUnsequenced, 6, &i, 1); a.flush(); std::this_thread::sleep_for(std::chrono::milliseconds(16)); }
     for (int s = 0; s < 300 && unsequenced < 10; s++) { b.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
     std::printf("cpp unsequenced channel: events=%d/10\n", unsequenced);
+    // a group or a cache the wire has no room for is refused, not sent to everybody
+    auto sent = [&](int group, int cache) { try { a.sendEventEx(7, hi, 5, Target::Others, true, {}, group, cache); return 0; } catch (const Error& error) { return error.code; } };
+    int group = sent(70000, 0), below = sent(-2, 0), cache = sent(-1, 3);
+    int channel = 0;
+    try { Chat(a).join(6000); } catch (const Error& error) { channel = error.code; }
+    bool inRange = group == AURIX_NET_ERR_INVALID_ARGUMENT && below == AURIX_NET_ERR_INVALID_ARGUMENT && cache == AURIX_NET_ERR_INVALID_ARGUMENT && sent(65535, 0) == 0
+                   && channel == AURIX_NET_ERR_INVALID_ARGUMENT;
+    std::printf("cpp numbers out of range: group 70000 code=%d, group -2 code=%d, cache 3 code=%d, chat channel 6000 code=%d\n", group, below, cache, channel);
     // a late joiner gets the cached events, and the chat history once it joins the channel
     Chat chatA(a); chatA.join(1); const uint8_t seven = 7; a.sendEventEx(3, &seven, 1, Target::Others, true, {}, -1, 1); chatA.send(1, "hello");
     for (int s = 0; s < 30; s++) { a.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
@@ -148,5 +156,5 @@ int main() {
         std::printf("cpp join ended by a kick%s: code=%d (%s) after %ld ms, told of [%s] -> %s\n", tunnel ? ", tunnel" : "", code, why.c_str(), ms, lefts.c_str(), ok ? "ok" : "FAIL");
         turnedOut = turnedOut && ok;
     }
-    a.leave(); return (hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && refused && matched && shaped && rejoined && turnedOut && handedBack) ? 0 : 1;
+    a.leave(); return (hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && inRange && refused && matched && shaped && rejoined && turnedOut && handedBack) ? 0 : 1;
 }

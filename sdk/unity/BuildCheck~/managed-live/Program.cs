@@ -413,6 +413,9 @@ class P
         var chatC = new ChatClient(rc); chatC.OnMessage += m => { if (m.Text == "hello" && m.Cached) history++; };
         await rc.JoinAsync(room + "-second"); await chatC.JoinAsync(1);
         Console.WriteLine($"late joiner: cached events={cached}/1 chat history={history}/1");
+        // a chat channel whose group is past the last group is refused, not moved onto a group of the game
+        try { chatC.Send(6000, "hello"); throw new Exception("chat: channel 6000 was taken"); }
+        catch (ArgumentOutOfRangeException) { }
         ra.Dispose(); rb.Dispose(); rc.Dispose();
         // over a slow link (NET_SLOW_HTTP, see README): a client that left a room joins another one
         bool rejoined = true, toldApart = true; var slow = Environment.GetEnvironmentVariable("NET_SLOW_HTTP");

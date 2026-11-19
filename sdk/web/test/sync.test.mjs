@@ -2,7 +2,7 @@
 // (sdk/unity/BuildCheck~/managed-tests asserts the same bytes): node --test test/
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { BitWriter, BitReader, Schema, ComponentValue, SyncWorld, SyncSession, InterpolationBuffer, lerpVec, distVec } from "../dist/index.js";
+import { BitWriter, BitReader, Schema, ComponentValue, SyncWorld, SyncSession, InterpolationBuffer, lerpVec, distVec, MAX_INPUT } from "../dist/index.js";
 
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 const SCHEMA = "component Transform {\n  pos: vec3 @range(-4096, 4096, 0.01)\n  rot: quat\n}\ncomponent Stats {\n  hp: u16\n  name: string(16)\n  speed: f32\n  team: i8\n  flags: bits(5)\n  seed: u64\n}\n";
@@ -24,6 +24,19 @@ test("bit writer matches the C# vector", () => {
   const r = new BitReader(w.finish());
   assert.equal(r.readBits(9), 0x1ff); assert.equal(r.readInt(12), -77n); assert.ok(Math.abs(r.readQuantized(-100, 100, 0.001) - 12.345) < 0.001);
   assert.equal(r.readF32(), 1.5); assert.equal(r.readBig(64), (1n << 64n) - 1n); assert.equal(r.readBool(), true);
+});
+
+test("an entity is not given to an actor number cut down to another player", () => {
+  const w = new SyncWorld(Schema.parse(SCHEMA));
+  assert.throws(() => w.encodeOps([{ op: "transfer", entity: 1, to: 65537 }]), RangeError);
+  assert.throws(() => w.encodeOps([{ op: "transfer", entity: 1, to: -1 }]), RangeError);
+  assert.throws(() => w.encodeOps([{ op: "set_policy", entity: 1, policy: 4 }]), RangeError);
+  assert.equal(w.encodeOps([{ op: "transfer", entity: 1, to: 65535 }]).length > 0, true);
+});
+
+test("an input too long for its length byte is refused, not cut", () => {
+  assert.equal(SyncWorld.encodeInput(1, [new Uint8Array(MAX_INPUT)]).length, 6 + 1 + MAX_INPUT);
+  assert.throws(() => SyncWorld.encodeInput(1, [new Uint8Array(MAX_INPUT + 1)]), RangeError);
 });
 
 test("owner writes match the C# vector and round-trip", () => {

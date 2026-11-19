@@ -317,6 +317,7 @@ namespace Aurix.Net.Managed
         /// while the room's tick is unknown.</summary>
         public long SendInput(byte[] input)
         {
+            SyncWorld.CheckInput(input);
             if (!_started)
             {
                 return -1;

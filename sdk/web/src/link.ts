@@ -281,6 +281,9 @@ export class Link {
     if (msg.length > MAX_MESSAGE) {
       throw new Error("message too large (max 64 KiB)");
     }
+    if (typeof Channel[channel] !== "string") {
+      throw new RangeError(`unknown channel ${channel}`);
+    }
     const reliable =
       channel === Channel.Reliable || channel === Channel.ReliableUnordered;
     const queued = msg.length > MAX_UNFRAGMENTED || reliable;

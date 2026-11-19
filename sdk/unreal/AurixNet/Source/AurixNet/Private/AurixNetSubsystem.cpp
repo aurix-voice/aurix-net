@@ -394,6 +394,11 @@ bool UAurixNetSubsystem::SendEventEx(uint8 Code, const TArray<uint8>& Payload, E
 	ActorIds.Reserve(Actors.Num());
 	for (const int32 Actor : Actors)
 	{
+		if (Actor < 0 || Actor > MAX_uint16)
+		{
+			CarryError(EAurixNetError::InvalidArgument, FString::Printf(TEXT("actor %d is not in 0..65535"), Actor));
+			return false;
+		}
 		ActorIds.Add(static_cast<uint16>(Actor));
 	}
 	const int32 NativeTarget = ActorIds.Num() ? AURIX_NET_TARGET_ACTORS : static_cast<int32>(Target);

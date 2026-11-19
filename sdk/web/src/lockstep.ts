@@ -4,7 +4,7 @@
 // The game owns the deterministic simulation: step it in onTick, hash it, restore it in onRestore.
 import { MarginControl } from "./margin.js";
 import { Channel } from "./packet.js";
-import { SyncWorld } from "./sync.js";
+import { MAX_INPUT, SyncWorld } from "./sync.js";
 
 export const LS_INPUT = 0x10;
 export const LS_BUNDLE = 0x20;
@@ -247,6 +247,11 @@ export class LockstepClient {
    *  called more often than that it sends nothing and returns -1, so sample the input again next time.
    *  It does the same before the first frame from the room, while the room's tick is unknown. */
   sendInput(input: Uint8Array): number {
+    if (input.length > MAX_INPUT) {
+      throw new RangeError(
+        `input of ${input.length} bytes: at most ${MAX_INPUT} a tick`,
+      );
+    }
     if (!this.started) {
       return -1;
     }

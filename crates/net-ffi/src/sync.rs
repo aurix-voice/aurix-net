@@ -6,6 +6,7 @@ use crate::{
     Stopped,
 };
 use bytes::{BufMut, Bytes, BytesMut};
+use net_client::lockstep::MAX_INPUT;
 use net_client::margin::MarginControl;
 use net_common::Channel;
 use net_replication::{AckTracker, Replicator};
@@ -601,6 +602,13 @@ unsafe fn send_input_inner(
     body: Vec<u8>,
     keep: bool,
 ) -> i64 {
+    if body.len() > MAX_INPUT {
+        set_error(
+            ErrorCode::InvalidArgument,
+            format_args!("input of {} bytes: at most {MAX_INPUT} a tick", body.len()),
+        );
+        return -1;
+    }
     match st.held.back_mut() {
         Some(tail) if !tail.1 && !keep => tail.0 = body,
         _ => st.held.push_back((body, keep)),
@@ -939,8 +947,19 @@ pub unsafe extern "C" fn aurix_net_sync_send_op(
                     return -1;
                 }
             }
-            3 => writer.write_bits(to.clamp(0, 0xFFFF) as u64, 16),
-            4 => writer.write_bits(to.clamp(0, 3) as u64, 8),
+            3 if (0..=0xFFFF).contains(&to) => writer.write_bits(to as u64, 16),
+            4 if (0..=3).contains(&to) => writer.write_bits(to as u64, 8),
+            3 | 4 => {
+                set_error(
+                    ErrorCode::InvalidArgument,
+                    if op == 3 {
+                        "send_op: actor must be 0..=65535"
+                    } else {
+                        "send_op: policy must be 0..=3"
+                    },
+                );
+                return -1;
+            }
             _ => {}
         }
         let body = writer.finish();

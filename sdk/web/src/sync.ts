@@ -28,6 +28,8 @@ export enum OwnerPolicy {
 }
 
 export const KIND_INPUT = 0x10;
+/** The longest input of one tick, in bytes: its length travels in one byte. */
+export const MAX_INPUT = 255;
 export const KIND_DELTA = 0x11;
 export const KIND_RESYNC = 0x12;
 export const KIND_ACK = 0x13;
@@ -732,7 +734,12 @@ export class SyncWorld {
   static encodeInput(firstTick: number, inputs: Uint8Array[]): Uint8Array {
     let len = 6;
     for (const input of inputs) {
-      len += 1 + Math.min(255, input.length);
+      if (input.length > MAX_INPUT) {
+        throw new RangeError(
+          `input of ${input.length} bytes: at most ${MAX_INPUT} a tick`,
+        );
+      }
+      len += 1 + input.length;
     }
     const bytes = new Uint8Array(len);
     let offset = 0;
@@ -743,10 +750,9 @@ export class SyncWorld {
     bytes[offset++] = firstTick & 255;
     bytes[offset++] = Math.min(255, inputs.length);
     for (const input of inputs) {
-      const count = Math.min(255, input.length);
-      bytes[offset++] = count;
-      bytes.set(input.subarray(0, count), offset);
-      offset += count;
+      bytes[offset++] = input.length;
+      bytes.set(input, offset);
+      offset += input.length;
     }
     return bytes;
   }
@@ -796,6 +802,9 @@ export class SyncWorld {
           writer.writeBits(op.entity, 48);
           break;
         case "set_policy":
+          if (!(op.policy in OwnerPolicy)) {
+            throw new RangeError(`unknown policy ${op.policy}`);
+          }
           writer.writeBits(4, 8);
           writer.writeBits(op.entity, 48);
           writer.writeBits(op.policy, 8);
@@ -809,6 +818,9 @@ export class SyncWorld {
           writer.writeBits(op.entity, 48);
           break;
         case "transfer":
+          if (!Number.isInteger(op.to) || op.to < 0 || op.to > 0xffff) {
+            throw new RangeError(`actor ${op.to} is not in 0..65535`);
+          }
           writer.writeBits(3, 8);
           writer.writeBits(op.entity, 48);
           writer.writeBits(op.to, 16);
@@ -1017,6 +1029,11 @@ export class SyncSession {
   // the rest waits for the next delta, and everything waits for the first one, which tells the room's tick.
   // Waiting writes and raw inputs are replaced by newer ones, ops are kept.
   private queue(body: Uint8Array, keep: boolean): number {
+    if (body.length > MAX_INPUT) {
+      throw new RangeError(
+        `input of ${body.length} bytes: at most ${MAX_INPUT} a tick`,
+      );
+    }
     const tail = this.held[this.held.length - 1];
     if (tail && !tail.keep && !keep) {
       tail.body = body;

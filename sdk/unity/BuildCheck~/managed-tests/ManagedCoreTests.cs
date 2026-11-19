@@ -85,6 +85,8 @@ public class ManagedCoreTests
         Assert.That(Hex(w.Finish()), Is.EqualTo("ff84cb6db27f800001ffffffffffffffff"), "bits");
         Assert.That(Hex(SyncWorld.EncodeInput(0x01020304, new List<byte[]> { new byte[] { 1, 2 }, new byte[0], new byte[] { 9 } })), Is.EqualTo("100102030403020102000109"), "input");
         Assert.That(Hex(SyncWorld.EncodeAck(0xdeadbeef, 0x80000001)), Is.EqualTo("13deadbeef80000001"), "ack");
+        Assert.That(SyncWorld.EncodeInput(1, new List<byte[]> { new byte[SyncWorld.MaxInput] }).Length, Is.EqualTo(6 + 1 + SyncWorld.MaxInput), "the longest input");
+        Assert.Throws<ArgumentException>(() => SyncWorld.EncodeInput(1, new List<byte[]> { new byte[SyncWorld.MaxInput + 1] }), "an input too long for its length byte is refused, not cut");
     }
 
     [Test]

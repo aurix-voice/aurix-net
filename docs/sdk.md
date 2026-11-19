@@ -98,6 +98,14 @@ event goes on the unsequenced one (docs/modes.md):
 With a node that does not list `unsequenced` in its `hello` the SDK sends the same event on the
 sequenced channel. Sync and lockstep input always goes on the sequenced channel.
 
+An event code is a byte (0..255); a group and an actor are 16 bits (0..65535). Where the language
+lets a game pass a wider number, the client refuses it instead of sending it cut down to another
+code, group or player: Web throws `RangeError`, also for a channel it does not know; the Godot
+node returns `false` with `ERROR_INVALID_ARGUMENT`; the C ABI fails with
+`AURIX_NET_ERR_INVALID_ARGUMENT` for a group other than -1 (none) or 0..65535 and for an unknown
+cache value; Unreal's `SendEventEx` returns `false` for such an actor or group. The actor a sync
+entity is transferred to and its policy are checked the same way.
+
 A relay event sent with `cache: add` stays in the room for late joiners. They receive it as an
 ordinary `event` right after the join, before anything sent later (Web and the managed C# client
 mark it `cached`).
@@ -503,7 +511,8 @@ back too, so a region picker UI is one call.
 ## Chat
 
 No separate chat service: `Chat` (Web), `ChatClient` (Unity) and `aurix::net::Chat` (C++) run on a relay room.
-Channels are interest groups (`join` = subscribe, chat groups live at `groupBase + channel`, default 60000), messages
+Channels are interest groups (`join` = subscribe, chat groups live at `groupBase + channel`, default 60000, and a
+channel whose group would be past 65535 is refused), messages
 are reliable events to the group with `cache: add` so late joiners receive the history the room still holds when
 they join the channel (the room's cache limits and `cleanup_cache_on_leave` apply), whispers are events to one actor and are never cached.
 Payload: `u8 kind (0 channel, 1 whisper), u16 channel, UTF-8 text` on a reserved event code (default 240). Chat

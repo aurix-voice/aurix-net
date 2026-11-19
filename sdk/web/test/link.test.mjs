@@ -3,6 +3,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { IDLE_TIMEOUT, Link, RELIABLE_BACKLOG_BYTES } from "../dist/link.js";
 import { Channel } from "../dist/packet.js";
+import { decodeEvent, encodeEvent } from "../dist/event.js";
+import { Chat } from "../dist/chat.js";
 
 test("a lost packet in a burst longer than the ack window is still retransmitted and acked", () => {
   const a = new Link(), b = new Link();
@@ -181,4 +183,19 @@ test("a link names the reliable messages its peer has not acknowledged, in the o
 
   near.close();
   assert.deepEqual(listed(), [[Channel.Reliable, large, 0]], "a link that has ended keeps the list");
+});
+
+test("a number the wire has no room for is refused, not sent as another one", () => {
+  const one = Uint8Array.of(1);
+  for (const code of [256, -1, 1.5, NaN]) assert.throws(() => encodeEvent(code, one), RangeError);
+  assert.throws(() => encodeEvent(1, one, [65536]), RangeError);
+  assert.throws(() => encodeEvent(1, one, "others", 65536), RangeError);
+  assert.deepEqual(decodeEvent(encodeEvent(255, one, [65535], 65535)), { code: 255, from: 0, target: [65535], group: 65535, payload: one });
+  for (const channel of [3, 9, -1, "Reliable"]) assert.throws(() => new Link().send(channel, one), RangeError);
+  const groups = [];
+  const chat = new Chat({ on() {}, cached: [], setGroups: (join) => groups.push(...join), sendEvent() {} });
+  assert.throws(() => chat.join(6000), RangeError, "the group of a chat channel past the last group");
+  assert.throws(() => chat.send(6000, "hi"), RangeError);
+  chat.join(5535);
+  assert.deepEqual(groups, [65535]);
 });

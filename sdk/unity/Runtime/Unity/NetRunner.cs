@@ -484,7 +484,9 @@ namespace Aurix.Net.Unity
                 return 0;
             }
 
-            _heldInput = body ?? Array.Empty<byte>();
+            body ??= Array.Empty<byte>();
+            SyncWorld.CheckInput(body);
+            _heldInput = body;
             return SendHeldInput() ? _inputs.LastTick : _inputs.LastTick + 1;
         }
 
@@ -541,6 +543,7 @@ namespace Aurix.Net.Unity
 
         uint Hold(byte[] ops)
         {
+            SyncWorld.CheckInput(ops);
             _heldOps.Enqueue(ops);
             SendHeldOps();
             return _inputs.LastTick + (uint)_heldOps.Count;

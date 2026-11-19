@@ -34,13 +34,20 @@ export class Chat {
     return this.opts.code ?? 240;
   }
   private group(channel: number): number {
-    return (this.opts.groupBase ?? 60000) + channel;
+    const group = (this.opts.groupBase ?? 60000) + channel;
+    if (!Number.isInteger(group) || group < 0 || group > 0xffff) {
+      throw new RangeError(
+        `chat channel ${channel} is group ${group}, not in 0..65535`,
+      );
+    }
+    return group;
   }
 
   join(channel: number): void {
+    const group = this.group(channel);
     if (!this.joined.has(channel)) {
       this.joined.add(channel);
-      this.client.setGroups([this.group(channel)], []);
+      this.client.setGroups([group], []);
       for (const frame of this.client.cached) {
         if (
           frame.code === this.code &&

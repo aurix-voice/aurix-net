@@ -19,6 +19,8 @@ pub const LS_ACK: u8 = 0x29;
 pub const COMMAND_ACTOR: u16 = 0xFFFF;
 /// Longest command a tick can carry.
 pub const MAX_COMMAND: usize = 251;
+/// The longest input of one tick, in bytes: its length travels in one byte.
+pub const MAX_INPUT: usize = 255;
 pub const LS_CHECKPOINT: u8 = 0x22;
 pub const LS_CHECKPOINT_REQ: u8 = 0x23;
 pub const LS_CATCHUP: u8 = 0x24;
@@ -293,9 +295,10 @@ impl LockstepClient {
     /// Queues this tick's local input (sent together with the previous ones for redundancy).
     /// Returns the tick it was stamped with and the unreliable frame to send. The room takes
     /// one input per tick: called more often than that it returns `None` and sends nothing, as
-    /// it does before the first frame from the room, while the room's tick is unknown.
+    /// it does before the first frame from the room, while the room's tick is unknown, and for
+    /// an input longer than `MAX_INPUT`.
     pub fn send_input(&mut self, input: Bytes) -> Option<(u32, Outgoing)> {
-        if !self.started {
+        if !self.started || input.len() > MAX_INPUT {
             return None;
         }
         let tick = (self.server_tick + self.input_delay).max(self.last_input + 1);
@@ -324,8 +327,8 @@ impl LockstepClient {
         frame.put_u32(first);
         frame.put_u8(self.recent_inputs.len() as u8);
         for queued in &self.recent_inputs {
-            frame.put_u8(queued.len().min(255) as u8);
-            frame.extend_from_slice(&queued[..queued.len().min(255)]);
+            frame.put_u8(queued.len() as u8);
+            frame.extend_from_slice(queued);
         }
         Some((
             tick,
@@ -663,6 +666,18 @@ mod tests {
         assert_eq!(longest.payload.len(), 1 + MAX_COMMAND);
         assert!(LockstepClient::command_frame(&[7; MAX_COMMAND + 1]).is_none());
         assert!(LockstepClient::command_frame(&[]).is_none());
+    }
+
+    #[test]
+    fn an_input_too_long_for_its_length_byte_is_refused_not_cut() {
+        let mut client = LockstepClient::new();
+        client.started = true;
+        assert!(client
+            .send_input(Bytes::from(vec![7; MAX_INPUT + 1]))
+            .is_none());
+        let (_, frame) = client.send_input(Bytes::from(vec![7; MAX_INPUT])).unwrap();
+        assert_eq!(frame.payload.len(), 6 + 1 + MAX_INPUT);
+        assert_eq!(usize::from(frame.payload[6]), MAX_INPUT);
     }
 
     #[test]

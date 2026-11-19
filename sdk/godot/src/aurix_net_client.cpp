@@ -132,6 +132,17 @@ void AurixNetClient::hook() {
 		return fail;                           \
 	}
 
+// A number of a script the wire has no room for is refused: cast, it would reach the room as
+// another one.
+bool AurixNetClient::fits(int64_t value, int64_t max, const char *what) {
+	if (value >= 0 && value <= max) {
+		return true;
+	}
+	last_error_ = vformat("%s %d is not in 0..%d", what, value, max);
+	last_error_code_ = AURIX_NET_ERR_INVALID_ARGUMENT;
+	return false;
+}
+
 bool AurixNetClient::connect_to(const String &http_url, const String &grant, bool force_tunnel) {
 	AURIX_TRY(client_.connect(to_std(http_url), to_std(grant), force_tunnel); hook(); return true, false);
 }
@@ -162,9 +173,15 @@ bool AurixNetClient::send_control(const String &json) {
 	AURIX_TRY(client_.sendControl(to_std(json)); return true, false);
 }
 bool AurixNetClient::send_event(int code, const PackedByteArray &payload, int target, bool reliable) {
+	if (!fits(code, UINT8_MAX, "event code")) {
+		return false;
+	}
 	AURIX_TRY(client_.sendEvent((uint8_t)code, payload.ptr(), payload.size(), (aurix::net::Target)target, reliable); return true, false);
 }
 bool AurixNetClient::send_event_on(int channel, int code, const PackedByteArray &payload, int target) {
+	if (!fits(channel, UINT8_MAX, "channel") || !fits(code, UINT8_MAX, "event code")) {
+		return false;
+	}
 	AURIX_TRY(client_.sendEventOn((aurix::net::Channel)channel, (uint8_t)code, payload.ptr(), payload.size(), (aurix::net::Target)target); return true, false);
 }
 
@@ -181,14 +198,23 @@ bool AurixNetClient::set_view(const PackedInt64Array &viewpoints, const PackedIn
 bool AurixNetClient::set_groups(const PackedInt32Array &join, const PackedInt32Array &leave) {
 	std::vector<uint16_t> joined, left;
 	for (int k = 0; k < join.size(); ++k) {
+		if (!fits(join[k], UINT16_MAX, "group")) {
+			return false;
+		}
 		joined.push_back((uint16_t)join[k]);
 	}
 	for (int k = 0; k < leave.size(); ++k) {
+		if (!fits(leave[k], UINT16_MAX, "group")) {
+			return false;
+		}
 		left.push_back((uint16_t)leave[k]);
 	}
 	AURIX_TRY(client_.setGroups(joined, left); return true, false)
 }
 bool AurixNetClient::send_data(int channel, const PackedByteArray &payload) {
+	if (!fits(channel, UINT8_MAX, "channel")) {
+		return false;
+	}
 	AURIX_TRY(client_.sendData((aurix::net::Channel)channel, payload.ptr(), payload.size()); return true, false);
 }
 void AurixNetClient::flush() {

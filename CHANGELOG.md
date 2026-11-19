@@ -194,6 +194,23 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Sync and lockstep rooms, every client: an input longer than 255 bytes was cut to 255 without
+  a word. The writes of a tick cut this way were dropped by the room, so an entity with long
+  strings stopped changing for the other players; a lockstep input reached everybody cut. The
+  client now refuses such an input: `RangeError` in Web, `ArgumentException` in C#, `-1` with
+  `AURIX_NET_ERR_INVALID_ARGUMENT` in the C ABI and the clients built on it.
+- Web, Godot, C ABI, Unreal: a number too wide for the wire was cut down and sent as another
+  one. In Web and Godot the event code 300 reached the room as 44, in Web an actor 65538 as
+  actor 2 and a group 65536 as group 0; Godot took channel 257 for the reliable channel and
+  group 65537 for group 1; Unreal's `SendEventEx` cut an actor the same way; the C ABI sent an
+  event with a group above 65535 to everybody. Such a number is now refused: `RangeError` in
+  Web (also for an unknown channel, which failed with an internal `TypeError`), `false` with
+  `ERROR_INVALID_ARGUMENT` in Godot, `AURIX_NET_ERR_INVALID_ARGUMENT` in the C ABI for a group
+  or a cache value out of range, `false` in Unreal. The same for the actor a sync entity is
+  transferred to and for its policy: Web cut the actor 65537 down to actor 1 and gave that
+  player the entity, the C ABI took the nearest actor or policy it knew. And for a chat channel
+  whose group, `groupBase + channel`, is past 65535: C# and C++ moved it onto a group of the
+  game, channel 6000 onto group 464.
 - C ABI and the clients built on it (C++, Godot, the native Unity client, Unreal): a panic
   inside the library ended the process of the game. Every function of the C ABI now catches
   it and fails with the new `AURIX_NET_ERR_PANIC` (`ERROR_PANIC` in Godot,
