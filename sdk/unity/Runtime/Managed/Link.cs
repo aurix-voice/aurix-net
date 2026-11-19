@@ -378,15 +378,30 @@ namespace Aurix.Net.Managed
             }
 
             FlushBatch();
-            double waitingSince = double.PositiveInfinity;
+            // The link is lost when a packet that was resent has waited the idle time for its
+            // acknowledgement. One whose time ran out before any resend, because this timer came
+            // late, is resent below and waits its time again.
+            bool lost = false;
             foreach (var stream in _streams.Values)
             {
-                if (stream.InFlight.Count > 0)
+                foreach (var packet in stream.InFlight)
                 {
-                    waitingSince = Math.Min(waitingSince, stream.InFlight[0].FirstSent);
+                    if (now - packet.FirstSent < _idle)
+                    {
+                        continue;
+                    }
+
+                    if (packet.Resent)
+                    {
+                        lost = true;
+                    }
+                    else
+                    {
+                        packet.FirstSent = now;
+                    }
                 }
             }
-            if (now - waitingSince >= _idle)
+            if (lost)
             {
                 Close();
                 return false;

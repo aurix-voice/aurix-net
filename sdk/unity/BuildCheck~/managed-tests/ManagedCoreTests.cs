@@ -518,6 +518,33 @@ public class ManagedCoreTests
         Assert.That(datagrams.Select(d => d.Take(4).ToArray()), Is.EqualTo(new[] { new byte[] { 1, 0x20, 0, 0 }, new byte[] { 1, 0x24, 0, 0 } }));
     }
 
+    static List<byte[]> Drain(Link link) { var sent = new List<byte[]>(); while (link.TryDequeueOutgoing(out var datagram)) sent.Add(datagram); return sent; }
+
+    [TestCase(true)]
+    [TestCase(false)]
+    public void ATimerThatComesLateResendsAPacketBeforeTheLinkIsGivenUp(bool answered)
+    {
+        var near = new Link(); var far = new Link();
+        near.Send(Channel.Reliable, new byte[] { 7 }, 0);
+        Assert.That(Drain(near).Count, Is.EqualTo(1), "the packet goes out, and is lost");
+        double late = Link.IdleTimeout + 5000;
+        Assert.That(near.Poll(late), Is.True, "no resend had its chance yet");
+        var again = Drain(near);
+        Assert.That(again.Count, Is.EqualTo(1), "the packet is resent");
+        if (answered)
+        {
+            foreach (var datagram in again) far.Receive(datagram, late);
+            far.Poll(late + 100);
+            foreach (var datagram in Drain(far)) near.Receive(datagram, late + 100);
+            Assert.That(near.Poll(late + 2 * Link.IdleTimeout), Is.True, "the resend was acknowledged");
+        }
+        else
+        {
+            Assert.That(near.Poll(late + Link.IdleTimeout - 1), Is.True);
+            Assert.That(near.Poll(late + Link.IdleTimeout), Is.False, "the resend went unanswered for the idle timeout");
+        }
+    }
+
     [Test]
     public void ALinkDiesWhenItsOldestReliablePacketGoesUnacknowledgedForTheIdleTimeout()
     {
@@ -581,6 +608,7 @@ public class ManagedCoreTests
     {
         var near = new Link();
         for (int i = 0; i < 100; i++) near.Send(Channel.Reliable, new byte[] { 1 }, 0);
+        for (double at = 1000; at < Link.IdleTimeout; at += 1000) Assert.That(near.Poll(at), Is.True);
         Assert.That(near.Poll(Link.IdleTimeout), Is.False);
         Assert.That(near.Backlog(), Is.EqualTo(0));
         Assert.That(near.TryDequeueOutgoing(out _), Is.False);

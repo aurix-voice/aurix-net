@@ -18,11 +18,13 @@ sync/lockstep frames), `closed`. Grants always come from the developer's backend
 Outside a room and after `closed` a send fails with `disconnected` and nothing is queued: an
 exception in Web, C# and C++, a non-zero result in C, `false` in Godot.
 
-The data path is lost (`closed` with `link dead`) when a reliable message has gone 15 s without
-the node's acknowledgement, and when more than 1 MiB of them wait for the node: the send that
-meets the limit fails ([modes.md](modes.md)). The node applies the same rule to its own
-messages: when it gives the link up, the game gets the same `closed` with `link dead`, over QUIC,
-WebTransport and the tunnel alike.
+The data path is lost (`closed` with `link dead`) when a reliable message has been resent and
+has gone 15 s without the node's acknowledgement, and when more than 1 MiB of them wait for the
+node: the send that meets the limit fails ([modes.md](modes.md)). A message whose 15 s ran out
+before it was resent once, because the client's timer came late (a page that was busy or frozen,
+a hidden tab whose timers the browser slowed), is resent and waits 15 s more. The node applies
+the same rule to its own messages: when it gives the link up, the game gets the same `closed`
+with `link dead`, over QUIC, WebTransport and the tunnel alike.
 
 A client that sends nothing stays connected: every client probes the control channel once a
 second, and the node closes one it has heard nothing from for 90 s ([api.md](api.md)).

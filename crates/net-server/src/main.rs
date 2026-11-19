@@ -287,6 +287,7 @@ async fn main() -> anyhow::Result<()> {
     info!(addr = %http_addr, node = %node_id, "control plane listening");
     // What a stopping node is busy with, for the log when its time runs out.
     let (doing, unfinished) = tokio::sync::watch::channel("");
+    let stop_within = Duration::from_secs(cfg.server.shutdown_secs);
     let shutdown = {
         let st = st.clone();
         let http_url = http_url.clone();
@@ -295,6 +296,8 @@ async fn main() -> anyhow::Result<()> {
             wait_for_signal().await;
             info!("shutdown: draining");
             doing.send_replace("rooms still not handed off");
+            // Half of the time to stop is the players' to acknowledge what they were sent.
+            let settle_until = tokio::time::Instant::now() + stop_within / 2;
             st.draining
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             if let Err(e) = heartbeat(&st, &http_url, true).await {
@@ -303,7 +306,7 @@ async fn main() -> anyhow::Result<()> {
             // A cycle under way is finished, so no match is made without its webhook.
             stop_matchmaking.cancel();
             let _ = matchmaking.await;
-            let moved = net_api::ws::handoff_all(&st).await;
+            let moved = net_api::ws::handoff_all(&st, settle_until).await;
             info!(rooms = moved, "shutdown: rooms handed off");
             if let Err(e) = queries::delete_node(&st.pool, st.node_id.0).await {
                 error!(error = %e, "delete node row");
@@ -324,10 +327,9 @@ async fn main() -> anyhow::Result<()> {
     };
     let out_of_time = {
         let mut asked = unfinished.clone();
-        let within = Duration::from_secs(cfg.server.shutdown_secs);
         async move {
             let _ = asked.wait_for(|doing| !doing.is_empty()).await;
-            tokio::time::sleep(within).await;
+            tokio::time::sleep(stop_within).await;
         }
     };
     tokio::select! {

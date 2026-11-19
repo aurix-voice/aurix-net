@@ -4,7 +4,8 @@ mod common;
 
 use base64::Engine;
 use bytes::Bytes;
-use common::{joined, Node};
+use common::{joined, refused, Node};
+use futures::FutureExt;
 use net_common::Channel;
 use net_transport::{quic, Link};
 use serde_json::{json, Value};
@@ -633,4 +634,181 @@ async fn packet_of_a_kicked_player_is_not_acknowledged_over_webtransport() {
         link.poll(Instant::now() + 2 * link.rto()).expect("poll");
         assert_eq!(link.stats().retransmits, 1, "round {round}");
     }
+}
+
+/// Takes what the node sent into the link and sends what the link has to send.
+fn pump(path: &Path, link: &mut Link) {
+    while let Some(Ok(datagram)) = path.conn.read_datagram().now_or_never() {
+        link.receive(datagram, Instant::now());
+    }
+    let _ = link.poll(Instant::now());
+    while let Some(datagram) = link.next_outgoing() {
+        let _ = path.conn.send_datagram(datagram);
+    }
+}
+
+/// The relay events `client` has got since the last call.
+fn events(client: &mut net_client::Client) -> u64 {
+    std::iter::from_fn(|| client.try_next_event())
+        .filter(|event| matches!(event, net_client::Event::Data { .. }))
+        .count() as u64
+}
+
+/// The reliable events the node has relayed.
+async fn relayed(node: &Node) -> u64 {
+    let metrics = reqwest::get(format!("{}/metrics", node.http))
+        .await
+        .expect("metrics")
+        .text()
+        .await
+        .expect("metrics text");
+    metrics
+        .lines()
+        .find_map(|l| l.strip_prefix("net_events_total{channel=\"reliable_ordered\"} "))
+        .map_or(0, |count| count.parse().expect("count"))
+}
+
+const NO_EVENT_LIMIT: &[(&str, &str)] = &[
+    ("NET__LIMITS__MAX_EVENTS_PER_SEC_PER_PLAYER", "1000000"),
+    ("NET__LIMITS__MAX_EVENTS_PER_SEC_PER_ROOM", "1000000"),
+];
+
+/// ann sends reliable events faster than they get through, the node hands its rooms off
+/// after 2000 of them, and she goes on until she is told to leave. Returns how many events
+/// she holds acknowledged and how many bob got.
+async fn flood_through_a_handoff(node: &Node, stop: bool) -> (u64, u64) {
+    use net_client::{Client, Options};
+    use net_rooms::event::{CacheOp, EventFrame, EventTarget};
+    let project = node.project("datapath").await;
+    let mut ann = project.player("ann").await;
+    let reply = ann.call(json!({"t": "create", "name": "room"})).await;
+    let actor = net_common::ActorId(joined(&reply) as u16);
+    let path = connect(&reply).await;
+    let mut link = Link::new(Instant::now(), IDLE);
+    path.conn.send_datagram(path.ticket.clone()).expect("send");
+    assert!(path.opened(&mut link).await, "the path did not open");
+    let mut bob = Client::connect(&node.http, &project.grant("bob").await, Options::default())
+        .await
+        .expect("bob connects");
+    let join = serde_json::from_value(json!({"t": "join", "name": "room"})).expect("join");
+    bob.join(join).await.expect("bob joins");
+
+    let drain = project
+        .operator
+        .post("/v1/internal/drain", json!({"draining": true}));
+    tokio::pin!(drain);
+    let (mut sent, mut got) = (0u32, 0);
+    let (mut asked, mut drained, mut left) = (false, false, false);
+    while !left {
+        for _ in 0..4 {
+            let event = EventFrame {
+                code: 1,
+                target: EventTarget::Others,
+                cache: CacheOp::None,
+                group: None,
+                from: actor,
+                payload: Bytes::copy_from_slice(&sent.to_be_bytes()),
+            };
+            link.send(Channel::ReliableOrdered, event.encode(), Instant::now())
+                .expect("send");
+            sent += 1;
+        }
+        pump(&path, &mut link);
+        got += events(&mut bob);
+        if sent >= 2000 && stop && !asked {
+            node.stop();
+        }
+        asked = sent >= 2000;
+        tokio::select! {
+            biased;
+            _ = &mut drain, if asked && !stop && !drained => drained = true,
+            message = ann.poll(Duration::from_micros(200)) => {
+                left = message.is_some_and(|message| message["t"] == "left");
+            }
+        }
+    }
+    let settled = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < settled {
+        pump(&path, &mut link);
+        got += events(&mut bob);
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    if !stop && !drained {
+        drain.await;
+    }
+    (u64::from(sent) - link.unacknowledged() as u64, got)
+}
+
+#[tokio::test]
+async fn events_the_node_acknowledged_have_reached_the_room_when_it_is_handed_off() {
+    let node = Node::start_with(NO_EVENT_LIMIT).await;
+    let (acknowledged, got) = flood_through_a_handoff(&node, false).await;
+    let took = relayed(&node).await;
+    assert_eq!((acknowledged, got), (took, took));
+}
+
+#[tokio::test]
+async fn events_the_node_acknowledged_have_reached_the_room_when_the_node_stops() {
+    let node = Node::start_with(NO_EVENT_LIMIT).await;
+    let (acknowledged, got) = flood_through_a_handoff(&node, true).await;
+    assert_eq!(acknowledged, got);
+}
+
+#[tokio::test]
+async fn player_who_acknowledges_nothing_holds_a_stopping_node_for_half_its_time() {
+    let node = Node::start_with(&[("NET__SERVER__SHUTDOWN_SECS", "4")]).await;
+    let project = node.project("datapath").await;
+    let mut ann = project.player("ann").await;
+    joined(&ann.call(json!({"t": "create", "name": "room"})).await);
+    let mut bob = project.player("bob").await;
+    let reply = bob.call(json!({"t": "join", "name": "room"})).await;
+    joined(&reply);
+    let path = connect(&reply).await;
+    let mut link = Link::new(Instant::now(), IDLE);
+    path.conn.send_datagram(path.ticket.clone()).expect("send");
+    assert!(path.opened(&mut link).await, "the path did not open");
+    // bob's link sends nothing from here on: what the node sends him stays unacknowledged
+    ann.send(json!({"t": "event", "code": 1, "data": "AQI=", "target": {"kind": "others"}}))
+        .await;
+
+    let asked = Instant::now();
+    node.stop();
+    assert_eq!(ann.until("left").await["reason"], "rehost");
+    let waited = asked.elapsed();
+    assert!(
+        (Duration::from_millis(1900)..Duration::from_secs(4)).contains(&waited),
+        "{waited:?}"
+    );
+    let logged = node.logged();
+    assert!(
+        logged
+            .iter()
+            .any(|line| line["message"] == "handoff: events not acknowledged in time"),
+        "{}",
+        node.log_tail()
+    );
+}
+
+#[tokio::test]
+async fn event_on_the_control_channel_is_refused_once_the_room_takes_no_more() {
+    let node = Node::start_with(&[("NET__SERVER__SHUTDOWN_SECS", "4")]).await;
+    let project = node.project("datapath").await;
+    let mut ann = project.player("ann").await;
+    joined(&ann.call(json!({"t": "create", "name": "room"})).await);
+    let mut bob = project.player("bob").await;
+    let reply = bob.call(json!({"t": "join", "name": "room"})).await;
+    joined(&reply);
+    let path = connect(&reply).await;
+    let mut link = Link::new(Instant::now(), IDLE);
+    path.conn.send_datagram(path.ticket.clone()).expect("send");
+    assert!(path.opened(&mut link).await, "the path did not open");
+    // bob acknowledges nothing: the node waits for him for two seconds before it lets go
+    let event = json!({"t": "event", "code": 1, "data": "AQI=", "target": {"kind": "others"}});
+    ann.send(event.clone()).await;
+
+    node.stop();
+    ann.drain(Duration::from_millis(500)).await;
+    let reply = ann.call(event).await;
+    refused(&reply, "conflict");
+    assert_eq!(reply["message"], "conflict: node_draining");
 }

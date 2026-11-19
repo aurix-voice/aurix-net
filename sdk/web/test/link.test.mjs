@@ -116,6 +116,7 @@ test("a sender that outruns its peer loses the link", () => {
 test("a dead link refuses to send and keeps nothing", () => {
   const near = new Link();
   for (let i = 0; i < 100; i++) near.send(Channel.Reliable, Uint8Array.of(1), 0);
+  for (let at = 1000; at < IDLE_TIMEOUT; at += 1000) assert.ok(near.poll(at));
   assert.equal(near.poll(IDLE_TIMEOUT), false);
   assert.equal(near.backlog(), 0);
   assert.equal(near.nextOutgoing(), undefined);
@@ -125,4 +126,26 @@ test("a dead link refuses to send and keeps nothing", () => {
   near.flushBatch();
   assert.equal(near.nextOutgoing(), undefined);
   assert.equal(near.poll(2 * IDLE_TIMEOUT), false);
+});
+
+test("a timer that comes late resends a packet before the link is given up", () => {
+  const drain = (link) => { const out = []; for (let d; (d = link.nextOutgoing()); ) out.push(d); return out; };
+  for (const answered of [true, false]) {
+    const near = new Link(), far = new Link();
+    near.send(Channel.Reliable, Uint8Array.of(7), 0);
+    assert.equal(drain(near).length, 1, "the packet goes out, and is lost");
+    const late = IDLE_TIMEOUT + 5000;
+    assert.ok(near.poll(late), "no resend had its chance yet");
+    const again = drain(near);
+    assert.equal(again.length, 1, "the packet is resent");
+    if (answered) {
+      for (const datagram of again) far.receive(datagram, late);
+      far.poll(late + 100);
+      for (const datagram of drain(far)) near.receive(datagram, late + 100);
+      assert.ok(near.poll(late + 2 * IDLE_TIMEOUT), "the resend was acknowledged");
+    } else {
+      assert.ok(near.poll(late + IDLE_TIMEOUT - 1));
+      assert.equal(near.poll(late + IDLE_TIMEOUT), false, "the resend went unanswered for the idle timeout");
+    }
+  }
 });

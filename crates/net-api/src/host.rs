@@ -142,6 +142,19 @@ impl DataSession {
         self.link.lock().is_dead()
     }
 
+    /// The link takes no more from the player; what it took is acknowledged at once.
+    pub fn stop_receiving(&self) {
+        self.link.lock().stop_receiving();
+        self.tick();
+    }
+
+    /// The player has acknowledged all that was queued for him when the link stopped
+    /// receiving, or nothing more reaches him.
+    pub fn settled(&self) -> bool {
+        let link = self.link.lock();
+        link.is_dead() || link.settled()
+    }
+
     /// Timer-driven retransmits/acks. Returns false when the link is dead.
     pub fn tick(&self) -> bool {
         let (alive, out) = {
@@ -190,6 +203,8 @@ pub struct HostedRoom {
     pub sync: Option<crate::sync::SyncRoom>,
     /// Present for rooms in lockstep mode.
     pub lockstep: Option<crate::lockstep::LockstepRoom>,
+    /// The node is handing the room off and takes no more events for it.
+    pub leaving: bool,
 }
 
 pub const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(2);
@@ -290,6 +305,7 @@ impl RoomHost {
             project,
             sync: None,
             lockstep: None,
+            leaving: false,
         }));
         self.rooms.insert(id, handle.clone());
         self.by_name.insert((project, name), id);

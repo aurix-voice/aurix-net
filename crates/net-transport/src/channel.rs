@@ -116,9 +116,32 @@ impl ReliableTx {
         out
     }
 
-    /// When the oldest unacknowledged packet first left.
-    pub fn waiting_since(&self) -> Option<Instant> {
-        self.in_flight.front().map(|p| p.first_sent)
+    /// The seq the next packet queued will get.
+    pub fn queued_up_to(&self) -> u16 {
+        self.next_seq.wrapping_add(self.pending.len() as u16)
+    }
+
+    /// Whether every packet before `seq` is acknowledged.
+    pub fn acknowledged_up_to(&self, seq: u16) -> bool {
+        let oldest = self.in_flight.front().map_or(self.next_seq, |p| p.seq);
+        !seq_newer(seq, oldest)
+    }
+
+    /// Whether a packet that was repeated has waited `idle` for its acknowledgement. One that
+    /// has waited as long without a repeat, the timer having run late, waits anew from `now`:
+    /// the next [`Self::repeat`] sends it.
+    pub fn given_up(&mut self, now: Instant, idle: Duration) -> bool {
+        let mut given_up = false;
+        for packet in self.in_flight.iter_mut() {
+            if now.duration_since(packet.first_sent) >= idle {
+                if packet.resent {
+                    given_up = true;
+                } else {
+                    packet.first_sent = now;
+                }
+            }
+        }
+        given_up
     }
 
     /// Drops everything queued and in flight.

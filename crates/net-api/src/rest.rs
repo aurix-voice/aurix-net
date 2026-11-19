@@ -2665,7 +2665,8 @@ async fn set_local_draining(st: &Shared, draining: bool) -> Result<usize> {
     st.draining
         .store(draining, std::sync::atomic::Ordering::Relaxed);
     let handed = if draining {
-        crate::ws::handoff_all(st).await
+        let settle = std::time::Duration::from_secs(st.cfg.server.shutdown_secs) / 2;
+        crate::ws::handoff_all(st, tokio::time::Instant::now() + settle).await
     } else {
         0
     };

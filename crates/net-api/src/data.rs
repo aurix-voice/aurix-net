@@ -102,15 +102,16 @@ async fn handle(st: Shared, incoming: quinn::Incoming) -> anyhow::Result<()> {
         if datagram == first {
             continue;
         }
-        // Taking the packet acknowledges it.
-        if !attached(&hosted.lock(), ticket.actor, &ds) {
+        // Taking the packet acknowledges it. The room is held until the packet is dealt with:
+        // a room that hands its players off stops their links under the same lock.
+        let mut room = hosted.lock();
+        if !attached(&room, ticket.actor, &ds) {
             return Ok(());
         }
         for message in ds.receive(datagram) {
             if message.payload.is_empty() {
                 continue;
             }
-            let mut room = hosted.lock();
             if !attached(&room, ticket.actor, &ds) {
                 return Ok(());
             }
@@ -191,15 +192,16 @@ async fn handle_wt(
         if datagram == first {
             continue;
         }
-        // Taking the packet acknowledges it.
-        if !attached(&hosted.lock(), ticket.actor, &ds) {
+        // Taking the packet acknowledges it. The room is held until the packet is dealt with:
+        // a room that hands its players off stops their links under the same lock.
+        let mut room = hosted.lock();
+        if !attached(&room, ticket.actor, &ds) {
             return Ok(());
         }
         for message in ds.receive(datagram) {
             if message.payload.is_empty() {
                 continue;
             }
-            let mut room = hosted.lock();
             if !attached(&room, ticket.actor, &ds) {
                 return Ok(());
             }

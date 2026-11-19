@@ -53,14 +53,16 @@ not be baked into images or committed; use your orchestrator's secret store.
 
 - Run as an unprivileged user; raise `nofile` (one fd per connection, ≥ 65536).
 - Send `SIGTERM` to stop. The node marks itself draining (new joins refused, `/healthz` 503),
-  checkpoints every room to Redis and marks them `orphaned`; the next node a player reaches
-  adopts the room. It stops matchmaking, lets the requests under way finish and delivers the
-  webhooks it still owes. All of this has `server.shutdown_secs` (default 8) from the signal;
-  when they run out the node logs what was left (`shutdown: rooms still not handed off`,
-  `requests still under way` or `webhooks still undelivered`) and exits. Send `SIGKILL` later
-  than that: the 10 s Docker waits by default fit the default, and a larger `shutdown_secs`
-  needs a larger `stop_grace_period`. Rolling deploys with ≥ 2 nodes per region therefore do not
-  end matches.
+  stops taking packets from the players and waits until they have acknowledged what it sent them,
+  for half of `server.shutdown_secs` at most (a player who has not by then is logged: `handoff:
+  events not acknowledged in time`). Then it checkpoints every room to Redis and marks them
+  `orphaned`; the next node a player reaches adopts the room. It stops matchmaking, lets the
+  requests under way finish and delivers the webhooks it still owes. All of this has
+  `server.shutdown_secs` (default 8) from the signal; when they run out the node logs what was
+  left (`shutdown: rooms still not handed off`, `requests still under way` or `webhooks still
+  undelivered`) and exits. Send `SIGKILL` later than that: the 10 s Docker waits by default fit
+  the default, and a larger `shutdown_secs` needs a larger `stop_grace_period`. Rolling deploys
+  with ≥ 2 nodes per region therefore do not end matches.
 - Readiness probe: `GET /healthz` (200 = serving, 503 = draining). Liveness: TCP on the HTTP
   port.
 

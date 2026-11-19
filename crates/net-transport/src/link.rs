@@ -76,11 +76,14 @@ pub struct Link {
     last_ack_sent: Instant,
     last_recv: Instant,
     dead: bool,
+    /// Set once the link takes nothing more from the peer but his acknowledgements: how far
+    /// each reliable channel was queued by then.
+    closing: Option<[u16; 3]>,
 }
 
 impl Link {
     /// `idle` is the idle timeout of what carries the datagrams: a link with a reliable packet
-    /// that stays unacknowledged that long is dead.
+    /// that was repeated and stays unacknowledged that long is dead.
     pub fn new(now: Instant, idle: Duration) -> Self {
         Self {
             seq_tx: 0,
@@ -108,6 +111,7 @@ impl Link {
             last_ack_sent: now,
             last_recv: now,
             dead: false,
+            closing: None,
         }
     }
 
@@ -144,6 +148,34 @@ impl Link {
         self.batch_n = 0;
         self.loose.clear();
         self.loose_n = 0;
+    }
+
+    /// The link takes no more messages: what the peer sends from now on is neither delivered
+    /// nor acknowledged, his acknowledgements still count, and the acknowledgement of what
+    /// was taken leaves with the next `poll()`.
+    pub fn stop_receiving(&mut self) {
+        let queued =
+            [&self.ordered_tx, &self.unordered_tx, &self.frag_tx].map(|tx| tx.queued_up_to());
+        self.closing.get_or_insert(queued);
+    }
+
+    /// Reliable packets the peer has not acknowledged, sent or still waiting for the window.
+    pub fn unacknowledged(&self) -> usize {
+        [&self.ordered_tx, &self.unordered_tx, &self.frag_tx]
+            .into_iter()
+            .map(|tx| tx.in_flight() + tx.pending())
+            .sum()
+    }
+
+    /// Whether the peer has acknowledged all that was queued for him when the link stopped
+    /// receiving.
+    pub fn settled(&self) -> bool {
+        self.closing.is_some_and(|queued| {
+            [&self.ordered_tx, &self.unordered_tx, &self.frag_tx]
+                .into_iter()
+                .zip(queued)
+                .all(|(tx, seq)| tx.acknowledged_up_to(seq))
+        })
     }
 
     pub fn last_recv(&self) -> Instant {
@@ -307,7 +339,7 @@ impl Link {
     pub fn receive(&mut self, datagram: Bytes, now: Instant) -> Vec<Received> {
         self.stats.recv_datagrams += 1;
         self.stats.recv_bytes += datagram.len() as u64;
-        let (header, payload) = match Header::decode(datagram) {
+        let (mut header, payload) = match Header::decode(datagram) {
             Ok(decoded) => decoded,
             Err(PacketError::TooShort)
             | Err(PacketError::Version(_))
@@ -317,6 +349,11 @@ impl Link {
             }
         };
         self.last_recv = now;
+        if self.closing.is_some() && !header.ack_only {
+            // The peer hears again how far he was taken.
+            self.ack_dirty = true;
+            header.ack_only = true;
+        }
         let mut out = Vec::new();
         match header.kind {
             Kind::Channel(Channel::UnreliableSequenced) => {
@@ -396,7 +433,7 @@ impl Link {
         }
         self.flush_batch();
         let rto = self.rto();
-        let mut waiting_since: Option<Instant> = None;
+        let mut given_up = false;
         let mut send: Vec<(Kind, u16, Bytes)> = Vec::new();
         for (kind, tx) in [
             (
@@ -409,6 +446,7 @@ impl Link {
             ),
             (Kind::Fragment, &mut self.frag_tx),
         ] {
+            given_up |= tx.given_up(now, self.idle);
             let mut packets = tx.repeat(now, rto);
             self.stats.retransmits += packets.len() as u64;
             packets.extend(tx.drain_window(now));
@@ -417,13 +455,8 @@ impl Link {
                     .into_iter()
                     .map(|(seq, payload)| (kind, seq, payload)),
             );
-            waiting_since = match (waiting_since, tx.waiting_since()) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
         }
-        let unacknowledged = waiting_since.map(|since| now.duration_since(since));
-        if unacknowledged.is_some_and(|waited| waited >= self.idle) {
+        if given_up {
             self.close();
             return Err(LinkError::Dead);
         }
@@ -431,7 +464,9 @@ impl Link {
             let header = self.header(kind, seq, false);
             self.push_datagram(header, &payload);
         }
-        if self.ack_dirty && now.duration_since(self.last_ack_sent) >= ACK_DELAY {
+        if self.ack_dirty
+            && (self.closing.is_some() || now.duration_since(self.last_ack_sent) >= ACK_DELAY)
+        {
             self.ack_dirty = false;
             self.last_ack_sent = now;
             for kind in [
@@ -509,6 +544,37 @@ mod tests {
             got.extend(to.receive(datagram, now));
         }
         got
+    }
+
+    #[test]
+    fn link_that_stopped_receiving_takes_acknowledgements_and_nothing_else() {
+        let t0 = Instant::now();
+        let mut node = Link::new(t0, IDLE);
+        let mut player = Link::new(t0, IDLE);
+        let mut rng = 1;
+        let send = |link: &mut Link, payload: &'static [u8]| {
+            link.send(Channel::ReliableOrdered, Bytes::from_static(payload), t0)
+                .unwrap();
+        };
+        send(&mut player, b"taken");
+        assert_eq!(pump(&mut player, &mut node, t0, 0, &mut rng).len(), 1);
+        send(&mut node, b"owed");
+
+        node.stop_receiving();
+        send(&mut player, b"late");
+        assert_eq!(pump(&mut player, &mut node, t0, 0, &mut rng), []);
+        node.poll(t0).unwrap();
+        assert_eq!(pump(&mut node, &mut player, t0, 0, &mut rng).len(), 1);
+        // "taken" is acknowledged, "late" is not: the player repeats it alone.
+        let repeated = player.stats().retransmits;
+        player.poll(t0 + 2 * player.rto()).unwrap();
+        assert_eq!(player.stats().retransmits - repeated, 1);
+
+        // What the node queues after it stopped is not waited for.
+        send(&mut node, b"after");
+        assert!(!node.settled());
+        pump(&mut player, &mut node, t0, 0, &mut rng);
+        assert!(node.settled());
     }
 
     #[test]
@@ -708,6 +774,53 @@ mod tests {
     }
 
     #[test]
+    fn timer_that_ran_late_repeats_a_packet_before_the_link_is_given_up() {
+        let t0 = Instant::now();
+        let late = t0 + Duration::from_secs(20);
+        for (channel, message) in [
+            (Channel::ReliableOrdered, Bytes::from_static(b"x")),
+            (Channel::ReliableUnordered, Bytes::from_static(b"x")),
+            (Channel::ReliableOrdered, Bytes::from(vec![3u8; 3000])),
+        ] {
+            let lost_once = || {
+                let mut near = Link::new(t0, IDLE);
+                near.send(channel, message.clone(), t0).unwrap();
+                let packets = sent(&mut near);
+                near.poll(late).expect("a packet not repeated yet");
+                (near, packets)
+            };
+
+            let (mut near, packets) = lost_once();
+            let mut far = Link::new(t0, IDLE);
+            let repeats: Vec<_> = std::iter::from_fn(|| near.next_outgoing()).collect();
+            assert_eq!(repeats.len(), packets.len());
+            for repeat in repeats {
+                far.receive(repeat, late);
+            }
+            acknowledge(&mut far, &mut near, late + ACK_DELAY);
+            near.poll(late + 2 * IDLE)
+                .expect("nothing waits for the peer");
+
+            let (mut near, packets) = lost_once();
+            assert_eq!(sent(&mut near), packets);
+            near.poll(late + IDLE - Duration::from_millis(1)).unwrap();
+            assert!(matches!(near.poll(late + IDLE), Err(LinkError::Dead)));
+        }
+    }
+
+    #[test]
+    fn timer_that_ran_late_gives_up_a_link_whose_packet_was_repeated_before() {
+        let t0 = Instant::now();
+        let mut near = Link::new(t0, IDLE);
+        near.send(Channel::ReliableOrdered, Bytes::from_static(b"x"), t0)
+            .unwrap();
+        near.poll(t0 + MAX_RTO).unwrap();
+        assert_eq!(near.stats().retransmits, 1);
+        let late = t0 + Duration::from_secs(20);
+        assert!(matches!(near.poll(late), Err(LinkError::Dead)));
+    }
+
+    #[test]
     fn link_dies_when_a_packet_stays_unacknowledged_while_the_peer_talks() {
         let t0 = Instant::now();
         let (mut near, mut far) = (Link::new(t0, IDLE), Link::new(t0, IDLE));
@@ -760,6 +873,7 @@ mod tests {
             near.send(Channel::ReliableOrdered, Bytes::from_static(b"x"), t0)
                 .unwrap();
         }
+        near.poll(t0 + MAX_RTO).unwrap();
         assert!(near.poll(t0 + IDLE).is_err());
         assert_eq!(near.ordered_tx.in_flight() + near.ordered_tx.pending(), 0);
         assert!(near.next_outgoing().is_none());

@@ -314,13 +314,23 @@ export class Link {
       return false;
     }
     this.flushBatch();
-    let waitingSince = Infinity;
+    // The link is lost when a packet that was resent has waited the idle time for its
+    // acknowledgement. One whose time ran out before any resend, because this timer came late,
+    // is resent below and waits its time again.
+    let lost = false;
     for (const stream of this.streams.values()) {
-      if (stream.tx.inFlight.length) {
-        waitingSince = Math.min(waitingSince, stream.tx.inFlight[0].firstSent);
+      for (const packet of stream.tx.inFlight) {
+        if (now - packet.firstSent < this.idle) {
+          continue;
+        }
+        if (packet.resent) {
+          lost = true;
+        } else {
+          packet.firstSent = now;
+        }
       }
     }
-    if (now - waitingSince >= this.idle) {
+    if (lost) {
       this.close();
       return false;
     }

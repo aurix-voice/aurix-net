@@ -328,7 +328,13 @@ CLI: `aurix-net modules | module-put <name> <file> | module-delete <name>`.
 | Request body | 64 KiB (module upload 8 MiB) | 413 |
 
 `GET /healthz` answers 503 `{"ok":false,"draining":true}` while the node shuts down; players
-in its rooms get `left{reason:"rehost"}` and rejoin the same room name on any node.
+in its rooms get `left{reason:"rehost"}` and rejoin the same room name on any node. Before
+that the node stops taking packets on the data path, answers `event` on the control channel
+with `error` `conflict` (`conflict: node_draining`) and waits, for at most half of
+`server.shutdown_secs`, until the players have acknowledged what it sent them: a reliable
+event the node acknowledged has reached the others in the room by the time `left` comes,
+and one it did not acknowledge, or refused, was not delivered. Reliable delivery holds
+within one connection; nothing is carried over to the room on its new node.
 `GET /metrics` requires `Authorization: Bearer <server.metrics_token>` when that is set.
 
 ## Audit log

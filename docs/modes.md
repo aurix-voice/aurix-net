@@ -40,9 +40,11 @@ A link holds at most 1 MiB of reliable messages that wait for the other side
 (`RELIABLE_BACKLOG_BYTES`, the same in the SDKs): 87 s of 60 events a second of 200 bytes, or 16
 messages of the largest size. A sender that outruns the receiver by more has lost it: the link
 ends and `send` fails, as it does on a link that is already gone. A link also ends when a
-reliable message has stayed unacknowledged for the idle timeout of the transport under it
-(`transport.idle_timeout_ms`, 15 s), whatever else arrives from the other side. A player whose
-link ended stays in the room on the control channel, where relay events still reach it.
+reliable message has been resent and has gone the idle timeout of the transport under it
+(`transport.idle_timeout_ms`, 15 s) without acknowledgement, whatever else arrives from the
+other side. A message whose time ran out before it was resent once, because the timer of the
+link came late, is resent and waits that long again. A player whose link ended stays in the
+room on the control channel, where relay events still reach it.
 
 ## Topologies
 

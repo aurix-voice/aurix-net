@@ -664,6 +664,9 @@ impl Session {
                     payload: Bytes::from(payload),
                 };
                 let mut hosted = joined.hosted.lock();
+                if hosted.leaving {
+                    return Err(NetError::Conflict("node_draining".into()));
+                }
                 let out = hosted
                     .room
                     .raise_event(joined.actor, frame, channel, Instant::now())
@@ -1356,8 +1359,8 @@ impl Session {
         let (hosted, actor) = (joined.hosted.clone(), joined.actor);
         let lost = self.data.as_ref().is_some_and(|ds| ds.lost());
         if let Some(ds) = self.data.as_ref().filter(|_| !lost) {
+            let mut room = hosted.lock();
             for message in ds.receive(frame) {
-                let mut room = hosted.lock();
                 if !self.owns_slot(&room, actor) {
                     return Ok(());
                 }
@@ -2346,11 +2349,38 @@ pub async fn kick_player(
     Ok(player_id)
 }
 
+/// The rooms and the links of their players stop taking events, and the node waits until
+/// `until` for the players to acknowledge what it holds for them: an event the node
+/// acknowledged has reached the room by the time its players are told to leave.
+async fn settle_links(rooms: &[Arc<Mutex<HostedRoom>>], until: tokio::time::Instant) {
+    let mut links = Vec::new();
+    for handle in rooms {
+        let mut hosted = handle.lock();
+        hosted.leaving = true;
+        for (actor, session) in &hosted.sessions {
+            if let Some(ds) = &session.data {
+                ds.stop_receiving();
+                links.push((hosted.room.id(), *actor, ds.clone()));
+            }
+        }
+    }
+    let mut every = tokio::time::interval(crate::host::FLUSH_EVERY);
+    while links.iter().any(|(_, _, ds)| !ds.settled()) {
+        if tokio::time::timeout_at(until, every.tick()).await.is_err() {
+            break;
+        }
+    }
+    for (room, actor, _) in links.iter().filter(|(_, _, ds)| !ds.settled()) {
+        tracing::warn!(%room, actor = actor.0, "handoff: events not acknowledged in time");
+    }
+}
+
 /// Shutdown: every hosted room gets a fresh checkpoint in Redis and becomes `orphaned` in the
 /// DB, so the next node a player reaches adopts it (same path as a crashed node, minus the
 /// heartbeat wait). Players get `left{reason:"rehost"}` and rejoin by room name.
-pub async fn handoff_all(st: &Shared) -> usize {
+pub async fn handoff_all(st: &Shared, settle_until: tokio::time::Instant) -> usize {
     let rooms = st.host.all();
+    settle_links(&rooms, settle_until).await;
     for handle in &rooms {
         let (project, id, body) = {
             let mut hosted = handle.lock();

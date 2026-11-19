@@ -145,6 +145,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Data path: a link whose timer ran late was given up without one repeat. A node or a Rust
+  client that got no processor time for the idle timeout (15 s) ended the link the moment
+  its timer ran, though the acknowledgement was waiting to be read. A link ends when a
+  reliable message has been resent and has gone the idle timeout without acknowledgement;
+  one whose time ran out before any resend is resent and waits again, as in the Web and C#
+  clients.
 - Data path: a player who stopped acknowledging over the WebSocket tunnel kept its link for
   good, and the node queued every reliable message for it: 100 events a second of 60 000 bytes
   grew the node by about 1 MB a second. Over QUIC and WebTransport a link was given up after 20
@@ -165,6 +171,14 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   and in `join_random` and `fill_existing`, so a stranger was sent there to get `room_full`.
   A held seat counts as taken for everybody but the player it is held for, until he arrives
   or the hold lapses.
+- Hand-over: a node that stopped or was drained told the players to leave at once: reliable
+  events it had taken from one player and not yet got through to the others were lost, and
+  the sender was left without the acknowledgement of some it had taken. The node stops
+  taking packets, waits for the players' acknowledgements for at most half of
+  `server.shutdown_secs` and tells them to leave after that.
+- Hand-over: an `event` sent on the control channel while the node waited for the players'
+  acknowledgements was taken and could be lost without a word to its sender. It is refused
+  with `conflict: node_draining`.
 - Data path: over WebTransport the node acknowledged a packet of a player it had taken out
   of the room and dropped it, so his client took a reliable message sent after a kick for
   delivered. Such a packet is not acknowledged, over QUIC either.
@@ -337,6 +351,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   `transport` to a frame of a tunnel it gave up, and its close of a QUIC or WebTransport
   connection with code 4, now end the data path with `closed` (`link dead`), and sends fail
   from there.
+- Web SDK, Unity SDK (managed client): a link timer that came late found a reliable message
+  15 s old and gave the link up (`link dead`) without resending it once, even with the node's
+  acknowledgement already waiting to be read: a page that was busy for 15 s lost its room, and
+  so did a hidden tab on the WebSocket tunnel, whose timers Chrome wakes once a minute, when it
+  lost one message. The link is lost when a message that was resent has gone 15 s without the
+  node's acknowledgement; one whose time ran out before any resend is resent and waits again.
 - C++ SDK, Godot: a tick of `Lockstep` hands its commands over in `Event::commands`, with their
   senders and in the order every client gets them, and no longer among the players' inputs
   under actor 65535, where a game that makes an avatar for every actor of a tick made one for
