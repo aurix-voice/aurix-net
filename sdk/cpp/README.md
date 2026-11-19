@@ -32,6 +32,9 @@ points at the same proxy started with a loss pattern: `node sdk/web/test/slow-li
 The managed C# check also sends through a node that does not list the unsequenced channel when
 `NET_PLAIN_HTTP` points at the same proxy started with `plain`:
 `node sdk/web/test/slow-link.mjs 0 8199 plain`, then `NET_PLAIN_HTTP=http://127.0.0.1:8199`.
+It also connects through a control channel that closes on `auth` when `NET_CUT_HTTP` points at
+the proxy started with `cut auth`: `node sdk/web/test/slow-link.mjs 0 8202 cut auth`, then
+`NET_CUT_HTTP=http://127.0.0.1:8202`.
 
 `rehost_test.cpp` and the plain C `ctest/rehost.c` need two nodes and are built and run by
 `scripts/sdk-rehost-test.sh`: the node hands the room over, the client forgets it and joins it again

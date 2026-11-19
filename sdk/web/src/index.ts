@@ -127,6 +127,7 @@ export class Client {
   private timer?: ReturnType<typeof setInterval>;
   private path?: DataPath;
   private onReady?: () => void;
+  private failReady?: (error: Error) => void;
   private isLost = false;
   forceTunnel = false;
   /** Which data path is in use after join(). */
@@ -134,7 +135,10 @@ export class Client {
     return this.path?.kind;
   }
   private listeners: { [K in keyof ClientEvents]?: ClientEvents[K][] } = {};
-  private waiters: ((message: ControlMessage) => boolean)[] = [];
+  private waiters: {
+    take: (message: ControlMessage) => boolean;
+    fail: (error: Error) => void;
+  }[] = [];
   private requestSeq = 0;
   joined?: Joined;
   actor = -1;
@@ -250,9 +254,14 @@ export class Client {
       };
     });
     client.ws.onmessage = (event) => client.onMessage(event.data);
-    client.ws.onclose = () => client.lost("control channel closed");
+    client.ws.onclose = () => client.controlClosed();
     client.send({ t: "auth", grant, supports: SUPPORTS });
-    await client.waitFor((message) => message.t === "authed", refuses);
+    try {
+      await client.waitFor((message) => message.t === "authed", refuses);
+    } catch (error) {
+      client.close();
+      throw error;
+    }
     return client;
   }
 
@@ -286,7 +295,7 @@ export class Client {
           typeof message.level === "string" ? message.level : "info",
         );
       }
-      this.waiters = this.waiters.filter((matches) => !matches(message));
+      this.waiters = this.waiters.filter((waiter) => !waiter.take(message));
     } else {
       this.onDatagram(new Uint8Array(data as ArrayBuffer));
     }
@@ -315,22 +324,29 @@ export class Client {
   ): Promise<T> {
     return new Promise((res, rej) => {
       const timer = setTimeout(() => rej(new Error("timeout")), timeoutMs);
-      this.waiters.push((message) => {
-        if (ok(message)) {
+      this.waiters.push({
+        take: (message) => {
+          if (ok(message)) {
+            clearTimeout(timer);
+            res(message as T);
+            return true;
+          }
+          if (fail?.(message)) {
+            clearTimeout(timer);
+            rej(
+              Object.assign(
+                new Error(String(message.message ?? message.code)),
+                { code: message.code },
+              ),
+            );
+            return true;
+          }
+          return false;
+        },
+        fail: (error) => {
           clearTimeout(timer);
-          res(message as T);
-          return true;
-        }
-        if (fail?.(message)) {
-          clearTimeout(timer);
-          rej(
-            Object.assign(new Error(String(message.message ?? message.code)), {
-              code: message.code,
-            }),
-          );
-          return true;
-        }
-        return false;
+          rej(error);
+        },
       });
     });
   }
@@ -452,15 +468,26 @@ export class Client {
     this.link = new Link();
     this.isLost = false;
     const ready = new Promise<void>((res, rej) => {
-      const timer = setTimeout(() => {
-        this.onReady = undefined;
-        rej(new Error("data path timeout"));
-      }, 10000);
-      this.onReady = () => {
+      const timer = setTimeout(
+        () => this.failReady?.(new Error("data path timeout")),
+        10000,
+      );
+      const settle = () => {
         clearTimeout(timer);
+        this.onReady = undefined;
+        this.failReady = undefined;
+      };
+      this.onReady = () => {
+        settle();
         res();
       };
+      this.failReady = (error) => {
+        settle();
+        rej(error);
+      };
     });
+    // it may fail while the path is still opening, before anything awaits it
+    ready.catch(() => {});
     this.path = await this.openPath(joined.data, ticket);
     this.timer = setInterval(() => {
       if (!this.link.poll()) {
@@ -730,7 +757,16 @@ export class Client {
     }
     this.isLost = true;
     this.stop();
+    this.failReady?.(new Error(why));
     this.emit("closed", why);
+  }
+  /** No answer can come any more: the calls waiting for one fail now, not at their timeout. */
+  private controlClosed() {
+    this.lost("control channel closed");
+    const error = new Error("control channel closed");
+    for (const waiter of this.waiters.splice(0)) {
+      waiter.fail(error);
+    }
   }
   private stop() {
     if (this.timer) {

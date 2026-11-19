@@ -118,6 +118,20 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - Lobby: a room in which nobody joined, left or changed anything for two minutes dropped out
   of the room list (`lobby_rooms`, `get_rooms`, `GET /v1/rooms`) until its next change, with its
   players still in it. A node now renews its rooms in the list with every heartbeat.
+- Rust client and the C, C++, Godot and native Unity SDKs over it: `connect` and `join` waited
+  without limit for the node's `authed` and `joined`. A node or a link that went silent after
+  the control channel opened held the call, which blocks the game's thread in the C API, for
+  good. Both waits now end with `timeout` after `connect_timeout` (10 s), like the wait for the
+  data path.
+- Web SDK: a call waiting for the node's answer (`connect`, a join, `rejoin`, a lookup) learned
+  that the control channel had closed only from its own timeout, 10 s later; `rejoin` lost
+  those 10 s on every URL that closed on it. The call now fails with `control channel closed`
+  when the channel closes. A `connect` that failed after the socket opened left the socket
+  open; it closes it.
+- Unity SDK (managed client): the same in `ManagedClient`: `ConnectAsync`, the joins,
+  `RejoinAsync` and the lookups waited out their 10 s timeout on a control channel that had
+  closed, and a `ConnectAsync` that failed kept its socket. They fail with
+  `control channel closed` as it closes, and the failed client is disposed.
 - Unreal SDK: `SendEventEx` sent an event for `EAurixNetChannel::ReliableUnordered` on the
   reliable ordered channel. It goes on the channel it is given.
 - Lobby: a node that lost its Redis connection heard no room changes for about 2 s, and a room

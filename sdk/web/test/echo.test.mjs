@@ -129,6 +129,23 @@ test("a failed connectAndJoin closes its connection", { skip: !key }, async () =
   }
 });
 
+test("a connection that closes fails the call waiting on it at once", { skip: !key }, async (t) => {
+  const link = slowLink(http, 0);
+  t.after(() => link.close());
+  const Real = globalThis.WebSocket, sockets = [];
+  globalThis.WebSocket = class extends Real { constructor(...args) { super(...args); sockets.push(this); } };
+  t.after(() => { globalThis.WebSocket = Real; for (const socket of sockets) socket.close(); });
+  const since = Date.now();
+  link.cut("auth");
+  await assert.rejects(Client.connect(link.url, await grant("web-cut-a")), /control channel closed/);
+  const a = await Client.connect(link.url, await grant("web-cut-a"));
+  link.cut("join_or_create");
+  await assert.rejects(a.joinOrCreate(`web-cut-${process.pid}`, "relay", 4), /control channel closed/);
+  assert.ok(Date.now() - since < 5000, "neither call waited for its timeout");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.deepEqual(sockets.map((socket) => socket.readyState === Real.OPEN), [false, false]);
+});
+
 test("a late joiner gets the cached events and the chat history", { skip: !key }, async () => {
   const a = await Client.connect(http, await grant("web-cache-a"));
   const b = await Client.connect(http, await grant("web-cache-b"));

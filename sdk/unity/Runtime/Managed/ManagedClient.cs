@@ -33,6 +33,7 @@ namespace Aurix.Net.Managed
 
         // One lost connection is reported once, whichever of the link and the control channel notices it first.
         bool _lost;
+        bool _controlClosed;
         readonly ConcurrentQueue<object> _inbox = new ConcurrentQueue<object>();
         readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
         CancellationTokenSource _cts;
@@ -85,6 +86,7 @@ namespace Aurix.Net.Managed
         sealed class Closed
         {
             public string Reason;
+            public bool Control = true;
         }
 
         sealed class Text
@@ -115,17 +117,27 @@ namespace Aurix.Net.Managed
                 (httpUrl.StartsWith("https") ? "wss" : "ws")
                 + httpUrl.Substring(httpUrl.IndexOf(':'))
                 + "/ws";
-            using (var timeout = new CancellationTokenSource(timeoutMs))
+            try
             {
-                await client._ws.ConnectAsync(new Uri(url), timeout.Token);
-            }
+                using (var timeout = new CancellationTokenSource(timeoutMs))
+                {
+                    await client._ws.ConnectAsync(new Uri(url), timeout.Token);
+                }
 
-            _ = client.ReadLoop();
-            await client.SendControlAsync(
-                "{\"t\":\"auth\",\"grant\":" + Json.Str(grant) + ",\"supports\":[\"unsequenced\"]}"
-            );
-            await client.WaitForAsync("authed", timeoutMs);
-            return client;
+                _ = client.ReadLoop();
+                await client.SendControlAsync(
+                    "{\"t\":\"auth\",\"grant\":"
+                        + Json.Str(grant)
+                        + ",\"supports\":[\"unsequenced\"]}"
+                );
+                await client.WaitForAsync("authed", timeoutMs);
+                return client;
+            }
+            catch
+            {
+                client.Dispose();
+                throw;
+            }
         }
 
         /// <summary>connect + join, following one `room_elsewhere:&lt;url&gt;` redirect.</summary>
@@ -324,6 +336,7 @@ namespace Aurix.Net.Managed
 
                 await Task.Delay(5);
                 Poll();
+                ThrowIfControlClosed();
             }
             return Actor;
         }
@@ -439,7 +452,7 @@ namespace Aurix.Net.Managed
             }
             if (_dataOpen && !_link.Poll() && !_lost)
             {
-                _inbox.Enqueue(new Closed { Reason = "link dead" });
+                _inbox.Enqueue(new Closed { Reason = "link dead", Control = false });
             }
             FlushLink();
             while (count < max && _inbox.TryDequeue(out var message))
@@ -539,6 +552,7 @@ namespace Aurix.Net.Managed
                         FlushLink();
                         break;
                     case Closed closed:
+                        _controlClosed |= closed.Control;
                         if (!_lost)
                         {
                             _lost = true;
@@ -740,6 +754,11 @@ namespace Aurix.Net.Managed
                     }
 
                     Poll();
+                    if (got == null && err == null)
+                    {
+                        ThrowIfControlClosed();
+                    }
+
                     await Task.Delay(2);
                 }
             }
@@ -753,6 +772,15 @@ namespace Aurix.Net.Managed
             }
 
             return got;
+        }
+
+        /// <summary>No answer can come any more: a call waiting for one fails now, not at its timeout.</summary>
+        void ThrowIfControlClosed()
+        {
+            if (_controlClosed)
+            {
+                throw new NetException("control channel closed");
+            }
         }
 
         public void Dispose()

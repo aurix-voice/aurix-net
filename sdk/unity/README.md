@@ -204,6 +204,8 @@ moves every tick. With `NET_LOSSY_HTTP` set (the same proxy losing data frames, 
 (the same proxy hiding the node's `supports`, see `sdk/cpp/README.md`) it also sends events for the
 unsequenced channel that have to arrive on channel 0, from the managed client and, when
 `libaurix_net` is on the library path (`LD_LIBRARY_PATH=target/release`), from the native one.
+With `NET_CUT_HTTP` set (the same proxy closing the connection on `auth`, see `sdk/cpp/README.md`)
+it also checks that `ConnectAsync` fails as the control channel closes.
 
 Lockstep tuning: `Runner.Lockstep.InputDelay` adapts between `InputDelayMin`/`InputDelayMax` from the node's
 input-margin reports (late inputs raise it at once to cover the round trip, steady slack lowers it again;

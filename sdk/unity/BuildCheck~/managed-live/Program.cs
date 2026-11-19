@@ -273,6 +273,17 @@ class P
             listener.Dispose();
         }
         else Console.WriteLine("node without the unsequenced channel: skipped (NET_PLAIN_HTTP not set)");
+        // a control channel that closes on `auth` (NET_CUT_HTTP, see README): ConnectAsync fails as it closes, not at its timeout
+        bool failedFast = true; var cut = Environment.GetEnvironmentVariable("NET_CUT_HTTP");
+        if (cut != null)
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew(); string failure = "none";
+            try { (await ManagedClient.ConnectAsync(cut, await Grant(h, key, "cs-cut"))).Dispose(); }
+            catch (NetException error) { failure = error.Message; }
+            failedFast = failure == "control channel closed" && clock.ElapsedMilliseconds < 5000;
+            Console.WriteLine($"closed control channel: connect failed after {clock.ElapsedMilliseconds} ms: {failure} -> {(failedFast ? "ok" : "FAIL")}");
+        }
+        else Console.WriteLine("closed control channel: skipped (NET_CUT_HTTP not set)");
         // NetRunner over the slow link: what the owner writes every tick reaches the room in time
         bool runnerOk = true;
         if (slow != null)
@@ -306,7 +317,7 @@ class P
             Console.WriteLine($"slow link, NetRunner: owner moves that reached the room={reached.Count}/{moves}");
             runnerOk = moves > 0 && reached.Count >= moves * 3 / 4; runner.Client.Dispose(); watcher.Dispose();
         }
-        bool ok = lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && runnerOk;
+        bool ok = lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && failedFast && runnerOk;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");
         return ok ? 0 : 1;
     }

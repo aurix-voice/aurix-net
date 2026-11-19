@@ -303,16 +303,16 @@ impl Client {
             })
             .await?;
         // wait for Authed (or Error)
+        let deadline = tokio::time::Instant::now() + client.opts.connect_timeout;
         loop {
-            match client.next_event().await {
-                Some(Event::Control(ServerMsg::Authed { .. })) => break,
-                Some(Event::Control(ServerMsg::Hello { supports, .. })) => {
+            match client.answer_by(deadline).await? {
+                Event::Control(ServerMsg::Authed { .. }) => break,
+                Event::Control(ServerMsg::Hello { supports, .. }) => {
                     client.unsequenced = supports.iter().any(|s| s == UNSEQUENCED);
                 }
-                Some(Event::Control(ServerMsg::Error { code, message, .. })) => {
+                Event::Control(ServerMsg::Error { code, message, .. }) => {
                     return Err(ClientError::Server { code, message })
                 }
-                Some(Event::Closed(_)) | None => return Err(ClientError::Disconnected),
                 _ => continue,
             }
         }
@@ -398,9 +398,10 @@ impl Client {
         self.replay.clear();
         self.lost = false;
         self.send(msg).await?;
+        let deadline = tokio::time::Instant::now() + self.opts.connect_timeout;
         let (joined, cached) = loop {
-            match self.next_event().await {
-                Some(Event::Control(ServerMsg::Joined {
+            match self.answer_by(deadline).await? {
+                Event::Control(ServerMsg::Joined {
                     room,
                     name,
                     mode,
@@ -413,7 +414,7 @@ impl Client {
                     next_spawn_tag,
                     cached,
                     ..
-                })) => {
+                }) => {
                     let joined = Joined {
                         room,
                         name,
@@ -428,10 +429,9 @@ impl Client {
                     };
                     break (joined, cached);
                 }
-                Some(Event::Control(ServerMsg::Error { code, message, .. })) => {
+                Event::Control(ServerMsg::Error { code, message, .. }) => {
                     return Err(ClientError::Server { code, message })
                 }
-                Some(Event::Closed(_)) | None => return Err(ClientError::Disconnected),
                 _ => continue,
             }
         };
@@ -571,14 +571,21 @@ impl Client {
         }));
         self.data = Some(dp);
         // wait for the server's empty ack frame
-        let deadline = Instant::now() + self.opts.connect_timeout;
+        let deadline = tokio::time::Instant::now() + self.opts.connect_timeout;
         loop {
-            match tokio::time::timeout_at(deadline.into(), self.next_event()).await {
-                Ok(Some(Event::DataReady)) => return Ok(()),
-                Ok(Some(Event::Closed(_))) | Ok(None) => return Err(ClientError::Disconnected),
-                Ok(Some(_)) => continue,
-                Err(_) => return Err(ClientError::Timeout),
+            if let Event::DataReady = self.answer_by(deadline).await? {
+                return Ok(());
             }
+        }
+    }
+
+    /// The next event while a call waits for the node's answer: the wait ends with the
+    /// connection and at `deadline`.
+    async fn answer_by(&mut self, deadline: tokio::time::Instant) -> Result<Event> {
+        match tokio::time::timeout_at(deadline, self.next_event()).await {
+            Ok(Some(Event::Closed(_))) | Ok(None) => Err(ClientError::Disconnected),
+            Ok(Some(event)) => Ok(event),
+            Err(_) => Err(ClientError::Timeout),
         }
     }
 
