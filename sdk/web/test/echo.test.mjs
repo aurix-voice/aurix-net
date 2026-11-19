@@ -25,6 +25,7 @@ test("relay echo over ws tunnel", { skip: !key }, async (t) => {
   const ja = await a.joinOrCreate(room, "relay", 4);
   const jb = await b.joinOrCreate(room, "relay", 4);
   assert.notEqual(ja.actor, jb.actor);
+  assert.deepEqual(a.lastJoin, { t: "join", name: room }, "the way back into the room is a join by its name");
   const got = []; b.on("event", (f) => got.push(f));
   const bData = []; b.on("data", (channel, tick, payload) => bData.push({ channel, payload }));
   a.sendEvent(1, new TextEncoder().encode("hello"), "others", true);

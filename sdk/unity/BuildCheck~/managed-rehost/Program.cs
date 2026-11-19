@@ -28,6 +28,18 @@ class P
         var a = await ManagedClient.ConnectAsync(A, await Grant(h, A, key, "cs-rehost-a"));
         int actor1 = await a.JoinOrCreateAsync(room, "relay", 8);
         Console.WriteLine($"cs: joined {room} actor={actor1} on A");
+        // a client that a random join brought into a room: the room is full with it, and another room it
+        // could be matched into stands open beside it
+        string tag = "{\"tag\":\"" + room + "-cs\"}";
+        var host = await ManagedClient.ConnectAsync(A, await Grant(h, A, key, "cs-rehost-h"));
+        await host.JoinOrCreateAsync(room + "-cs-full", "relay", 2, tag);
+        var r = await ManagedClient.ConnectAsync(A, await Grant(h, A, key, "cs-rehost-r"));
+        int actorR = await r.JoinRandomAsync(tag);
+        string roomR = ManagedClientTestHooks.Str(r.JoinedJson, "name");
+        var beside = await ManagedClient.ConnectAsync(A, await Grant(h, A, key, "cs-rehost-o"));
+        await beside.JoinOrCreateAsync(room + "-cs-open", "relay", 8, tag);
+        bool moved = false; r.OnRehost += () => moved = true;
+        Console.WriteLine($"cs: a random join led to {roomR} actor={actorR}");
         bool rehost = false; int frames = 0;
         a.OnRehost += () => rehost = true;
         a.OnData += (ch, t, p) => frames++;
@@ -35,6 +47,7 @@ class P
         while (!rehost && DateTime.UtcNow < deadline)
         {
             a.SendEvent(1, new byte[] { 1 }, Target.Others, reliable: false); a.Flush(); a.Poll();
+            r.Poll(); host.Poll(); beside.Poll();
             await Task.Delay(50);
         }
         if (!rehost) { Console.WriteLine("CS_REHOST_FAIL no rehost within 60 s"); return 1; }
@@ -42,6 +55,18 @@ class P
         if (a.Actor != -1 || a.JoinedJson != null) { Console.WriteLine("CS_REHOST_FAIL still describes the room the node handed off"); return 1; }
         var a2 = await a.RejoinAsync(B);
         Console.WriteLine($"cs: rejoined actor={a2.Actor} (same actor: {a2.Actor == actor1})");
+        deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!moved && DateTime.UtcNow < deadline) { r.Poll(); await Task.Delay(20); }
+        string back;
+        try
+        {
+            var r2 = await r.RejoinAsync(B);
+            back = ManagedClientTestHooks.Str(r2.JoinedJson, "name") + " actor=" + r2.Actor;
+            r2.Dispose();
+        }
+        catch (NetException refusal) { back = "refused: " + refusal.Message; }
+        bool returned = back == roomR + " actor=" + actorR;
+        Console.WriteLine($"cs: after a random join the rejoin led to {back} (same room and actor: {returned})");
         string got = null;
         a2.OnEvent += f => { if (f.Code == 7) got = Encoding.UTF8.GetString(f.Payload.Array, f.Payload.Offset, f.Payload.Count); };
         var b = await ManagedClient.ConnectAsync(B, await Grant(h, B, key, "cs-rehost-b"));
@@ -49,9 +74,9 @@ class P
         b.SendEvent(7, Encoding.UTF8.GetBytes("after-rehost"), Target.Others, reliable: true); b.Flush();
         deadline = DateTime.UtcNow.AddSeconds(3);
         while (got == null && DateTime.UtcNow < deadline) { a2.Poll(); b.Poll(); await Task.Delay(5); }
-        bool ok = got == "after-rehost" && a2.Actor == actor1;
+        bool ok = got == "after-rehost" && a2.Actor == actor1 && returned;
         Console.WriteLine(ok ? "CS_REHOST_OK" : $"CS_REHOST_FAIL got={got}");
-        a2.Dispose(); b.Dispose();
+        a2.Dispose(); b.Dispose(); host.Dispose(); beside.Dispose();
         return ok ? 0 : 1;
     }
 }

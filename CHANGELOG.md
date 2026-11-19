@@ -325,6 +325,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   `Unity.*.CodeGen`. It is `Unity.Aurix.Net.CodeGen`. The package names the engine modules it
   uses (animation, audio, IMGUI, physics), and `BuildCheck~/unity-project` builds the package
   in an editor from the command line and checks that the RPCs of a probe were woven.
+- Web SDK, Unity SDK (managed client), Rust client: `rejoin` after a rehost asked the last join
+  again. A client that a random join had brought into its room was refused (`not found: no
+  matching room`) or would have been matched into another room, and after a `join_or_create`
+  the Web and C# clients sent a `join` that still carried `mode`, `max_players`, `props`,
+  `reserved` and `lobby_props`. The rejoin is a `join` by the name of the room the client was
+  in, with the player props it entered with.
 - Web SDK: a client that sent nothing for 90 s was disconnected (`closed` with `control channel
   closed`), in a quiet room as in a menu: the node closes a control channel it hears nothing
   from, and the Web client probed it only when the game called `ping()`. It probes once a second

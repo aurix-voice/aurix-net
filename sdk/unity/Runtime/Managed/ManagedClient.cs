@@ -59,7 +59,7 @@ namespace Aurix.Net.Managed
         /// <summary>The display name of the grant this client signed in with.</summary>
         public string PlayerName { get; private set; }
 
-        /// <summary>URL given to ConnectAsync, the grant and the last join message: what RejoinAsync needs.</summary>
+        /// <summary>URL given to ConnectAsync, the grant and the join that leads back into the last room: what RejoinAsync needs.</summary>
         public string EntryUrl { get; private set; }
         public string Grant { get; private set; }
         public string LastJoinJson { get; private set; }
@@ -322,7 +322,7 @@ namespace Aurix.Net.Managed
                 throw new NetException("rejoin: never joined");
             }
 
-            var msg = LastJoinJson.Replace("\"t\":\"join_or_create\"", "\"t\":\"join\"");
+            var msg = LastJoinJson;
             Dispose();
             Exception last = null;
             foreach (var url in new[] { EntryUrl }.Concat(fallbackUrls))
@@ -342,10 +342,10 @@ namespace Aurix.Net.Managed
         /// <summary>Any join-like control message; opens the data path (ticket first) and waits for the server's ack.</summary>
         public async Task<int> JoinRawAsync(string json, int timeoutMs = 10000)
         {
-            LastJoinJson = json;
             await SendControlAsync(json);
             var joined = await WaitForAsync("joined", timeoutMs);
             JoinedJson = joined;
+            LastJoinJson = Json.WayBack(json, Json.Str(joined, "name"));
             Actor = (int)Json.Num(joined, "actor");
             RoomMode = Json.Str(joined, "mode");
             Seed = Json.ULong(joined, "seed");
@@ -1013,6 +1013,26 @@ namespace Aurix.Net.Managed
     internal static class Json
     {
         public static string Str(string text) => JsonConvert.ToString(text);
+
+        /// <summary>The join that brings a client back into the room `asked` led to: the room by its name, as
+        /// the player that entered it. A random join or a join_or_create asked again could lead elsewhere.</summary>
+        public static string WayBack(string asked, string name)
+        {
+            var was = JObject.Parse(asked);
+            var again = new JObject { ["t"] = "join", ["name"] = name };
+            var kept =
+                (string)was["t"] == "join"
+                    ? new[] { "player_props", "schema_hash", "spectator" }
+                    : new[] { "player_props" };
+            foreach (var key in kept)
+            {
+                if (was[key] != null)
+                {
+                    again[key] = was[key];
+                }
+            }
+            return again.ToString(Formatting.None);
+        }
 
         public static JToken Parse(string json)
         {

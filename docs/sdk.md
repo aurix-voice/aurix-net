@@ -76,7 +76,7 @@ from `get_last_error_code()` (`AurixNetClient.ERROR_*`).
 
 ## Rehost
 
-When a node shuts down (deploy) it hands its rooms to another node and sends `left{reason:"rehost"}`. Clients rejoin the same room with the same grant: Rust `client.rejoin(&[fallback_urls])`, Web `client.rejoin(fallbackUrls)` (or listen to the `rehost` event), C# `ManagedClient.RejoinAsync(fallbacks)`; Unity `NetRunner` does it automatically (`FallbackUrls`). C++, Godot and Unreal have no `rejoin` call: connect again with the same grant and join the same room (Unreal reports the `left` with `OnLeft(Reason, RoomId)`). Actor ids are preserved by player id.
+When a node shuts down (deploy) it hands its rooms to another node and sends `left{reason:"rehost"}`. Clients rejoin the same room with the same grant: Rust `client.rejoin(&[fallback_urls])`, Web `client.rejoin(fallbackUrls)` (or listen to the `rehost` event), C# `ManagedClient.RejoinAsync(fallbacks)`; Unity `NetRunner` does it automatically (`FallbackUrls`). The rejoin is a `join` by the name of the room the client was in, whichever call led it there: a random join or a `join_or_create` is not asked again. C++, Godot and Unreal have no `rejoin` call: connect again with the same grant and join the same room (Unreal reports the `left` with `OnLeft(Reason, RoomId)`). Actor ids are preserved by player id.
 
 ## Lobby statistics and presence
 

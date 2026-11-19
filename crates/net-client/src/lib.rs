@@ -407,18 +407,8 @@ impl Client {
     /// a fresh client in the same room with the same grant, trying the entry URL then
     /// `fallback_urls` (other nodes / the region URL).
     pub async fn rejoin(self, fallback_urls: &[&str]) -> Result<(Client, Joined)> {
-        let msg = match self.last_join.clone() {
-            Some(ClientMsg::JoinOrCreate {
-                name, player_props, ..
-            }) => ClientMsg::Join {
-                name,
-                player_props,
-                rejoin_actor: None,
-                schema_hash: None,
-                spectator: false,
-            },
-            Some(msg) => msg,
-            None => return Err(ClientError::Disconnected),
+        let Some(msg) = self.last_join.clone() else {
+            return Err(ClientError::Disconnected);
         };
         let (entry, grant, opts) = (
             self.entry_url.clone(),
@@ -437,7 +427,7 @@ impl Client {
     }
 
     pub async fn join(&mut self, msg: ClientMsg) -> Result<Joined> {
-        self.last_join = Some(msg.clone());
+        let asked = msg.clone();
         // what the room before this one sent is not the new room's
         self.replay
             .retain(|event| !matches!(event, Event::Data { .. }));
@@ -493,6 +483,7 @@ impl Client {
         };
         self.keep(passed);
         let (joined, cached) = answer?;
+        self.last_join = Some(way_back(&asked, &joined.name));
         // the room announces the avatar as soon as the data path is up
         self.avatar = None;
         self.open_data(&joined.data).await?;
@@ -876,6 +867,30 @@ impl Drop for Client {
     }
 }
 
+/// The join that brings a client back into the room `asked` led to: the room by its name, as
+/// the player that entered it. A random join or a create asked again would lead elsewhere.
+fn way_back(asked: &ClientMsg, name: &str) -> ClientMsg {
+    let (player_props, schema_hash, spectator) = match asked {
+        ClientMsg::Join {
+            player_props,
+            schema_hash,
+            spectator,
+            ..
+        } => (player_props.clone(), schema_hash.clone(), *spectator),
+        ClientMsg::Create { player_props, .. }
+        | ClientMsg::JoinOrCreate { player_props, .. }
+        | ClientMsg::JoinRandom { player_props, .. } => (player_props.clone(), None, false),
+        _ => (Default::default(), None, false),
+    };
+    ClientMsg::Join {
+        name: name.to_owned(),
+        player_props,
+        rejoin_actor: None,
+        schema_hash,
+        spectator,
+    }
+}
+
 async fn deliver(dp: &Arc<DataPath>, datagram: Bytes, ev: &mpsc::Sender<Event>) {
     let recv = dp.link.lock().receive(datagram, Instant::now());
     dp.flush();
@@ -987,4 +1002,37 @@ pub async fn best_region(catalog_http: &str, probes: u8) -> Result<RegionPick> {
         rtt_ms: win.rtt_ms,
         candidates,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_way_back_into_a_room_is_a_join_by_its_name() {
+        let props: serde_json::Map<String, serde_json::Value> =
+            [("team".to_owned(), "red".into())].into_iter().collect();
+        let random = ClientMsg::JoinRandom {
+            filter: [("map".to_owned(), "dust".into())].into_iter().collect(),
+            player_props: props.clone(),
+            expr: Some("rank > 3".into()),
+            match_type: Some("fill".into()),
+        };
+        let watched = ClientMsg::Join {
+            name: "asked".into(),
+            player_props: props.clone(),
+            rejoin_actor: None,
+            schema_hash: Some("abc".into()),
+            spectator: true,
+        };
+        assert_eq!(
+            serde_json::to_value(way_back(&random, "found")).unwrap(),
+            serde_json::json!({"t": "join", "name": "found", "player_props": {"team": "red"},
+                "rejoin_actor": null, "schema_hash": null, "spectator": false})
+        );
+        assert_eq!(
+            serde_json::to_value(way_back(&watched, "asked")).unwrap(),
+            serde_json::to_value(&watched).unwrap()
+        );
+    }
 }

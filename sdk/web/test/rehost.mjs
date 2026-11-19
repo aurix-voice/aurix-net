@@ -17,6 +17,17 @@ const j1 = await a.joinOrCreate(room, "relay", 8);
 console.log(`web: joined ${room} actor=${j1.actor} on A`);
 let frames = 0; a.on("data", () => frames++);
 const rehost = new Promise((res) => a.on("rehost", res));
+// a client that a random join brought into a room: the room is full with it, and another room it
+// could be matched into stands open beside it
+const tag = { tag: room };
+const host = await Client.connect(A, await grant(A, "web-rehost-h"));
+await host.joinOrCreate(`${room}-full`, "relay", 2, tag);
+const r = await Client.connect(A, await grant(A, "web-rehost-r"));
+const jr1 = await r.joinRandom(tag);
+const beside = await Client.connect(A, await grant(A, "web-rehost-o"));
+await beside.joinOrCreate(`${room}-open`, "relay", 8, tag);
+const moved = new Promise((res) => r.on("rehost", res));
+console.log(`web: a random join led to ${jr1.name} actor=${jr1.actor}`);
 const timer = setInterval(() => { a.sendEvent(1, new Uint8Array([1]), "others", false); a.flush(); }, 50);
 await Promise.race([rehost, new Promise((_, rej) => setTimeout(() => rej(new Error("no rehost within 60 s")), 60000))]);
 clearInterval(timer);
@@ -24,11 +35,23 @@ console.log(`web: got rehost after ${frames} data frames`);
 if (a.joined !== undefined || a.actor !== -1) { console.log("WEB_REHOST_FAIL still describes the room the node handed off"); process.exit(1); }
 const { client: a2, joined: j2 } = await a.rejoin([B]);
 console.log(`web: rejoined actor=${j2.actor} (same actor: ${j2.actor === j1.actor})`);
+await moved;
+let back = "refused";
+try {
+  const { client: r2, joined: jr2 } = await r.rejoin([B]);
+  back = `${jr2.name} actor=${jr2.actor}`;
+  r2.close();
+} catch (error) {
+  back = `refused: ${error.message}`;
+}
+const returned = back === `${jr1.name} actor=${jr1.actor}`;
+console.log(`web: after a random join the rejoin led to ${back} (same room and actor: ${returned})`);
 const got = []; a2.on("event", (f) => got.push(f));
 const b = await Client.connect(B, await grant(B, "web-rehost-b"));
 await b.join({ t: "join", name: room });
 b.sendEvent(7, new TextEncoder().encode("after-rehost"), "others", true); b.flush();
 const t0 = Date.now(); while (Date.now() - t0 < 3000 && !got.some((f) => f.code === 7)) await new Promise((r) => setTimeout(r, 20));
 const ok = got.some((f) => f.code === 7 && new TextDecoder().decode(f.payload) === "after-rehost");
-console.log(ok && j2.actor === j1.actor ? "WEB_REHOST_OK" : `WEB_REHOST_FAIL events=${got.length}`);
-a2.close(); b.close(); process.exit(ok ? 0 : 1);
+const pass = ok && j2.actor === j1.actor && returned;
+console.log(pass ? "WEB_REHOST_OK" : `WEB_REHOST_FAIL events=${got.length}`);
+a2.close(); b.close(); host.close(); beside.close(); process.exit(pass ? 0 : 1);

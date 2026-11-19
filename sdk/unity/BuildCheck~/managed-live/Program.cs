@@ -145,6 +145,7 @@ class P
         b.OnEvent += f => { if (f.Code == 1) rel++; else if (f.Code == 2) unrel++; else if (f.Code == 3) { big++; bigLen = f.Payload.Count; } };
         b.OnControl += j => { if (j.Contains("player_joined")) ctl += "J"; };
         int aa = await a.JoinOrCreateAsync(room, "relay", 8);
+        bool wayBack = a.LastJoinJson == "{\"t\":\"join\",\"name\":\"" + room + "\"}";
         int ab = await b.JoinAsync(room);
         Console.WriteLine($"joined actors a={aa} b={ab} mode={a.RoomMode}");
         a.SendEvent(1, Encoding.UTF8.GetBytes("hello"), Target.Others, reliable: true);
@@ -641,7 +642,7 @@ class P
             stallOk = stallGot == stallSent && stallReasons.Count == 0;
             talker.Dispose();
         }
-        bool ok = stallOk && busyOk && givenUpOk && refused && lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && failedFast && runnerOk;
+        bool ok = wayBack && stallOk && busyOk && givenUpOk && refused && lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && failedFast && runnerOk;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");
         return ok ? 0 : 1;
     }

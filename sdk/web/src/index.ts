@@ -90,6 +90,22 @@ export interface ControlMessage {
 // What this client names in `auth`, so the node sends it nothing it does not know.
 const SUPPORTS = ["unsequenced"];
 
+// The join that brings a client back into the room `asked` led to: the room by its name, as the
+// player that entered it. A random join or a join_or_create asked again could lead elsewhere.
+function wayBack(asked: Record<string, unknown>, name: string): object {
+  const kept =
+    asked.t === "join"
+      ? ["player_props", "schema_hash", "spectator"]
+      : ["player_props"];
+  const again: Record<string, unknown> = { t: "join", name };
+  for (const key of kept) {
+    if (asked[key] !== undefined) {
+      again[key] = asked[key];
+    }
+  }
+  return again;
+}
+
 // An `error` refuses the request whose `id` it repeats; one without an `id` may refuse any.
 function refuses(message: ControlMessage, id?: number): boolean {
   return (
@@ -171,7 +187,8 @@ export class Client {
     }
   }
 
-  /** URL given to connect(), the grant and the last join message: what rejoin() needs. */
+  /** URL given to connect(), the grant and the join that leads back into the last room: what
+   *  rejoin() needs. */
   entryUrl = "";
   grant = "";
   lastJoin: object | null = null;
@@ -469,10 +486,7 @@ export class Client {
     if (!this.lastJoin) {
       throw new Error("rejoin: never joined");
     }
-    const msg = { ...(this.lastJoin as Record<string, unknown>) };
-    if (msg.t === "join_or_create") {
-      msg.t = "join";
-    }
+    const msg = this.lastJoin;
     this.close();
     let err: unknown = null;
     for (const url of [this.entryUrl, ...fallbackUrls]) {
@@ -485,12 +499,12 @@ export class Client {
     throw err;
   }
   async join(msg: object): Promise<Joined> {
-    this.lastJoin = msg;
     this.send(msg);
     const joined = await this.waitFor<Joined>(
       (message) => message.t === "joined",
       refuses,
     );
+    this.lastJoin = wayBack(msg as Record<string, unknown>, joined.name);
     this.joined = joined;
     this.actor = joined.actor;
     this.avatar = undefined;
