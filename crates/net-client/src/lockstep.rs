@@ -254,6 +254,10 @@ impl LockstepClient {
         if tick > self.server_tick + self.input_delay + 1 {
             return None;
         }
+        // a frame carries inputs for consecutive ticks, so earlier ones are resent only without a gap
+        if tick != self.last_input + 1 {
+            self.recent_inputs.clear();
+        }
         self.last_input = tick;
         self.recent_inputs.push(input);
         let keep = self.input_redundancy.clamp(1, 8);
@@ -414,6 +418,17 @@ mod tests {
         assert_eq!(c.confirmed_tick(), 40);
         assert!(c.receive(&bundle(&[(39, &[])])).unwrap().is_empty());
         assert_eq!(c.receive(&bundle(&[(40, &[])])).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_input_is_resent_only_under_its_own_tick() {
+        let mut c = LockstepClient::new();
+        c.server_tick = 10;
+        c.send_input(Bytes::from_static(b"A")).unwrap();
+        c.server_tick = 20;
+        let (tick, frame) = c.send_input(Bytes::from_static(b"B")).unwrap();
+        assert_eq!(tick, 22);
+        assert_eq!(frame.payload.as_ref(), &[LS_INPUT, 0, 0, 0, 22, 1, 1, b'B']);
     }
 
     #[test]

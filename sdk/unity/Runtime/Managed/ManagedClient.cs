@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.WebSockets;
@@ -48,6 +49,11 @@ namespace Aurix.Net.Managed
 
         /// <summary>Raw control message (JSON text).</summary>
         public event Action<string> OnControl;
+
+        /// <summary>Smoothed round trip of the control channel in milliseconds; 0 until the first sample.</summary>
+        public float RttMs { get; private set; }
+        readonly Stopwatch _clock = Stopwatch.StartNew();
+        long _lastPingMs = -1000;
 
         /// <summary>Data-path message (channel, server tick, payload).</summary>
         public event Action<Channel, ushort, byte[]> OnData;
@@ -340,6 +346,12 @@ namespace Aurix.Net.Managed
         public int Poll(int max = 256)
         {
             int count = 0;
+            long now = _clock.ElapsedMilliseconds;
+            if (now - _lastPingMs >= 1000)
+            {
+                _lastPingMs = now;
+                _ = SendControlAsync("{\"t\":\"ping\",\"ts\":" + now + "}");
+            }
             if (!_link.Poll())
             {
                 _inbox.Enqueue(new Closed { Reason = "link dead" });
@@ -351,6 +363,14 @@ namespace Aurix.Net.Managed
                 switch (message)
                 {
                     case Text text:
+                        if (Json.Str(text.Json, "t") == "pong")
+                        {
+                            float sample = Math.Max(
+                                0f,
+                                (float)(_clock.ElapsedMilliseconds - Json.Num(text.Json, "ts"))
+                            );
+                            RttMs = RttMs > 0f ? 0.875f * RttMs + 0.125f * sample : sample;
+                        }
                         OnControl?.Invoke(text.Json);
                         if (
                             Json.Str(text.Json, "t") == "left"

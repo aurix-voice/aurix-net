@@ -2,7 +2,7 @@
 // (sdk/unity/BuildCheck~/managed-tests asserts the same bytes): node --test test/
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { BitWriter, BitReader, Schema, ComponentValue, SyncWorld, InterpolationBuffer, lerpVec, distVec } from "../dist/index.js";
+import { BitWriter, BitReader, Schema, ComponentValue, SyncWorld, SyncSession, InterpolationBuffer, lerpVec, distVec } from "../dist/index.js";
 
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 const SCHEMA = "component Transform {\n  pos: vec3 @range(-4096, 4096, 0.01)\n  rot: quat\n}\ncomponent Stats {\n  hp: u16\n  name: string(16)\n  speed: f32\n  team: i8\n  flags: bits(5)\n  seed: u64\n}\n";
@@ -88,4 +88,17 @@ test("owner ops encode as the node parses them (0xFF marker, u48 entity, u16 act
   assert.equal(hex(w.encodeOps([{ op: "transfer", entity: 7 * 2 ** 32 + 1, to: 3 }])), "ff01030007000000010003");
   assert.equal(hex(w.encodeOps([{ op: "spawn", writes }])), "ff0101" + hex(w.encodeWrites(writes)));
   assert.equal(hex(w.encodeOps([{ op: "write", entity: 2, writes }])), "ff0100000000000002" + hex(w.encodeWrites(writes)));
+});
+
+test("an input is resent only under the tick it was stamped with", () => {
+  const frames = [];
+  const client = { on() {}, send() {}, sendData(channel, payload) { frames.push({ first: new DataView(payload.buffer, payload.byteOffset).getUint32(1), count: payload[5] }); } };
+  const session = new SyncSession(client, "component T {\n  x: f32\n}\n", 60, 2);
+  session.world.serverTick = 10;
+  assert.equal(session.spawn(), 12);
+  assert.equal(session.sendInput(new Uint8Array([1])), 13);
+  session.world.serverTick = 14;
+  assert.equal(session.sendInput(new Uint8Array([2])), 16);
+  // tick 13 follows 12, so the spawn rides along; tick 16 does not follow 13, so nothing is carried over
+  assert.deepEqual(frames, [{ first: 12, count: 1 }, { first: 12, count: 2 }, { first: 16, count: 1 }]);
 });

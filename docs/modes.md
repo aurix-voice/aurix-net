@@ -111,8 +111,19 @@ does not have; lost despawns are repeated. Clients that never ack get the plain 
 sent" behaviour.
 
 Input frames are limited per client to tick rate + 10 % (burst of 8 frames); inputs more than
-64 ticks ahead of the room are dropped. Counters: `net_sync_inputs_rate_limited_total`,
-`net_sync_invalid_inputs_total`.
+64 ticks ahead of the room are dropped, and so is a frame in which every input is for a tick the
+room has already simulated: the client is stamping its inputs too close to the room's tick for
+its latency. Counters: `net_sync_inputs_rate_limited_total`, `net_sync_invalid_inputs_total`,
+`net_sync_late_inputs_total`.
+
+The room tells each client how its inputs arrive, with the same frame as lockstep (`0x25`:
+`u32 tick, i8 min_margin, u8 late`, big-endian, over `UnreliableSequenced`). Every 30 ticks a
+client that sent input since the last report gets one: `tick` is the room's tick, `min_margin`
+the least number of ticks by which the newest input of a frame was ahead of the room when it
+arrived (0 is just in time, negative is late, held to -127..127), `late` the frames dropped as
+late (at most 255). Frames dropped for rate or as invalid are not in it; a client that sends
+nothing gets nothing. A client stamps its inputs further ahead when the margin is negative and
+may come closer when it stays high; one that ignores the frame works as before.
 
 ### Schema IDL
 
@@ -248,4 +259,5 @@ inputs are lost; sync rooms checkpoint every 2 s. A `room.rehosted` webhook fire
 | `0x22` Checkpoint | master -> server (reliable) | lockstep |
 | `0x23` CheckpointReq | server -> master (reliable) | lockstep |
 | `0x24` Catchup | server -> joiner (reliable), then `0x20` bundles | lockstep |
+| `0x25` InputStats (tick, least input margin, late inputs; every 30 ticks) | server -> client | sync, lockstep |
 | `0x28` Command | client -> server (reliable); delivered inside the next `0x20` bundle as the input of pseudo-actor 65535 (`[u16 actor, u16 len, bytes]*`) | lockstep |

@@ -45,3 +45,12 @@ test("adaptive input delay follows the node's margin reports; redundancy window 
   const frames = sent.length; assert.equal(ls.sendInput(Uint8Array.of(3)), -1, "one input per tick"); assert.equal(sent.length, frames);
   const last = sent.at(-1)[1]; assert.equal(last[0], 0x10); assert.equal(last[5], 2); assert.equal(((last[1] << 24) | (last[2] << 16) | (last[3] << 8) | last[4]) >>> 0, t - 1);
 });
+
+test("an input is resent only under the tick it was stamped with", () => {
+  const sent = []; const ls = new LockstepClient((ch, p) => sent.push(p));
+  ls.serverTick = 10; ls.sendInput(Uint8Array.of(1));
+  ls.serverTick = 20; const tick = ls.sendInput(Uint8Array.of(2));
+  const last = sent.at(-1);
+  assert.equal(last[5], 1, "the input of an earlier, non-adjacent tick is not carried over");
+  assert.equal(((last[1] << 24) | (last[2] << 16) | (last[3] << 8) | last[4]) >>> 0, tick);
+});

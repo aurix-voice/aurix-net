@@ -111,6 +111,12 @@ public class ManagedCoreTests
         Assert.That(sent[sent.Count - 1].Item2[5] == 2, "two inputs per datagram");
         int frames = sent.Count; ls.SendInput(new byte[] { 3 });
         Assert.That(sent.Count == frames, "one input per tick");
+        ls.Receive(new byte[] { 0x20, 1, 0, 6, 0x20, 0, 0, 0, 40, 0 });
+        ls.SendInput(new byte[] { 4 });
+        Assert.That(
+            sent.Count == frames + 1 && sent[sent.Count - 1].Item2[5] == 1,
+            "an input of an earlier, non-adjacent tick is not carried over"
+        );
     }
 
 

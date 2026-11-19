@@ -409,8 +409,13 @@ fn encode_input(first_tick: u32, inputs: &VecDeque<Vec<u8>>) -> Bytes {
     b.freeze()
 }
 
-/// The room takes one input per tick, and an input stamped far ahead is applied that much later.
-/// So only one tick of lead is used; the rest waits in `held` for the next delta.
+const DEFAULT_TICK_HZ: u16 = 60;
+/// The room drops inputs more than 64 ticks ahead of it.
+const MAX_LEAD_TICKS: u32 = 60;
+
+/// The room takes one input per tick, drops an input whose tick it has already simulated and
+/// applies one stamped far ahead that much later. So an input is stamped ahead of the last delta
+/// by the round trip plus two ticks, and no further; the rest waits in `held` for the next delta.
 unsafe fn send_input_inner(
     st: &mut State,
     h: *mut AurixNetClient,
@@ -429,14 +434,24 @@ unsafe fn send_input_inner(
 
 unsafe fn pump(st: &mut State, h: *mut AurixNetClient) -> i32 {
     let Some(h) = h.as_ref() else { return -1 };
+    let lead = {
+        let client = h.inner.lock();
+        let tick_hz = client.joined.as_ref().and_then(|joined| joined.tick_hz);
+        let round_trip = client.rtt_ms() * u32::from(tick_hz.unwrap_or(DEFAULT_TICK_HZ));
+        2 + round_trip.div_ceil(1000).min(MAX_LEAD_TICKS)
+    };
     while !st.held.is_empty() {
-        let tick = (st.server_tick + 2).max(st.last_input_tick + 1);
-        if tick > st.server_tick + 3 {
+        let tick = (st.server_tick + lead).max(st.last_input_tick + 1);
+        if tick > st.server_tick + lead + 1 {
             break;
         }
         let Some((body, _)) = st.held.pop_front() else {
             break;
         };
+        // a frame carries inputs for consecutive ticks, so earlier ones are resent only without a gap
+        if tick != st.last_input_tick + 1 {
+            st.recent.clear();
+        }
         st.last_input_tick = tick;
         st.recent.push_back(body);
         while st.recent.len() > INPUT_REDUNDANCY {
@@ -466,8 +481,8 @@ pub unsafe extern "C" fn aurix_net_sync_pump(
     pump(&mut s.inner.lock(), h)
 }
 
-/// Raw input for server-side logic (rooms with `props.logic`): stamped two ticks ahead of the last
-/// delta and resent with the next two inputs. Returns the stamped tick or -1.
+/// Raw input for server-side logic (rooms with `props.logic`): stamped ahead of the last delta by the
+/// round trip plus two ticks and resent with the next two inputs. Returns the stamped tick or -1.
 #[no_mangle]
 pub unsafe extern "C" fn aurix_net_sync_send_input(
     s: *const AurixNetSync,

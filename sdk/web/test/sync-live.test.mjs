@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Client, SyncSession, ComponentValue } from "../dist/index.js";
-import WebSocket from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
 
 const http = process.env.NET_HTTP ?? "http://127.0.0.1:8090";
@@ -60,6 +60,47 @@ test("sync room: writes sent every frame in a slower room are not delayed", { sk
   assert.ok(behind < 30, `b fell ${behind} writes (of 60 a second) behind a`);
   assert.equal(Math.round(seen), x, "the last write arrives");
   a.close(); b.close();
+});
+
+// A WebSocket proxy in front of the node that holds every frame for `delayMs` in each direction.
+function slowLink(delayMs) {
+  const server = new WebSocketServer({ port: 0 });
+  server.on("connection", (near, request) => {
+    const far = new WebSocket(http.replace(/^http/, "ws") + request.url);
+    const opened = new Promise((resolve) => far.on("open", resolve));
+    near.on("message", (data, binary) => setTimeout(async () => { await opened; if (far.readyState === 1) far.send(binary ? data : data.toString()); }, delayMs));
+    far.on("message", (data, binary) => setTimeout(() => { if (near.readyState === 1) near.send(binary ? data : data.toString()); }, delayMs));
+    far.on("close", () => near.close()); near.on("close", () => far.close());
+  });
+  return { url: `http://127.0.0.1:${server.address().port}`, close: () => server.close() };
+}
+
+test("sync room: writes and spawns arrive over a 200 ms round trip", { skip: !key }, async () => {
+  const link = slowLink(100);
+  const a = await Client.connect(link.url, await grant("web-slow-a"));
+  const b = await Client.connect(link.url, await grant("web-slow-b"));
+  try {
+    const room = `web-slow-${process.pid}`;
+    const ja = await a.joinOrCreate(room, "sync", 4, { schema: SCHEMA });
+    await b.joinOrCreate(room, "sync", 4, { schema: SCHEMA });
+    const sa = new SyncSession(a, SCHEMA, 60, 2), sb = new SyncSession(b, SCHEMA, 60, 2);
+    const tr = sa.world.schema.byName("Transform");
+    const mine = () => [...sb.world.entities.values()].filter((e) => e.owner === ja.actor);
+    let x = 0, seen = 0;
+    sb.world.onChange = (e) => { if (e.owner === ja.actor) seen = sb.world.get(e, tr)?.fields[0][0] ?? seen; };
+    sb.world.onSpawn = sb.world.onChange;
+    await sleep(500);
+    const timer = setInterval(() => { x += 1; sa.sendWrites([[tr, new ComponentValue([[x, 1, -2], [0, 0, 0, 1]])]]); }, 1000 / 60);
+    await sleep(1000);
+    sa.spawn([[tr, new ComponentValue([[9, 1, -2], [0, 0, 0, 1]])]]);
+    await sleep(1000);
+    clearInterval(timer);
+    await sleep(700);
+    assert.equal(Math.round(seen), x, "the last write arrives");
+    assert.equal(mine().length, 2, "the spawned entity arrives once");
+  } finally {
+    a.close(); b.close(); link.close();
+  }
 });
 
 async function until(what, cond, ms = 4000) {

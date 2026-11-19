@@ -18,6 +18,7 @@ pub struct Metrics {
     pub sync_lost_deltas: IntCounter,
     pub sync_inputs_rate_limited: IntCounter,
     pub sync_invalid_inputs: IntCounter,
+    pub sync_late_inputs: IntCounter,
     pub sync_resyncs: IntCounter,
     pub sync_aoi_starved: IntCounter,
     pub tick_overruns: IntCounter,
@@ -69,6 +70,10 @@ impl Metrics {
             "net_sync_invalid_inputs_total",
             "input frames dropped as malformed or too far ahead of the room tick",
         );
+        let sync_late_inputs = counter(
+            "net_sync_late_inputs_total",
+            "input frames dropped: every input in them was for a tick already simulated",
+        );
         let sync_resyncs = counter(
             "net_sync_resyncs_total",
             "clients that asked for a full snapshot (baselines dropped)",
@@ -99,6 +104,7 @@ impl Metrics {
             rooms_adopted,
             sync_inputs_rate_limited,
             sync_invalid_inputs,
+            sync_late_inputs,
             rooms: gauge("net_rooms", "open rooms on this node"),
             players: gauge("net_players", "online players on this node"),
             control_sessions: gauge("net_control_sessions", "open control websockets"),

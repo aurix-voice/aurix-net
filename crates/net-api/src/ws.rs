@@ -1356,17 +1356,19 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
         {
             let mut hosted = handle.lock();
             let project = hosted.project;
-            let (out, events, actors) = {
+            let (out, reports, events, actors) = {
                 let Some(sy) = hosted.sync.as_mut() else {
                     return;
                 };
                 let out = sy.tick();
+                let reports = sy.input_reports();
                 let events = sy.take_events();
                 let actors: Vec<ActorId> = sy.avatars.keys().copied().collect();
                 st.metrics.sync_lost_deltas.inc_by(sy.take_lost_deltas());
-                let (limited, invalid) = sy.take_input_stats();
+                let (limited, invalid, late) = sy.take_input_stats();
                 st.metrics.sync_inputs_rate_limited.inc_by(limited);
                 st.metrics.sync_invalid_inputs.inc_by(invalid);
+                st.metrics.sync_late_inputs.inc_by(late);
                 let (resyncs, starved) = sy.take_replication_stats();
                 st.metrics.sync_resyncs.inc_by(resyncs);
                 st.metrics.sync_aoi_starved.inc_by(starved);
@@ -1374,7 +1376,7 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
                 if ticks.is_multiple_of(checkpoint_every) {
                     checkpoint = Some((project, sy.checkpoint()));
                 }
-                (out, events, actors)
+                (out, reports, events, actors)
             };
             if let Some((_, body)) = checkpoint.take() {
                 checkpoint = Some((
@@ -1386,6 +1388,11 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
                 if let Some(ds) = hosted.sessions.get(&actor).and_then(|s| s.data.as_ref()) {
                     ds.send(net_common::Channel::UnreliableSequenced, delta);
                     st.metrics.events.with_label_values(&["sync_delta"]).inc();
+                }
+            }
+            for (actor, frame) in reports {
+                if let Some(ds) = hosted.sessions.get(&actor).and_then(|s| s.data.as_ref()) {
+                    ds.send(net_common::Channel::UnreliableSequenced, frame);
                 }
             }
             if !events.is_empty() {

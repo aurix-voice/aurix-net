@@ -488,6 +488,8 @@ async fn player(
 
     let sync = cli.mode == "sync" || cli.mode == "lockstep";
     let server_tick = Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX));
+    let started = Instant::now();
+    let round_trip_ms = Arc::new(AtomicU64::new(0));
     let catchup = Arc::new(Mutex::new(Catchup::default()));
     let acks = Arc::new(Mutex::new(net_replication::AckTracker::default()));
     let drop_in = cli.drop_in;
@@ -659,31 +661,41 @@ async fn player(
         Sink::Quic(conn) => {
             let conn = conn.clone();
             let on = on_datagram.clone();
-            tokio::spawn(async move {
+            Some(tokio::spawn(async move {
                 while let Ok(d) = conn.read_datagram().await {
                     on(d);
                 }
-            })
+            }))
         }
         Sink::Wt(conn) => {
             let conn = conn.clone();
             let on = on_datagram.clone();
-            tokio::spawn(async move {
+            Some(tokio::spawn(async move {
                 while let Ok(d) = conn.receive_datagram().await {
                     on(d.payload());
                 }
-            })
+            }))
         }
-        Sink::Ws(_) => {
-            let on = on_datagram.clone();
-            tokio::spawn(async move {
-                while let Some(Ok(m)) = rx.next().await {
-                    if let Message::Binary(b) = m {
-                        on(b);
+        Sink::Ws(_) => None,
+    };
+    // The control socket: tunnelled datagrams, and the pongs the input lead is measured from.
+    let control = {
+        let on = on_datagram.clone();
+        let round_trip_ms = round_trip_ms.clone();
+        tokio::spawn(async move {
+            while let Some(Ok(m)) = rx.next().await {
+                match m {
+                    Message::Binary(b) => on(b),
+                    Message::Text(t) => {
+                        if let Ok(ServerMsg::Pong { ts, .. }) = serde_json::from_str(t.as_str()) {
+                            let now = started.elapsed().as_millis() as u64;
+                            round_trip_ms.store(now.saturating_sub(ts), Ordering::Relaxed);
+                        }
                     }
+                    _ => {}
                 }
-            })
-        }
+            }
+        })
     };
     let ticker = {
         let link = link.clone();
@@ -714,10 +726,17 @@ async fn player(
     while Instant::now() < stop {
         iv.tick().await;
         if sync {
-            // Follow the server clock: inputs are for a couple of ticks ahead of the last delta.
+            // Follow the server clock. The last delta is half a round trip old and an input takes
+            // the other half to arrive, so inputs are stamped a round trip and two ticks ahead.
             let st = server_tick.load(Ordering::Relaxed);
-            if st != u32::MAX && (tick < st || tick > st + 8) {
-                tick = st + 2;
+            if tick.is_multiple_of(tick_hz.unwrap_or(cli.tick_hz).max(1) as u32) {
+                let ts = started.elapsed().as_millis() as u64;
+                let _ = ws_tx.try_send(send(&ClientMsg::Ping { ts }));
+            }
+            let round_trip = round_trip_ms.load(Ordering::Relaxed) as f64 / 1000.0;
+            let lead = 2 + (round_trip / period.as_secs_f64()).ceil() as u32;
+            if st != u32::MAX && (tick + 2 < st + lead || tick > st + lead + 6) {
+                tick = st + lead;
                 recent.clear();
             }
             if tick.is_multiple_of(90) {
@@ -781,7 +800,10 @@ async fn player(
             tracing::warn!(room, idx, next = ?cu.next, live_oldest = ?cu.live_oldest, server_tick = server_tick.load(Ordering::Relaxed), "still catching up at exit");
         }
     }
-    reader.abort();
+    if let Some(reader) = reader {
+        reader.abort();
+    }
+    control.abort();
     ticker.abort();
     let _ = ws_tx.send(Message::Close(None)).await;
     writer.abort();

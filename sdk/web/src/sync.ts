@@ -872,6 +872,9 @@ export const distVec = (from: number[], to: number[]): number =>
 import { Channel } from "./packet.js";
 import type { Client } from "./index.js";
 
+// The room drops inputs more than 64 ticks ahead of it.
+const MAX_LEAD_TICKS = 60;
+
 /** Drives a `SyncWorld` from a joined sync-room `Client`: decodes deltas, acks them, advances a render
  *  tick `interpolationTicks` behind the server, and stamps/sends owner writes or raw inputs. */
 export class SyncSession {
@@ -881,6 +884,8 @@ export class SyncSession {
   private recent: Uint8Array[] = [];
   private lastDeltaAt = 0;
   private held: { body: Uint8Array; keep: boolean }[] = [];
+  private rttMs = 0;
+  private lastPingAt = 0;
   constructor(
     readonly client: Client,
     schema: Schema | string,
@@ -899,9 +904,23 @@ export class SyncSession {
           this.world.serverTick - this.interpolationTicks,
         );
         this.lastDeltaAt = performance.now();
+        if (this.lastDeltaAt - this.lastPingAt >= 1000) {
+          this.ping();
+        }
         this.pump();
       }
     });
+    client.on("control", (message) => {
+      if (message.t === "pong" && typeof message.ts === "number") {
+        const sample = Math.max(0, Math.floor(performance.now()) - message.ts);
+        this.rttMs = this.rttMs ? 0.875 * this.rttMs + 0.125 * sample : sample;
+      }
+    });
+    this.ping();
+  }
+  private ping(): void {
+    this.lastPingAt = performance.now();
+    this.client.send({ t: "ping", ts: Math.floor(this.lastPingAt) });
   }
   /** Call once per animation frame: advances the render tick between deltas. */
   advance(dtSeconds: number): number {
@@ -923,7 +942,8 @@ export class SyncSession {
   sendOps(ops: SyncOp[]): number {
     return this.queue(this.world.encodeOps(ops), true);
   }
-  // An input stamped far ahead of the room is applied that much later, so only one tick of lead is used:
+  // The room drops an input whose tick it has already simulated and applies one stamped far ahead that much
+  // later. So an input is stamped ahead of the last delta by the round trip plus two ticks, and no further:
   // the rest waits for the next delta. Waiting writes and raw inputs are replaced by newer ones, ops are kept.
   private queue(body: Uint8Array, keep: boolean): number {
     const tail = this.held[this.held.length - 1];
@@ -936,10 +956,20 @@ export class SyncSession {
     return this.lastInputTick + this.held.length;
   }
   private pump(): void {
+    const lead =
+      2 +
+      Math.min(MAX_LEAD_TICKS, Math.ceil((this.rttMs * this.tickHz) / 1000));
     while (this.held.length) {
-      const tick = Math.max(this.world.serverTick + 2, this.lastInputTick + 1);
-      if (tick > this.world.serverTick + 3) {
+      const tick = Math.max(
+        this.world.serverTick + lead,
+        this.lastInputTick + 1,
+      );
+      if (tick > this.world.serverTick + lead + 1) {
         return;
+      }
+      // a frame carries inputs for consecutive ticks, so earlier ones are resent only without a gap
+      if (tick !== this.lastInputTick + 1) {
+        this.recent = [];
       }
       this.lastInputTick = tick;
       this.recent.push(this.held.shift()!.body);

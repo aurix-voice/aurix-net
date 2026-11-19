@@ -12,6 +12,7 @@ use net_common::{Channel, RoomMode};
 use net_rooms::protocol::{ClientMsg, DataEndpoint, ServerMsg};
 use net_transport::{quic, Link};
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -130,6 +131,8 @@ impl DataPath {
     }
 }
 
+const PING_EVERY: Duration = Duration::from_secs(1);
+
 pub struct Client {
     ctl: mpsc::Sender<Message>,
     events: mpsc::Receiver<Event>,
@@ -143,6 +146,7 @@ pub struct Client {
     entry_url: String,
     grant: String,
     last_join: Option<ClientMsg>,
+    rtt_ms: Arc<AtomicU32>,
 }
 
 /// Room facts from the `joined` message.
@@ -191,7 +195,30 @@ impl Client {
             entry_url: http_url.to_string(),
             grant: grant.to_string(),
             last_join: None,
+            rtt_ms: Arc::new(AtomicU32::new(0)),
         };
+        // The control round trip, measured once a second: sync inputs are stamped ahead by it.
+        let started = Instant::now();
+        let pinger = {
+            let ctl = c.ctl.clone();
+            tokio::spawn(async move {
+                let mut every = tokio::time::interval(PING_EVERY);
+                loop {
+                    every.tick().await;
+                    let ping = ClientMsg::Ping {
+                        ts: started.elapsed().as_millis() as u64,
+                    };
+                    let Ok(text) = serde_json::to_string(&ping) else {
+                        break;
+                    };
+                    if ctl.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
+            })
+        };
+        c.tasks.push(pinger);
+        let rtt_ms = c.rtt_ms.clone();
         // Reader: text -> Control events, binary -> tunnel datagrams (routed via data path if any).
         let tunnel_in: Arc<Mutex<Option<Arc<DataPath>>>> = Arc::new(Mutex::new(None));
         let tunnel_slot = tunnel_in.clone();
@@ -200,6 +227,17 @@ impl Client {
                 match m {
                     Ok(Message::Text(t)) => match serde_json::from_str::<ServerMsg>(&t) {
                         Ok(msg) => {
+                            if let ServerMsg::Pong { ts, .. } = &msg {
+                                let sample = (started.elapsed().as_millis() as u64)
+                                    .saturating_sub(*ts)
+                                    .min(u64::from(u32::MAX))
+                                    as u32;
+                                let smoothed = match rtt_ms.load(Ordering::Relaxed) {
+                                    0 => sample,
+                                    rtt => (rtt * 7 + sample) / 8,
+                                };
+                                rtt_ms.store(smoothed, Ordering::Relaxed);
+                            }
                             if events_tx.send(Event::Control(msg)).await.is_err() {
                                 break;
                             }
@@ -507,6 +545,11 @@ impl Client {
     /// Non-blocking poll for engines with their own loop.
     pub fn try_next_event(&mut self) -> Option<Event> {
         self.events.try_recv().ok()
+    }
+
+    /// Smoothed round trip of the control channel in milliseconds; 0 until the first sample.
+    pub fn rtt_ms(&self) -> u32 {
+        self.rtt_ms.load(Ordering::Relaxed)
     }
 
     pub fn link_stats(&self) -> Option<net_transport::LinkStats> {

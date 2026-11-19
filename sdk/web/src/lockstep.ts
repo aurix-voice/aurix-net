@@ -241,6 +241,10 @@ export class LockstepClient {
     if (tick > this.serverTick + this.inputDelay + 1) {
       return -1;
     }
+    // a frame carries inputs for consecutive ticks, so earlier ones are resent only without a gap
+    if (tick !== this.lastInput + 1) {
+      this.recentInputs = [];
+    }
     this.lastInput = tick;
     this.recentInputs.push(input);
     const keep = Math.max(1, Math.min(8, this.inputRedundancy));

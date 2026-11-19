@@ -80,6 +80,16 @@ pub const MAX_COMMAND_BYTES: usize = 1024;
 pub const INPUT_REPORT_EVERY: u32 = 30;
 const MAX_PENDING_DUMPS: usize = 16;
 
+/// A `KIND_INPUT_STATS` frame; sync rooms send the same one.
+pub(crate) fn input_stats_frame(tick: u32, min_margin: i32, late: u16) -> Bytes {
+    let mut buf = BytesMut::with_capacity(7);
+    buf.put_u8(KIND_INPUT_STATS);
+    buf.put_u32(tick);
+    buf.put_i8(min_margin.clamp(-127, 127) as i8);
+    buf.put_u8(late.min(255) as u8);
+    buf.freeze()
+}
+
 /// A client's state at the tick a desync was detected, for offline comparison.
 #[derive(Debug, Clone)]
 pub struct Dump {
@@ -761,14 +771,7 @@ impl LockstepRoom {
         let tick = self.tick.0;
         std::mem::take(&mut self.margins)
             .into_iter()
-            .map(|(a, (min, late))| {
-                let mut buf = BytesMut::with_capacity(7);
-                buf.put_u8(KIND_INPUT_STATS);
-                buf.put_u32(tick);
-                buf.put_i8(min.clamp(-127, 127) as i8);
-                buf.put_u8(late.min(255) as u8);
-                (a, buf.freeze())
-            })
+            .map(|(a, (min, late))| (a, input_stats_frame(tick, min, late)))
             .collect()
     }
 

@@ -7,6 +7,11 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 
 ## [Unreleased]
 
+### Added
+- Sync: the room reports to each client how early or late its inputs arrive, with the frame
+  lockstep rooms already send (`0x25`: tick, least margin in ticks, late frames; every 30 ticks
+  to a client that sent input). A client had only its ping to guess the lead from and was told
+
 ### Changed
 - Dates: the node reads and writes dates as strict RFC 3339 through the `time` crate; its own
   parser and formatter are gone. What clients see:
@@ -34,6 +39,17 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   for a string, and the node sends an object.
 - Console: the matchmaking page filed every ticket for 8 players whatever size the form showed;
   it sent the size in a field the node does not read.
+- SDKs, lockstep rooms: an input was confirmed more than once when the game did not send one every
+  tick (5 inputs sent 200 ms apart in a 30 Hz room came back as 12). Earlier inputs were resent
+  under new tick numbers; they are now resent only when the ticks follow each other.
+- SDKs, sync rooms: with a round trip of about 100 ms and more nothing a client wrote reached the
+  room, so other players saw neither its entities move nor the ones it spawned. Inputs were stamped
+  two ticks ahead of the last delta whatever the latency, and the room drops an input whose tick
+  it has already simulated. The clients now measure the round trip with the control `ping` once a
+  second and stamp inputs ahead by it (`rtt_ms` in the Rust client, `RttMs` in the managed C#
+  client). A spawn, despawn or ownership op could also be applied twice: earlier inputs were
+  resent under new tick numbers when the ticks were not consecutive. They are now resent only
+  under their own ticks.
 - Unity SDK: a room named `actor` gave every player the actor id -2147483648, and a player whose
   display name is `data` could not join and blocked the room for everyone after him. The managed
   client searched the control message text for a field name and took the first match, even inside
@@ -145,6 +161,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - Console: the nodes, rooms, projects, keys and modules tables sort by a column when its header
   is clicked. The columns were marked as sortable, but no page turned the sorting on. Date columns
   sort by time.
+- Load test: `aurix-net-loadtest --mode sync` stamped its inputs two ticks ahead of the last delta
+  whatever the latency, so over a link with 50 ms of delay each way the room dropped every one
+  of them. It now measures the round trip with `ping` once a second and stamps that far ahead.
 - Console: the quota form of a project and the matchmaking page showed nothing when the node
   refused the request. A quota out of range, which the node now answers with `invalid_request`,
   looked like a button that did nothing. Both show the node's message.

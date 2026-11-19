@@ -7,8 +7,11 @@
 //! 0x11 Delta    server->client  replication delta (see net-replication)
 //! 0x12 Resync   client->server  drop baselines, next delta is a full snapshot
 //! 0x13 Ack      client->server  u32 last delta tick, u32 history bits (see `AckTracker`)
+//! 0x25 InputStats server->client u32 tick, i8 min_margin, u8 late   (same as lockstep) every 30
+//!                               ticks per actor: how early its inputs arrived (negative = late)
 //! ```
 
+use crate::lockstep::{input_stats_frame, INPUT_REPORT_EVERY};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use net_common::types::{ActorId, Tick};
 use net_lagcomp::{History, Hitbox};
@@ -402,6 +405,10 @@ pub struct SyncRoom {
     input_tokens: HashMap<ActorId, f32>,
     pub inputs_rate_limited: u64,
     pub invalid_inputs: u64,
+    /// Input frames whose every input was for a tick already simulated.
+    pub late_inputs: u64,
+    /// Per actor since the last report: (min input margin in ticks, late input frames).
+    margins: HashMap<ActorId, (i32, u16)>,
     pub resyncs: u64,
     /// Watch-only actors: a view of the whole world, no avatar, inputs ignored.
     spectators: HashSet<ActorId>,
@@ -501,6 +508,8 @@ impl SyncRoom {
             input_tokens: HashMap::new(),
             inputs_rate_limited: 0,
             invalid_inputs: 0,
+            late_inputs: 0,
+            margins: HashMap::new(),
             resyncs: 0,
             spectators: HashSet::new(),
             replay: VecDeque::new(),
@@ -580,6 +589,7 @@ impl SyncRoom {
 
     pub fn on_leave(&mut self, actor: ActorId) {
         self.input_tokens.remove(&actor);
+        self.margins.remove(&actor);
         self.spectators.remove(&actor);
         if let Some(avatar) = self.avatars.remove(&actor) {
             self.logic.on_leave(&mut self.frame, actor, avatar);
@@ -617,6 +627,7 @@ impl SyncRoom {
                     self.invalid_inputs += 1;
                     return true;
                 }
+                let (mut read, mut taken) = (0, 0);
                 for i in 0..count.min(INPUT_REDUNDANCY + 1) {
                     if payload.is_empty() {
                         break;
@@ -626,11 +637,23 @@ impl SyncRoom {
                         break;
                     }
                     let data = payload.split_to(len).to_vec();
-                    self.frame.push_input(Input {
+                    read += 1;
+                    taken += u32::from(self.frame.push_input(Input {
                         actor,
                         tick: Tick(first.wrapping_add(i as u32)),
                         data,
-                    });
+                    }));
+                }
+                if read > 0 {
+                    let newest = first.wrapping_add(read - 1);
+                    let margin = (newest as i64 - self.frame.tick.0 as i64).clamp(-127, 127) as i32;
+                    let slack = self.margins.entry(actor).or_insert((i32::MAX, 0));
+                    slack.0 = slack.0.min(margin);
+                    // A frame repeats the last few inputs, so the older ones are late by design.
+                    if taken == 0 {
+                        self.late_inputs += 1;
+                        slack.1 = slack.1.saturating_add(1);
+                    }
                 }
                 true
             }
@@ -766,11 +789,25 @@ impl SyncRoom {
         (std::mem::take(&mut self.resyncs), starved)
     }
 
-    /// (rate-limited, invalid) input frames since the last call.
-    pub fn take_input_stats(&mut self) -> (u64, u64) {
+    /// Every `INPUT_REPORT_EVERY` ticks: one `KIND_INPUT_STATS` frame per actor that sent input
+    /// since the last report. Call right after `tick()`.
+    pub fn input_reports(&mut self) -> Vec<(ActorId, Bytes)> {
+        if !self.frame.tick.0.is_multiple_of(INPUT_REPORT_EVERY) || self.margins.is_empty() {
+            return Vec::new();
+        }
+        let tick = self.frame.tick.0;
+        std::mem::take(&mut self.margins)
+            .into_iter()
+            .map(|(actor, (min, late))| (actor, input_stats_frame(tick, min, late)))
+            .collect()
+    }
+
+    /// (rate-limited, invalid, late) input frames since the last call.
+    pub fn take_input_stats(&mut self) -> (u64, u64, u64) {
         (
             std::mem::take(&mut self.inputs_rate_limited),
             std::mem::take(&mut self.invalid_inputs),
+            std::mem::take(&mut self.late_inputs),
         )
     }
 
@@ -1175,15 +1212,71 @@ mod tests {
         for _ in 0..20 {
             room.handle(alice, frame.clone());
         }
-        assert_eq!(room.take_input_stats(), (20 - INPUT_BURST as u64, 0));
+        assert_eq!(room.take_input_stats(), (20 - INPUT_BURST as u64, 0, 0));
         let _ = room.tick();
         assert!(room.handle(alice, frame.clone()));
         assert!(room.handle(alice, frame.clone()));
-        assert_eq!(room.take_input_stats(), (1, 0));
+        assert_eq!(room.take_input_stats(), (1, 0, 0));
         let far = SyncRoom::encode_input(Tick(1000), &[vec![1, 0, 0]]);
         let _ = room.tick();
         room.handle(alice, far);
-        assert_eq!(room.take_input_stats(), (0, 1));
+        assert_eq!(room.take_input_stats(), (0, 1, 0));
+    }
+
+    #[test]
+    fn input_frame_with_nothing_but_past_ticks_is_counted_late() {
+        let mut room = SyncRoom::new(None, 60, 1).unwrap();
+        let alice = ActorId(1);
+        room.on_join(alice);
+        for _ in 0..5 {
+            let _ = room.tick();
+        }
+        let now = room.frame.tick.0;
+        // The newest input is still due: the older ones in the frame are the usual repeats.
+        let due = SyncRoom::encode_input(Tick(now - 2), &vec![vec![1, 0, 0]; 3]);
+        room.handle(alice, due);
+        assert_eq!(room.take_input_stats(), (0, 0, 0));
+        let late = SyncRoom::encode_input(Tick(now - 3), &vec![vec![1, 0, 0]; 3]);
+        room.handle(alice, late);
+        assert_eq!(room.take_input_stats(), (0, 0, 1));
+    }
+
+    #[test]
+    fn input_margins_are_reported_to_the_actor() {
+        let mut room = SyncRoom::new(None, 60, 1).unwrap();
+        let (alice, bob) = (ActorId(1), ActorId(2));
+        room.on_join(alice);
+        room.on_join(bob);
+        for _ in 0..5 {
+            let _ = room.tick();
+            assert!(room.input_reports().is_empty());
+        }
+        let now = room.frame.tick.0;
+        room.handle(
+            alice,
+            SyncRoom::encode_input(Tick(now + 3), &[vec![1, 0, 0]]),
+        );
+        room.handle(
+            alice,
+            SyncRoom::encode_input(Tick(now - 2), &[vec![1, 0, 0]]),
+        );
+        room.handle(
+            alice,
+            SyncRoom::encode_input(Tick(now - 1), &vec![vec![1, 0, 0]; 2]),
+        );
+        let mut reports = Vec::new();
+        while reports.is_empty() {
+            let _ = room.tick();
+            reports = room.input_reports();
+        }
+        assert_eq!(reports.len(), 1, "bob sent nothing");
+        assert_eq!(reports[0].0, alice);
+        let stats = crate::lockstep::LockstepRoom::decode_input_stats(reports[0].1.clone());
+        assert_eq!(stats, Some((INPUT_REPORT_EVERY, -2, 1)));
+        for _ in 0..INPUT_REPORT_EVERY {
+            let _ = room.tick();
+            assert!(room.input_reports().is_empty(), "nothing sent since");
+        }
     }
 
     #[test]

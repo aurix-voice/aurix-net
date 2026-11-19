@@ -55,6 +55,11 @@ namespace Aurix.Net.Unity
             new List<(ComponentDef, ComponentValue)>();
         readonly List<byte[]> _recentInputs = new List<byte[]>();
         uint _lastInputTick;
+
+        // The room drops an input whose tick it has already simulated, and one more than 64 ticks ahead.
+        // A frame carries inputs for consecutive ticks, so earlier ones are resent only without a gap.
+        uint InputLead =>
+            2 + Math.Min(60u, (uint)Math.Ceiling(Client.RttMs * Settings.TickHz / 1000f));
         float _tickTimer;
         float _lastDeltaTime;
         byte[] _heldInput;
@@ -385,7 +390,12 @@ namespace Aurix.Net.Unity
                 }
             }
 
-            uint tick = Math.Max(World.ServerTick + 2, _lastInputTick + 1);
+            uint tick = Math.Max(World.ServerTick + InputLead, _lastInputTick + 1);
+            if (tick != _lastInputTick + 1)
+            {
+                _recentInputs.Clear();
+            }
+
             _lastInputTick = tick;
             var body = _writes.Count > 0 ? World.EncodeWrites(_writes) : Array.Empty<byte>();
             _recentInputs.Add(body);
@@ -427,10 +437,16 @@ namespace Aurix.Net.Unity
                 return false;
             }
 
-            uint tick = Math.Max(World.ServerTick + 2, _lastInputTick + 1);
-            if (tick > World.ServerTick + 3)
+            uint lead = InputLead;
+            uint tick = Math.Max(World.ServerTick + lead, _lastInputTick + 1);
+            if (tick > World.ServerTick + lead + 1)
             {
                 return false;
+            }
+
+            if (tick != _lastInputTick + 1)
+            {
+                _recentInputs.Clear();
             }
 
             _lastInputTick = tick;

@@ -276,6 +276,12 @@ namespace Aurix.Net.Managed
                 return;
             }
 
+            // A frame carries inputs for consecutive ticks, so earlier ones are resent only without a gap.
+            if (tick != _lastInput + 1)
+            {
+                _recentInputs.Clear();
+            }
+
             _lastInput = tick;
             _recentInputs.Add(input);
             int keep = Math.Max(1, Math.Min(8, InputRedundancy));
