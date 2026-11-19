@@ -3,6 +3,7 @@
 
 mod common;
 
+use base64::Engine;
 use bytes::{BufMut, Bytes, BytesMut};
 use common::{Node, Project};
 use net_client::{Client, Event, Options};
@@ -10,6 +11,7 @@ use net_common::Channel;
 use net_replication::Replicator;
 use net_rooms::protocol::ClientMsg;
 use net_sim::{Frame, FrameConfig};
+use net_transport::{quic, Link};
 use net_wire::Schema;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -345,4 +347,51 @@ async fn tagged_spawn_repeated_after_the_room_moved_creates_nothing() {
         assert_eq!(ids(&world), both);
     };
     tokio::join!(frozen, back);
+}
+
+#[tokio::test]
+async fn client_whose_data_path_opens_late_gets_the_whole_world() {
+    let node = Node::start().await;
+    let project = node.project("late-path").await;
+    let mut ann = project.player("ann").await;
+    let reply = ann.call(create_arena()).await;
+    assert_eq!(reply["t"], "joined", "{reply}");
+    // The room ticks for a while before the client has a data path for its deltas.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let data = &reply["data"];
+    let ticket = base64::engine::general_purpose::STANDARD
+        .decode(data["ticket"].as_str().expect("ticket"))
+        .expect("base64");
+    let transport = quic::transport_config(Duration::from_secs(15), Duration::from_secs(5));
+    let fingerprint = data["cert_sha256"].as_str().expect("cert_sha256");
+    let endpoint = quic::client_endpoint("0.0.0.0:0".parse().unwrap(), fingerprint, transport)
+        .expect("endpoint");
+    let port = data["port"].as_u64().expect("port") as u16;
+    let conn = endpoint
+        .connect(([127, 0, 0, 1], port).into(), "aurix-net")
+        .expect("connect")
+        .await
+        .expect("handshake");
+    conn.send_datagram(Bytes::from(ticket)).expect("ticket");
+
+    // A client that never acks has only what the deltas bring.
+    let config = FrameConfig {
+        tick_hz: 30,
+        ..Default::default()
+    };
+    let mut world = Frame::new(Schema::parse(POSE_SCHEMA).expect("schema"), config, 0);
+    let mut link = Link::new(Instant::now());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while world.entities().count() == 0 {
+        let datagram = tokio::time::timeout_at(deadline, conn.read_datagram())
+            .await
+            .expect("the avatar is in no delta")
+            .expect("the path closed");
+        for message in link.receive(datagram, Instant::now()) {
+            if message.payload.first() == Some(&0x11) {
+                Replicator::apply(&mut world, &message.payload[1..]).expect("delta");
+            }
+        }
+    }
 }

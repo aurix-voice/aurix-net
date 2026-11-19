@@ -77,6 +77,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
 - A room continued on another node without a checkpoint always got the same seed: 1 in
   lockstep (the `seed` of `joined`), 0 in sync. It gets a random one below 2^53, as a new room
   does.
+- Sync: a delta built before the client's data path was open counted as sent. An entity that
+  did not change afterwards, the client's own avatar among them, never reached a client that
+  sends no acks. The first delta a client gets now holds everything it should see.
 - Lockstep: the room seed in `joined` was a nanosecond timestamp, more than a JSON number keeps
   (2^53), so a client reading it as a double started from a different seed than the node. The
   seed is a random number below 2^53 now.

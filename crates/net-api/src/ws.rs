@@ -1368,10 +1368,13 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
                     return;
                 };
                 let sessions = &room.sessions;
+                let wired = |actor| sessions.get(&actor).is_some_and(|s| s.data.is_some());
                 let out = sy.tick();
+                for (actor, _) in out.iter().filter(|(actor, _)| !wired(*actor)) {
+                    sy.undelivered(*actor);
+                }
                 let reports = sy.input_reports();
-                let spawned =
-                    sy.take_spawned(|actor| sessions.get(&actor).is_some_and(|s| s.data.is_some()));
+                let spawned = sy.take_spawned(wired);
                 let events = sy.take_events();
                 let actors: Vec<ActorId> = sy.avatars.keys().copied().collect();
                 st.metrics.sync_lost_deltas.inc_by(sy.take_lost_deltas());

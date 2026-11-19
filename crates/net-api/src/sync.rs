@@ -880,6 +880,14 @@ impl SyncRoom {
         out
     }
 
+    /// The delta the last tick built for `actor` had no data path to leave by. Its next one
+    /// starts from nothing, or what only that delta carried would never reach the client.
+    pub fn undelivered(&mut self, actor: ActorId) {
+        if let Some(view) = self.views.get_mut(&actor) {
+            view.reset();
+        }
+    }
+
     /// Room props `replay_every` (ticks between snapshots, default hz/2) and `replay_secs`
     /// (window kept, default 30; 0 disables the ring).
     pub fn set_replay(&mut self, every: Option<u32>, secs: Option<u32>) {
