@@ -461,3 +461,98 @@ async fn control_message_with_an_unknown_field_is_refused_by_its_name() {
     let message = reply["message"].as_str().expect("message");
     assert!(message.contains("colour"), "{reply}");
 }
+
+const NO_EVENT_LIMIT: &[(&str, &str)] = &[
+    ("NET__LIMITS__MAX_EVENTS_PER_SEC_PER_PLAYER", "1000000"),
+    ("NET__LIMITS__MAX_EVENTS_PER_SEC_PER_ROOM", "1000000"),
+];
+
+/// `host` sends 2000 events of 30 KB on `channel` to the others of his room; what he was told
+/// by the time the node had taken them all.
+async fn flood(host: &mut common::Ws, channel: &str) -> Vec<Value> {
+    use base64::Engine;
+    let data = base64::engine::general_purpose::STANDARD.encode([7u8; 30_000]);
+    let event = json!({"t": "event", "code": 1, "data": data, "channel": channel,
+                       "target": {"kind": "others"}});
+    for _ in 0..2000 {
+        host.send(event.clone()).await;
+    }
+    host.send(json!({"t": "ping", "ts": 1})).await;
+    let mut told = Vec::new();
+    loop {
+        let msg = host.next().await;
+        if msg["t"] == "pong" {
+            return told;
+        }
+        told.push(msg);
+    }
+}
+
+#[tokio::test]
+async fn player_who_does_not_read_what_he_must_not_miss_is_cut_off() {
+    let node = Node::start_with(NO_EVENT_LIMIT).await;
+    let project = node.project("sessions-overrun").await;
+    let mut host = project.player("host").await;
+    joined(&host.call(json!({"t": "create", "name": "arena"})).await);
+    let mut idler = project.player("idler").await;
+    let actor = joined(&idler.call(json!({"t": "join", "name": "arena"})).await);
+    host.until("player_joined").await;
+
+    let told = flood(&mut host, "reliable_ordered").await;
+
+    assert!(
+        idler.closed(Duration::from_secs(5)).await,
+        "the node dropped messages of a session and kept it"
+    );
+    let gone = told.iter().find(|msg| msg["t"] == "player_left");
+    assert_eq!(gone.expect("player_left")["actor"], actor);
+    assert_eq!(node.metric("net_control_overflows_total").await, 1);
+    let logged = node.logged();
+    let line = logged
+        .iter()
+        .find(|line| line["message"] == "control queue overflow: session closed")
+        .expect("a line about the session");
+    assert_eq!(line["player"], "idler");
+}
+
+#[tokio::test]
+async fn player_who_does_not_read_unreliable_events_loses_them_and_stays() {
+    let node = Node::start_with(NO_EVENT_LIMIT).await;
+    let project = node.project("sessions-lossy").await;
+    let mut host = project.player("host").await;
+    joined(&host.call(json!({"t": "create", "name": "arena"})).await);
+    let mut idler = project.player("idler").await;
+    joined(&idler.call(json!({"t": "join", "name": "arena"})).await);
+    host.until("player_joined").await;
+
+    flood(&mut host, "unreliable_sequenced").await;
+
+    let got = idler.drain(QUIET).await.len() as u64;
+    assert!(got < 2000, "{got}");
+    assert_eq!(node.metric("net_control_dropped_total").await, 2000 - got);
+    assert_eq!(node.metric("net_control_overflows_total").await, 0);
+    idler.send(json!({"t": "ping", "ts": 1})).await;
+    idler.until("pong").await;
+}
+
+#[tokio::test]
+async fn player_under_unreliable_events_he_does_not_read_is_still_told_of_the_room() {
+    let node = Node::start_with(NO_EVENT_LIMIT).await;
+    let project = node.project("sessions-classes").await;
+    let mut host = project.player("host").await;
+    joined(&host.call(json!({"t": "create", "name": "arena"})).await);
+    let mut idler = project.player("idler").await;
+    joined(&idler.call(json!({"t": "join", "name": "arena"})).await);
+    host.until("player_joined").await;
+
+    flood(&mut host, "unreliable_sequenced").await;
+    let mut late = project.player("late").await;
+    let actor = joined(&late.call(json!({"t": "join", "name": "arena"})).await);
+
+    let told = idler.drain(QUIET).await;
+    let came = told.iter().find(|msg| msg["t"] == "player_joined");
+    assert_eq!(came.expect("player_joined")["player"]["actor"], actor);
+    assert_eq!(node.metric("net_control_overflows_total").await, 0);
+    idler.send(json!({"t": "ping", "ts": 1})).await;
+    idler.until("pong").await;
+}

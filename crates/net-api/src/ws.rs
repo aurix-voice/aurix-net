@@ -1,14 +1,16 @@
 //! Control channel: one WebSocket per client. Text frames are JSON [`ClientMsg`]/[`ServerMsg`],
 //! binary frames are tunnelled data-path datagrams (first one is the data ticket).
 
-use crate::host::{dispatch, handle_data_frame, Attached, DataSession, DataSink, HostedRoom};
+use crate::host::{
+    dispatch, handle_data_frame, Attached, Control, DataSession, DataSink, HostedRoom,
+};
 use crate::state::Shared;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use bytes::Bytes;
-use futures::{SinkExt, StreamExt};
+use futures::{stream, SinkExt, StreamExt};
 use net_auth::Grant;
 use net_common::{ActorId, NetError, ProjectId, Result, RoomId, RoomMode, SessionId};
 use net_control::redis_store::LiveRoom;
@@ -28,6 +30,14 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const CATCHUP_BACKLOG_BYTES: usize = net_common::limits::RELIABLE_BACKLOG_BYTES / 2;
 /// A connection that has not authenticated within this window is dropped.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Control messages a client must not miss that the node holds for it.
+const CONTROL_QUEUE: usize = 512;
+/// Unreliable events the node holds for a client without a data path; more are dropped.
+const LOSSY_QUEUE: usize = 512;
+/// Why a session is closed whose client did not read a message it must not miss.
+const OVERRUN: &str = "control queue overflow";
+/// How long the close of such a session waits for a client that may not be reading.
+const OVERRUN_CLOSE_WAIT: Duration = Duration::from_secs(1);
 /// Largest text frame accepted before `auth` succeeded (a grant is ~1 KB).
 const PRE_AUTH_MAX_TEXT: usize = 8 * 1024;
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
@@ -72,7 +82,7 @@ struct InRoom {
 struct Session {
     st: Shared,
     id: SessionId,
-    ctl: mpsc::Sender<ServerMsg>,
+    ctl: Control,
     bin: mpsc::Sender<Bytes>,
     grant: Option<Grant>,
     room: Option<InRoom>,
@@ -97,31 +107,51 @@ const RPC_MAX_BODY: usize = 8 * 1024;
 async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
     st.metrics.control_sessions.inc();
     let (mut sink, mut stream) = socket.split();
-    let (ctl_tx, mut ctl_rx) = mpsc::channel::<ServerMsg>(512);
+    let (ctl_tx, mut ctl_rx) = mpsc::channel::<ServerMsg>(CONTROL_QUEUE);
+    let (lossy_tx, mut lossy_rx) = mpsc::channel::<ServerMsg>(LOSSY_QUEUE);
     let (bin_tx, mut bin_rx) = mpsc::channel::<Bytes>(2048);
+    let ctl = Control::new(ctl_tx, lossy_tx);
+    let overrun = ctl.clone();
     let writer = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                m = ctl_rx.recv() => match m {
-                    Some(msg) => {
-                        let txt = serde_json::to_string(&msg).unwrap_or_default();
-                        if sink.send(Message::Text(txt.into())).await.is_err() { break; }
-                    }
-                    None => break,
-                },
-                b = bin_rx.recv() => match b {
-                    Some(frame) => if sink.send(Message::Binary(frame)).await.is_err() { break; },
-                    None => break,
-                },
+        // Each queue that has something gets its turn, so no one of them holds up the rest.
+        let text =
+            |msg: ServerMsg| Message::Text(serde_json::to_string(&msg).unwrap_or_default().into());
+        let mut queues = stream::select_all([
+            stream::poll_fn(move |cx| ctl_rx.poll_recv(cx))
+                .map(text)
+                .boxed(),
+            stream::poll_fn(move |cx| bin_rx.poll_recv(cx))
+                .map(Message::Binary)
+                .boxed(),
+            stream::poll_fn(move |cx| lossy_rx.poll_recv(cx))
+                .map(text)
+                .boxed(),
+        ]);
+        let write = async {
+            while let Some(message) = queues.next().await {
+                if sink.send(message).await.is_err() {
+                    break;
+                }
+            }
+        };
+        tokio::select! {
+            () = write => {
+                let _ = sink.close().await;
+            }
+            () = overrun.overrun() => {
+                let close = Message::Close(Some(CloseFrame {
+                    code: close_code::POLICY,
+                    reason: OVERRUN.into(),
+                }));
+                let _ = tokio::time::timeout(OVERRUN_CLOSE_WAIT, sink.send(close)).await;
             }
         }
-        let _ = sink.close().await;
     });
 
     let mut sess = Session {
         st: st.clone(),
         id: SessionId::new(),
-        ctl: ctl_tx,
+        ctl,
         bin: bin_tx,
         grant: None,
         room: None,
@@ -134,20 +164,28 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
         rpc_tokens: RPC_BURST,
         rpc_at: Instant::now(),
     };
-    let _ = sess.ctl.try_send(ServerMsg::Hello {
+    sess.ctl.send(ServerMsg::Hello {
         session: sess.id.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         region: st.region.to_string(),
         supports: vec![UNSEQUENCED.to_string()],
     });
 
+    let mut overrun = false;
     loop {
         let limit = if sess.grant.is_some() {
             IDLE_TIMEOUT
         } else {
             AUTH_TIMEOUT
         };
-        let next = tokio::time::timeout(limit, stream.next()).await;
+        let next = tokio::select! {
+            next = tokio::time::timeout(limit, stream.next()) => next,
+            () = sess.ctl.overrun() => {
+                sess.log_overrun();
+                overrun = true;
+                break;
+            }
+        };
         let msg = match next {
             Err(_) => break,
             Ok(None) => break,
@@ -186,11 +224,19 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
         }
     }
     sess.cleanup().await;
-    writer.abort();
+    if !overrun {
+        writer.abort();
+    }
     st.metrics.control_sessions.dec();
 }
 
 impl Session {
+    fn log_overrun(&self) {
+        self.st.metrics.control_overflows.inc();
+        let player = self.grant.as_ref().map(|grant| grant.player_id.as_str());
+        tracing::warn!(session = %self.id, player, "{OVERRUN}: session closed");
+    }
+
     fn error(&self, e: NetError) {
         self.refuse(None, e);
     }
@@ -198,7 +244,7 @@ impl Session {
     /// `id`: the one the refused request carried.
     fn refuse(&self, id: Option<u32>, e: NetError) {
         self.st.metrics.errors.with_label_values(&[e.code()]).inc();
-        let _ = self.ctl.try_send(ServerMsg::Error {
+        self.ctl.send(ServerMsg::Error {
             code: e.code().to_string(),
             message: e.public_message(),
             id,
@@ -298,7 +344,7 @@ impl Session {
                         });
                     }
                 };
-                let _ = self.ctl.try_send(ServerMsg::Authed {
+                self.ctl.send(ServerMsg::Authed {
                     player_id: checked.player_id.clone(),
                     name: checked.name.clone(),
                 });
@@ -329,7 +375,7 @@ impl Session {
                     .filter(|r| filter.as_ref().is_none_or(|f| f.matches(&r.props)))
                     .take(limit)
                     .collect();
-                let _ = self.ctl.try_send(ServerMsg::Rooms { rooms, id });
+                self.ctl.send(ServerMsg::Rooms { rooms, id });
                 Ok(())
             }
             ClientMsg::Rpc { id, name, body } => {
@@ -361,7 +407,7 @@ impl Session {
                 let (hooks, ctl) = (self.st.webhooks.clone(), self.ctl.clone());
                 tokio::spawn(async move {
                     let out = hooks.rpc(grant.project, payload).await;
-                    let _ = ctl.try_send(ServerMsg::RpcResult {
+                    ctl.send(ServerMsg::RpcResult {
                         id,
                         ok: out.ok,
                         status: out.status,
@@ -372,7 +418,7 @@ impl Session {
                 Ok(())
             }
             ClientMsg::Ping { ts } => {
-                let _ = self.ctl.try_send(ServerMsg::Pong {
+                self.ctl.send(ServerMsg::Pong {
                     ts,
                     server_ms: self.st.started.elapsed().as_millis() as u64,
                 });
@@ -616,7 +662,7 @@ impl Session {
                     .as_ref()
                     .map(|joined| joined.hosted.lock().room.id().to_string());
                 self.leave(false).await;
-                let _ = self.ctl.try_send(ServerMsg::Left {
+                self.ctl.send(ServerMsg::Left {
                     reason: "left".into(),
                     room,
                 });
@@ -766,7 +812,7 @@ impl Session {
                     Err(_) => self.st.host.listed(grant.project, &grant.player_id),
                 };
                 let (rooms, players, lobbies) = crate::presence::lobby_stats(&rooms);
-                let _ = self.ctl.try_send(ServerMsg::Stats {
+                self.ctl.send(ServerMsg::Stats {
                     rooms,
                     players,
                     lobbies,
@@ -788,7 +834,7 @@ impl Session {
                 self.lookup_budget()?;
                 let friends =
                     crate::presence::find_friends(&self.st, grant.project, &players).await;
-                let _ = self.ctl.try_send(ServerMsg::Friends { friends, id });
+                self.ctl.send(ServerMsg::Friends { friends, id });
                 Ok(())
             }
             ClientMsg::Lobby { subscribe } => {
@@ -1208,7 +1254,7 @@ impl Session {
             // one is told and ignored from here on (see `owns_slot`).
             if let Some(old) = hr.room.online_actor(&grant.player_id) {
                 if let Some(session) = hr.sessions.get(&old) {
-                    let _ = session.control.try_send(ServerMsg::Left {
+                    session.control.send(ServerMsg::Left {
                         reason: "session_replaced".into(),
                         room: Some(hr.room.id().to_string()),
                     });
@@ -1304,7 +1350,7 @@ impl Session {
             hosted: handle,
         });
         self.tunnel_refused = false;
-        let _ = self.ctl.try_send(joined);
+        self.ctl.send(joined);
         self.st.metrics.players.set(self.st.host.players() as i64);
         self.publish_current().await;
         Ok(())
@@ -1866,7 +1912,7 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
                 );
                 for member in &actors {
                     if let Some(session) = hosted.sessions.get(member) {
-                        let _ = session.control.try_send(ServerMsg::Desync {
+                        session.control.send(ServerMsg::Desync {
                             tick,
                             actor,
                             strikes,
@@ -2434,7 +2480,7 @@ pub async fn handoff_all(st: &Shared, settle_until: tokio::time::Instant) -> usi
         };
         st.host.remove(id);
         for session in sessions {
-            let _ = session.try_send(ServerMsg::Left {
+            session.send(ServerMsg::Left {
                 reason: "rehost".into(),
                 room: Some(id.to_string()),
             });
@@ -2491,7 +2537,7 @@ pub async fn reconcile_rooms(st: &Shared) -> Result<(u64, usize)> {
             .map(|s| s.control)
             .collect();
         for session in sessions {
-            let _ = session.try_send(ServerMsg::Left {
+            session.send(ServerMsg::Left {
                 reason: "rehost".into(),
                 room: Some(id.to_string()),
             });
@@ -2592,7 +2638,7 @@ pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {
                 std::mem::take(&mut hosted.sessions)
                     .into_values()
                     .map(|s| s.control)
-                    .collect::<Vec<mpsc::Sender<ServerMsg>>>(),
+                    .collect::<Vec<Control>>(),
                 replay,
             )
         };
@@ -2604,7 +2650,7 @@ pub async fn close_room(st: &Shared, project: ProjectId, id: RoomId) {
             }
         }
         for session in sessions {
-            let _ = session.try_send(ServerMsg::Left {
+            session.send(ServerMsg::Left {
                 reason: "room closed".into(),
                 room: Some(id.to_string()),
             });

@@ -24,6 +24,8 @@ pub struct Metrics {
     pub tick_overruns: IntCounter,
     pub lockstep_desyncs: IntCounter,
     pub rooms_adopted: IntCounter,
+    pub control_overflows: IntCounter,
+    pub control_dropped: IntCounter,
 }
 
 impl Metrics {
@@ -94,7 +96,17 @@ impl Metrics {
             "net_rooms_adopted_total",
             "rooms this node took over from a dead node (failover)",
         );
+        let control_overflows = counter(
+            "net_control_overflows_total",
+            "control sessions closed because their queue of messages was full",
+        );
+        let control_dropped = counter(
+            "net_control_dropped_total",
+            "unreliable events dropped because a control session held too many of them",
+        );
         Self {
+            control_overflows,
+            control_dropped,
             sync_tick,
             sync_lost_deltas,
             sync_resyncs,

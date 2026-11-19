@@ -94,6 +94,20 @@ impl Node {
             .collect()
     }
 
+    /// The count the node's metrics give on the line `name`, 0 when there is no such line.
+    pub async fn metric(&self, name: &str) -> u64 {
+        let metrics = reqwest::get(format!("{}/metrics", self.http))
+            .await
+            .expect("metrics")
+            .text()
+            .await
+            .expect("metrics text");
+        metrics
+            .lines()
+            .find_map(|line| line.strip_prefix(name)?.strip_prefix(' '))
+            .map_or(0, |count| count.parse().expect("count"))
+    }
+
     /// The address the node says its HTTP listener got.
     fn listening(&self) -> Option<String> {
         self.logged()
@@ -340,6 +354,18 @@ impl Ws {
                 Some(msg) if msg["t"] == kind => return msg,
                 Some(_) => {}
                 None => panic!("no `{kind}` from the node"),
+            }
+        }
+    }
+
+    /// Reads on until the node ends the connection; false when it has not within `wait`.
+    pub async fn closed(&mut self, wait: Duration) -> bool {
+        let end = tokio::time::Instant::now() + wait;
+        loop {
+            match tokio::time::timeout_at(end, self.ws.next()).await {
+                Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) | Ok(None) => return true,
+                Ok(Some(Ok(_))) => {}
+                Err(_) => return false,
             }
         }
     }

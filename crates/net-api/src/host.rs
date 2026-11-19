@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// Where a session's datagrams go.
 #[derive(Clone)]
@@ -170,8 +171,56 @@ impl DataSession {
     }
 }
 
+/// The queue of control messages of one session.
+#[derive(Clone)]
+pub struct Control {
+    tx: mpsc::Sender<ServerMsg>,
+    /// A queue of its own for what may be lost, so that it takes no room from the rest.
+    lossy: mpsc::Sender<ServerMsg>,
+    overrun: CancellationToken,
+}
+
+impl Control {
+    pub fn new(tx: mpsc::Sender<ServerMsg>, lossy: mpsc::Sender<ServerMsg>) -> Self {
+        Self {
+            tx,
+            lossy,
+            overrun: CancellationToken::new(),
+        }
+    }
+
+    /// Queues a message the client must not miss. A session whose queue is full is overrun:
+    /// it is closed, so that the client sees a lost connection and not a gap.
+    pub fn send(&self, msg: ServerMsg) {
+        if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(msg) {
+            self.overrun.cancel();
+        }
+    }
+
+    /// Queues a message that may be lost; false if the queue had no room for it.
+    pub fn send_lossy(&self, msg: ServerMsg) -> bool {
+        !matches!(
+            self.lossy.try_send(msg),
+            Err(mpsc::error::TrySendError::Full(_))
+        )
+    }
+
+    /// Completes once a message that must not be missed found the queue full.
+    pub async fn overrun(&self) {
+        self.overrun.cancelled().await;
+    }
+
+    pub fn same_channel(&self, other: &Control) -> bool {
+        self.tx.same_channel(&other.tx)
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.tx.is_closed()
+    }
+}
+
 pub struct Attached {
-    pub control: mpsc::Sender<ServerMsg>,
+    pub control: Control,
     /// Control session owning this slot; a newer session of the same player replaces it.
     pub session: net_common::SessionId,
     pub data: Option<Arc<DataSession>>,
@@ -226,7 +275,7 @@ pub struct RoomHost {
 
 struct LobbyWatcher {
     player: String,
-    control: mpsc::Sender<ServerMsg>,
+    control: Control,
     /// The rooms in the list the watcher holds.
     shown: HashSet<String>,
 }
@@ -254,7 +303,7 @@ impl LobbyWatcher {
             _ => true,
         };
         if news {
-            let _ = self.control.try_send(msg);
+            self.control.send(msg);
         }
     }
 }
@@ -457,7 +506,7 @@ impl RoomHost {
             .is_some_and(|n| *n > 0)
     }
 
-    pub fn subscribe_lobby(&self, project: ProjectId, player: &str, tx: mpsc::Sender<ServerMsg>) {
+    pub fn subscribe_lobby(&self, project: ProjectId, player: &str, tx: Control) {
         let mut watchers = self.lobby.entry(project).or_default();
         if !watchers.iter().any(|w| w.control.same_channel(&tx)) {
             watchers.push(LobbyWatcher {
@@ -468,19 +517,14 @@ impl RoomHost {
         }
     }
 
-    pub fn unsubscribe_lobby(&self, project: ProjectId, tx: &mpsc::Sender<ServerMsg>) {
+    pub fn unsubscribe_lobby(&self, project: ProjectId, tx: &Control) {
         if let Some(mut watchers) = self.lobby.get_mut(&project) {
             watchers.retain(|w| !w.control.same_channel(tx));
         }
     }
 
     /// Sends one watcher of the project's lobby its list.
-    pub fn tell_lobby_watcher(
-        &self,
-        project: ProjectId,
-        tx: &mpsc::Sender<ServerMsg>,
-        msg: ServerMsg,
-    ) {
+    pub fn tell_lobby_watcher(&self, project: ProjectId, tx: &Control, msg: ServerMsg) {
         if let Some(mut watchers) = self.lobby.get_mut(&project) {
             if let Some(watcher) = watchers.iter_mut().find(|w| w.control.same_channel(tx)) {
                 watcher.tell(msg);
@@ -524,7 +568,7 @@ pub fn dispatch(hosted: &HostedRoom, out: Vec<Outgoing>, metrics: &Metrics) {
         match outgoing {
             Outgoing::Control(actor, msg) => {
                 if let Some(session) = hosted.sessions.get(&actor) {
-                    let _ = session.control.try_send(msg);
+                    session.control.send(msg);
                 }
             }
             Outgoing::Data(actor, channel, frame) => {
@@ -546,11 +590,16 @@ pub fn dispatch(hosted: &HostedRoom, out: Vec<Outgoing>, metrics: &Metrics) {
                     _ => {
                         // No data path, or a lost one: fall back to the control channel.
                         use base64::Engine;
-                        let _ = session.control.try_send(ServerMsg::Event {
+                        let event = ServerMsg::Event {
                             code: frame.code,
                             from: frame.from,
                             data: base64::engine::general_purpose::STANDARD.encode(&frame.payload),
-                        });
+                        };
+                        if channel.is_reliable() {
+                            session.control.send(event);
+                        } else if !session.control.send_lossy(event) {
+                            metrics.control_dropped.inc();
+                        }
                     }
                 }
             }
@@ -589,7 +638,7 @@ pub fn handle_data_frame(
         .get(&actor)
         .filter(|session| !unreadable || session.frame_errors.check().is_ok());
     if let Some(session) = told {
-        let _ = session.control.try_send(ServerMsg::Error {
+        session.control.send(ServerMsg::Error {
             code: e.code().to_string(),
             message: e.public_message(),
             id: None,

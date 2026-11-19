@@ -150,6 +150,18 @@ connection with code 4, and answers the next frame of a tunnel with one `error` 
 ticket, from a session in a room without a tunnel, is answered once with `unauthorized`
 (`bad data ticket`).
 
+The node holds up to 512 control messages for a client that is not reading its socket. One
+more that the client must not miss (an answer, `left`, a message of the room, `lobby_update`,
+a reliable event) ends the session: the WebSocket is closed with code 1008 and the reason
+`control queue overflow`, and the player is out of the room as after any lost connection. A
+client that does not read may see only the connection end.
+
+Unreliable events for a player without a data path wait in a queue of their own, 512 of
+them; one more is dropped and counted. They take no room from the messages above. The
+node sends from the control messages, the unreliable events and the frames of the tunnel in
+turn, so none of them holds up the others, and such an event may arrive after a control
+message the node made later.
+
 Every refused request of the player is answered: a lockstep command, an event over the rate.
 Frames the node cannot read are answered `frame_errors_per_sec_per_player` times a second (10,
 in bursts of up to twice that); the rest are only counted.
@@ -214,6 +226,8 @@ regenerated on every start. The WebSocket tunnel remains the fallback. Manual br
 | `net_sync_inputs_rate_limited_total`, `net_sync_invalid_inputs_total`, `net_sync_late_inputs_total` | input frames over the rate (dropped), malformed or too far ahead (dropped), behind the room tick (late) |
 | `net_lockstep_desyncs_total` | hash reports disagreeing with the majority |
 | `net_rooms_adopted_total` | rooms taken over from a dead node |
+| `net_control_overflows_total` | control sessions closed because the client did not read: the queue was full for a message it must not miss |
+| `net_control_dropped_total` | unreliable events dropped on the control channel because the session held 512 of them unread |
 
 ## Usage metering
 

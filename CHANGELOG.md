@@ -187,6 +187,17 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   reliable message has been resent and has gone the idle timeout without acknowledgement;
   one whose time ran out before any resend is resent and waits again, as in the Web and C#
   clients.
+- Control channel: a message for a client that had 512 unread ones was dropped without a
+  word, be it `joined`, `error`, `left`, a message of the room or a reliable event, and the
+  client went on with a state the node did not have. Such a session is closed with code
+  1008 and the reason `control queue overflow`, counted in `net_control_overflows_total`
+  and logged. An unreliable event is still dropped, and counted in
+  `net_control_dropped_total`.
+- Control channel: unreliable events for a player without a data path filled the queue of
+  the messages he must not miss, and the first of those, a `player_joined` for one, closed
+  his session. Such events wait in a queue of their own, 512 of them. Control messages,
+  such events and the frames of the tunnel are sent in turn: with control messages always
+  first, the tunnel of a client that read slower than they came stood still for seconds.
 - Grants: the length of a `player_id` was counted in bytes when a grant was signed and in
   characters everywhere else, so a player named in 65 to 128 Cyrillic letters could be
   banned and queued for a match and could get no grant. It is counted in characters, by
