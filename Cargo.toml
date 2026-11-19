@@ -63,7 +63,7 @@ rcgen = "0.14"
 tokio-tungstenite = "0.29"
 futures = "0.3"
 dashmap = "6"
-moka = { version = "0.12", features = ["future"] }
+moka = { version = "0.12", features = ["future", "sync"] }
 backon = { version = "1", default-features = false, features = ["std", "tokio-sleep"] }
 governor = { version = "0.10", default-features = false, features = ["std", "dashmap"] }
 parking_lot = "0.13"

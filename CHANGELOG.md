@@ -84,6 +84,13 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   of a late join, and a client that drops a `Catchup` behind its own ticks never recovered. It
   is now a frame of its own, `Restore` (`0x2A`), with the same layout. Clients have to handle
   `0x2A`; one that does not skips it and stays desynced.
+- Modules: creating a room compiled its module on the node's runtime when the node had not
+  compiled it yet (after a restart, or on another node than the upload). On a node with one
+  runtime thread every player waited for the compile, seconds for a large module. The compile
+  now runs on the blocking pool, as it does on upload.
+- Modules: the node kept every module version it had ever compiled, so a project that
+  replaced its module over and over grew the node's memory without limit. The compiled-module
+  cache is now bounded (64 MiB of module bytes, least recently used first).
 - Data path: the node closed a QUIC or WebTransport connection with `bad ticket` when any
   datagram reached it before the ticket, which happens whenever the ticket datagram is lost.
   It now drops such datagrams and waits 5 s for a valid ticket. A ticket repeated after the

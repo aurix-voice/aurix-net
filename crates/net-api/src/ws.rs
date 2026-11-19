@@ -1757,14 +1757,15 @@ pub async fn load_logic(
                 let row = queries::get_game_module(&st.pool, project.0, name)
                     .await?
                     .ok_or_else(|| NetError::NotFound(format!("game module {name}")))?;
-                let (_, module) = st
-                    .games
-                    .load(&row.wasm)
-                    .map_err(|e| NetError::Invalid(format!("game module {name}: {e}")))?;
-                let logic = st
-                    .games
-                    .instantiate(&module, seed)
-                    .map_err(|e| NetError::Invalid(format!("game module {name}: {e}")))?;
+                // A module this node has not compiled yet takes seconds.
+                let games = st.games.clone();
+                let logic = tokio::task::spawn_blocking(move || {
+                    let (_, module) = games.load(&row.wasm)?;
+                    games.instantiate(&module, seed)
+                })
+                .await
+                .map_err(|e| NetError::Internal(e.to_string()))?
+                .map_err(|e| NetError::Invalid(format!("game module {name}: {e}")))?;
                 Some(Box::new(logic))
             }
         };

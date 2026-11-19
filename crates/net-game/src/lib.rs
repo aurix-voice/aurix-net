@@ -39,8 +39,6 @@ use net_lagcomp::Hitbox;
 use net_sim::{EntityId, Frame};
 use net_wire::schema::FieldType;
 use net_wire::value::{ComponentValue, Value};
-use parking_lot::Mutex;
-use std::collections::HashMap;
 use wasmtime::*;
 
 /// Fuel (roughly instructions) a single guest call may burn before it is trapped.
@@ -62,10 +60,13 @@ pub enum GameError {
     Instantiate(String),
 }
 
+/// Module bytes whose compiled form a node keeps; the least recently used go first.
+const CACHE_BYTES: u64 = 8 * MAX_MODULE_BYTES as u64;
+
 /// One compiled-module cache per node (compilation is the expensive part; instances are cheap).
 pub struct GameEngine {
     engine: Engine,
-    cache: Mutex<HashMap<String, Module>>,
+    cache: moka::sync::Cache<String, (Module, u32)>,
 }
 
 impl Default for GameEngine {
@@ -85,7 +86,10 @@ impl GameEngine {
         let engine = Engine::new(&cfg).expect("wasmtime engine");
         Self {
             engine,
-            cache: Mutex::new(HashMap::new()),
+            cache: moka::sync::Cache::builder()
+                .weigher(|_hash, (_module, bytes): &(Module, u32)| *bytes)
+                .max_capacity(CACHE_BYTES)
+                .build(),
         }
     }
 
@@ -99,8 +103,8 @@ impl GameEngine {
             return Err(GameError::TooLarge(bytes.len()));
         }
         let hash = Self::hash(bytes);
-        if let Some(module) = self.cache.lock().get(&hash) {
-            return Ok((hash, module.clone()));
+        if let Some((module, _)) = self.cache.get(&hash) {
+            return Ok((hash, module));
         }
         let module =
             Module::new(&self.engine, bytes).map_err(|e| GameError::Invalid(e.to_string()))?;
@@ -121,7 +125,8 @@ impl GameEngine {
                 }));
             }
         }
-        self.cache.lock().insert(hash.clone(), module.clone());
+        self.cache
+            .insert(hash.clone(), (module.clone(), bytes.len() as u32));
         Ok((hash, module))
     }
 
@@ -707,6 +712,23 @@ mod tests {
     use super::*;
     use net_sim::FrameConfig;
     use net_wire::schema::Schema;
+
+    #[test]
+    fn replaced_modules_do_not_stay_compiled_forever() {
+        let engine = GameEngine::new();
+        let padding = "x".repeat(MAX_MODULE_BYTES / 2);
+        for version in 0..40 {
+            let wat = format!(
+                "(module (memory (export \"memory\") 1) (data (i32.const 0) \"{version}\") \
+                 (func (export \"aurix_init\") (param i64)) (func (export \"aurix_step\")) \
+                 (; {padding} ;))"
+            );
+            engine.load(wat.as_bytes()).unwrap();
+        }
+        engine.cache.run_pending_tasks();
+        assert!(engine.cache.weighted_size() <= CACHE_BYTES);
+        assert!(engine.cache.entry_count() < 40);
+    }
 
     const SCHEMA: &str = r#"
 component Transform {
