@@ -444,6 +444,27 @@ test("a control message over what the node reads is refused and not sent", { ski
   assert.equal((await a.joinOrCreate(room, "relay", 4)).name, room);
 });
 
+test("a control message that is not an object, and a join that is none, are refused and not sent", { skip: !key }, async (t) => {
+  const a = await Client.connect(http, await grant("web-shape-a"));
+  t.after(() => a.close());
+  const heard = [];
+  a.on("control", (message) => heard.push(message.t));
+  for (const message of ["text", null, undefined, 5, [1, 2]]) {
+    assert.throws(() => a.send(message), { name: "TypeError", message: "control message: not an object" });
+    await assert.rejects(a.join(message), TypeError);
+  }
+  const clock = Date.now();
+  for (const message of [{ t: "stats" }, { t: "leave" }, { name: "a" }, { t: 5 }]) {
+    await assert.rejects(a.join(message), { name: "TypeError", message: "join: not one of create, join, join_or_create, join_random" });
+  }
+  assert.ok(Date.now() - clock < 1000, "at once, not at the timeout of a join");
+  // the node heard none of it: it answers the next call, and said nothing in between
+  assert.equal(typeof (await a.lobbyStats()).rooms, "number");
+  assert.deepEqual(heard, ["stats"]);
+  const room = `web-shape-${process.pid}`;
+  assert.equal((await a.join({ t: "join_or_create", name: room })).name, room);
+});
+
 test("the longest chat text reaches the room whole, a longer one is refused", { skip: !key }, async (t) => {
   const a = await Client.connect(http, await grant("web-text-a"));
   const b = await Client.connect(http, await grant("web-text-b"));

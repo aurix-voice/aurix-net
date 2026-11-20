@@ -235,6 +235,16 @@ private:
         }
         return out + "]";
     }
+    // What a game hands over as the text of a JSON value, as that value and nothing beside it.
+    static std::string value(const char* name, const std::string& json) {
+        char* written = aurix_net_json_value(name, json.c_str());
+        if (!written) {
+            throw Error::last();
+        }
+        std::string out = written;
+        aurix_net_string_free(written);
+        return out;
+    }
     static std::string quoted(const std::vector<std::string>& texts) {
         std::string out = "[";
         for (size_t i = 0; i < texts.size(); ++i) {
@@ -259,7 +269,7 @@ public:
                               ",\"visible\":" + (visible ? "true" : "false") +
                               ",\"open\":" + (open ? "true" : "false");
         if (!propsJson.empty()) {
-            message += ",\"props\":" + propsJson;
+            message += ",\"props\":" + value("props", propsJson);
         }
         if (!lobbyProps.empty()) {
             message += ",\"lobby_props\":" + quoted(lobbyProps);
@@ -276,7 +286,7 @@ public:
                    const std::string& matchType = "") {
         std::string message = "{\"t\":\"join_random\"";
         if (!filterJson.empty()) {
-            message += ",\"filter\":" + filterJson;
+            message += ",\"filter\":" + value("filter", filterJson);
         }
         if (!expr.empty()) {
             message += ",\"expr\":" + quote(expr);

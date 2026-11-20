@@ -46,6 +46,15 @@ sent without one (`set_room_props` outside a room, a kick the player may not mak
 reads it as the control message it is, and no call fails by it. A join to a node that does not
 list `join_id` goes without an `id`, and an `error` without one is its refusal.
 
+Text a game hands over as a message is checked before it is sent, and nothing is sent when it
+fails: it is one JSON object, a join is a `create`, `join`, `join_or_create` or `join_random`, and
+props or a filter given as text are one JSON object that becomes that one field. What the message
+says (a type the node does not know, a field of the wrong type) is left to the node. The refusal is
+of one kind per mistake: a value of the wrong shape is a `TypeError` on the Web, an
+`ArgumentException` in C# (`ArgumentNullException` for `null`) and `AURIX_NET_ERR_INVALID_REQUEST`
+in the C ABI and what is built on it; a value over a limit is a `RangeError`, an
+`ArgumentOutOfRangeException` and `AURIX_NET_ERR_INVALID_ARGUMENT`.
+
 The data path is lost (`closed` with `link dead`) when a reliable message has been resent and
 has gone 15 s without the node's acknowledgement, and when more than 1 MiB of them wait for the
 node: the send that meets the limit fails ([modes.md](modes.md)). A message whose 15 s ran out

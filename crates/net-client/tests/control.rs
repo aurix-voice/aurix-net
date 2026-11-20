@@ -101,6 +101,35 @@ async fn what_the_node_closed_the_control_channel_with_is_told() {
 }
 
 #[tokio::test]
+async fn a_join_asked_with_a_message_that_is_none_is_refused_and_not_sent() {
+    let (url, mut read) = node(false).await;
+    let mut client = Client::connect(&url, "grant", Options::default())
+        .await
+        .unwrap();
+    let refused = client.join(ClientMsg::Stats { id: None }).await;
+    assert!(
+        matches!(refused, Err(ClientError::NotJoin)),
+        "{:?}",
+        refused.err()
+    );
+    let apart = Client::connect_and_join(
+        &url,
+        "grant",
+        Options::default(),
+        ClientMsg::Leave { id: None },
+    )
+    .await;
+    assert!(
+        matches!(apart, Err(ClientError::NotJoin)),
+        "{:?}",
+        apart.err()
+    );
+    // neither the message nor a leave after it
+    let heard = tokio::time::timeout(WAIT, read.recv()).await;
+    assert!(!matches!(heard, Ok(Some(_))), "{heard:?}");
+}
+
+#[tokio::test]
 async fn a_close_that_ends_a_call_is_told_to_the_game_as_well() {
     let (url, _read) = node(true).await;
     let mut client = Client::connect(&url, "grant", Options::default())

@@ -213,6 +213,29 @@ int main() {
         apart = actor >= 0 && unasked == 1;
         std::printf("cpp join beside a refusal without an id: actor=%d, refusals the game read=%d\n", actor, unasked);
     }
+    // text that is not the message it is handed over as is refused and not sent: a join that is
+    // none at once, and props that carry a field beside them make no room
+    bool formed = false;
+    {
+        Client asker;
+        asker.connect(http, Client::issueGrant(http, key, "cpp-shaped", "Shaped"));
+        auto refusal = [](const std::function<void()>& call) {
+            try { call(); } catch (const Error& error) { return error.code; }
+            return 0;
+        };
+        auto start = std::chrono::steady_clock::now();
+        int notJoin = refusal([&] { asker.joinJson("{\"t\":\"stats\"}"); });
+        long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+        int beside = refusal([&] { asker.joinOrCreate(room + "-shaped", Mode::Relay, 4, "{},\"lobby_props\":[\"a\"]"); });
+        int filter = refusal([&] { asker.joinRandom("{},\"expr\":\"a = 1\""); });
+        int notObject = refusal([&] { asker.joinOrCreate(room + "-shaped", Mode::Relay, 4, "5"); });
+        int noRoom = refusal([&] { asker.join(room + "-shaped"); });
+        formed = notJoin == AURIX_NET_ERR_INVALID_REQUEST && ms < 1000 && beside == AURIX_NET_ERR_INVALID_REQUEST &&
+                 filter == AURIX_NET_ERR_INVALID_REQUEST && notObject == AURIX_NET_ERR_INVALID_REQUEST &&
+                 noRoom == AURIX_NET_ERR_NOT_FOUND && asker.joinOrCreate(room + "-shaped", Mode::Relay, 4, "{\"a\":1}") >= 0;
+        std::printf("cpp join that is none: error code %d after %ld ms; props with a field beside them: %d, filter: %d, props not an object: %d, the room: %d -> %s\n",
+                    notJoin, ms, beside, filter, notObject, noRoom, formed ? "ok" : "FAIL");
+    }
     // a chat channel is of the room: the same chat joins it again in the next one
     std::string matches;
     {
@@ -251,5 +274,5 @@ int main() {
         std::printf("cpp callback that leaves the room%s: events before the leave=%d/1, after it=%d/0\n", tunnel ? ", tunnel" : "", last, more);
         gone = gone && last == 1 && more == 0;
     }
-    a.leave(); return (apart && fits && rooms && gone && hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && threw && inRange && whole && refused && matched && shaped && rejoined && turnedOut && handedBack) ? 0 : 1;
+    a.leave(); return (formed && apart && fits && rooms && gone && hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && threw && inRange && whole && refused && matched && shaped && rejoined && turnedOut && handedBack) ? 0 : 1;
 }

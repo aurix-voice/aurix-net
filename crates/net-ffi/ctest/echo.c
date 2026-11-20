@@ -61,6 +61,11 @@ int main(void) {
     /* a message with a field the node does not know is refused before it is sent, and the field is named */
     snprintf(join, sizeof join, "{\"t\":\"join\",\"name\":\"c-missing-%d\",\"mode\":\"relay\"}", (int)getpid());
     if (aurix_net_join(a, join) >= 0 || aurix_net_last_error_code() != AURIX_NET_ERR_INVALID_REQUEST || !strstr(aurix_net_last_error(), "unknown field `mode`")) { fprintf(stderr, "unknown field: code %d (%s)\n", (int)aurix_net_last_error_code(), aurix_net_last_error()); return 1; }
+    /* text that is not the message it is handed over as is refused and not sent */
+    char *props = aurix_net_json_value("props", " { \"a\" : 1 } ");
+    if (!props || strcmp(props, "{\"a\":1}") != 0 || aurix_net_json_value("props", "{not") || aurix_net_json_value("props", "") || aurix_net_json_value("props", "{},\"a\":1") || aurix_net_last_error_code() != AURIX_NET_ERR_INVALID_REQUEST || !strstr(aurix_net_last_error(), "bad message: props: trailing characters")) { fprintf(stderr, "props as text: %s, code %d\n", props ? props : "none", (int)aurix_net_last_error_code()); return 1; }
+    aurix_net_string_free(props);
+    if (aurix_net_join(a, "{\"t\":\"stats\"}") >= 0 || aurix_net_last_error_code() != AURIX_NET_ERR_INVALID_REQUEST) { fprintf(stderr, "join that is none: code %d (%s)\n", (int)aurix_net_last_error_code(), aurix_net_last_error()); return 1; }
     snprintf(join, sizeof join, "{\"t\":\"join_or_create\",\"name\":\"c-one-%d\",\"max_players\":1}", (int)getpid());
     if (aurix_net_join(a, join) < 0) { fprintf(stderr, "join: %s\n", aurix_net_last_error()); return 1; }
     if (aurix_net_join(b, join) >= 0 || aurix_net_last_error_code() != AURIX_NET_ERR_ROOM_FULL) { fprintf(stderr, "full room: code %d (%s)\n", (int)aurix_net_last_error_code(), aurix_net_last_error()); return 1; }

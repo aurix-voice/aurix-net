@@ -101,6 +101,9 @@ export const MAX_CONTROL_MESSAGE = 69632;
 /** The same for the sign-in, the message with the grant that `Client.connect` sends. */
 export const MAX_CONTROL_MESSAGE_BEFORE_AUTH = 8192;
 
+// The messages that ask the node for a room: it answers these with `joined`, and no other.
+const JOINS = ["create", "join", "join_or_create", "join_random"];
+
 // What this client names in `auth`, so the node sends it nothing it does not know.
 const SUPPORTS = ["unsequenced"];
 
@@ -457,6 +460,9 @@ export class Client {
 
   /** Any control message, e.g. {t:"set_room_props", props:{...}}. */
   send(msg: object) {
+    if (typeof msg !== "object" || msg === null || Array.isArray(msg)) {
+      throw new TypeError("control message: not an object");
+    }
     const text = JSON.stringify(msg);
     const bytes = new TextEncoder().encode(text).length;
     const most =
@@ -575,6 +581,9 @@ export class Client {
     throw err;
   }
   async join(msg: object): Promise<Joined> {
+    if (!JOINS.includes(String((msg as { t?: unknown } | null)?.t))) {
+      throw new TypeError(`join: not one of ${JOINS.join(", ")}`);
+    }
     if (this.leaving) {
       await this.leaving;
     }

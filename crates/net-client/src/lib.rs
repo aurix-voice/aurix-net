@@ -49,6 +49,9 @@ pub enum ClientError {
     TooLarge(usize, usize),
     #[error("timeout")]
     Timeout,
+    /// A join was asked for with a message that is none: nothing was sent.
+    #[error("bad message: not a create, join, join_or_create or join_random")]
+    NotJoin,
     /// The node took the client out of the room before the join had entered it: the reason of
     /// its `left`.
     #[error("left: {0}")]
@@ -492,6 +495,9 @@ impl Client {
         opts: Options,
         msg: ClientMsg,
     ) -> Result<(Client, Joined)> {
+        if !joins(&msg) {
+            return Err(ClientError::NotJoin);
+        }
         let mut client = Client::connect(http_url, grant, opts.clone()).await?;
         match client.join(msg.clone()).await {
             Ok(joined) => Ok((client, joined)),
@@ -538,6 +544,9 @@ impl Client {
     }
 
     pub async fn join(&mut self, msg: ClientMsg) -> Result<Joined> {
+        if !joins(&msg) {
+            return Err(ClientError::NotJoin);
+        }
         let joined = self.enter(msg).await;
         let room = self.entering.take();
         match joined {
@@ -1219,6 +1228,18 @@ fn way_back(asked: &ClientMsg, name: &str) -> ClientMsg {
         spectator,
         id: None,
     }
+}
+
+/// Whether `msg` asks the node for a room: the node answers these with `joined`, and nothing
+/// else it is sent does.
+fn joins(msg: &ClientMsg) -> bool {
+    matches!(
+        msg,
+        ClientMsg::Create { .. }
+            | ClientMsg::Join { .. }
+            | ClientMsg::JoinOrCreate { .. }
+            | ClientMsg::JoinRandom { .. }
+    )
 }
 
 /// `msg` with `id` if it is a join: the client numbers its joins itself.

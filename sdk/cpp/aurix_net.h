@@ -75,6 +75,7 @@ void aurix_net_set_last_error(int32_t code, const char *message); /* the last er
 char *aurix_net_issue_grant(const char *http, const char *api_key, const char *player_id, const char *name);
 char *aurix_net_best_region(const char *catalog_http, int32_t probes); /* GetRegions + ping: JSON {region, endpoint, rtt_ms, candidates}; NULL on error; free with aurix_net_string_free */
 char *aurix_net_json_string(const char *json, const char *key); /* a top-level string field of a JSON object, e.g. "t" of a control message; NULL when absent or not a string; free with aurix_net_string_free */
+char *aurix_net_json_value(const char *name, const char *json); /* the text of one JSON value written anew, e.g. props a game hands over as text, so that it enters a message as one field; NULL with AURIX_NET_ERR_INVALID_REQUEST and an error that names `name`, the field it was to be, when the text is anything else; free with aurix_net_string_free */
 void aurix_net_string_free(char *string);
 
 AurixNetClient *aurix_net_connect(const char *http, const char *grant, int32_t tunnel);

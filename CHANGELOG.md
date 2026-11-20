@@ -197,6 +197,12 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Every client: text a game hands over as a message went to the node as it was. In C# text
+  that was not JSON made a join or an `rpc` wait out its timeout, and a `mode` or a cache
+  operation with a quote in it became fields of the message; in every client a join given a
+  message that is none waited out its timeout, and props or a filter given as text could carry
+  another field of the message beside them. Such text is now refused before it is sent
+  (`docs/sdk.md`), and props and a filter become that one field and nothing else.
 - Every client: an `error` of the node without an `id` was taken for the refusal of whatever
   call was waiting. The node refuses that way a message the game sent without an id
   (`set_room_props` outside a room, a kick the player may not make), so a join, lobby

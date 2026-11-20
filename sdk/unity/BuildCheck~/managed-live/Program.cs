@@ -921,7 +921,21 @@ class P
             stallOk = stallGot == stallSent && stallReasons.Count == 0;
             talker.Dispose();
         }
-        bool ok = throwOk && wayBack && stallOk && busyOk && givenUpOk && undeliveredOk && refused && lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && failedFast && runnerOk;
+        // text that is not the message it is handed over as is refused and not sent: a join that is none at once,
+        // and props that carry a field beside them make no room
+        bool formedOk;
+        {
+            using var former = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-formed"));
+            string formed = "cs-formed-" + Environment.ProcessId, notJoin = "none", beside = "none", absent = "none";
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            try { await former.JoinRawAsync("{\"t\":\"stats\"}"); } catch (ArgumentException error) { notJoin = error.GetType().Name; }
+            long ms = clock.ElapsedMilliseconds;
+            try { await former.JoinOrCreateAsync(formed, "relay", 4, "{},\"lobby_props\":[\"a\"]"); } catch (ArgumentException error) { beside = error.GetType().Name; }
+            try { await former.JoinAsync(formed); } catch (NetException error) { absent = error.Message; }
+            formedOk = notJoin == "ArgumentException" && ms < 1000 && beside == "ArgumentException" && absent.StartsWith("not_found") && await former.JoinOrCreateAsync(formed, "relay", 4, "{\"a\":1}") > 0;
+            Console.WriteLine($"join that is none: {notJoin} after {ms} ms; props with a field beside them: {beside}, the room: {absent} -> {(formedOk ? "ok" : "FAIL")}");
+        }
+        bool ok = formedOk && throwOk && wayBack && stallOk && busyOk && givenUpOk && undeliveredOk && refused && lsOk && schemaOk && spawnOk && tailOk && rel == 1 && unrel == 10 && big == 1 && bigLen == 5000 && deltas > 60 && again == 5 && cached == 1 && history == 1 && unsequenced == 10 && rejoined && toldApart && fellBack && failedFast && runnerOk;
         Console.WriteLine(ok ? "MANAGED OK" : "MANAGED FAIL");
         return ok ? 0 : 1;
     }

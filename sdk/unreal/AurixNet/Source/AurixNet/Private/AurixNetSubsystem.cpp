@@ -47,12 +47,20 @@ public:
 		return *this;
 	}
 
-	/** JSON text the caller already holds; nothing is written for an empty one. */
+	/** JSON text the caller already holds, as the one value it is; nothing is written for an empty one. */
 	FControlMessage& Raw(const TCHAR* Name, const FString& Json)
 	{
 		if (!Json.IsEmpty())
 		{
-			Writer->WriteRawJSONValue(Name, Json);
+			if (char* Written = aurix_net_json_value(TCHAR_TO_UTF8(Name), TCHAR_TO_UTF8(*Json)))
+			{
+				Writer->WriteRawJSONValue(Name, FString(UTF8_TO_TCHAR(Written)));
+				aurix_net_string_free(Written);
+			}
+			else
+			{
+				bWhole = false;
+			}
 		}
 		return *this;
 	}
@@ -84,14 +92,16 @@ public:
 		return *this;
 	}
 
+	/** The message, or no text when a part of it was not one JSON value: the core's error then names the part. */
 	FString Finish()
 	{
 		Writer->WriteObjectEnd();
 		Writer->Close();
-		return MoveTemp(Text);
+		return bWhole ? MoveTemp(Text) : FString();
 	}
 
 private:
+	bool bWhole = true;
 	FString Text;
 	TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer;
 };
@@ -190,6 +200,8 @@ bool UAurixNetSubsystem::Connect(const FString& CellUrl, const FString& Grant, b
 int32 UAurixNetSubsystem::JoinJson(const FString& Json)
 {
 	if (!Client || bBusy) { OnError.Broadcast(TEXT("join"), bBusy ? TEXT("busy") : TEXT("not connected")); return -1; }
+	// No text: a part of the join was refused as it was written, and the core's error names it.
+	if (Json.IsEmpty()) { OnError.Broadcast(TEXT("join"), GetLastError()); return -1; }
 	const int32 Actor = aurix_net_join(Client, TCHAR_TO_UTF8(*Json));
 	if (Actor < 0) { UE_LOG(LogAurixNet, Warning, TEXT("join failed: %s"), *GetLastError()); OnError.Broadcast(TEXT("join"), GetLastError()); return -1; }
 	FinishJoin();
@@ -292,6 +304,7 @@ void UAurixNetSubsystem::JoinAsync(const FString& JoinJson, FAurixNetAsyncResult
 {
 	if (!Client) { Done.ExecuteIfBound(-1, EAurixNetError::Disconnected, TEXT("not connected")); return; }
 	if (bBusy) { Done.ExecuteIfBound(-1, EAurixNetError::InvalidArgument, TEXT("busy")); return; }
+	if (JoinJson.IsEmpty()) { Done.ExecuteIfBound(-1, EAurixNetError::InvalidRequest, TEXT("bad message: props, lobby_props or filter is not one JSON value")); return; }
 	bBusy = true;
 	AurixNetClient* C = Client;
 	JoiningClient = C;
@@ -356,10 +369,11 @@ static const FString EmptyJsonObject(TEXT("{}"));
 
 bool UAurixNetSubsystem::SetRoomProps(const FString& PropsJson, const FString& ExpectedJson)
 {
-	return SendControl(FControlMessage(TEXT("set_room_props"))
+	const FString Message = FControlMessage(TEXT("set_room_props"))
 		.Raw(TEXT("props"), PropsJson.IsEmpty() ? EmptyJsonObject : PropsJson)
 		.Raw(TEXT("expected"), ExpectedJson)
-		.Finish());
+		.Finish();
+	return !Message.IsEmpty() && SendControl(Message);
 }
 
 bool UAurixNetSubsystem::SetRoomVisibility(bool bVisible, bool bOpen)
@@ -373,10 +387,11 @@ bool UAurixNetSubsystem::SetRoomVisibility(bool bVisible, bool bOpen)
 
 bool UAurixNetSubsystem::SetPlayerProps(const FString& PropsJson, const FString& ExpectedJson)
 {
-	return SendControl(FControlMessage(TEXT("set_player_props"))
+	const FString Message = FControlMessage(TEXT("set_player_props"))
 		.Raw(TEXT("props"), PropsJson.IsEmpty() ? EmptyJsonObject : PropsJson)
 		.Raw(TEXT("expected"), ExpectedJson)
-		.Finish());
+		.Finish();
+	return !Message.IsEmpty() && SendControl(Message);
 }
 
 bool UAurixNetSubsystem::SetGroups(const TArray<int32>& Join, const TArray<int32>& Leave)
@@ -425,11 +440,12 @@ bool UAurixNetSubsystem::RequestStats()
 int32 UAurixNetSubsystem::Rpc(const FString& Name, const FString& BodyJson)
 {
 	const int32 Id = NextRpcId++;
-	const bool bSent = SendControl(FControlMessage(TEXT("rpc"))
+	const FString Message = FControlMessage(TEXT("rpc"))
 		.Value(TEXT("id"), static_cast<int64>(Id))
 		.Value(TEXT("name"), Name)
 		.Raw(TEXT("body"), BodyJson.IsEmpty() ? FString(TEXT("null")) : BodyJson)
-		.Finish());
+		.Finish();
+	const bool bSent = !Message.IsEmpty() && SendControl(Message);
 	return bSent ? Id : -1;
 }
 

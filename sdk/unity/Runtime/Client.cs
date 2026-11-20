@@ -201,7 +201,7 @@ namespace Aurix.Net
                 .Append(open ? "true" : "false");
             if (!string.IsNullOrEmpty(propsJson))
             {
-                sb.Append(",\"props\":").Append(propsJson);
+                sb.Append(",\"props\":").Append(Value("props", propsJson));
             }
 
             if (reserved != null && reserved.Length > 0)
@@ -244,7 +244,7 @@ namespace Aurix.Net
             var sb = new StringBuilder("{\"t\":\"join_random\"");
             if (!string.IsNullOrEmpty(filterJson))
             {
-                sb.Append(",\"filter\":").Append(filterJson);
+                sb.Append(",\"filter\":").Append(Value("filter", filterJson));
             }
 
             if (!string.IsNullOrEmpty(expr))
@@ -467,6 +467,11 @@ namespace Aurix.Net
                 _h = IntPtr.Zero;
             }
         }
+
+        /// <summary>What a game hands over as the text of a JSON value, as that value and nothing beside it.</summary>
+        static string Value(string name, string json) =>
+            Taken(Native.aurix_net_json_value(name, json))
+            ?? throw new NetException(Native.LastError());
 
         static string Json(string text)
         {

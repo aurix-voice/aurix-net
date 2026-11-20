@@ -89,6 +89,14 @@ func _ready() -> void:
 	# each client knows the player its grant names, the one the room lists it as
 	var ids: Array = facts.get("players", []).map(func(player): return player.get("player_id"))
 	if a.get_player_id() == "" or a.get_player_name() == "" or a.get_player_id() == b.get_player_id() or not ids.has(a.get_player_id()) or not ids.has(b.get_player_id()): fail("player: a %s, b %s, room %s" % [a.get_player_id(), b.get_player_id(), ids]); return
+	# text that is not the message it is handed over as is refused and not sent: props that carry a field beside them make no room
+	if grant_c != "":
+		var odd := AurixNetClient.new()
+		var shaped := room + "-shaped"
+		var took: bool = odd.connect_to(http, grant_c) and (odd.join_or_create(shaped, AurixNetClient.MODE_RELAY, 4, "{},\"lobby_props\":[\"a\"]") >= 0 or odd.get_last_error_code() != AurixNetClient.ERROR_INVALID_REQUEST or odd.join_random("{},\"expr\":\"a = 1\"") >= 0 or odd.send_control("{not json") or odd.join(shaped) >= 0 or odd.get_last_error_code() != AurixNetClient.ERROR_NOT_FOUND)
+		var said := "%d %s" % [odd.get_last_error_code(), odd.get_last_error()]
+		odd.disconnect_from(); odd.free()
+		if took: fail("text of the wrong shape: " + said); return
 	# a number the wire has no room for is refused, not sent as another one
 	if a.send_event(300, PackedByteArray([1])) or a.get_last_error_code() != AurixNetClient.ERROR_INVALID_ARGUMENT or a.send_event_on(257, 1, PackedByteArray([1])) or a.send_data(257, PackedByteArray([1])) or a.set_groups(PackedInt32Array([65537])): fail("a number out of range was taken: " + a.get_last_error()); return
 	b.event.connect(func(code, from, payload): 

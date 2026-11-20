@@ -150,6 +150,7 @@ impl From<&ClientError> for ErrorCode {
             ClientError::Disconnected | ClientError::Closed(_) => ErrorCode::Disconnected,
             ClientError::TooLarge(..) => ErrorCode::InvalidArgument,
             ClientError::Timeout => ErrorCode::Timeout,
+            ClientError::NotJoin => ErrorCode::InvalidRequest,
             ClientError::Left(_) => ErrorCode::Left,
             ClientError::Server { code, .. } => match code.as_str() {
                 "unauthorized" => ErrorCode::Unauthorized,
@@ -472,6 +473,33 @@ pub unsafe extern "C" fn aurix_net_json_string(
             })
             .map(CString::into_raw)
             .unwrap_or(std::ptr::null_mut())
+    })
+}
+/// The text of `json` written anew when it is one JSON value, e.g. the props or the filter a
+/// game hands over as text: what goes into a message is then that value and nothing beside it.
+/// Returns a string to free with `aurix_net_string_free`, or NULL when it is anything else;
+/// the error then says so of `name`, the part of the message the text was to be.
+#[no_mangle]
+pub unsafe extern "C" fn aurix_net_json_value(
+    name: *const c_char,
+    json: *const c_char,
+) -> *mut c_char {
+    guard(&[], std::ptr::null_mut(), || {
+        let (Some(name), Some(json)) = (cstr(name), cstr(json)) else {
+            return std::ptr::null_mut();
+        };
+        match serde_json::from_str::<serde_json::Value>(json) {
+            Ok(value) => CString::new(value.to_string())
+                .map(CString::into_raw)
+                .unwrap_or(std::ptr::null_mut()),
+            Err(error) => {
+                set_error(
+                    ErrorCode::InvalidRequest,
+                    format_args!("bad message: {name}: {error}"),
+                );
+                std::ptr::null_mut()
+            }
+        }
     })
 }
 #[no_mangle]

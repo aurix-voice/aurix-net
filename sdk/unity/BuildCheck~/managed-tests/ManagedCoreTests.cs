@@ -844,6 +844,48 @@ public class ManagedCoreTests
     }
 
     [Test]
+    public async Task TextThatIsNotTheMessageItIsHandedOverAsIsRefusedAndNotSent()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+        using var listener = new HttpListener();
+        listener.Prefixes.Add("http://127.0.0.1:" + port + "/"); listener.Start();
+        var sizes = new List<int>();
+        _ = ReadControl(listener, sizes, false);
+        string url = "http://127.0.0.1:" + port;
+        using var client = await ManagedClient.ConnectAsync(url, "grant");
+        foreach (var text in new[] { "{not json", "[1,2]", "{\"t\":\"set_groups\",\"join\":[1]} and more", "", "5", "{\"t\":\"ping\",\"t\":\"ping\"}" })
+        {
+            Assert.Throws<ArgumentException>(() => client.SendControlAsync(text), text);
+            Assert.Throws<ArgumentException>(() => client.JoinRawAsync(text), text);
+            Assert.Throws<ArgumentException>(() => ManagedClient.ConnectAndJoinAsync(url, "grant", text), text);
+        }
+        Assert.Throws<ArgumentNullException>(() => client.SendControlAsync(null));
+        Assert.Throws<ArgumentNullException>(() => client.JoinRawAsync(null));
+        Assert.Throws<ArgumentNullException>(() => ManagedClient.ConnectAndJoinAsync(url, "grant", null));
+        foreach (var notJoin in new[] { "{\"t\":\"stats\"}", "{\"t\":\"leave\"}", "{\"name\":\"a\"}", "{\"t\":5}" })
+        {
+            var refused = Assert.Throws<ArgumentException>(() => client.JoinRawAsync(notJoin), notJoin);
+            Assert.That(refused.Message, Does.StartWith("not a create, join, join_or_create, join_random"));
+            Assert.Throws<ArgumentException>(() => ManagedClient.ConnectAndJoinAsync(url, "grant", notJoin), notJoin);
+        }
+        foreach (var props in new[] { "{\"a\":", "5", "[]", "{},\"max_players\":1", "{},\"lobby_props\":[\"a\"]" })
+        {
+            Assert.Throws<ArgumentException>(() => client.JoinOrCreateAsync("room", "relay", 4, props), props);
+            Assert.Throws<ArgumentException>(() => client.JoinRandomAsync(props), props);
+        }
+        Assert.ThrowsAsync<ArgumentException>(() => client.RpcAsync("echo", "{\"a\":"));
+        Assert.ThrowsAsync<ArgumentException>(() => client.RpcAsync("echo", "1,\"name\":\"other\""));
+        // a quote in a name is a character of the name, not the end of it
+        string op = "set\",\"index\":7,\"x\":\"" + new string('a', 64);
+        await client.CacheSliceAsync(op);
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (clock.ElapsedMilliseconds < 5000) { lock (sizes) { if (sizes.Count > 0) break; } await Task.Delay(10); }
+        string sent = "{\"t\":\"cache_slice\",\"op\":" + Newtonsoft.Json.JsonConvert.ToString(op) + "}";
+        Assert.That(sizes, Is.EqualTo(new[] { Encoding.UTF8.GetByteCount(sent) }));
+    }
+
+    [Test]
     public async Task WhatTheNodeClosedTheControlChannelWithIsTold()
     {
         var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start();

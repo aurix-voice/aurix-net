@@ -60,6 +60,9 @@ namespace Aurix.Net
         public static extern void aurix_net_string_free(IntPtr pointer);
 
         [DllImport(Lib)]
+        public static extern IntPtr aurix_net_json_value(string name, string json);
+
+        [DllImport(Lib)]
         public static extern IntPtr aurix_net_connect(string http, string grant, int tunnel);
 
         [DllImport(Lib)]

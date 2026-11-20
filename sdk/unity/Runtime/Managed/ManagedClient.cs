@@ -179,10 +179,13 @@ namespace Aurix.Net.Managed
             try
             {
                 await client._socket.OpenAsync(url, timeoutMs, client);
-                await client.SendControlAsync(
-                    "{\"t\":\"auth\",\"grant\":"
-                        + Json.Str(grant)
-                        + ",\"supports\":[\"unsequenced\"]}",
+                await client.Send(
+                    new JObject
+                    {
+                        ["t"] = "auth",
+                        ["grant"] = grant,
+                        ["supports"] = new JArray("unsequenced"),
+                    },
                     MaxControlMessageBeforeAuth
                 );
                 var authed = await client.WaitForAsync("authed", timeoutMs);
@@ -198,18 +201,25 @@ namespace Aurix.Net.Managed
         }
 
         /// <summary>connect + join, following one `room_elsewhere:&lt;url&gt;` redirect.</summary>
-        public static async Task<ManagedClient> ConnectAndJoinAsync(
+        public static Task<ManagedClient> ConnectAndJoinAsync(
             string httpUrl,
             string grant,
             string joinJson,
             int timeoutMs = 10000
+        ) => ConnectAndJoin(httpUrl, grant, Joining(joinJson, nameof(joinJson)), timeoutMs);
+
+        static async Task<ManagedClient> ConnectAndJoin(
+            string httpUrl,
+            string grant,
+            JObject join,
+            int timeoutMs
         )
         {
             try
             {
                 return await JoinOrDisposeAsync(
                     await ConnectAsync(httpUrl, grant, timeoutMs),
-                    joinJson,
+                    join,
                     timeoutMs
                 );
             }
@@ -220,7 +230,7 @@ namespace Aurix.Net.Managed
                     .Trim();
                 return await JoinOrDisposeAsync(
                     await ConnectAsync(url, grant, timeoutMs),
-                    joinJson,
+                    join,
                     timeoutMs
                 );
             }
@@ -228,13 +238,13 @@ namespace Aurix.Net.Managed
 
         static async Task<ManagedClient> JoinOrDisposeAsync(
             ManagedClient client,
-            string joinJson,
+            JObject join,
             int timeoutMs
         )
         {
             try
             {
-                await client.JoinRawAsync(joinJson, timeoutMs);
+                await client.Join((JObject)join.DeepClone(), timeoutMs);
                 return client;
             }
             catch
@@ -259,43 +269,31 @@ namespace Aurix.Net.Managed
             bool open = true
         )
         {
-            var sb = new StringBuilder("{\"t\":\"join_or_create\",\"name\":")
-                .Append(Json.Str(name))
-                .Append(",\"mode\":\"")
-                .Append(mode)
-                .Append("\",\"max_players\":")
-                .Append(maxPlayers)
-                .Append(",\"visible\":")
-                .Append(visible ? "true" : "false")
-                .Append(",\"open\":")
-                .Append(open ? "true" : "false");
+            var message = new JObject
+            {
+                ["t"] = "join_or_create",
+                ["name"] = name,
+                ["mode"] = mode,
+                ["max_players"] = maxPlayers,
+                ["visible"] = visible,
+                ["open"] = open,
+            };
             if (!string.IsNullOrEmpty(propsJson))
             {
-                sb.Append(",\"props\":").Append(propsJson);
+                message["props"] = Json.Object(propsJson, nameof(propsJson));
             }
 
             if (reserved != null && reserved.Length > 0)
             {
-                sb.Append(",\"reserved\":[");
-                for (int i = 0; i < reserved.Length; i++)
-                {
-                    if (i > 0)
-                    {
-                        sb.Append(',');
-                    }
-
-                    sb.Append(Json.Str(reserved[i]));
-                }
-                sb.Append(']');
+                message["reserved"] = new JArray(reserved);
             }
 
             if (lobbyProps != null && lobbyProps.Length > 0)
             {
-                sb.Append(",\"lobby_props\":[")
-                    .Append(string.Join(",", lobbyProps.Select(Json.Str)))
-                    .Append(']');
+                message["lobby_props"] = new JArray(lobbyProps);
             }
-            return JoinRawAsync(sb.Append('}').ToString());
+
+            return Join(message);
         }
 
         /// <summary>Joins a random open room. <paramref name="filterJson"/> must equal room props exactly,
@@ -307,39 +305,39 @@ namespace Aurix.Net.Managed
             string matchType = null
         )
         {
-            var sb = new StringBuilder("{\"t\":\"join_random\"");
+            var message = new JObject { ["t"] = "join_random" };
             if (!string.IsNullOrEmpty(filterJson))
             {
-                sb.Append(",\"filter\":").Append(filterJson);
+                message["filter"] = Json.Object(filterJson, nameof(filterJson));
             }
 
             if (!string.IsNullOrEmpty(expr))
             {
-                sb.Append(",\"expr\":").Append(Json.Str(expr));
+                message["expr"] = expr;
             }
 
             if (!string.IsNullOrEmpty(matchType))
             {
-                sb.Append(",\"match_type\":").Append(Json.Str(matchType));
+                message["match_type"] = matchType;
             }
 
-            return JoinRawAsync(sb.Append('}').ToString());
+            return Join(message);
         }
 
         public Task<int> JoinAsync(string name, string schemaHash = null, bool spectator = false)
         {
-            var sb = new StringBuilder("{\"t\":\"join\",\"name\":").Append(Json.Str(name));
+            var message = new JObject { ["t"] = "join", ["name"] = name };
             if (schemaHash != null)
             {
-                sb.Append(",\"schema_hash\":").Append(Json.Str(schemaHash));
+                message["schema_hash"] = schemaHash;
             }
 
             if (spectator)
             {
-                sb.Append(",\"spectator\":true");
+                message["spectator"] = true;
             }
 
-            return JoinRawAsync(sb.Append('}').ToString());
+            return Join(message);
         }
 
         /// <summary>After a rehost: a fresh client in the same room with the same grant (entry URL, then fallbacks).</summary>
@@ -368,11 +366,37 @@ namespace Aurix.Net.Managed
         }
 
         /// <summary>Any join-like control message; opens the data path (ticket first) and waits for the server's ack.</summary>
-        public async Task<int> JoinRawAsync(string json, int timeoutMs = 10000)
+        public Task<int> JoinRawAsync(string json, int timeoutMs = 10000) =>
+            Join(Joining(json, nameof(json)), timeoutMs);
+
+        static readonly string[] Joins = { "create", "join", "join_or_create", "join_random" };
+
+        /// <summary>The message a game hands over as the text of a join: the node answers these with
+        /// `joined`, and nothing else it is sent.</summary>
+        static JObject Joining(string json, string what)
+        {
+            var message = Json.Object(json, what);
+            if (
+                !(message["t"] is JValue { Type: JTokenType.String } kind)
+                || !Joins.Contains((string)kind)
+            )
+            {
+                throw new ArgumentException("not a " + string.Join(", ", Joins), what);
+            }
+
+            return message;
+        }
+
+        async Task<int> Join(JObject message, int timeoutMs = 10000)
         {
             // A node that repeats the id of a join answers this one and no other with it.
             uint? id = _nodeRepeatsJoinIds ? NextRequestId() : (uint?)null;
-            await SendControlAsync(WithId(json, id));
+            if (id != null)
+            {
+                message["id"] = id;
+            }
+
+            await Send(message);
             _turnedOut = null;
             // A `left` of this room that follows is the end of this join.
             var joined = await AnswerAsync(
@@ -393,7 +417,10 @@ namespace Aurix.Net.Managed
             }
 
             ThrowIfTurnedOut();
-            LastJoinJson = Json.WayBack(json, Json.Str(joined, "name"));
+            LastJoinJson = Json.WayBack(
+                message.ToString(Formatting.None),
+                Json.Str(joined, "name")
+            );
             Actor = (int)Json.Num(joined, "actor");
             RoomMode = Json.Str(joined, "mode");
             Seed = Json.ULong(joined, "seed");
@@ -441,15 +468,18 @@ namespace Aurix.Net.Managed
             }
         }
 
-        public Task SendControlAsync(string json) => SendControlAsync(json, MaxControlMessage);
+        /// <summary>Any control message as the text of its JSON object, e.g.
+        /// {"t":"set_room_props","props":{...}}. Text that is not one JSON object is refused and
+        /// not sent.</summary>
+        public Task SendControlAsync(string json) => Send(Json.Object(json, nameof(json)));
 
-        Task SendControlAsync(string json, int most)
+        Task Send(JObject message, int most = MaxControlMessage)
         {
-            var bytes = Encoding.UTF8.GetBytes(json);
+            var bytes = Encoding.UTF8.GetBytes(message.ToString(Formatting.None));
             if (bytes.Length > most)
             {
                 throw new ArgumentOutOfRangeException(
-                    nameof(json),
+                    nameof(message),
                     "control message of " + bytes.Length + " bytes: at most " + most
                 );
             }
@@ -526,14 +556,16 @@ namespace Aurix.Net.Managed
         ) => Queue(channel, Event.Encode(code, payload, target, actors, group, cache), EventMark);
 
         /// <summary>Relay event-cache slices: "increase" opens the next slice, "set" picks one, "purge" drops one slice, "purge_up_to" every slice up to index.</summary>
-        public Task CacheSliceAsync(string op, ushort? index = null) =>
-            SendControlAsync(
-                "{\"t\":\"cache_slice\",\"op\":\""
-                    + op
-                    + "\""
-                    + (index.HasValue ? ",\"index\":" + index.Value : "")
-                    + "}"
-            );
+        public Task CacheSliceAsync(string op, ushort? index = null)
+        {
+            var message = new JObject { ["t"] = "cache_slice", ["op"] = op };
+            if (index.HasValue)
+            {
+                message["index"] = index.Value;
+            }
+
+            return Send(message);
+        }
 
         /// <summary>Pushes queued unreliable messages; call at the end of the frame.</summary>
         public void Flush()
@@ -585,7 +617,7 @@ namespace Aurix.Net.Managed
                 {
                     _probes.TryRemove(_probes.Keys.Min(), out _);
                 }
-                _ = SendControlAsync("{\"t\":\"ping\",\"ts\":" + now + "}");
+                _ = Send(new JObject { ["t"] = "ping", ["ts"] = now });
             }
             lock (_linkLock)
             {
@@ -832,9 +864,13 @@ namespace Aurix.Net.Managed
             var events = UnacknowledgedEvents();
             ForgetRoom();
             HandBack(events);
-            await SendControlAsync(
-                WithId("{\"t\":\"leave\"}", _nodeRepeatsJoinIds ? NextRequestId() : (uint?)null)
-            );
+            var leave = new JObject { ["t"] = "leave" };
+            if (_nodeRepeatsJoinIds)
+            {
+                leave["id"] = NextRequestId();
+            }
+
+            await Send(leave);
         }
 
         bool AwaitsAcknowledgement()
@@ -845,33 +881,25 @@ namespace Aurix.Net.Managed
             }
         }
 
-        static string WithId(string json, uint? id) =>
-            id == null ? json : json.Substring(0, json.LastIndexOf('}')) + ",\"id\":" + id + "}";
-
         /// <summary>Project-wide live rooms/players grouped by the room prop "lobby" (JSON: {rooms, players, lobbies:[{lobby, rooms, players}]}); one per second.</summary>
         public async Task<string> StatsAsync(int timeoutMs = 10000)
         {
             var id = NextRequestId();
-            await SendControlAsync("{\"t\":\"stats\",\"id\":" + id + "}");
+            await Send(new JObject { ["t"] = "stats", ["id"] = id });
             return await WaitForAsync("stats", timeoutMs, id);
         }
 
         /// <summary>Presence of up to 64 players across the fleet (JSON: {friends:[{player, online, room?:{id,name,mode,node}}]}); one per second.</summary>
         public async Task<string> FindFriendsAsync(string[] players, int timeoutMs = 10000)
         {
-            var ids = new System.Text.StringBuilder();
-            foreach (var player in players ?? Array.Empty<string>())
-            {
-                if (ids.Length > 0)
-                {
-                    ids.Append(',');
-                }
-
-                ids.Append(Json.Str(player));
-            }
             var id = NextRequestId();
-            await SendControlAsync(
-                "{\"t\":\"find_friends\",\"players\":[" + ids + "],\"id\":" + id + "}"
+            await Send(
+                new JObject
+                {
+                    ["t"] = "find_friends",
+                    ["players"] = new JArray(players ?? Array.Empty<string>()),
+                    ["id"] = id,
+                }
             );
             return await WaitForAsync("friends", timeoutMs, id);
         }
@@ -884,14 +912,14 @@ namespace Aurix.Net.Managed
         )
         {
             var id = NextRequestId();
-            await SendControlAsync(
-                "{\"t\":\"get_rooms\",\"expr\":"
-                    + (expr == null ? "null" : Json.Str(expr))
-                    + ",\"limit\":"
-                    + limit
-                    + ",\"id\":"
-                    + id
-                    + "}"
+            await Send(
+                new JObject
+                {
+                    ["t"] = "get_rooms",
+                    ["expr"] = expr,
+                    ["limit"] = limit,
+                    ["id"] = id,
+                }
             );
             return await WaitForAsync("rooms", timeoutMs, id);
         }
@@ -910,37 +938,42 @@ namespace Aurix.Net.Managed
             int timeoutMs = 10000
         )
         {
+            var body = string.IsNullOrEmpty(bodyJson)
+                ? JValue.CreateNull()
+                : Json.Value(bodyJson, nameof(bodyJson));
             var id = NextRequestId();
-            await SendControlAsync(
-                "{\"t\":\"rpc\",\"id\":"
-                    + id
-                    + ",\"name\":"
-                    + Json.Str(name)
-                    + ",\"body\":"
-                    + (string.IsNullOrEmpty(bodyJson) ? "null" : bodyJson)
-                    + "}"
+            await Send(
+                new JObject
+                {
+                    ["t"] = "rpc",
+                    ["id"] = id,
+                    ["name"] = name,
+                    ["body"] = body,
+                }
             );
             return await WaitForAsync("rpc_result", timeoutMs, id);
         }
 
         /// <summary>Relay interest groups: events raised with a group reach only its members.</summary>
         public Task SetGroupsAsync(ushort[] join = null, ushort[] leave = null) =>
-            SendControlAsync(
-                "{\"t\":\"set_groups\",\"join\":["
-                    + string.Join(",", join ?? Array.Empty<ushort>())
-                    + "],\"leave\":["
-                    + string.Join(",", leave ?? Array.Empty<ushort>())
-                    + "]}"
+            Send(
+                new JObject
+                {
+                    ["t"] = "set_groups",
+                    ["join"] = new JArray(join ?? Array.Empty<ushort>()),
+                    ["leave"] = new JArray(leave ?? Array.Empty<ushort>()),
+                }
             );
 
         /// <summary>Sync rooms: steer area-of-interest: extra viewpoints (camera, scope target) and entities forced into view (team mates, objectives). Entity ids as in deltas.</summary>
         public Task SetViewAsync(ulong[] viewpoints = null, ulong[] interest = null) =>
-            SendControlAsync(
-                "{\"t\":\"set_view\",\"viewpoints\":["
-                    + string.Join(",", viewpoints ?? Array.Empty<ulong>())
-                    + "],\"interest\":["
-                    + string.Join(",", interest ?? Array.Empty<ulong>())
-                    + "]}"
+            Send(
+                new JObject
+                {
+                    ["t"] = "set_view",
+                    ["viewpoints"] = new JArray(viewpoints ?? Array.Empty<ulong>()),
+                    ["interest"] = new JArray(interest ?? Array.Empty<ulong>()),
+                }
             );
 
         async Task ISocketOwner.Message(byte[] data, bool text)
@@ -1215,6 +1248,43 @@ namespace Aurix.Net.Managed
                 return null;
             }
         }
+
+        // The node refuses a field named twice; read loosely, the later one would replace the earlier.
+        static readonly JsonLoadSettings Strict = new JsonLoadSettings
+        {
+            DuplicatePropertyNameHandling = DuplicatePropertyNameHandling.Error,
+        };
+
+        /// <summary>What a game hands over as the text of JSON, read whole: the value, and nothing after it.</summary>
+        public static JToken Value(string json, string what)
+        {
+            if (json == null)
+            {
+                throw new ArgumentNullException(what);
+            }
+
+            try
+            {
+                using var reader = new JsonTextReader(new StringReader(json))
+                {
+                    DateParseHandling = DateParseHandling.None,
+                };
+                var value = JToken.ReadFrom(reader, Strict);
+                if (!reader.Read())
+                {
+                    return value;
+                }
+            }
+            catch (JsonException error)
+            {
+                throw new ArgumentException("not JSON: " + error.Message, what);
+            }
+            throw new ArgumentException("not JSON: text after the value", what);
+        }
+
+        /// <summary><see cref="Value"/> that is an object: a control message, props, a filter.</summary>
+        public static JObject Object(string json, string what) =>
+            Value(json, what) as JObject ?? throw new ArgumentException("not a JSON object", what);
 
         static JToken Field(string json, string key) => (Parse(json) as JObject)?[key];
 
