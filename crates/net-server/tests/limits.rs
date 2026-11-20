@@ -142,3 +142,45 @@ async fn operator_is_alerted_of_a_project_with_unreadable_stored_limits() {
     let hook = format!("/v1/operator/webhooks/{}", hook["id"].as_str().expect("id"));
     assert_eq!(project.operator.delete(&hook).await.0, 204);
 }
+
+#[tokio::test]
+async fn rejections_of_a_project_are_listed_whatever_its_age() {
+    let env = [
+        ("NET__SERVER__HEARTBEAT_SECS", "1"),
+        ("NET__LIMITS__HTTP_RPS_PER_IP", "100000"),
+    ];
+    let node = Node::start_with(&env).await;
+    let other = Node::start_with(&env).await;
+    // The list once looked at the 200 oldest projects only.
+    for n in 0..200 {
+        node.project(&format!("older-{n}")).await;
+    }
+    let project = node.project("newest").await;
+    let mut host = project.player("host").await;
+    let full = json!({"t": "create", "name": "full", "max_players": 1});
+    joined(&host.call(full).await);
+    let mut ann = project.player("ann").await;
+    // Enough of them to be among the projects with the most, whatever other tests do.
+    const TURNED_AWAY: usize = 25;
+    for _ in 0..TURNED_AWAY {
+        refused(
+            &ann.call(json!({"t": "join", "name": "full"})).await,
+            "room_full",
+        );
+    }
+
+    let asked = other.same_project(&project);
+    let mut listed = Value::Null;
+    for _ in 0..20 {
+        let (status, body) = asked.operator.get("/v1/operator/attention").await;
+        assert_eq!(status, 200, "{body}");
+        let rejections = body["rejections"].as_array().expect("rejections");
+        let own = |row: &&Value| row["project_id"] == project.id.as_str();
+        listed = rejections.iter().find(own).cloned().unwrap_or_default();
+        if listed["total"] == TURNED_AWAY {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(listed["by"], json!({"room_full": TURNED_AWAY}), "{listed}");
+}

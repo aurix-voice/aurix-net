@@ -3367,9 +3367,16 @@ async fn internal_post(st: &Shared, http_url: &str, path: &str, body: Value) -> 
 
 /// Everything an operator should look at right now: nodes without a heartbeat or draining,
 /// suspended projects, webhooks failing in the last hour, projects with rejections this hour.
+/// Projects in the `rejections` of the attention list: those with the most.
+const ATTENTION_REJECTIONS: usize = 20;
+
 async fn op_attention(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Json<Value>> {
     operator(&st, &headers).await?;
-    Ok(Json(attention_value(&st).await?))
+    let mut attention = attention_value(&st).await?;
+    if let Some(rejections) = attention["rejections"].as_array_mut() {
+        rejections.truncate(ATTENTION_REJECTIONS);
+    }
+    Ok(Json(attention))
 }
 
 /// A node is stale once it has missed two of its own heartbeats in a row; after the third its
@@ -3408,27 +3415,16 @@ pub(crate) async fn attention_value(st: &Shared) -> Result<Value> {
         .map(|f| json!({"project_id": f.project_id, "project_name": names.get(&f.project_id).copied().unwrap_or(""), "webhook_id": f.webhook_id, "url": f.url, "failed": f.failed, "total": f.total}))
         .collect();
     let mut rejections: Vec<Value> = Vec::new();
-    for project in projects.iter().take(200) {
-        let buckets = st
-            .redis
-            .get_rejections(ProjectId::from_uuid(project.id), 1)
-            .await?;
-        let mut total = 0i64;
-        let mut by: std::collections::BTreeMap<String, i64> = Default::default();
-        for (_, counts) in buckets {
-            for (k, v) in counts {
-                total += v;
-                *by.entry(k).or_default() += v;
-            }
-        }
-        if total > 0 {
+    for (project, by) in st.redis.rejected_this_hour().await? {
+        let total: i64 = by.values().sum();
+        if let Some(name) = names.get(&project.0).filter(|_| total > 0) {
+            let by: std::collections::BTreeMap<String, i64> = by.into_iter().collect();
             rejections.push(
-                json!({"project_id": project.id, "project_name": project.name, "total": total, "by": by}),
+                json!({"project_id": project.0, "project_name": name, "total": total, "by": by}),
             );
         }
     }
     rejections.sort_by_key(|r| -r["total"].as_i64().unwrap_or(0));
-    rejections.truncate(20);
     let mut usage_caps: Vec<Value> = Vec::new();
     let mut invalid_limits: Vec<Value> = Vec::new();
     for project in projects.iter().filter(|p| p.deleted_at.is_none()) {

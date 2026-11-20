@@ -450,11 +450,16 @@ impl RedisStore {
         let mut conn = self.conn.clone();
         let hour = net_db::Timestamp::now().unix_timestamp() / 3600;
         let bucket = format!("net:rej:{project}:{hour}");
+        let rejected = Self::rejected_key(hour);
         redis::pipe()
             .atomic()
             .hincr(&bucket, reason, 1)
             .ignore()
             .expire(&bucket, 26 * 3600)
+            .ignore()
+            .sadd(&rejected, project.to_string())
+            .ignore()
+            .expire(&rejected, 26 * 3600)
             .ignore()
             .query_async::<()>(&mut conn)
             .await
@@ -463,6 +468,36 @@ impl RedisStore {
 
     /// Hourly rejection buckets for the last `hours` (oldest first); each entry is
     /// `(hour_start_unix, reason -> count)`. Missing hours are returned as empty maps.
+    /// The projects that had a rejection in the hour, kept as long as their counters.
+    fn rejected_key(hour: i64) -> String {
+        format!("net:rej:projects:{hour}")
+    }
+
+    /// Every project with a rejection in the current hour, with its counts by reason.
+    pub async fn rejected_this_hour(
+        &self,
+    ) -> Result<Vec<(ProjectId, std::collections::HashMap<String, i64>)>> {
+        let mut conn = self.conn.clone();
+        let hour = net_db::Timestamp::now().unix_timestamp() / 3600;
+        let projects: Vec<String> = conn
+            .smembers(Self::rejected_key(hour))
+            .await
+            .map_err(|e| NetError::Redis(e.to_string()))?;
+        let projects: Vec<ProjectId> = projects.iter().filter_map(|p| p.parse().ok()).collect();
+        if projects.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut read = redis::pipe();
+        for project in &projects {
+            read.hgetall(format!("net:rej:{project}:{hour}"));
+        }
+        let counts: Vec<std::collections::HashMap<String, i64>> = read
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| NetError::Redis(e.to_string()))?;
+        Ok(projects.into_iter().zip(counts).collect())
+    }
+
     pub async fn get_rejections(
         &self,
         project: ProjectId,
