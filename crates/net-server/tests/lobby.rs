@@ -83,6 +83,43 @@ async fn lookups_sent_at_once_are_told_apart_by_their_ids() {
 }
 
 #[tokio::test]
+async fn message_that_does_not_read_as_a_request_is_refused_with_its_id() {
+    let node = Node::start().await;
+    let project = node.project("unread").await;
+    let mut ann = project.player("ann").await;
+    let unread = [
+        json!({"t": "nonsense"}),
+        json!({"t": "join", "name": "arena", "bogus": 1}),
+        json!({"t": "join"}),
+        json!({"t": "join", "name": 5}),
+        json!({"name": "arena"}),
+        json!({"t": "create", "name": "arena", "mode": "chess"}),
+        json!({"t": "lobby", "subscribe": true, "bogus": 1}),
+        // These take no id: it is the field the node does not know.
+        json!({"t": "set_room_props", "props": {}}),
+        json!({"t": "event", "code": 1, "data": "AQI="}),
+    ];
+    for (id, mut message) in (1..).zip(unread) {
+        message["id"] = json!(id);
+        let reply = ann.call(message.clone()).await;
+        refused(&reply, "invalid_request");
+        assert_eq!(reply["id"], id, "{message}: {reply}");
+    }
+
+    // An id that is not a number a request may carry cannot be repeated, nor one out of a
+    // message that is not JSON.
+    for id in [json!("7"), json!(-7), json!(4_294_967_296_u64), json!(7.5)] {
+        let reply = ann.call(json!({"t": "nonsense", "id": id})).await;
+        refused(&reply, "invalid_request");
+        assert_eq!(reply["id"], Value::Null, "{id}: {reply}");
+    }
+    ann.send_text(r#"{"t": "join", "id": 7"#).await;
+    let reply = ann.next().await;
+    refused(&reply, "invalid_request");
+    assert_eq!(reply["id"], Value::Null, "{reply}");
+}
+
+#[tokio::test]
 async fn the_rust_client_sends_a_lookup_under_the_id_it_is_given() {
     let node = Node::start().await;
     let project = node.project("lobby-client-ids").await;

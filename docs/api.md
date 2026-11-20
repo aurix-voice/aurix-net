@@ -128,7 +128,10 @@ Server → client: `hello{session, version, region, supports?}`, `authed{player_
 `id` (a number up to 2^32 − 1) tells apart the answers to requests in flight at once: the node
 repeats the `id` of a `stats`, `find_friends` or `get_rooms` in its answer, and the `id` of any
 of these or of an `rpc` in the `error` that refuses that request (`lookup_rate`, `rpc_rate`, a
-bad `expr`, name or body). A request sent without an `id` is answered without one.
+bad `expr`, name or body). A message the node cannot read as a request is refused with the `id`
+it carried as well, whatever its type. Two refusals have no `id` to repeat: of a message whose
+`id` is not such a number, and of one that is not JSON. A request sent without an `id` is
+answered without one.
 
 A node that lists `join_id` in `supports` takes an `id` in `create`, `join`, `join_or_create`,
 `join_random` and `leave` too and repeats it in the `joined`, the `left` (reason `left`) or the

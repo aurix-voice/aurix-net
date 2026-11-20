@@ -228,7 +228,10 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
                         }
                     }
                 }
-                Err(e) => sess.error(NetError::Invalid(format!("bad message: {e}"))),
+                Err(e) => sess.refuse(
+                    unread_request_id(&text),
+                    NetError::Invalid(format!("bad message: {e}")),
+                ),
             },
             Message::Binary(frame) => {
                 if let Err(e) = sess.on_binary(frame) {
@@ -254,6 +257,15 @@ async fn run(socket: WebSocket, st: Shared, ip: std::net::IpAddr) {
         writer.abort();
     }
     st.metrics.control_sessions.dec();
+}
+
+/// The `id` of a message that did not read as a request.
+fn unread_request_id(frame: &str) -> Option<u32> {
+    #[derive(serde::Deserialize)]
+    struct Numbered {
+        id: u32,
+    }
+    serde_json::from_str(frame).ok().map(|n: Numbered| n.id)
 }
 
 /// The socket refused to read a message for its size.

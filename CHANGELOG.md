@@ -312,6 +312,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   held no hash from before the move. A node keeps the whole journal of a room and its hashes
   in Redis, not the last ten seconds, and the node that takes the room over has them. The
   checkpoint of a room is deleted with the room; it used to stay ten minutes after the close.
+- A message with an `id` that the node could not read as a request (a type or field it does
+  not know, a field missing or of the wrong type) was refused without the `id`, so a client
+  could not tell which of its calls the `error` answered. The refusal repeats the `id`.
 - `find_friends` could name a room the player was not in: one that still held their seat
   after a lost connection, while they played in another room or were connected and in none.
   Asked on the node of the held seat it always did. The answer names the room the player is

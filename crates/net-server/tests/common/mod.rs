@@ -314,10 +314,12 @@ impl Ws {
     }
 
     pub async fn send(&mut self, msg: Value) {
-        self.ws
-            .send(Message::text(msg.to_string()))
-            .await
-            .expect("ws send");
+        self.send_text(&msg.to_string()).await;
+    }
+
+    /// A text message as written: one that need not be JSON.
+    pub async fn send_text(&mut self, text: &str) {
+        self.ws.send(Message::text(text)).await.expect("ws send");
     }
 
     /// The next control message within `wait`, None when nothing came (or the socket closed).
