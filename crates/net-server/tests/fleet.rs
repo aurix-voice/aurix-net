@@ -322,3 +322,34 @@ async fn relay_room_of_a_node_that_died_keeps_its_seats_and_its_master() {
     let mut host = pb.player("host").await;
     assert_eq!(joined(&host.call(join).await), host_actor);
 }
+
+#[tokio::test]
+async fn room_of_a_node_that_died_young_keeps_its_seats() {
+    let mut node_a = Node::start_with(FAST).await;
+    let node_b = Node::start_with(FAST).await;
+    let pb = node_b.project("young").await;
+    let pa = node_a.same_project(&pb);
+    let modes = ["relay", "sync", "lockstep"];
+    let mut players = Vec::new();
+    for mode in modes {
+        let mut host = pa.player("host").await;
+        joined(
+            &host
+                .call(json!({"t": "create", "name": mode, "mode": mode}))
+                .await,
+        );
+        let mut ann = pa.player("ann").await;
+        joined(&ann.call(json!({"t": "join", "name": mode})).await);
+        players.push((host, ann));
+    }
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    node_a.kill();
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    for mode in modes {
+        let mut ann = pb.player("ann").await;
+        let back = ann.call(json!({"t": "join", "name": mode})).await;
+        assert_eq!(joined(&back), 2, "{mode}: {back}");
+        assert_eq!(back["master"], 1, "{mode}: {back}");
+    }
+}

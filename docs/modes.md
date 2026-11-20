@@ -356,7 +356,8 @@ positions back. `player_joined.player.spectator` tells clients who is watching.
 ## Node failure: rooms move, they do not die
 
 A node writes each room to Redis (`net:<project>:ckpt:<room>`): a lockstep room every 5 s, a
-sync room every 2 s, a relay room within a second of a change of its seats or its master. The
+sync room every 2 s, and a room of any mode within a second of a change of its seats or its
+master, so a room has a checkpoint a second after its first player took a seat. The
 checkpoint lives 10 min and is renewed with the room's record in the room list, so it is
 there as long as the room is and 10 min after its node died. It holds the player list (actor
 ids, player ids, names, master), the simulation snapshot for sync, and for lockstep the

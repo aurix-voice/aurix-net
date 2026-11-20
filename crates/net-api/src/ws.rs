@@ -1593,6 +1593,7 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
     let mut iv = tokio::time::interval(period);
     iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let checkpoint_every = (2_000_000 / period.as_micros().max(1)) as u64;
+    let second = (1_000_000 / period.as_micros().max(1)) as u64;
     let writer = RoomWriter::spawn(st.clone(), room);
     let mut ticks: u64 = 0;
     loop {
@@ -1629,7 +1630,10 @@ pub async fn run_sync(st: Shared, room: RoomId, period: std::time::Duration) {
                 st.metrics.sync_resyncs.inc_by(resyncs);
                 st.metrics.sync_aoi_starved.inc_by(starved);
                 ticks += 1;
-                if ticks.is_multiple_of(checkpoint_every) {
+                // Seats that changed do not wait for the next checkpoint longer than a second.
+                let reseated =
+                    ticks.is_multiple_of(second) && std::mem::take(&mut room.room.reseated);
+                if reseated || ticks.is_multiple_of(checkpoint_every) {
                     checkpoint = Some((project, sy.checkpoint()));
                 }
                 (out, reports, spawned, events, actors)
@@ -1821,6 +1825,7 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
     let mut iv = tokio::time::interval(period);
     iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let checkpoint_every = (5_000_000 / period.as_micros().max(1)) as u64;
+    let second = (1_000_000 / period.as_micros().max(1)) as u64;
     // Every tick's bundle goes to Redis in batches of JOURNAL_FLUSH ticks, and the room keeps
     // a tick until it is there, so an adopting node has every tick of the room.
     let journal_keep = crate::lockstep::MAX_JOURNAL_TICKS as isize;
@@ -1839,7 +1844,9 @@ pub async fn run_lockstep(st: Shared, room: RoomId, period: std::time::Duration)
             let mut hosted = handle.lock();
             project = hosted.project;
             ticks += 1;
-            if ticks.is_multiple_of(checkpoint_every) {
+            let reseated =
+                ticks.is_multiple_of(second) && std::mem::take(&mut hosted.room.reseated);
+            if reseated || ticks.is_multiple_of(checkpoint_every) {
                 let snap = hosted.lockstep.as_ref().map(|l| l.snapshot());
                 checkpoint = Some((
                     hosted.project,
@@ -2317,7 +2324,7 @@ pub async fn adopt_room(
 /// Writes the rooms that changed, the latest state of each: props, `open` and `visible` to the
 /// room's row, the seats and the master of a relay room to its checkpoint. The node that takes
 /// a room over builds it from the two. Sync and lockstep rooms write their checkpoints as they
-/// tick.
+/// tick, within a second of such a change too.
 pub async fn save_rooms(st: &Shared) {
     for handle in st.host.all() {
         let (project, id, row, checkpoint) = {
@@ -2327,7 +2334,7 @@ pub async fn save_rooms(st: &Shared) {
                 (cfg.visible, cfg.open, Value::Object(cfg.props.clone()))
             });
             let ticks = hosted.sync.is_some() || hosted.lockstep.is_some();
-            let checkpoint = (std::mem::take(&mut hosted.room.reseated) && !ticks)
+            let checkpoint = (!ticks && std::mem::take(&mut hosted.room.reseated))
                 .then(|| RoomCheckpoint::of(&hosted, None, None).encode());
             (hosted.project, hosted.room.id(), row, checkpoint)
         };

@@ -324,6 +324,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   held no hash from before the move. A node keeps the whole journal of a room and its hashes
   in Redis, not the last ten seconds, and the node that takes the room over has them. The
   checkpoint of a room is deleted with the room; it used to stay ten minutes after the close.
+- A lockstep room in its first 5 seconds and a sync room in its first 2 had no checkpoint, and
+  one whose node died then came back empty. A player who joined later was not in the
+  checkpoint for as long. A room of any mode is checkpointed within a second of a change of
+  its seats or its master.
 - A relay room whose node died came back empty: its players got new actor ids, the master was
   whoever returned first, and a room its players had closed let none of them back in. A node
   writes the seats and the master of a relay room to its checkpoint within a second of a
