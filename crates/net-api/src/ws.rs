@@ -1061,8 +1061,9 @@ impl Session {
             return Err(NetError::Conflict("node_draining".into()));
         }
         crate::rest::validate_room_create(&name, &lobby_props)?;
+        crate::rest::validate_room_props(mode, &props)?;
         let mut lockstep = if mode == RoomMode::Lockstep {
-            let hz = props.get("tick_hz").and_then(|v| v.as_u64()).unwrap_or(60) as u16;
+            let hz = prop_hz(&props);
             let seed = room_seed();
             Some(
                 crate::lockstep::LockstepRoom::new(hz, seed).with_spectator_delay(prop_secs(
@@ -1113,9 +1114,7 @@ impl Session {
             crate::rest::reject(&self.st, grant.project, "capacity");
             return Err(NetError::QuotaExceeded("node is full".into()));
         }
-        let max_players = max_players
-            .unwrap_or(limits.max_players_per_room.min(16))
-            .clamp(1, limits.max_players_per_room);
+        let max_players = crate::rest::room_size(max_players, limits.max_players_per_room)?;
         if net_rooms::room::props_len(&props) > limits.max_props_bytes {
             return Err(NetError::Invalid("props too large".into()));
         }
@@ -2044,7 +2043,7 @@ pub async fn build_sync(
     seed: u64,
 ) -> Result<crate::sync::SyncRoom> {
     let schema = props.get("schema").and_then(|v| v.as_str());
-    let hz = props.get("tick_hz").and_then(|v| v.as_u64()).unwrap_or(60) as u16;
+    let hz = prop_hz(props);
     let logic = load_logic(st, project, props, seed).await?;
     crate::sync::SyncRoom::with_logic(
         schema,
@@ -2239,7 +2238,7 @@ pub async fn adopt_room(
         offline_ttl: Duration::from_secs(prop_secs(&props, "player_ttl_secs", 30)),
         empty_ttl: Duration::from_secs(prop_secs(&props, "empty_ttl_secs", 5)),
     };
-    let hz = props.get("tick_hz").and_then(|v| v.as_u64()).unwrap_or(60) as u16;
+    let hz = prop_hz(&props);
     let mut room = Room::new(cfg, Instant::now());
     let mut sync = None;
     let mut lockstep = None;
@@ -2863,6 +2862,15 @@ pub fn prop_secs(props: &Map<String, Value>, key: &str, default: u64) -> u64 {
         .and_then(|v| v.as_u64())
         .unwrap_or(default)
         .min(300)
+}
+
+/// The simulation rate a room's props ask for. `create` refuses one outside 8..=128; a room
+/// stored before that is brought into the range.
+fn prop_hz(props: &Map<String, Value>) -> u16 {
+    props
+        .get("tick_hz")
+        .and_then(|v| v.as_u64())
+        .map_or(60, |hz| hz.clamp(8, 128) as u16)
 }
 
 fn short_id() -> String {

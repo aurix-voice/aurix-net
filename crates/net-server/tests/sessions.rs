@@ -664,3 +664,75 @@ async fn control_message_over_the_limit_closes_with_the_limit_in_the_reason() {
     assert_eq!(outcome(create(over), false).await, closed);
     assert_eq!(outcome(Message::binary(vec![0; over]), false).await, closed);
 }
+
+#[tokio::test]
+async fn room_number_out_of_its_range_is_refused_not_replaced() {
+    let node = Node::start().await;
+    let project = node.project("numbers").await;
+    let mut ann = project.player("ann").await;
+    let refusals = [
+        (json!({"max_players": 0}), "max_players: 1..=128"),
+        (json!({"max_players": 129}), "max_players: 1..=128"),
+        (
+            json!({"props": {"player_ttl_secs": 301}}),
+            "player_ttl_secs: a whole number 0..=300",
+        ),
+        (
+            json!({"props": {"player_ttl_secs": -1}}),
+            "player_ttl_secs: a whole number 0..=300",
+        ),
+        (
+            json!({"props": {"empty_ttl_secs": 2.5}}),
+            "empty_ttl_secs: a whole number 0..=300",
+        ),
+        (
+            json!({"props": {"empty_ttl_secs": "10"}}),
+            "empty_ttl_secs: a whole number 0..=300",
+        ),
+        (
+            json!({"mode": "lockstep", "props": {"tick_hz": 7}}),
+            "tick_hz: a whole number 8..=128",
+        ),
+        (
+            json!({"mode": "sync", "props": {"tick_hz": 129}}),
+            "tick_hz: a whole number 8..=128",
+        ),
+        (
+            json!({"mode": "lockstep", "props": {"tick_hz": 65536}}),
+            "tick_hz: a whole number 8..=128",
+        ),
+        (
+            json!({"mode": "lockstep", "props": {"spectator_delay_secs": 301}}),
+            "spectator_delay_secs: a whole number 0..=300",
+        ),
+    ];
+    for kind in ["create", "join_or_create"] {
+        for (numbers, range) in &refusals {
+            let mut message = json!({"t": kind, "name": "arena"});
+            for (key, value) in numbers.as_object().expect("an object") {
+                message[key] = value.clone();
+            }
+            let reply = ann.call(message.clone()).await;
+            refused(&reply, "invalid_request");
+            let said = format!("invalid request: {range}");
+            assert_eq!(reply["message"], said, "{message}");
+        }
+    }
+    let (status, body) = project
+        .api
+        .post("/v1/rooms", json!({"name": "arena", "max_players": 0}))
+        .await;
+    assert_eq!(
+        (status, &body["message"]),
+        (400, &json!("invalid request: max_players: 1..=128"))
+    );
+
+    let edges = json!({"t": "create", "name": "arena", "mode": "lockstep", "max_players": 128,
+        "props": {"player_ttl_secs": 0, "empty_ttl_secs": 300, "tick_hz": 8, "spectator_delay_secs": 300}});
+    let reply = ann.call(edges).await;
+    joined(&reply);
+    assert_eq!(
+        (&reply["max_players"], &reply["tick_hz"]),
+        (&json!(128), &json!(8))
+    );
+}

@@ -140,6 +140,19 @@ A node that lists `join_id` in `supports` takes an `id` in `create`, `join`, `jo
 join. A node that does not list `join_id` refuses the `id` in these five as a field it does
 not know.
 
+The numbers of a room are read when it is created, by `create`, by a `join_or_create` that
+creates and by `POST /v1/rooms`. One that is not a whole number or is outside its range is
+refused with `invalid_request` (HTTP 400), which names it and the range; the node does not
+put another value in its place.
+
+| number | range | left out |
+|---|---|---|
+| `max_players` | 1 up to the project's `max_players_per_room` | 16, or that limit if it is less |
+| room prop `player_ttl_secs` | 0..=300 | 30 |
+| room prop `empty_ttl_secs` | 0..=300 | 5 |
+| room prop `tick_hz` (sync, lockstep) | 8..=128 | 60 |
+| room prop `spectator_delay_secs` (lockstep) | 0..=300 | 3 |
+
 `left.room` is the id from `joined.room` of the room the session is out of, whatever the reason
 (`left`, `kicked` or the reason a kick gave, `room closed`, `session_replaced`, `rehost`). A
 `left` can reach a client that has already joined another room; it then names the earlier one.

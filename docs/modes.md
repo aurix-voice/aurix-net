@@ -78,8 +78,8 @@ Create with `mode: "relay"` (default). Events are opaque bytes with a code, a ta
 late joiners receive them. Rate and size limits come from the project quota.
 
 Room props `player_ttl_secs` (default 30) and `empty_ttl_secs` (default 5) set how long a
-disconnected player keeps their slot and how long an empty room stays open (both capped at
-300). Interest groups are `u16` (65 535 groups). A player who connects again while still online
+disconnected player keeps their slot and how long an empty room stays open (0 to 300, see
+[the numbers of a room](api.md)). Interest groups are `u16` (65 535 groups). A player who connects again while still online
 takes over their own slot; the old session gets `left` with reason `session_replaced` and is
 ignored from then on.
 `cleanup_cache_on_leave` (default true) drops a player's cached events when they leave for good; set it
@@ -116,7 +116,7 @@ Create with `mode: "sync"` and optional props:
 
 | prop | default | meaning |
 |---|---|---|
-| `tick_hz` | 60 | simulation rate (8..128) |
+| `tick_hz` | 60 | simulation rate, 8 to 128 |
 | `schema` | built-in arena | IDL text, see below |
 | `budget_bytes` | 1100 | max delta payload per client per tick |
 | `aoi_cell`, `aoi_radius` | 32, 2 | interest grid cell size (world units) and radius in cells; `aoi_cell: 0` disables AOI |
@@ -350,7 +350,7 @@ starts. Two players with 8-byte inputs take 47 bytes a tick there, which is 1 h 
 against `max_players`, never become master and cannot send events or inputs (`forbidden`).
 Relay: they receive events like everyone else. Sync: they get a view of the whole world (no
 AOI, no avatar). Lockstep: they get the input stream `spectator_delay_secs` (room prop, default
-3) late, and catch-up only up to that delayed tick, so a streamer's viewers cannot feed live
+3, at most 300) late, and catch-up only up to that delayed tick, so a streamer's viewers cannot feed live
 positions back. `player_joined.player.spectator` tells clients who is watching.
 
 ## Node failure: rooms move, they do not die

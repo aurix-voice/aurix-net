@@ -1131,6 +1131,7 @@ async fn create_room(
         .into());
     }
     validate_room_create(&req.name, &req.lobby_props)?;
+    validate_room_props(net_common::RoomMode::Relay, &req.props)?;
     let project = ProjectId::from_uuid(key.project_id);
     if st.host.by_name(project, &req.name).is_some() {
         return Err(NetError::Conflict("room name already in use".into()).into());
@@ -1143,10 +1144,7 @@ async fn create_room(
         return Err(NetError::QuotaExceeded(format!("max {} open rooms", limits.max_rooms)).into());
     }
     check_usage_cap(&st, key.project_id, &limits).await?;
-    let max_players = req
-        .max_players
-        .unwrap_or(limits.max_players_per_room.min(16))
-        .clamp(1, limits.max_players_per_room);
+    let max_players = room_size(req.max_players, limits.max_players_per_room)?;
     if req.reserved.len() > MAX_RESERVED {
         return Err(NetError::Invalid(format!("reserved: at most {MAX_RESERVED} players")).into());
     }
@@ -2831,6 +2829,46 @@ async fn close_room_anywhere(st: &Shared, project: ProjectId, id: Uuid) -> Resul
 }
 
 /// Room name and `lobby_props` keys as accepted by both the control plane and REST.
+/// The numbers a room takes from its props; one out of its range is refused, not replaced.
+pub(crate) fn validate_room_props(
+    mode: net_common::RoomMode,
+    props: &serde_json::Map<String, Value>,
+) -> std::result::Result<(), NetError> {
+    use net_common::RoomMode::{Lockstep, Relay, Sync};
+    let numbers = [
+        (
+            "player_ttl_secs",
+            0..=300,
+            [Relay, Sync, Lockstep].as_slice(),
+        ),
+        ("empty_ttl_secs", 0..=300, &[Relay, Sync, Lockstep]),
+        ("spectator_delay_secs", 0..=300, &[Lockstep]),
+        ("tick_hz", 8..=128, &[Sync, Lockstep]),
+    ];
+    for (prop, range, modes) in numbers {
+        let Some(value) = props.get(prop).filter(|_| modes.contains(&mode)) else {
+            continue;
+        };
+        if !value.as_u64().is_some_and(|n| range.contains(&n)) {
+            return Err(NetError::Invalid(format!(
+                "{prop}: a whole number {}..={}",
+                range.start(),
+                range.end()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// How many players a new room takes: what was asked, up to the `most` its project allows.
+pub(crate) fn room_size(asked: Option<u16>, most: u16) -> std::result::Result<u16, NetError> {
+    let size = asked.unwrap_or(most.min(16));
+    if !(1..=most).contains(&size) {
+        return Err(NetError::Invalid(format!("max_players: 1..={most}")));
+    }
+    Ok(size)
+}
+
 pub(crate) fn validate_room_create(
     name: &str,
     lobby_props: &[String],
