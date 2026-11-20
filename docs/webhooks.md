@@ -86,6 +86,7 @@ Operators can register their own receivers under **Settings → Alert webhooks**
 | `project.suspended` | `{id, name, since}` | a project is suspended |
 | `project.usage_cap` | `{project_id, project_name, metric, used, cap, hard}` | ≥80 % of a monthly cap (`hard: false`) and again at 100 % (`hard: true`) |
 | `project.rejections` | `{project_id, project_name, total, by}` | players were turned away in the last hour |
+| `project.invalid_limits` | `{project_id, project_name, error}` | the limits stored for a project do not parse: its players get no room until an operator sets them again |
 | `webhook.failing` | `{project_id, project_name, webhook_id, url, failed, total}` | a project webhook failed in the last hour |
 | `test` | `{webhook}` | `POST /v1/operator/webhooks/:id/test` |
 

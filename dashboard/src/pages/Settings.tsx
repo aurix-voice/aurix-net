@@ -131,7 +131,7 @@ function TokensCard() {
   );
 }
 
-const ALERT_EVENTS = ["node.stale", "node.draining", "project.suspended", "project.usage_cap", "project.rejections", "webhook.failing"] as const;
+const ALERT_EVENTS = ["node.stale", "node.draining", "project.suspended", "project.usage_cap", "project.rejections", "project.invalid_limits", "webhook.failing"] as const;
 
 function AlertsCard() {
   const { t, locale } = useI18n();

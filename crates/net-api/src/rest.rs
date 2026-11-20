@@ -817,7 +817,7 @@ pub(crate) fn project_limits(
         Ok(limits) => Ok(limits.effective(&st.cfg.limits)),
         Err(e) => {
             tracing::warn!(project = %project.id, error = %e, "stored project limits do not parse");
-            reject(st, ProjectId::from_uuid(project.id), "quota");
+            reject(st, ProjectId::from_uuid(project.id), "invalid_limits");
             Err(NetError::QuotaExceeded(
                 "the project's limits are unreadable; an operator has to set them again".into(),
             ))

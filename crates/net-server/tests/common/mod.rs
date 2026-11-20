@@ -438,6 +438,12 @@ impl Sink {
         }
     }
 
+    /// The next delivery, whatever its event, if one comes within `time`.
+    pub async fn poll(&mut self, time: Duration) -> Option<Value> {
+        let delivery = tokio::time::timeout(time, self.rx.recv()).await;
+        delivery.ok().flatten().map(|(_, body)| body)
+    }
+
     /// True when nothing is delivered for `time`.
     pub async fn quiet(&mut self, time: Duration) -> bool {
         tokio::time::timeout(time, self.rx.recv()).await.is_err()

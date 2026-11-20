@@ -107,6 +107,13 @@ async fn cycle(st: &Shared) -> anyhow::Result<()> {
             rejection,
         ));
     }
+    for project in arr("invalid_limits") {
+        items.push((
+            "project.invalid_limits",
+            project["project_id"].to_string(),
+            project,
+        ));
+    }
     for (event, subject, payload) in items {
         if first_time(st, &format!("{event}:{subject}")).await? {
             st.webhooks.emit_fleet(event, payload);

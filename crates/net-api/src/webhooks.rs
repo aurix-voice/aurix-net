@@ -39,6 +39,7 @@ pub const OPERATOR_EVENTS: &[&str] = &[
     "project.suspended",
     "project.usage_cap",
     "project.rejections",
+    "project.invalid_limits",
     "webhook.failing",
     "test",
 ];
