@@ -292,6 +292,72 @@ async fn an_answer_to_a_leave_the_node_lost_fails_no_join_after_it() {
     }
 }
 
+/// A node that gives the data path up under the first join, with the control channel open, and
+/// refuses the join after it.
+async fn node_that_gives_the_first_join_up() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        ws.send(hello()).await.unwrap();
+        let mut joins = 0;
+        while let Some(Ok(Message::Text(request))) = ws.next().await {
+            let (code, id) = match serde_json::from_str(&request).unwrap() {
+                ClientMsg::Auth { .. } => {
+                    ws.send(authed()).await.unwrap();
+                    continue;
+                }
+                ClientMsg::Leave { id } => {
+                    ws.send(left(id)).await.unwrap();
+                    continue;
+                }
+                ClientMsg::Join { id, .. } => {
+                    joins += 1;
+                    // the id of a join the client gave up: this error is not its answer
+                    match joins {
+                        1 => ("transport", id.map(|id| id + 1)),
+                        _ => ("not_found", id),
+                    }
+                }
+                _ => continue,
+            };
+            let error = ServerMsg::Error {
+                code: code.into(),
+                message: String::new(),
+                id,
+            };
+            ws.send(text(&error)).await.unwrap();
+        }
+    });
+    url
+}
+
+#[tokio::test]
+async fn a_loss_that_ended_a_join_does_not_end_the_join_after_it() {
+    let url = node_that_gives_the_first_join_up().await;
+    let mut client = Client::connect(&url, "grant", Options::default())
+        .await
+        .unwrap();
+    let first = client.join(join("first")).await;
+    assert!(
+        matches!(first, Err(ClientError::Disconnected)),
+        "{:?}",
+        first.err()
+    );
+    let second = client.join(join("second")).await;
+    assert!(
+        matches!(&second, Err(ClientError::Server { code, .. }) if code == "not_found"),
+        "{:?}",
+        second.err()
+    );
+    // the game joined again before it asked: the loss was of the stay it gave up
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    while let Some(event) = client.try_next_event() {
+        assert!(!matches!(event, Event::Closed(_)), "{event:?}");
+    }
+}
+
 #[tokio::test]
 async fn what_the_room_sent_is_not_handed_out_after_the_leave() {
     let mut client = client_of(Node {

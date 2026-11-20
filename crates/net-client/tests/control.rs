@@ -100,6 +100,38 @@ async fn what_the_node_closed_the_control_channel_with_is_told() {
     );
 }
 
+#[tokio::test]
+async fn a_close_that_ends_a_call_is_told_to_the_game_as_well() {
+    let (url, _read) = node(true).await;
+    let mut client = Client::connect(&url, "grant", Options::default())
+        .await
+        .unwrap();
+    let join = ClientMsg::Join {
+        name: "room".into(),
+        player_props: Default::default(),
+        rejoin_actor: None,
+        schema_hash: None,
+        spectator: false,
+        id: None,
+    };
+    let joined = client.join(join).await;
+    assert!(
+        matches!(&joined, Err(ClientError::Closed(said)) if said == "1009 message too large: at most 69632 bytes"),
+        "{:?}",
+        joined.err()
+    );
+    let mut closed = Vec::new();
+    while let Ok(Some(event)) = tokio::time::timeout(WAIT, client.next_event()).await {
+        if let Event::Closed(reason) = event {
+            closed.push(reason);
+        }
+    }
+    assert_eq!(
+        closed,
+        ["control channel closed: 1009 message too large: at most 69632 bytes"]
+    );
+}
+
 /// A node that closes on the sign-in, as a node does on one over its limit, and tells its size.
 async fn node_that_reads_no_sign_in() -> (String, mpsc::UnboundedReceiver<usize>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

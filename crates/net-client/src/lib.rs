@@ -190,6 +190,8 @@ pub struct Client {
     /// One lost connection is reported once, whichever of the link, the data path and the
     /// control channel notices it first.
     lost: bool,
+    /// The loss that ended a call, until the game is told of it.
+    unheard: Option<Event>,
     data: Option<Arc<DataPath>>,
     /// The node takes the unsequenced channel (`hello.supports`).
     unsequenced: bool,
@@ -301,6 +303,7 @@ impl Client {
             events,
             replay: VecDeque::new(),
             lost: false,
+            unheard: None,
             events_tx: events_tx.clone(),
             data: None,
             unsequenced: false,
@@ -559,7 +562,7 @@ impl Client {
         };
         let deadline = tokio::time::Instant::now() + LEAVE_WAIT;
         let mut passed = VecDeque::new();
-        while let Ok(Some(event)) = tokio::time::timeout_at(deadline, self.next_event()).await {
+        while let Ok(Some(event)) = tokio::time::timeout_at(deadline, self.next(false)).await {
             match event {
                 Event::Control(ServerMsg::Left { id: answered, .. }) if answered == Some(id) => {
                     break
@@ -584,6 +587,8 @@ impl Client {
         self.lost = false;
         let id = self.own_id();
         self.send(with_id(msg, id)).await?;
+        // the loss that ended a join before this one is of the stay the game gave up
+        self.unheard = None;
         let deadline = tokio::time::Instant::now() + self.opts.connect_timeout;
         let mut passed = VecDeque::new();
         let answer = loop {
@@ -848,10 +853,14 @@ impl Client {
     }
 
     /// The next event while a call waits for the node's answer: the wait ends with the
-    /// connection and at `deadline`.
+    /// connection and at `deadline`. The loss that ends it is the game's to hear as well.
     async fn answer_by(&mut self, deadline: tokio::time::Instant) -> Result<Event> {
-        match tokio::time::timeout_at(deadline, self.next_event()).await {
-            Ok(Some(Event::Closed(_))) | Ok(None) => Err(self.gone()),
+        match tokio::time::timeout_at(deadline, self.next(false)).await {
+            Ok(Some(Event::Closed(reason))) => {
+                self.unheard = Some(Event::Closed(reason));
+                Err(self.gone())
+            }
+            Ok(None) => Err(self.gone()),
             Ok(Some(event)) => Ok(event),
             Err(_) => Err(ClientError::Timeout),
         }
@@ -939,10 +948,19 @@ impl Client {
     }
 
     pub async fn next_event(&mut self) -> Option<Event> {
+        self.next(true).await
+    }
+
+    /// The next event: for the game, or for a call of the client that waits for its answer.
+    /// The loss that ended a call is the game's alone, after what the call read before it.
+    async fn next(&mut self, for_game: bool) -> Option<Event> {
         loop {
             let event = match self.replay.pop_front() {
                 Some(event) => event,
                 None => {
+                    if for_game && self.unheard.is_some() {
+                        return self.heard();
+                    }
                     let event = self.events.recv().await?;
                     self.noted(event)
                 }
@@ -953,12 +971,20 @@ impl Client {
         }
     }
 
+    fn heard(&mut self) -> Option<Event> {
+        self.lost = true;
+        self.unheard.take()
+    }
+
     /// Non-blocking poll for engines with their own loop.
     pub fn try_next_event(&mut self) -> Option<Event> {
         loop {
             let event = match self.replay.pop_front() {
                 Some(event) => event,
                 None => {
+                    if self.unheard.is_some() {
+                        return self.heard();
+                    }
                     let event = self.events.try_recv().ok()?;
                     self.noted(event)
                 }

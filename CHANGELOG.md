@@ -197,6 +197,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- C, C++, Godot, the native Unity client and Unreal: a connection lost while a call waited for
+  the node's answer, a join most often, failed the call and was not told to the game: `closed`
+  never came, so a game that shows a lost connection from `closed` showed nothing. The game
+  now gets both the error of the call and `closed`, as it does in Web and C#.
 - Every client: a control message larger than the node reads, 69 632 bytes of JSON (room
   properties, a long list in a join, an `rpc` body), was sent, and the node closed the control
   channel on it: the game lost its connection and was told `control channel closed` or
