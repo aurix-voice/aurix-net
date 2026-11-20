@@ -104,7 +104,9 @@ project quotas (`/v1/operator/projects/:id/limits`).
 lobby is its room prop `lobby` (always part of the lobby listing; rooms without it form the default lobby
 `""`) — lobby statistics without subscribing to the room list. `find_friends{players}` (≤ 64 ids)
 answers with `online` (an authenticated control session or a room slot on any node of the fleet) and the
-room/node each player is in — find friends. Both fan out across the fleet, so a session may
+room/node each player is in — find friends. A player who is connected and in no room has no room
+there, and one who is not connected has the room that still holds their seat, if any does.
+Both fan out across the fleet, so a session may
 send at most one per second. Player ids are whatever your grants carry: a friends list itself stays in
 your backend.
 

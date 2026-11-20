@@ -40,21 +40,23 @@ pub fn lobby_stats(rooms: &[RoomSummary]) -> (u32, u32, Vec<LobbyStats>) {
 }
 
 /// What this node knows about `players`: a control session here, or a slot in a room hosted here.
+/// The room of an online player is one they are in; the room of an offline one holds their seat.
 pub fn local_friends(st: &Shared, project: ProjectId, players: &[String]) -> Vec<FriendInfo> {
     players
         .iter()
         .map(|p| {
             let slots = st.host.find_player(project, p);
             let online = st.host.is_online(project, p) || slots.iter().any(|s| s.5);
-            let room = slots
-                .into_iter()
-                .next()
-                .map(|(id, name, mode, _, _, _)| FriendRoom {
-                    id: id.to_string(),
-                    name,
-                    mode,
-                    node: st.node_id.to_string(),
-                });
+            let room =
+                slots
+                    .into_iter()
+                    .find(|slot| slot.5 == online)
+                    .map(|(id, name, mode, _, _, _)| FriendRoom {
+                        id: id.to_string(),
+                        name,
+                        mode,
+                        node: st.node_id.to_string(),
+                    });
             FriendInfo {
                 player: p.clone(),
                 online,
@@ -65,7 +67,8 @@ pub fn local_friends(st: &Shared, project: ProjectId, players: &[String]) -> Vec
 }
 
 /// One answer per requested player (duplicates collapsed, request order kept): online if any node
-/// says so, the first room reported wins.
+/// says so, and then in the first room a node that has them online reports. A seat held for a
+/// player is their room only while no node has them online.
 pub fn merge_friends(
     order: &[String],
     parts: impl IntoIterator<Item = FriendInfo>,
@@ -85,10 +88,13 @@ pub fn merge_friends(
         .collect();
     for part in parts {
         if let Some(friend) = map.get_mut(&part.player) {
-            friend.online |= part.online;
-            if friend.room.is_none() {
+            if part.online && !friend.online {
+                friend.room = None;
+            }
+            if friend.room.is_none() && (part.online || !friend.online) {
                 friend.room = part.room;
             }
+            friend.online |= part.online;
         }
     }
     order.iter().filter_map(|p| map.remove(p)).collect()
@@ -186,46 +192,63 @@ mod tests {
         );
     }
 
+    fn friend(player: &str, online: bool, node: Option<&str>) -> FriendInfo {
+        FriendInfo {
+            player: player.into(),
+            online,
+            room: node.map(|node| FriendRoom {
+                id: "r".into(),
+                name: "r".into(),
+                mode: RoomMode::Sync,
+                node: node.into(),
+            }),
+        }
+    }
+
     #[test]
-    fn merge_keeps_order_dedupes_and_prefers_first_room() {
+    fn merge_keeps_order_and_dedupes() {
         let order: Vec<String> = ["bob", "amy", "bob", "zed"]
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let room = |node: &str| FriendRoom {
-            id: "r".into(),
-            name: "r".into(),
-            mode: RoomMode::Sync,
-            node: node.into(),
-        };
         let parts = vec![
-            FriendInfo {
-                player: "amy".into(),
-                online: false,
-                room: Some(room("n1")),
-            },
-            FriendInfo {
-                player: "amy".into(),
-                online: true,
-                room: Some(room("n2")),
-            },
-            FriendInfo {
-                player: "bob".into(),
-                online: true,
-                room: None,
-            },
-            FriendInfo {
-                player: "nobody".into(),
-                online: true,
-                room: None,
-            },
+            friend("amy", true, Some("n1")),
+            friend("bob", true, None),
+            friend("nobody", true, None),
         ];
         let out = merge_friends(&order, parts);
         let names: Vec<&str> = out.iter().map(|f| f.player.as_str()).collect();
         assert_eq!(names, ["bob", "amy", "zed"]);
         assert!(out[0].online && out[0].room.is_none());
-        assert!(out[1].online);
-        assert_eq!(out[1].room.as_ref().unwrap().node, "n1");
+        assert!(out[1].online && out[1].room.is_some());
         assert!(!out[2].online && out[2].room.is_none());
+    }
+
+    #[test]
+    fn merge_names_the_room_a_player_is_in_over_a_seat_held_for_them() {
+        let merged = |parts: Vec<FriendInfo>| {
+            let out = merge_friends(&["amy".to_string()], parts).remove(0);
+            (out.online, out.room.map(|room| room.node))
+        };
+        let (held, played) = (
+            friend("amy", false, Some("held")),
+            friend("amy", true, Some("played")),
+        );
+        let (other, idle) = (
+            friend("amy", false, Some("other")),
+            friend("amy", true, None),
+        );
+        let at = |node: &str| Some(node.to_string());
+        assert_eq!(
+            merged(vec![held.clone(), played.clone()]),
+            (true, at("played"))
+        );
+        assert_eq!(
+            merged(vec![played.clone(), held.clone()]),
+            (true, at("played"))
+        );
+        assert_eq!(merged(vec![held.clone(), idle.clone()]), (true, None));
+        assert_eq!(merged(vec![idle, held.clone()]), (true, None));
+        assert_eq!(merged(vec![held, other]), (false, at("held")));
     }
 }

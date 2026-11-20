@@ -267,6 +267,7 @@ pub struct FriendInfo {
     pub player: String,
     /// Has an authenticated control session or a live room slot somewhere in the fleet.
     pub online: bool,
+    /// The room an online player is in; of an offline one, a room that holds their seat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room: Option<FriendRoom>,
 }

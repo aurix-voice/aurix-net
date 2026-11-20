@@ -431,3 +431,37 @@ async fn room_is_offered_again_once_the_hold_on_its_seat_lapses() {
     assert_eq!(rooms["rooms"][0]["name"], "party", "{rooms}");
     joined(&ann.call(json!({"t": "join_random"})).await);
 }
+
+#[tokio::test]
+async fn find_friends_names_the_room_a_player_is_in() {
+    const FAST: &[(&str, &str)] = &[("NET__SERVER__HEARTBEAT_SECS", "1")];
+    let node = Node::start_with(FAST).await;
+    let other = Node::start_with(FAST).await;
+    let project = node.project("friends").await;
+    let elsewhere = other.same_project(&project);
+    let mut ann = project.player("ann").await;
+    let find = async |ann: &mut common::Ws| {
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let reply = ann
+            .call(json!({"t": "find_friends", "players": ["bob"]}))
+            .await;
+        let bob = &reply["friends"][0];
+        (bob["online"] == true, bob["room"]["name"].clone())
+    };
+
+    // Bob loses the connection to a room, and the room keeps his seat.
+    let mut bob = project.player("bob").await;
+    joined(&bob.call(json!({"t": "create", "name": "left"})).await);
+    let mut stays = project.player("cat").await;
+    joined(&stays.call(json!({"t": "join", "name": "left"})).await);
+    drop(bob);
+    assert_eq!(stays.until("player_left").await["offline"], true);
+    assert_eq!(find(&mut ann).await, (false, json!("left")));
+
+    // He connects to another node: online, and in no room.
+    let mut bob = elsewhere.player("bob").await;
+    assert_eq!(find(&mut ann).await, (true, Value::Null));
+
+    joined(&bob.call(json!({"t": "create", "name": "now"})).await);
+    assert_eq!(find(&mut ann).await, (true, json!("now")));
+}
