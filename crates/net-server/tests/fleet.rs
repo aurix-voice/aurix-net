@@ -218,3 +218,75 @@ async fn room_on_another_node_whose_last_seat_is_held_is_offered_to_its_player_a
         "{reply}"
     );
 }
+
+#[tokio::test]
+async fn room_that_moves_keeps_the_props_and_the_closed_door_it_was_given() {
+    let mut node_a = Node::start_with(FAST).await;
+    let node_b = Node::start_with(FAST).await;
+    let pa = node_a.project("kept").await;
+    let pb = node_b.same_project(&pa);
+    let mut host = pa.player("host").await;
+    let made = json!({"t": "create", "name": "arena", "props": {"map": "dust"}});
+    joined(&host.call(made).await);
+    let later = json!({"t": "set_room_props", "props": {"map": "nuke", "round": 3},
+        "open": false, "visible": false});
+    host.send(later).await;
+    host.until("room_props").await;
+    // A row younger than this is taken for a room that is still being created.
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    node_a.terminate();
+
+    let mut stranger = pb.player("stranger").await;
+    refused(
+        &stranger.call(json!({"t": "join", "name": "arena"})).await,
+        "room_closed",
+    );
+    let rooms = stranger.call(json!({"t": "get_rooms"})).await;
+    assert_eq!(rooms["rooms"], json!([]));
+    let mut back = pb.player("host").await;
+    let reply = back.call(json!({"t": "join", "name": "arena"})).await;
+    joined(&reply);
+    assert_eq!(reply["props"], json!({"map": "nuke", "round": 3}));
+}
+
+#[tokio::test]
+async fn stalled_node_does_not_write_over_a_room_adopted_elsewhere() {
+    let node_a = Node::start_with(FAST).await;
+    let node_b = Node::start_with(FAST).await;
+    let pa = node_a.project("overwritten").await;
+    let pb = node_b.same_project(&pa);
+    let mut alice = pa.player("alice").await;
+    let made = json!({"t": "create", "name": "arena", "props": {"map": "dust"}});
+    let created = alice.call(made).await;
+    joined(&created);
+
+    // A change A has yet to write when B adopts the room and its players change it again.
+    alice
+        .send(json!({"t": "set_room_props", "props": {"map": "stale"}}))
+        .await;
+    alice.until("room_props").await;
+    let frozen = node_a.freeze(Duration::from_secs(9));
+    let adopt = async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let mut bob = pb.player("bob").await;
+        joined(&bob.call(json!({"t": "join", "name": "arena"})).await);
+        bob.send(json!({"t": "set_room_props", "props": {"map": "nuke"}}))
+            .await;
+        bob.until("room_props").await;
+        bob
+    };
+    let (_, _bob) = tokio::join!(frozen, adopt);
+    assert_eq!(alice.until("left").await["reason"], "rehost");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let url = std::env::var("NET__DATABASE__URL")
+        .unwrap_or_else(|_| "postgres://aurix:aurix@127.0.0.1:5432/aurix_net".into());
+    let pool = sqlx::PgPool::connect(&url).await.expect("postgres");
+    let props: serde_json::Value =
+        sqlx::query_scalar("SELECT props FROM rooms WHERE id = $1::uuid")
+            .bind(created["room"].as_str().expect("room id"))
+            .fetch_one(&pool)
+            .await
+            .expect("room row");
+    assert_eq!(props["map"], "nuke");
+}

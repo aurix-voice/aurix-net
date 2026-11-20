@@ -196,6 +196,7 @@ async fn main() -> anyhow::Result<()> {
     }
     tokio::spawn(net_api::ws::reaper(st.clone()));
     tokio::spawn(net_api::ws::flusher(st.clone()));
+    tokio::spawn(net_api::ws::saver(st.clone()));
     tokio::spawn(net_api::metering::meter(st.clone()));
     tokio::spawn(net_api::janitor::run(st.clone()));
     // What one node does for the whole fleet stops first when the node does.

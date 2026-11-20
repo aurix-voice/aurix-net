@@ -254,6 +254,8 @@ pub struct HostedRoom {
     pub lockstep: Option<crate::lockstep::LockstepRoom>,
     /// The node is handing the room off and takes no more events for it.
     pub leaving: bool,
+    /// Props, `open` or `visible` changed since the room's row was last written.
+    pub unsaved: bool,
 }
 
 pub const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(2);
@@ -355,6 +357,7 @@ impl RoomHost {
             sync: None,
             lockstep: None,
             leaving: false,
+            unsaved: false,
         }));
         self.rooms.insert(id, handle.clone());
         self.by_name.insert((project, name), id);

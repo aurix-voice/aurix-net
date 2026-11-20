@@ -733,6 +733,7 @@ impl Session {
                         .room
                         .set_room_props(joined.actor, props, expected.as_ref(), visible, open)
                         .map_err(room_err)?;
+                    hosted.unsaved = true;
                     dispatch(&hosted, out, &self.st.metrics);
                 }
                 self.publish_current().await;
@@ -2313,6 +2314,41 @@ pub async fn adopt_room(
     Ok(handle)
 }
 
+/// Writes the rooms whose props, `open` or `visible` changed to their rows, the latest state of
+/// each. The node that takes a room over builds it from its row.
+pub async fn save_rooms(st: &Shared) {
+    for handle in st.host.all() {
+        let (id, visible, open, props) = {
+            let mut hosted = handle.lock();
+            if !std::mem::take(&mut hosted.unsaved) {
+                continue;
+            }
+            let cfg = &hosted.room.cfg;
+            (
+                cfg.id,
+                cfg.visible,
+                cfg.open,
+                Value::Object(cfg.props.clone()),
+            )
+        };
+        let saved = queries::save_room_state(&st.pool, id.0, st.node_id.0, visible, open, &props);
+        if let Err(e) = saved.await {
+            tracing::warn!(room = %id, error = %e, "room state not saved; trying again");
+            handle.lock().unsaved = true;
+        }
+    }
+}
+
+/// Saves changed rooms once a second, so a node that dies loses a second of changes at most.
+pub async fn saver(st: Shared) {
+    let mut iv = tokio::time::interval(Duration::from_secs(1));
+    iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        iv.tick().await;
+        save_rooms(&st).await;
+    }
+}
+
 /// Drives every data link every FLUSH_EVERY: coalesced batches, acks, retransmits.
 pub async fn flusher(st: Shared) {
     let mut iv = tokio::time::interval(crate::host::FLUSH_EVERY);
@@ -2565,6 +2601,7 @@ pub async fn handoff_all(st: &Shared, settle_until: tokio::time::Instant) -> usi
             tracing::warn!(room = %id, error = %e, "handoff checkpoint failed");
         }
     }
+    save_rooms(st).await;
     match queries::orphan_rooms_of_node(&st.pool, st.node_id.0).await {
         Ok(count) => tracing::info!(rooms = count, "rooms handed off for adoption"),
         Err(e) => tracing::error!(error = %e, "handoff: orphan rooms"),

@@ -324,6 +324,10 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   held no hash from before the move. A node keeps the whole journal of a room and its hashes
   in Redis, not the last ten seconds, and the node that takes the room over has them. The
   checkpoint of a room is deleted with the room; it used to stay ten minutes after the close.
+- A room that moved to another node came back with the props, `open` and `visible` it was
+  created with: what `set_room_props` had changed was gone, and a room closed and hidden by
+  its players was open and listed again. A node writes these to the room's record within a
+  second of a change and before it hands the room over.
 - A room was created with another number than the one asked for, without a word: `max_players`
   0 made a room for one player and one above the project's limit a room of that limit, a
   `tick_hz` outside 8 to 128 ran at 8 or 128 (65 536 at 8, it wrapped), a time to live that was

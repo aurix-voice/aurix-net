@@ -396,23 +396,24 @@ pub async fn list_open_rooms(pool: &DbPool, project_id: Uuid, limit: i64) -> Res
     .map_err(db_err)
 }
 
-pub async fn update_room_flags(
+/// Writes what a room's players changed since it was created, while `node` still hosts it.
+pub async fn save_room_state(
     pool: &DbPool,
     id: Uuid,
-    visible: Option<bool>,
-    open: Option<bool>,
-    props: Option<&serde_json::Value>,
-    lobby_props: Option<&[String]>,
+    node: Uuid,
+    visible: bool,
+    open: bool,
+    props: &serde_json::Value,
 ) -> Result<()> {
     sqlx::query(
-        "UPDATE rooms SET visible = COALESCE($2, visible), open = COALESCE($3, open),
-            props = COALESCE($4, props), lobby_props = COALESCE($5, lobby_props) WHERE id = $1",
+        "UPDATE rooms SET visible = $3, open = $4, props = $5
+         WHERE id = $1 AND node_id = $2 AND state = 'open'",
     )
     .bind(id)
+    .bind(node)
     .bind(visible)
     .bind(open)
     .bind(props)
-    .bind(lobby_props)
     .execute(pool)
     .await
     .map_err(db_err)?;

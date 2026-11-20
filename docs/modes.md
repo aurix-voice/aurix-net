@@ -361,7 +361,9 @@ sync, and for lockstep the newest master checkpoint plus the ticks and hashes th
 the room's list in Redis yet (below).
 When a node misses three heartbeats the others mark its rooms `orphaned` instead of closing
 them. The first node a player of that room reaches (plain `join` / `join_or_create` by name
-on any node of the region) atomically adopts the row, rebuilds the room from the DB config,
+on any node of the region) atomically adopts the row, rebuilds the room from the DB config
+(its props, `open` and `visible` as last set: a node writes them within a second of a change
+and before it hands a room over, so a node that dies loses a second of such changes at most),
 restores the simulation from the checkpoint, recreates every player as an offline slot (so
 reconnects get the same actor ids, `rejoin_actor` works) and restarts the tick loop. Lockstep
 joiners then get the normal catch-up; sync clients get fresh baselines. Lockstep rooms also
