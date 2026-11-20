@@ -1000,6 +1000,12 @@ namespace Aurix.Net.Managed
                 err = null;
             Action<string> handler = json =>
             {
+                // the first answer is the answer: what a Poll hands out after it is not
+                if (got != null || err != null)
+                {
+                    return;
+                }
+
                 var ty = Json.Str(json, "t");
                 var repeated = Json.ULong(json, "id");
                 if (ty == type && (id == null || repeated == null || repeated == id))
@@ -1007,7 +1013,7 @@ namespace Aurix.Net.Managed
                     got = json;
                     taken?.Invoke(json);
                 }
-                else if (ty == "error" && (repeated == null || repeated == id))
+                else if (ty == "error" && repeated == id)
                 {
                     err = Json.Str(json, "code") + ": " + Json.Str(json, "message");
                 }

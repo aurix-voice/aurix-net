@@ -197,6 +197,14 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   results no longer carry the room name as `MAPNAME`.
 
 ### Fixed
+- Every client: an `error` of the node without an `id` was taken for the refusal of whatever
+  call was waiting. The node refuses that way a message the game sent without an id
+  (`set_room_props` outside a room, a kick the player may not make), so a join, lobby
+  statistics, find-friends, a room list or an `rpc` in flight at that moment failed with the
+  refusal of another message; the join failed although the node had let the client in. A call
+  sent with an id now fails only with the `error` that repeats it, and one without an id
+  reaches the game as the control message it is. In C# a call the node had answered failed
+  too, when such an `error` came after the answer within one `Poll`.
 - C, C++, Godot, the native Unity client and Unreal: a connection lost while a call waited for
   the node's answer, a join most often, failed the call and was not told to the game: `closed`
   never came, so a game that shows a lost connection from `closed` showed nothing. The game

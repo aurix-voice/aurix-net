@@ -39,6 +39,13 @@ When the node closes the control channel, the game is told the code and the reas
 the calls that waited for an answer or are made later fail with the same code and reason. A
 channel that ended without a close of the node is `control channel closed`, as before.
 
+A call that waits for the node's answer (a join, lobby statistics, find-friends, a room list, an
+`rpc`) fails with the refusal of its own request and of no other: the node repeats the `id` of a
+request in the `error` that refuses it. An `error` without an `id` refuses a message the game
+sent without one (`set_room_props` outside a room, a kick the player may not make); the game
+reads it as the control message it is, and no call fails by it. A join to a node that does not
+list `join_id` goes without an `id`, and an `error` without one is its refusal.
+
 The data path is lost (`closed` with `link dead`) when a reliable message has been resent and
 has gone 15 s without the node's acknowledgement, and when more than 1 MiB of them wait for the
 node: the send that meets the limit fails ([modes.md](modes.md)). A message whose 15 s ran out

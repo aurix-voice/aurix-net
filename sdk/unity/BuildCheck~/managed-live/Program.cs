@@ -434,6 +434,19 @@ class P
             throw new Exception("a control message over the limit: refused " + refusedLarge);
         overLimit.Dispose();
 
+        // a refusal without an id is not the answer to a call sent with one: the game reads it
+        var asker = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-other"));
+        var unasked = new List<string>();
+        asker.OnControl += json => { if (json.Contains("\"t\":\"error\"")) unasked.Add(json); };
+        // outside a room the node refuses this, and a message sent without an id is refused without one
+        const string roomless = "{\"t\":\"set_room_props\",\"props\":{\"stage\":1}}";
+        await asker.SendControlAsync(roomless);
+        await asker.StatsAsync();
+        await asker.SendControlAsync(roomless);
+        if (await asker.JoinOrCreateAsync(room + "-other", "relay", 4) < 0 || unasked.Count != 2 || !unasked.TrueForAll(json => json.Contains("not in a room")))
+            throw new Exception("a refusal without an id: " + string.Join(" ", unasked));
+        asker.Dispose();
+
         // a chat channel is of the room: the same chat joins it again in the next one
         var ma = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-ma"));
         var mb = await ManagedClient.ConnectAsync("http://127.0.0.1:8090", await Grant(h, key, "cs-mb"));

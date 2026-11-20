@@ -61,6 +61,14 @@ fn left(id: Option<u32>) -> Message {
     })
 }
 
+fn refused() -> Message {
+    text(&ServerMsg::Error {
+        code: "invalid_request".into(),
+        message: "not in a room".into(),
+        id: None,
+    })
+}
+
 fn kicked(room: &str) -> Message {
     text(&ServerMsg::Left {
         reason: "kicked".into(),
@@ -172,6 +180,8 @@ struct Node {
     late: Option<Duration>,
     /// Loses its answer to the first leave.
     loses_left: bool,
+    /// Refuses another message of the game, without an id, ahead of its answer to a join.
+    refuses_another: bool,
     /// Messages the room sends as soon as the client is in.
     says: usize,
     /// Takes the client out of its room when asked for `stats`, and sends this many messages
@@ -205,6 +215,9 @@ impl Node {
                             ClientMsg::Join { name, id, .. } => {
                                 if let Some(late) = self.late.take() {
                                     tokio::time::sleep(late).await;
+                                }
+                                if self.refuses_another {
+                                    ws.send(refused()).await.unwrap();
                                 }
                                 joined(&name, data.clone(), id.filter(|_| self.join_ids))
                             }
@@ -290,6 +303,40 @@ async fn an_answer_to_a_leave_the_node_lost_fails_no_join_after_it() {
         assert_eq!(client.join(join(name)).await.unwrap().name, name);
         client.leave().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn a_refusal_without_an_id_is_not_the_answer_to_a_join_sent_with_one() {
+    let mut client = client_of(Node {
+        join_ids: true,
+        refuses_another: true,
+        ..Node::default()
+    })
+    .await;
+    assert_eq!(client.join(join("room")).await.unwrap().name, "room");
+    let mut refusals = 0;
+    while let Some(event) = client.try_next_event() {
+        if let Event::Control(ServerMsg::Error { code, id, .. }) = event {
+            assert_eq!((code.as_str(), id), ("invalid_request", None));
+            refusals += 1;
+        }
+    }
+    assert_eq!(refusals, 1, "the refusal is the game's to read");
+}
+
+#[tokio::test]
+async fn a_refusal_without_an_id_answers_a_join_sent_without_one() {
+    let mut client = client_of(Node {
+        refuses_another: true,
+        ..Node::default()
+    })
+    .await;
+    let joined = client.join(join("room")).await;
+    assert!(
+        matches!(&joined, Err(ClientError::Server { code, .. }) if code == "invalid_request"),
+        "{:?}",
+        joined.err()
+    );
 }
 
 /// A node that gives the data path up under the first join, with the control channel open, and

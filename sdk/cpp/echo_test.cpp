@@ -196,6 +196,23 @@ int main() {
                large.joinOrCreate(room + "-large", Mode::Relay, 4) >= 0;
         std::printf("cpp control message over the limit: error code %d, sign-in %d, then joined: %d\n", refused, signIn, fits);
     }
+    // a refusal without an id is not the answer to a join sent with one: the game reads it
+    bool apart = false;
+    {
+        Client asker;
+        int unasked = 0;
+        asker.onControl = [&](const std::string& json) {
+            if (Client::jsonStr(json, "t") == "error" && Client::jsonStr(json, "message").find("not in a room") != std::string::npos) unasked++;
+        };
+        asker.connect(http, Client::issueGrant(http, key, "cpp-other", "Other"));
+        // outside a room the node refuses this, and a message sent without an id is refused without one
+        asker.sendControl("{\"t\":\"set_room_props\",\"props\":{\"stage\":1}}");
+        int actor = -1;
+        try { actor = asker.joinOrCreate(room + "-other", Mode::Relay, 4); } catch (const Error& error) { std::printf("cpp join beside a refusal: %s\n", error.what()); }
+        for (int i = 0; i < 100 && unasked == 0; i++) { asker.poll(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+        apart = actor >= 0 && unasked == 1;
+        std::printf("cpp join beside a refusal without an id: actor=%d, refusals the game read=%d\n", actor, unasked);
+    }
     // a chat channel is of the room: the same chat joins it again in the next one
     std::string matches;
     {
@@ -234,5 +251,5 @@ int main() {
         std::printf("cpp callback that leaves the room%s: events before the leave=%d/1, after it=%d/0\n", tunnel ? ", tunnel" : "", last, more);
         gone = gone && last == 1 && more == 0;
     }
-    a.leave(); return (fits && rooms && gone && hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && threw && inRange && whole && refused && matched && shaped && rejoined && turnedOut && handedBack) ? 0 : 1;
+    a.leave(); return (apart && fits && rooms && gone && hello && ticks == 10 && unsequenced == 10 && cached == 1 && history == 1 && early == 0 && described && threw && inRange && whole && refused && matched && shaped && rejoined && turnedOut && handedBack) ? 0 : 1;
 }

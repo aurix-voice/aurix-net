@@ -637,9 +637,7 @@ impl Client {
                     code,
                     message,
                     id: answered,
-                })) if id.is_none() || answered.is_none() || answered == id => {
-                    break Err(ClientError::Server { code, message })
-                }
+                })) if answered == id => break Err(ClientError::Server { code, message }),
                 Ok(Event::Data { .. } | Event::DataReady) => {}
                 Ok(event) => passed.push_back(event),
                 Err(error) => break Err(error),

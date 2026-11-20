@@ -714,3 +714,18 @@ test("a sign-in over what the node reads before it is refused, and its close is 
   t.after(() => link.close());
   await assert.rejects(Client.connect(link.url, await grant("web-sign-a")), { message: "control channel closed: 1009 message too large: at most 8192 bytes" });
 });
+
+test("a refusal without an id is not the answer to a call sent with one", { skip: !key }, async (t) => {
+  const a = await Client.connect(http, await grant("web-other-a"));
+  t.after(() => a.close());
+  const refusals = [];
+  a.on("control", (message) => { if (message.t === "error") refusals.push(message.message); });
+  // outside a room the node refuses this, and a message sent without an id is refused without one
+  const outside = { t: "set_room_props", props: { stage: 1 } };
+  a.send(outside);
+  assert.equal(typeof (await a.lobbyStats()).rooms, "number");
+  a.send(outside);
+  const room = `web-other-${process.pid}`;
+  assert.equal((await a.joinOrCreate(room, "relay", 4)).name, room);
+  assert.deepEqual(refusals, ["invalid request: not in a room", "invalid request: not in a room"]);
+});

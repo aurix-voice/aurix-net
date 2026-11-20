@@ -932,6 +932,51 @@ public class ManagedCoreTests
     }
 
     // A node that answers a ping only when the next one arrives, as a link slower than the probes would.
+    // answers `stats` and beside the answer refuses another message of the game, without an id
+    static async Task RefuseAnotherBeside(HttpListener listener, bool first)
+    {
+        var socket = (await (await listener.GetContextAsync()).AcceptWebSocketAsync(null)).WebSocket;
+        var buffer = new byte[4096];
+        Task Say(string json) => socket.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(json)), WebSocketMessageType.Text, true, CancellationToken.None);
+        const string refusal = "{\"t\":\"error\",\"code\":\"invalid_request\",\"message\":\"not in a room\"}";
+        try
+        {
+            while (true)
+            {
+                var read = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                if (read.MessageType == WebSocketMessageType.Close) break;
+                string json = Encoding.UTF8.GetString(buffer, 0, read.Count);
+                if (ManagedClientTestHooks.Str(json, "t") == "auth") await Say("{\"t\":\"authed\",\"player_id\":\"ann\",\"name\":\"Ann\"}");
+                if (ManagedClientTestHooks.Str(json, "t") != "stats") continue;
+                string answer = "{\"t\":\"stats\",\"rooms\":0,\"players\":0,\"lobbies\":[],\"id\":" + (long)ManagedClientTestHooks.Num(json, "id") + "}";
+                await Say(first ? refusal : answer);
+                await Say(first ? answer : refusal);
+            }
+        }
+        catch (WebSocketException) { }
+    }
+
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task ARefusalWithoutAnIdIsNotTheAnswerToACallSentWithOne(bool first)
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0); probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop();
+        using var listener = new HttpListener();
+        listener.Prefixes.Add("http://127.0.0.1:" + port + "/"); listener.Start();
+        _ = RefuseAnotherBeside(listener, first);
+        using var client = await ManagedClient.ConnectAsync("http://127.0.0.1:" + port, "grant");
+        int refusals = 0;
+        client.OnControl += json => { if (ManagedClientTestHooks.Str(json, "t") == "error") refusals++; };
+        for (int round = 0; round < 20; round++)
+        {
+            Assert.That(ManagedClientTestHooks.Str(await client.StatsAsync(), "t"), Is.EqualTo("stats"));
+        }
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (refusals < 20 && clock.ElapsedMilliseconds < 2000) { client.Poll(); await Task.Delay(5); }
+        Assert.That(refusals, Is.EqualTo(20), "the game reads each refusal");
+    }
+
     static async Task AnswerLate(HttpListener listener)
     {
         var socket = (await (await listener.GetContextAsync()).AcceptWebSocketAsync(null)).WebSocket;

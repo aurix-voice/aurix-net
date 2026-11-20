@@ -123,11 +123,11 @@ function wayBack(asked: Record<string, unknown>, name: string): object {
 // The mark of an event among the messages of the link.
 const EVENT = 1;
 
-// An `error` refuses the request whose `id` it repeats; one without an `id` may refuse any.
+// An `error` refuses the request whose `id` it repeats: the node repeats the id of a request it
+// refuses. One without an `id` refuses a request sent without one, and is another message's
+// otherwise.
 function refuses(message: ControlMessage, id?: number): boolean {
-  return (
-    message.t === "error" && (message.id === undefined || message.id === id)
-  );
+  return message.t === "error" && message.id === id;
 }
 
 /** What `Client.on` can subscribe to, with the arguments each listener receives. */
