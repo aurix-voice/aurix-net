@@ -126,20 +126,6 @@ async fn operator_is_alerted_of_a_project_with_unreadable_stored_limits() {
     }
     assert_eq!(turned_away["total"], json!({"invalid_limits": 1}));
 
-    // One node of the fleet looks for alerts, and keeps that place for 90 s after its last
-    // look: a node of an earlier test may have left with it.
-    let redis =
-        std::env::var("NET__REDIS__URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".into());
-    let mut redis = redis::Client::open(redis)
-        .expect("redis url")
-        .get_multiplexed_async_connection()
-        .await
-        .expect("redis");
-    let _: i64 = redis::cmd("DEL")
-        .arg("aurix:alerts:leader")
-        .query_async(&mut redis)
-        .await
-        .expect("del");
     let asked = Instant::now();
     let alert = loop {
         let left = Duration::from_secs(45)

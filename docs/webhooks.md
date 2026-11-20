@@ -90,4 +90,4 @@ Operators can register their own receivers under **Settings → Alert webhooks**
 | `webhook.failing` | `{project_id, project_name, webhook_id, url, failed, total}` | a project webhook failed in the last hour |
 | `test` | `{webhook}` | `POST /v1/operator/webhooks/:id/test` |
 
-One node (Redis leader lock) evaluates the conditions every 30 s; each subject fires at most once per hour while the condition persists, so a stuck node produces one alert an hour, not sixty. Deliveries are logged like project webhooks (`retention.webhook_deliveries_days`).
+One node (Redis leader lock) evaluates the conditions every 30 s; each subject fires at most once per hour while the condition persists, so a stuck node produces one alert an hour, not sixty. A node that stops gives the lock up and the next node to look takes over; after a node that was killed the others wait for the lock to run out, up to 90 s. Deliveries are logged like project webhooks (`retention.webhook_deliveries_days`).

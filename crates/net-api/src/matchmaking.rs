@@ -567,6 +567,11 @@ impl Matchmaker {
         self.get(redis, project, id).await
     }
 
+    /// Gives up the leader lock, for a node that stops: the others need not wait for it to run out.
+    pub async fn resign(&self, redis: &RedisStore, node: &str) -> Result<()> {
+        redis.release_lock(LEADER_KEY, node).await
+    }
+
     /// One matching cycle; only the node holding the leader lock does work. Returns the matches
     /// formed (empty when not leader or nothing matched) so the caller can notify webhooks.
     pub async fn run_cycle(&self, redis: &RedisStore, node: &str) -> Result<Vec<MatchFound>> {

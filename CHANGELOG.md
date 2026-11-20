@@ -324,6 +324,9 @@ image, the `sbom` artifact and this file's entry are produced from the tagged co
   held no hash from before the move. A node keeps the whole journal of a room and its hashes
   in Redis, not the last ten seconds, and the node that takes the room over has them. The
   checkpoint of a room is deleted with the room; it used to stay ten minutes after the close.
+- A node that stopped kept the lock of the node that looks for operator alerts until it ran
+  out: after an update of that node no alert was sent for up to 90 s (90.2 s measured). A node
+  that stops gives up that lock and the matchmaking one.
 - The operator alert webhooks said nothing of a project whose stored limits do not parse,
   though its players get no room until the limits are set again. The alert is
   `project.invalid_limits`, and `/v1/rejections` counts those players under `invalid_limits`,

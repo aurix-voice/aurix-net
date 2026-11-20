@@ -5,6 +5,15 @@ use net_common::{NetError, ProjectId, Result, RoomId};
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
+
+/// Deletes the key if it still holds the value given.
+static RELEASE_LOCK: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
+         return 0",
+    )
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LiveRoom {
@@ -473,6 +482,18 @@ impl RedisStore {
             out.push((hour * 3600, counts));
         }
         Ok(out)
+    }
+
+    /// Gives up a lock that one node holds for the whole fleet, if `holder` still has it.
+    pub async fn release_lock(&self, key: &str, holder: &str) -> Result<()> {
+        let mut conn = self.conn.clone();
+        RELEASE_LOCK
+            .key(key)
+            .arg(holder)
+            .invoke_async::<i64>(&mut conn)
+            .await
+            .map(drop)
+            .map_err(|e| NetError::Redis(e.to_string()))
     }
 
     pub fn raw(&self) -> ConnectionManager {

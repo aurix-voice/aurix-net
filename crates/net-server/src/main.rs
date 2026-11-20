@@ -198,10 +198,11 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(net_api::ws::flusher(st.clone()));
     tokio::spawn(net_api::metering::meter(st.clone()));
     tokio::spawn(net_api::janitor::run(st.clone()));
-    let stop_matchmaking = CancellationToken::new();
+    // What one node does for the whole fleet stops first when the node does.
+    let stop_leading = CancellationToken::new();
     let matchmaking = tokio::spawn({
         let st = st.clone();
-        let stop = stop_matchmaking.clone();
+        let stop = stop_leading.clone();
         async move {
             let mut iv = tokio::time::interval(std::time::Duration::from_millis(500));
             loop {
@@ -236,7 +237,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
     tokio::spawn(fleet_listener(st.clone(), cfg.redis.clone()));
-    tokio::spawn(net_api::alerts::run(st.clone()));
+    let alerts = tokio::spawn(net_api::alerts::run(st.clone(), stop_leading.clone()));
     {
         let st = st.clone();
         let http_url = http_url.clone();
@@ -317,8 +318,13 @@ async fn main() -> anyhow::Result<()> {
                 warn!(error = %e, "drain heartbeat failed");
             }
             // A cycle under way is finished, so no match is made without its webhook.
-            stop_matchmaking.cancel();
+            stop_leading.cancel();
             let _ = matchmaking.await;
+            let node = st.node_id.to_string();
+            if let Err(e) = st.matchmaker.resign(&st.redis, &node).await {
+                warn!(error = %e, "matchmaking leader lock not released");
+            }
+            let _ = alerts.await;
             let moved = net_api::ws::handoff_all(&st, settle_until).await;
             info!(rooms = moved, "shutdown: rooms handed off");
             if let Err(e) = queries::delete_node(&st.pool, st.node_id.0).await {

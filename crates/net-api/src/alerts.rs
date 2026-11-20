@@ -5,18 +5,27 @@
 
 use crate::state::Shared;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 const LEADER_KEY: &str = "aurix:alerts:leader";
 const LEADER_TTL_MS: u64 = 90_000;
 const REPEAT_SECS: u64 = 3600;
 
-pub async fn run(st: Shared) {
+pub async fn run(st: Shared, stop: CancellationToken) {
     let mut iv = tokio::time::interval(Duration::from_secs(30));
     loop {
-        iv.tick().await;
+        tokio::select! {
+            () = stop.cancelled() => break,
+            _ = iv.tick() => {}
+        }
         if let Err(e) = cycle(&st).await {
             tracing::warn!(error = %e, "alert cycle failed");
         }
+    }
+    // Left held, the lock would keep the other nodes from the alerts until it ran out.
+    let node = st.node_id.to_string();
+    if let Err(e) = st.redis.release_lock(LEADER_KEY, &node).await {
+        tracing::warn!(error = %e, "alert leader lock not released");
     }
 }
 
