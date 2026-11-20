@@ -197,6 +197,12 @@ impl Node {
             .status();
     }
 
+    /// Ends the node the way a crash does: it hands nothing over.
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+
     /// Stops the node the way a deploy does and waits for it to exit. SIGTERM lets it remove
     /// its row from the fleet; it is killed if that takes too long.
     pub fn terminate(&mut self) {

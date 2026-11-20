@@ -290,3 +290,35 @@ async fn stalled_node_does_not_write_over_a_room_adopted_elsewhere() {
             .expect("room row");
     assert_eq!(props["map"], "nuke");
 }
+
+#[tokio::test]
+async fn relay_room_of_a_node_that_died_keeps_its_seats_and_its_master() {
+    let mut node_a = Node::start_with(FAST).await;
+    let node_b = Node::start_with(FAST).await;
+    let pb = node_b.project("crashed").await;
+    let pa = node_a.same_project(&pb);
+    let join = json!({"t": "join", "name": "arena"});
+    let mut host = pa.player("host").await;
+    let host_actor = joined(&host.call(json!({"t": "create", "name": "arena"})).await);
+    let mut ann = pa.player("ann").await;
+    let ann_actor = joined(&ann.call(join.clone()).await);
+    host.send(json!({"t": "set_master", "actor": ann_actor}))
+        .await;
+    host.until("master_changed").await;
+    let shut = json!({"t": "set_room_props", "props": {}, "open": false, "visible": false});
+    host.send(shut).await;
+    host.until("room_props").await;
+    // The node writes what changed in a room once a second.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    node_a.kill();
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    let mut stranger = pb.player("stranger").await;
+    refused(&stranger.call(join.clone()).await, "room_closed");
+    let mut ann = pb.player("ann").await;
+    let back = ann.call(join.clone()).await;
+    assert_eq!(joined(&back), ann_actor);
+    assert_eq!(back["master"], ann_actor);
+    let mut host = pb.player("host").await;
+    assert_eq!(joined(&host.call(join).await), host_actor);
+}

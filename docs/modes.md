@@ -355,10 +355,13 @@ positions back. `player_joined.player.spectator` tells clients who is watching.
 
 ## Node failure: rooms move, they do not die
 
-Every 5 s a node writes each sync/lockstep room to Redis (`net:<project>:ckpt:<room>`, TTL
-10 min): the player list (actor ids, player ids, names, master), the simulation snapshot for
-sync, and for lockstep the newest master checkpoint plus the ticks and hashes that are not in
-the room's list in Redis yet (below).
+A node writes each room to Redis (`net:<project>:ckpt:<room>`): a lockstep room every 5 s, a
+sync room every 2 s, a relay room within a second of a change of its seats or its master. The
+checkpoint lives 10 min and is renewed with the room's record in the room list, so it is
+there as long as the room is and 10 min after its node died. It holds the player list (actor
+ids, player ids, names, master), the simulation snapshot for sync, and for lockstep the
+newest master checkpoint plus the ticks and hashes that are not in the room's list in Redis
+yet (below).
 When a node misses three heartbeats the others mark its rooms `orphaned` instead of closing
 them. The first node a player of that room reaches (plain `join` / `join_or_create` by name
 on any node of the region) atomically adopts the row, rebuilds the room from the DB config

@@ -2180,7 +2180,7 @@ impl RoomCheckpoint {
 
 /// Takes over an orphaned room (its node was reaped): rebuilds the room from the DB row,
 /// restores simulation state from the Redis checkpoint, recreates the players as offline
-/// slots and restarts the tick loop. Relay rooms come back empty but keep name/props/slots.
+/// slots and restarts the tick loop. A room with no checkpoint comes back empty.
 pub async fn adopt_room(
     st: &Shared,
     row: net_db::models::RoomRow,
@@ -2314,27 +2314,36 @@ pub async fn adopt_room(
     Ok(handle)
 }
 
-/// Writes the rooms whose props, `open` or `visible` changed to their rows, the latest state of
-/// each. The node that takes a room over builds it from its row.
+/// Writes the rooms that changed, the latest state of each: props, `open` and `visible` to the
+/// room's row, the seats and the master of a relay room to its checkpoint. The node that takes
+/// a room over builds it from the two. Sync and lockstep rooms write their checkpoints as they
+/// tick.
 pub async fn save_rooms(st: &Shared) {
     for handle in st.host.all() {
-        let (id, visible, open, props) = {
+        let (project, id, row, checkpoint) = {
             let mut hosted = handle.lock();
-            if !std::mem::take(&mut hosted.unsaved) {
-                continue;
-            }
-            let cfg = &hosted.room.cfg;
-            (
-                cfg.id,
-                cfg.visible,
-                cfg.open,
-                Value::Object(cfg.props.clone()),
-            )
+            let row = std::mem::take(&mut hosted.unsaved).then(|| {
+                let cfg = &hosted.room.cfg;
+                (cfg.visible, cfg.open, Value::Object(cfg.props.clone()))
+            });
+            let ticks = hosted.sync.is_some() || hosted.lockstep.is_some();
+            let checkpoint = (std::mem::take(&mut hosted.room.reseated) && !ticks)
+                .then(|| RoomCheckpoint::of(&hosted, None, None).encode());
+            (hosted.project, hosted.room.id(), row, checkpoint)
         };
-        let saved = queries::save_room_state(&st.pool, id.0, st.node_id.0, visible, open, &props);
-        if let Err(e) = saved.await {
-            tracing::warn!(room = %id, error = %e, "room state not saved; trying again");
-            handle.lock().unsaved = true;
+        if let Some((visible, open, props)) = row {
+            let saved =
+                queries::save_room_state(&st.pool, id.0, st.node_id.0, visible, open, &props);
+            if let Err(e) = saved.await {
+                tracing::warn!(room = %id, error = %e, "room state not saved; trying again");
+                handle.lock().unsaved = true;
+            }
+        }
+        if let Some(body) = checkpoint {
+            if let Err(e) = st.redis.put_checkpoint(project, id, &body, 600).await {
+                tracing::warn!(room = %id, error = %e, "checkpoint not saved; trying again");
+                handle.lock().room.reseated = true;
+            }
         }
     }
 }

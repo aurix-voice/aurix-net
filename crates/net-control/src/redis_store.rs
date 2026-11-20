@@ -168,7 +168,8 @@ impl RedisStore {
         Ok(())
     }
 
-    /// Renews the live records of rooms that did not change. False for a record that is gone.
+    /// Renews the live records of rooms that did not change, and their checkpoints with them.
+    /// False for a record that is gone.
     pub async fn touch_rooms(&self, rooms: &[(ProjectId, RoomId)]) -> Result<Vec<bool>> {
         if rooms.is_empty() {
             return Ok(Vec::new());
@@ -177,6 +178,11 @@ impl RedisStore {
         let mut pipe = redis::pipe();
         for (project, room) in rooms {
             pipe.expire(Self::room_key(*project, *room), self.room_ttl_secs as i64);
+            pipe.expire(
+                Self::checkpoint_key(*project, *room),
+                crate::nodes::ORPHAN_TTL_SECS,
+            )
+            .ignore();
         }
         pipe.query_async(&mut conn)
             .await
@@ -187,7 +193,7 @@ impl RedisStore {
         format!("net:{project}:ckpt:{room}")
     }
 
-    /// Stores a sync-room checkpoint (frame snapshot) for re-hosting after a node failure.
+    /// Stores a room's checkpoint for re-hosting after a node failure.
     pub async fn put_checkpoint(
         &self,
         project: ProjectId,

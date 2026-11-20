@@ -222,6 +222,8 @@ pub struct Room {
     empty_since: Option<Instant>,
     /// Map player_id -> actor for rejoin.
     by_player: HashMap<String, ActorId>,
+    /// A seat or the master changed since the room's checkpoint was last written.
+    pub reseated: bool,
 }
 
 impl Room {
@@ -238,6 +240,7 @@ impl Room {
             created: now,
             empty_since: Some(now),
             by_player: HashMap::new(),
+            reseated: false,
         }
     }
 
@@ -416,6 +419,7 @@ impl Room {
                 }
                 let info = player.info();
                 self.empty_since = None;
+                self.reseated = true;
                 if self.master.is_none() && !spec {
                     self.master = Some(a);
                 }
@@ -467,6 +471,7 @@ impl Room {
         self.players.insert(actor, player);
         self.by_player.insert(player_id.to_string(), actor);
         self.empty_since = None;
+        self.reseated = true;
         let mut out = Vec::new();
         if self.master.is_none() && !spectator {
             self.master = Some(actor);
@@ -615,6 +620,7 @@ impl Room {
             let Some(player) = self.players.remove(&actor) else {
                 return out;
             };
+            self.reseated = true;
             self.by_player.remove(&player.player_id);
             for other in self.players.values_mut() {
                 other.flows.remove(&actor);
@@ -633,6 +639,7 @@ impl Room {
             }
         }
         if self.master == Some(actor) {
+            self.reseated = true;
             // Oldest online (non-spectator) player becomes master.
             self.master = self
                 .players
@@ -781,6 +788,7 @@ impl Room {
             Some(_) => {}
         }
         self.master = Some(target);
+        self.reseated = true;
         Ok(self.broadcast_all(ServerMsg::MasterChanged { actor: target }))
     }
 
